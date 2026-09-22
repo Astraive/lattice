@@ -5,31 +5,60 @@
     "": {
       "name": "lattice",
       "devDependencies": {
-        "@biomejs/biome": "^2.5.14",
-        "markdownlint-cli2": "^0.23.3",
-        "turbo": "^2.11.3",
+        "@biomejs/biome": "2.5.14",
+        "markdownlint-cli2": "0.23.3",
+        "turbo": "2.11.3",
       },
     },
     "apps/desktop": {
       "name": "@lattice/desktop",
       "version": "0.1.0",
       "dependencies": {
-        "react": "^19.3.0",
-        "react-dom": "^19.3.0",
+        "react": "19.3.0",
+        "react-dom": "19.3.0",
       },
       "devDependencies": {
         "@lattice/config": "workspace:*",
-        "@tauri-apps/cli": "^2.11.5",
-        "@types/react": "^19.3.0",
-        "@types/react-dom": "^19.3.0",
-        "@vitejs/plugin-react": "^6.1.1",
-        "typescript": "^7.0.2",
-        "vite": "^8.3.0",
+        "@tauri-apps/cli": "2.11.5",
+        "@types/react": "19.3.0",
+        "@types/react-dom": "19.3.0",
+        "@vitejs/plugin-react": "6.1.1",
+        "typescript": "7.0.2",
+        "vite": "8.3.0",
       },
     },
     "packages/config": {
       "name": "@lattice/config",
       "version": "0.1.0",
+    },
+    "packages/desktop-ui": {
+      "name": "@lattice/desktop-ui",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@lattice/config": "workspace:*",
+        "@types/react": "19.3.0",
+        "typescript": "7.0.2",
+      },
+      "peerDependencies": {
+        "react": "19.3.0",
+        "react-dom": "19.3.0",
+      },
+    },
+    "packages/protocol-inspector": {
+      "name": "@lattice/protocol-inspector",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@lattice/config": "workspace:*",
+        "typescript": "7.0.2",
+      },
+    },
+    "packages/theme": {
+      "name": "@lattice/theme",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@lattice/config": "workspace:*",
+        "typescript": "7.0.2",
+      },
     },
   },
   "packages": {
@@ -54,6 +83,12 @@
     "@lattice/config": ["@lattice/config@workspace:packages/config"],
 
     "@lattice/desktop": ["@lattice/desktop@workspace:apps/desktop"],
+
+    "@lattice/desktop-ui": ["@lattice/desktop-ui@workspace:packages/desktop-ui"],
+
+    "@lattice/protocol-inspector": ["@lattice/protocol-inspector@workspace:packages/protocol-inspector"],
+
+    "@lattice/theme": ["@lattice/theme@workspace:packages/theme"],
 
     "@nodelib/fs.scandir": ["@nodelib/fs.scandir@2.1.5", "", { "dependencies": { "@nodelib/fs.stat": "2.0.5", "run-parallel": "^1.1.9" } }, "sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g=="],
 
