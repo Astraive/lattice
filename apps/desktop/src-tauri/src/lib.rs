@@ -1,3 +1,8 @@
+/// Starts the native Lattice desktop process.
+///
+/// # Panics
+///
+/// Panics when Tauri cannot initialize the configured application runtime.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
