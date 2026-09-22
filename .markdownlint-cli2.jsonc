@@ -1,0 +1,11 @@
+{
+  "globs": [
+    "docs/**/*.md",
+    "!docs/spec.md",
+    "!docs/spec2.md"
+  ],
+  "config": {
+    // Project documentation uses dense requirement tables and long links.
+    "MD013": false
+  }
+}

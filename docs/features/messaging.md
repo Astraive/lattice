@@ -1,0 +1,45 @@
+# Messaging and history — MSG
+
+Messages are immutable authenticated creation events. Edits, tombstones, reactions and receipts are separate events. UI ordering is stable but does not assert a global physical timeline.
+
+| ID | Requirement | Acceptance criterion | Gate |
+| --- | --- | --- | --- |
+| MSG-001 | An authorized user shall compose and commit text while disconnected. | Restart after local send retains event with queued status. | M1 |
+| MSG-002 | A text channel shall show messages in deterministic order and repair gaps on contact. | Reordered/duplicated batch yields identical view on replicas. | M1 |
+| MSG-003 | Sender shall see queued, forwarded, delivered-to-device and optional read-local states separately. | Relay/courier ACK cannot appear as recipient delivery; read opt-out works. | M1 |
+| MSG-004 | Direct messages shall use an end-to-end protected two-device/group context. | Non-member transport relay cannot decrypt; add/remove changes keys appropriately. | M3 |
+| MSG-005 | Replies shall reference immutable event IDs; threads shall retain parent Space/channel policy. | Parent arrives after reply, UI repairs thread without duplicate. | M3 |
+| MSG-006 | Author edit shall create a new event preserving previous versions under retention policy. | Conflict between two edits yields specified deterministic view and audit. | M3 |
+| MSG-007 | Author/moderator delete shall be an authenticated tombstone, not remote erasure. | Offline peer sees tombstone after sync; malicious retained copy remains possible. | M3 |
+| MSG-008 | Reactions and pins shall use element-tagged add/remove semantics. | Opposite orders of same valid events converge without oscillation. | M3 |
+| MSG-009 | Mentions shall resolve identity/role IDs rather than display-name text. | Rename/collision cannot redirect mention; local mute policy suppresses notification. | M3 |
+| MSG-010 | Presence and typing shall be expiring hints and never durable truth. | Disconnected peer expires and does not remain globally online. | M3 |
+| MSG-011 | Locally retained history shall be searchable offline within key/retention constraints. | Query old authorized messages with all network paths off. | M3 |
+| MSG-012 | Sending rich text shall use constrained semantic content, never raw executable HTML. | Malicious markup renders as safe text; desktop/mobile results agree. | M3 |
+
+Messages reference attachments by authenticated manifest IDs. Local storage may retain less history under pressure, but loss of cryptographic dependencies or inability to decrypt must be shown explicitly. The outbox and local event log are different: dropping an expired envelope must not delete the authored message. See [DATA_MODEL.md](../data/DATA_MODEL.md).
+
+## Send, receive and display
+
+Composer action first validates local role/channel state and draft size, creates canonical event bytes, commits event and outbox atomically, then returns an event ID. It must not block on a radio link. The router chooses a path and may make multiple envelopes for the same event. A recipient authenticates/decrypts, checks parent and permission context, persists once, projects once, and optionally returns a destination receipt. The sender may remain queued/forwarded for a long time if acknowledgments cannot return through a partition.
+
+**Message identity:** event ID, not a timestamp, is the reference for replies, edits, delete, reactions, pins, receipts and notifications. Sequence numbers detect missing messages; Lamport order plus stable tie breaks produces a consistent display without inventing real-time order. A local optimistic bubble shows its actual queued status. If local commit fails, show failure and keep a recoverable draft rather than pretending it was sent.
+
+## Update semantics
+
+| User action | Event rule | Remote/offline behavior |
+| --- | --- | --- |
+| Edit own text | Create authenticated replacement referencing original; preserve versions until retention removes them. | Multiple edits get deterministic resolution; a device without original keeps dependency pending. |
+| Delete own text | Create tombstone referencing original. | Honoring clients hide the message after receiving it; cannot erase exports or malicious copies. |
+| Moderator removal | Distinct moderation event with reason and privilege proof. | Validate role at causal context; present moderator action as distinct from author delete. |
+| React | Element-identified add/remove; avoid interpreting a duplicated packet as another toggle. | Commutative view after reorder; counters are derived, not trusted. |
+| Pin | Permission-checked add/remove reference. | Missing target displays pending/removed reference safely. |
+| Reply/thread | Immutable parent/root ID and inherited Space policy. | Child arriving before parent stays in a recoverable pending/placeholder view. |
+
+## DMs, mentions and history
+
+DMs have their own two-member encrypted context under the chosen MLS profile; changing device participation implies key and history rules. A displayed human name is never a routing or authorization target. Mentions carry stable identity/role references inside encrypted content, with notification delivery controlled by recipient settings; role membership can change between authoring and receipt, so notification semantics are evaluated against an explicitly chosen event context. Search operates on locally decrypted, retained authorized content; an offline search cannot retrieve unavailable remote history. Retention and key disposal can make an old message permanently undecryptable. A quoted snippet must not bypass a source channel’s access rules when forwarded or exported.
+
+## Delivery and notification edge cases
+
+Relay accepted → **forwarded**, not delivered. Courier has three copies → still **forwarded**, not delivered. Destination persisted but receipt lost → sender may remain forwarded despite actual receipt; duplicate retry is idempotent. Read receipts are optional, per-device and end-to-end, not a global “everyone read” indicator. Typing/presence are volatile with short expiries; they do not survive reconnect as durable history. Notifications fire from locally validated/decrypted messages only, never raw relay events. An unread badge is local projection state and may be corrected after delayed synchronization.
