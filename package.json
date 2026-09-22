@@ -1,0 +1,24 @@
+{
+  "name": "lattice",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "check": "turbo run check && cargo check --workspace --all-targets --locked",
+    "dev": "turbo run dev",
+    "format": "biome check --write . && cargo fmt --all",
+    "format:check": "biome check . && cargo fmt --all -- --check",
+    "lint": "turbo run lint && markdownlint-cli2 && cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "test": "turbo run test && cargo test --workspace --locked"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "markdownlint-cli2": "^0.23.3",
+    "turbo": "^2.11.3"
+  }
+}

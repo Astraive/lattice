@@ -1,2 +1,29 @@
 # Local agent instructions and state
 .agents/
+.markdownlint-cli2.jsonc
+
+# JavaScript and Turborepo
+node_modules/
+.bun/
+.turbo/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Rust and Tauri
+target/
+local.properties
+
+apps/desktop/src-tauri/gen/
+
+# Environment and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
