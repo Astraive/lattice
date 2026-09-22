@@ -1,0 +1,4 @@
+{
+  "extends": "@lattice/config/typescript/base.json",
+  "include": ["src"]
+}
