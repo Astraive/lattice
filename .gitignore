@@ -3,6 +3,7 @@
 .markdownlint-cli2.jsonc
 
 # JavaScript and Turborepo
+.gradle/
 node_modules/
 .bun/
 .turbo/
