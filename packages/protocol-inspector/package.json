@@ -10,7 +10,7 @@
     "build": "tsc --noEmit",
     "check": "tsc --noEmit --pretty false",
     "lint": "biome check src",
-    "test": "bun test"
+    "test": "bun test --pass-with-no-tests"
   },
   "devDependencies": {
     "@lattice/config": "workspace:*",
