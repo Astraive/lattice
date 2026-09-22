@@ -1,0 +1,10 @@
+[package]
+name = "lattice-core"
+description = "Lattice command and orchestration facade"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

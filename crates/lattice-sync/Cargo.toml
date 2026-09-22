@@ -1,0 +1,10 @@
+[package]
+name = "lattice-sync"
+description = "Lattice anti-entropy and repair planning"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

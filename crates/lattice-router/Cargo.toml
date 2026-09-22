@@ -1,0 +1,10 @@
+[package]
+name = "lattice-router"
+description = "Lattice path selection and bounded queues"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

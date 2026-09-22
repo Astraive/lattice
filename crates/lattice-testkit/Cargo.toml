@@ -1,0 +1,10 @@
+[package]
+name = "lattice-testkit"
+description = "Lattice deterministic clocks and transport fixtures"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "lattice-voice"
+description = "Lattice voice session and signaling state"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

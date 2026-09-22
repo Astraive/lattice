@@ -1,0 +1,10 @@
+[package]
+name = "lattice-node"
+description = "Lattice optional persistent peer"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

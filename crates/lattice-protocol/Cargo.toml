@@ -1,0 +1,10 @@
+[package]
+name = "lattice-protocol"
+description = "Lattice wire profile and capability handling"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

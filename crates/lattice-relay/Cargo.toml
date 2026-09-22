@@ -1,0 +1,10 @@
+[package]
+name = "lattice-relay"
+description = "Lattice optional mailbox adapter"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

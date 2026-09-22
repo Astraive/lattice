@@ -1,5 +1,26 @@
 [workspace]
-members = ["apps/cli", "apps/desktop/src-tauri"]
+members = [
+    "apps/cli",
+    "apps/desktop/src-tauri",
+    "crates/lattice-core",
+    "crates/lattice-crypto",
+    "crates/lattice-events",
+    "crates/lattice-files",
+    "crates/lattice-identity",
+    "crates/lattice-mesh",
+    "crates/lattice-mls",
+    "crates/lattice-node",
+    "crates/lattice-platform",
+    "crates/lattice-protocol",
+    "crates/lattice-relay",
+    "crates/lattice-router",
+    "crates/lattice-storage",
+    "crates/lattice-sync",
+    "crates/lattice-testkit",
+    "crates/lattice-transport",
+    "crates/lattice-uniffi",
+    "crates/lattice-voice",
+]
 resolver = "3"
 
 [workspace.package]

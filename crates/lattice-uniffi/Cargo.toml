@@ -1,0 +1,10 @@
+[package]
+name = "lattice-uniffi"
+description = "Lattice mobile binding boundary"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

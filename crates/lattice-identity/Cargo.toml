@@ -1,0 +1,10 @@
+[package]
+name = "lattice-identity"
+description = "Lattice device identities and verification"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

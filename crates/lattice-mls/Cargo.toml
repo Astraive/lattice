@@ -1,0 +1,10 @@
+[package]
+name = "lattice-mls"
+description = "Lattice group membership and epoch state"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

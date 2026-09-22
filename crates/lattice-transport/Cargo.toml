@@ -1,0 +1,10 @@
+[package]
+name = "lattice-transport"
+description = "Lattice transport lifecycle and framing ports"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "lattice-crypto"
+description = "Lattice cryptographic adapters"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

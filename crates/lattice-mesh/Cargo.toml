@@ -1,0 +1,10 @@
+[package]
+name = "lattice-mesh"
+description = "Lattice forwarding and courier behavior"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "lattice-events"
+description = "Lattice authenticated events and reducers"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
