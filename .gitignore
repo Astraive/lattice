@@ -22,6 +22,10 @@ apps/desktop/src-tauri/gen/
 .env.*
 !.env.example
 *.log
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+.swiftpm/
 
 # Editors and operating systems
 .vscode/
