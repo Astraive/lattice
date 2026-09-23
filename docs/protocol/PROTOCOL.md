@@ -1,6 +1,10 @@
 # Protocol profile and interoperability boundaries
 
-**Status:** draft. `spec.md` contains longer examples; exact v1 bytes are not frozen. This document defines the responsibilities of the future versioned `protocol/specs/*` documents. Do not ship independent client implementations from this summary alone.
+**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. A bounded executable candidate currently exists for canonical CBOR, event-ID hashing, and the local identity bundle; see [`protocol/specs/00-overview.md`](../../protocol/specs/00-overview.md) and its vector file. Those candidate bytes are not an interoperability claim. Do not ship independent client implementations from this summary alone.
+
+## Current executable candidate
+
+[`00-overview.md`](../../protocol/specs/00-overview.md), [`02-encoding.md`](../../protocol/specs/02-encoding.md), [`03-identity.md`](../../protocol/specs/03-identity.md), and [`canonical-cbor.json`](../../protocol/vectors/canonical-cbor.json) track the Rust subset implemented so far. Signed event framing, authorization, MLS, sessions, envelopes, relay, files-on-wire and voice signaling remain separate profile work; do not infer acceptance from the CBOR decoder.
 
 ## Layer map
 

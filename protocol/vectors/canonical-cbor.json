@@ -1,0 +1,116 @@
+{
+  "profile": "lattice-candidate-1",
+  "status": "candidate, not interoperability proof",
+  "encoding": {
+    "positive": [
+      {
+        "name": "unsigned-zero",
+        "value": "0",
+        "hex": "00"
+      },
+      {
+        "name": "unsigned-24",
+        "value": "24",
+        "hex": "1818"
+      },
+      {
+        "name": "unsigned-256",
+        "value": "256",
+        "hex": "190100"
+      },
+      {
+        "name": "negative-minus-one",
+        "value": "-1",
+        "hex": "20"
+      },
+      {
+        "name": "negative-minus-25",
+        "value": "-25",
+        "hex": "3818"
+      },
+      {
+        "name": "byte-string",
+        "value_hex": "aa",
+        "hex": "41aa"
+      },
+      {
+        "name": "text-string",
+        "value": "a",
+        "hex": "6161"
+      },
+      {
+        "name": "array",
+        "value": [
+          "1",
+          "a"
+        ],
+        "hex": "82016161"
+      },
+      {
+        "name": "ordered-integer-map",
+        "value": [
+          [
+            "0",
+            true
+          ],
+          [
+            "10",
+            {
+              "bytes_hex": "aa"
+            }
+          ]
+        ],
+        "hex": "a200f50a41aa"
+      },
+      {
+        "name": "null",
+        "value": null,
+        "hex": "f6"
+      }
+    ],
+    "negative": [
+      {
+        "name": "non-minimal-integer",
+        "hex": "1800",
+        "error": "NonCanonicalInteger"
+      },
+      {
+        "name": "indefinite-array",
+        "hex": "9fff",
+        "error": "IndefiniteLength"
+      },
+      {
+        "name": "duplicate-map-key",
+        "hex": "a200000001",
+        "error": "DuplicateMapKey"
+      },
+      {
+        "name": "descending-map-keys",
+        "hex": "a201000000",
+        "error": "UnsortedMapKeys"
+      },
+      {
+        "name": "invalid-utf8",
+        "hex": "61ff",
+        "error": "InvalidUtf8"
+      },
+      {
+        "name": "trailing-data",
+        "hex": "0000",
+        "error": "TrailingBytes"
+      }
+    ]
+  },
+  "event_id": {
+    "preimage_hex": "a10001",
+    "domain_utf8": "lattice:event:v1",
+    "sha256_hex": "b004d95df1123a2e0062e8279137aa707cdb97788ab32cc6216f5d4891622195"
+  },
+  "identity": {
+    "bundle_format": "01 || 32-byte Ed25519 public key || 32-byte X25519 public key",
+    "bundle_hex": "01d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    "fingerprint_domain_hex": "6c6174746963653a6964656e746974792d62756e646c653a763100",
+    "fingerprint_sha256_hex": "5f7e15d6a462c18997358f8934ac2d0c53556bce94ed7d031b7c9813da55c02a",
+    "status": "candidate; asserted by Rust test, cross-language interop unverified"
+  }
+}
