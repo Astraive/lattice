@@ -4,8 +4,8 @@ This index tracks decisions. Create one `ADR-xxx-title.md` per resolved item wit
 
 | ADR | Issue | Current safe rule | Blocking IDs | Gate |
 | --- | --- | --- | --- | --- |
-| ADR-001 | Concurrent MLS Commit order, policy conflict, fork recovery | No claim of secure convergence under simultaneous membership changes; keep explicit conflict/pending state. | SPC-006–007, LAT-007 | M3 |
-| ADR-002 | Does channel privacy include read confidentiality from other Space members? | Do not advertise read-private channel using only Space exporter material. | SPC-011, LAT-003 | M3 |
+| ADR-001 | Concurrent MLS Commit order, policy conflict, fork recovery | Accepted fail-closed policy: no winner selection; conflict blocks mutations and requires new-group recovery. | SPC-006–007, LAT-007 | Accepted; implementation evidence pending |
+| ADR-002 | Does channel privacy include read confidentiality from other Space members? | Accepted policy-only channel access; read-private channel types are unsupported. | SPC-011, LAT-003 | Accepted; implementation evidence pending |
 | ADR-003 | Relay kind, tags, outer identity, expiration/size and backfill | Experimental relay profile only; no Nostr-wide interop claim. | NET-010 | M5 |
 | ADR-004 | Snapshot provenance, compaction, retention and history recovery | Retain dependencies; surface gaps rather than accepting unverifiable snapshot. | MSG-011, LAT-007 | M8 |
 | ADR-005 | Rotating BLE advertisement/rendezvous token design | Avoid stable app identity, but do not claim anonymity/unlinkability. | NET-001, LAT-010 | M2/M8 |
@@ -16,13 +16,13 @@ This index tracks decisions. Create one `ADR-xxx-title.md` per resolved item wit
 
 Native Kotlin/Swift mobile; shared Rust core/UniFFI; Tauri/React desktop; Rust CLI; SQLite local log; deterministic event ID independent of carrier; BLE text/control; supported local IP for bulk; optional untrusted Nostr-compatible mailbox; MLS group security; reviewed Noise link sessions; WebRTC/Opus voice. These are architectural baselines, not proof that a specific library or hardware combination passes verification.
 
-## Resolve ADR-001 before membership implementation
+## ADR-001 implementation gate
 
-Compare (a) a short wait window with deterministic Commit tie break and (b) immediate speculative application with bounded prior-state retention and rollback. Specify sequence and validation order; simultaneous add/remove precedence; dependencies/proposals; losing-branch messages; Welcome coupling; old secret deletion; recovery after long partitions; malicious invalid Commit; and test vectors. [RFC 9750 §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) is primary guidance. Avoid an unreviewed local-wall-time winner.
+The policy is accepted in [ADR-001](ADR-001-membership-commit-conflicts.md): a current-epoch linear commit is the only automatically applied change. Missing dependencies stay pending; valid conflicting successors freeze mutation and require explicit new-group recovery. There is no timestamp/hash/arrival winner. Code and permutation vectors remain required before enabling membership changes.
 
-## Resolve ADR-002 before naming a private channel
+## ADR-002 implementation gate
 
-Option A: Space-wide MLS keys with action-only permissions, meaning every Space member with group secrets can derive channel ciphertext. Option B: per-channel MLS membership with explicit add/remove/rekey. Option C: a reviewed subordinate key distribution protocol with equivalent isolation. Compare state size, join/remove complexity, offline sync and cryptographic review burden. Select semantics first, then implementation.
+The policy is accepted in [ADR-002](ADR-002-channel-read-semantics.md): channel roles can restrict actions, but all active Space MLS members remain inside the read trust boundary. Read-private channels are unsupported; code and capability tests must reject them.
 
 ## ADR governance
 

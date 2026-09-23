@@ -417,8 +417,8 @@ Protocol major versions reject incompatible mandatory semantics; minor/capabilit
 | D-05 | MLS for group membership; Noise for pairwise sessions | Baseline, profile draft | Standards/reviewed libraries; exact application profile pending |
 | D-06 | Controlled flood + bounded courier copies + anti-entropy | Baseline, tuning open | Avoid unbounded amplification; measure on traces |
 | D-07 | WebRTC/Opus small-room voice, TURN optional | Baseline | No viable sustained BLE media route; NAT may require relay |
-| ADR-001 | Concurrent MLS Commit ordering and fork recovery | **Open, blocking** | Specify policy, losing-branch sends, Welcome coupling and deletion |
-| ADR-002 | Private-channel confidentiality scope and keys | **Open, blocking** | Decide whether access is policy-only or cryptographically isolated |
+| ADR-001 | Concurrent MLS Commit conflicts | Accepted fail-closed rule: reject automatic branch selection, freeze conflicted group mutations, and recover via explicit new-group membership. | See [ADR-001](decisions/ADR-001-membership-commit-conflicts.md); implementation/vector evidence pending |
+| ADR-002 | Channel read confidentiality | Accepted policy-only semantics; cryptographically read-private channels are unsupported. | See [ADR-002](decisions/ADR-002-channel-read-semantics.md); implementation evidence pending |
 | ADR-003 | Nostr relay kind, retrieval tags, outer identity and limits | Open before public relay release | Interop/privacy and relay compatibility tests |
 | ADR-004 | Snapshot/compaction validation and recovery | Open before long-lived large Spaces | Prevent history truncation from invalidating authorization |
 | ADR-005 | BLE rotating token/rendezvous privacy profile | Open before strong privacy claims | Test passive captures and correlation attacks |
