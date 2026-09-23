@@ -16,6 +16,9 @@ target/
 local.properties
 build/
 out/
+.cxx/
+.externalNativeBuild/
+captures/
 
 apps/desktop/src-tauri/gen/
 
