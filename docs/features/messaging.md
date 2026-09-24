@@ -30,9 +30,9 @@ Composer action first validates local role/channel state and draft size, creates
 | User action | Event rule | Remote/offline behavior |
 | --- | --- | --- |
 | Edit own text | Create authenticated replacement referencing original; preserve versions until retention removes them. | Multiple edits get deterministic resolution; a device without original keeps dependency pending. |
-| Delete own text | Create tombstone referencing original. | Honoring clients hide the message after receiving it; cannot erase exports or malicious copies. |
-| Moderator removal | Distinct moderation event with reason and privilege proof. | Validate role at causal context; present moderator action as distinct from author delete. |
-| React | Element-identified add/remove; avoid interpreting a duplicated packet as another toggle. | Commutative view after reorder; counters are derived, not trusted. |
+| Delete own text | Create an authenticated tombstone for the author's own message. | Honoring clients hide the message after receiving it; cannot erase exports or malicious copies. |
+| Moderator removal | Create a distinct reason-bearing tombstone with `MESSAGE_MODERATE`. | Validate role at causal context; present the moderator action and reason separately from author deletion. |
+| React | Add uses its immutable event ID as a tag; remove references one ancestor tag from the same author, target and token. | Concurrent additions commute; duplicate delivery cannot toggle state. |
 | Pin | Permission-checked add/remove reference. | Missing target displays pending/removed reference safely. |
 | Reply/thread | Immutable parent/root ID and inherited Space policy. | Child arriving before parent stays in a recoverable pending/placeholder view. |
 

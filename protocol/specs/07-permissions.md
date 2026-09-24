@@ -16,7 +16,7 @@ All permission masks are unsigned 64-bit CBOR integers. Body version `1` selects
 | 5 | `MEMBER_BAN` | Ban a member. |
 | 6 | `MESSAGE_SEND` | Send a message or reaction, or edit the sender's own message. |
 | 7 | `MESSAGE_ATTACH` | Attach a file to a message. |
-| 8 | `MESSAGE_MODERATE` | Tombstone another member's content. |
+| 8 | `MESSAGE_MODERATE` | Moderate another member's content, including tombstones with a reason. |
 | 9 | `THREAD_CREATE` | Create a thread. |
 | 10 | `MENTION_EVERYONE` | Use an everyone mention. |
 | 11 | `MESSAGE_PIN` | Pin or unpin a message. |
@@ -95,7 +95,7 @@ For channel-scoped application actions, evaluate these candidate requirements at
 | --- | --- |
 | Kind 1 message | `MESSAGE_SEND`; `THREAD_CREATE` if it creates a thread; `MENTION_EVERYONE` if used. |
 | Kind 2 edit | `MESSAGE_SEND` for the author's own message; otherwise `MESSAGE_MODERATE`. |
-| Kind 3 tombstone | `MESSAGE_MODERATE`. |
+| Kind 3 tombstone | `MESSAGE_SEND` for the author's own deletion; `MESSAGE_MODERATE` for a reason-bearing moderation tombstone. |
 | Kind 4 reaction | `MESSAGE_SEND`. |
 | Kind 5 pin | `MESSAGE_PIN`. |
 | Kind 8 file manifest | `MESSAGE_SEND` and `MESSAGE_ATTACH`. |
@@ -113,14 +113,16 @@ Every map uses key `0` for body version `1`; all keys are exact and increasing. 
 | ---: | --- | --- |
 | 1 Message | `{0,1,2,3,4}` | `1`: UTF-8 text content; `2`: null or 32-byte thread-root event ID; `3`: boolean everyone-mention action; `4`: array of at most 64 strictly bytewise-sorted unique 32-byte file-manifest event IDs. |
 | 2 Edit | `{0,1,2}` | `1`: 32-byte target message event ID; `2`: replacement UTF-8 text content. |
-| 3 Tombstone | `{0,1}` | `1`: 32-byte target message event ID. |
-| 4 Reaction | `{0,1,2}` | `1`: 32-byte target message event ID; `2`: nonempty UTF-8 reaction token of at most 64 bytes. |
+| 3 Tombstone | `{0,1,2,3}` | `1`: 32-byte target message event ID; `2`: `0` author deletion or `1` moderation; `3`: null for author deletion or nonempty UTF-8 moderation reason (at most 512 bytes). |
+| 4 Reaction | `{0,1,2,3,4}` | `1`: 32-byte target message event ID; `2`: nonempty UTF-8 reaction token of at most 64 bytes; `3`: `0` add or `1` remove; `4`: null for add or the 32-byte event ID tag to remove. |
 | 5 Pin | `{0,1,2}` | `1`: 32-byte target message event ID; `2`: boolean pin state. |
 | 8 File manifest | `{0,1,2,3,4,5}` | `1`: UTF-8 filename hint (at most 255 bytes); `2`: null or UTF-8 MIME hint (at most 127 bytes); `3`: unsigned file length (at most 1 GiB); `4`: 32-byte whole-file SHA-256; `5`: ordered array of at most 16,384 32-byte chunk SHA-256 digests for fixed 64 KiB chunks. |
 
-Kind 1 requires `MESSAGE_SEND`; a non-null thread root also requires `THREAD_CREATE`, a true everyone-mention action requires `MENTION_EVERYONE`, and a nonempty attachment array requires `MESSAGE_ATTACH`. Every referenced thread root and manifest MUST be an ancestor in the same Space, MLS generation, and channel, with the matching event kind and prior authorization. Kind 2 targets an ancestor Message in the same channel and requires `MESSAGE_SEND` when the target author is the event author, otherwise `MESSAGE_MODERATE`. Kind 3 requires `MESSAGE_MODERATE`, including for the author's own target. Kind 4 requires `MESSAGE_SEND`; kind 5 requires `MESSAGE_PIN`. Their target MUST be an ancestor Message in the same channel and generation. Kind 8 requires both `MESSAGE_SEND` and `MESSAGE_ATTACH`; its manifest metadata and chunk-count bounds are validated by `lattice-files`. Chunk bytes and whole-file consistency are checked during transfer, not by event authorization.
+An add is tagged by its own immutable event ID. A remove must reference an ancestor add by the same author for the same target and token; it cannot remove another member's add or a different token. Each remove names one add tag, so concurrent adds commute and duplicate delivery cannot toggle state. A remove with an unavailable tag remains pending; a present but mismatched tag is rejected. A message projection MUST retain these add/remove tags separately.
 
-All application events require the complete current policy-head set as ancestors, an active member, and a non-archived text or announcement channel. The current reducer rejects kind 9 as `UnsupportedAction`; it does not infer voice actions from opaque bytes. This is fail-closed behavior, not voice authorization support. The payloads above do not define the convergent message/edit/tombstone/reaction/pin projection or element-tagged reaction semantics.
+Kind 1 requires `MESSAGE_SEND`; a non-null thread root also requires `THREAD_CREATE`, a true everyone-mention action requires `MENTION_EVERYONE`, and a nonempty attachment array requires `MESSAGE_ATTACH`. Every referenced thread root and manifest MUST be an ancestor in the same Space, MLS generation, and channel, with the matching event kind and prior authorization. Kind 2 targets an ancestor Message in the same channel and requires `MESSAGE_SEND` when the target author is the event author, otherwise `MESSAGE_MODERATE`. Kind 3 mode `0` MUST target the author's own Message and requires `MESSAGE_SEND`; mode `1` requires a nonempty reason and `MESSAGE_MODERATE`. Kind 4 requires `MESSAGE_SEND`; kind 5 requires `MESSAGE_PIN`. Their target MUST be an ancestor Message in the same channel and generation. Kind 8 requires both `MESSAGE_SEND` and `MESSAGE_ATTACH`; its manifest metadata and chunk-count bounds are validated by `lattice-files`. Chunk bytes and whole-file consistency are checked during transfer, not by event authorization.
+
+All application events require the complete current policy-head set as ancestors, an active member, and a non-archived text or announcement channel. The current reducer rejects kind 9 as `UnsupportedAction`; it does not infer voice actions from opaque bytes. Message, edit, tombstone, reaction, and pin payloads currently have candidate authorization checks but no convergent materialized-history projection.
 
 ## No self-escalation and owner protection
 

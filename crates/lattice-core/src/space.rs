@@ -525,8 +525,31 @@ impl SpaceReducer {
         {
             return EventAuthorization::Rejected(RejectReason::Unauthorized);
         }
+        let reaction_tag = match &action {
+            ApplicationAction::Reaction {
+                target,
+                token,
+                add: true,
+                ..
+            } => Some(ReactionTag {
+                target: *target,
+                token: token.clone(),
+            }),
+            _ => None,
+        };
+        if reaction_tag.as_ref().is_some_and(|reaction_tag| {
+            self.graph
+                .get(&metadata.event_id)
+                .and_then(|node| node.reaction_tag.as_ref())
+                .is_some_and(|existing| existing != reaction_tag)
+        }) {
+            return EventAuthorization::Rejected(RejectReason::GraphConflict);
+        }
         if let Some(node) = self.graph.get_mut(&metadata.event_id) {
             node.application_authorized = true;
+            if reaction_tag.is_some() {
+                node.reaction_tag = reaction_tag;
+            }
         }
         EventAuthorization::Authorized {
             required_permissions,
@@ -603,6 +626,7 @@ impl SpaceReducer {
             control_relation: relation,
             mls_bound,
             application_authorized: false,
+            reaction_tag: None,
         };
         if let Some(previous) = self.graph.get(&id) {
             if previous.space_id != node.space_id
@@ -1119,6 +1143,13 @@ struct GraphNode {
     control_relation: Option<ValidatedMlsControlRelation>,
     mls_bound: bool,
     application_authorized: bool,
+    reaction_tag: Option<ReactionTag>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReactionTag {
+    target: EventReference,
+    token: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1194,9 +1225,13 @@ enum ApplicationAction {
     },
     Tombstone {
         target: EventReference,
+        moderation_reason: Option<String>,
     },
     Reaction {
         target: EventReference,
+        token: String,
+        add: bool,
+        tag: Option<EventReference>,
     },
     Pin {
         target: EventReference,
@@ -1926,27 +1961,48 @@ fn parse_application_action(
             })
         }
         EventKind::Tombstone => {
-            let fields = exact_map(&payload, &[0, 1])?;
+            let fields = exact_map(&payload, &[0, 1, 2, 3])?;
             if unsigned(fields[0])? != 1 {
                 return Err(RejectReason::InvalidSchema);
             }
+            let moderation_reason = match (unsigned(fields[2])?, fields[3]) {
+                (0, Value::Null) => None,
+                (1, Value::Text(reason)) if !reason.trim().is_empty() && reason.len() <= 512 => {
+                    Some(reason.clone())
+                }
+                _ => return Err(RejectReason::InvalidValue),
+            };
             Ok(ApplicationAction::Tombstone {
                 target: fixed_bytes(fields[1])?,
+                moderation_reason,
             })
         }
         EventKind::Reaction => {
-            let fields = exact_map(&payload, &[0, 1, 2])?;
+            let fields = exact_map(&payload, &[0, 1, 2, 3, 4])?;
             if unsigned(fields[0])? != 1 {
                 return Err(RejectReason::InvalidSchema);
             }
-            let Value::Text(emoji) = fields[2] else {
+            let Value::Text(token) = fields[2] else {
                 return Err(RejectReason::InvalidValue);
             };
-            if emoji.is_empty() || emoji.len() > 64 {
+            if token.is_empty() || token.len() > 64 {
                 return Err(RejectReason::InvalidValue);
             }
+            let add = match unsigned(fields[3])? {
+                0 => true,
+                1 => false,
+                _ => return Err(RejectReason::InvalidValue),
+            };
+            let tag = match (add, fields[4]) {
+                (true, Value::Null) => None,
+                (false, value) => Some(fixed_bytes(value)?),
+                _ => return Err(RejectReason::InvalidValue),
+            };
             Ok(ApplicationAction::Reaction {
                 target: fixed_bytes(fields[1])?,
+                token: token.clone(),
+                add,
+                tag,
             })
         }
         EventKind::Pin => {
@@ -2033,8 +2089,11 @@ fn application_permissions(
                 MESSAGE_MODERATE
             }
         }
-        ApplicationAction::Tombstone { target } => {
-            let _ = application_target(
+        ApplicationAction::Tombstone {
+            target,
+            moderation_reason,
+        } => {
+            let target_node = application_target(
                 *target,
                 EventKind::Message,
                 metadata,
@@ -2042,9 +2101,20 @@ fn application_permissions(
                 graph,
                 ancestors,
             )?;
-            MESSAGE_MODERATE
+            if moderation_reason.is_some() {
+                MESSAGE_MODERATE
+            } else if target_node.author == metadata.author {
+                MESSAGE_SEND
+            } else {
+                return Err(RejectReason::Unauthorized);
+            }
         }
-        ApplicationAction::Reaction { target } => {
+        ApplicationAction::Reaction {
+            target,
+            token,
+            add,
+            tag,
+        } => {
             let _ = application_target(
                 *target,
                 EventKind::Message,
@@ -2053,6 +2123,25 @@ fn application_permissions(
                 graph,
                 ancestors,
             )?;
+            if !*add {
+                let tag_node = application_target(
+                    tag.ok_or(RejectReason::InvalidTarget)?,
+                    EventKind::Reaction,
+                    metadata,
+                    channel_id,
+                    graph,
+                    ancestors,
+                )?;
+                if tag_node.author != metadata.author
+                    || tag_node.reaction_tag.as_ref().is_none_or(|reaction| {
+                        reaction.target != *target || reaction.token != *token
+                    })
+                {
+                    return Err(RejectReason::InvalidTarget);
+                }
+            } else if tag.is_some() {
+                return Err(RejectReason::InvalidValue);
+            }
             MESSAGE_SEND
         }
         ApplicationAction::Pin { target } => {
@@ -2784,6 +2873,109 @@ mod tests {
             EventAuthorization::Authorized {
                 required_permissions: MESSAGE_SEND
             }
+        );
+        let delete_own_message = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Tombstone,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Unsigned(0)),
+                (3, Value::Null),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&delete_own_message),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        let reason_bearing_moderation = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Tombstone,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Unsigned(1)),
+                (3, Value::Text("spam".into())),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&reason_bearing_moderation),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_MODERATE
+            }
+        );
+        let reaction = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Reaction,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Text("wave".into())),
+                (3, Value::Unsigned(0)),
+                (4, Value::Null),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&reaction),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        let reaction_id = *reaction.event().event_id().as_bytes();
+        let remove_reaction = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![reaction_id],
+            EventKind::Reaction,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Text("wave".into())),
+                (3, Value::Unsigned(1)),
+                (4, Value::Bytes(reaction_id.to_vec())),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&remove_reaction),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+
+        let remove_wrong_tag = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Reaction,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Text("wave".into())),
+                (3, Value::Unsigned(1)),
+                (4, Value::Bytes(message_id.to_vec())),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&remove_wrong_tag),
+            EventAuthorization::Rejected(RejectReason::InvalidTarget)
         );
     }
     #[test]
