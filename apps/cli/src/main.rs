@@ -8,7 +8,7 @@ use identity::{
     IdentityCommand, certificate_request_pem, print_pinned_identity, write_certificate_request_pem,
 };
 use relay::RelayCommand;
-use space::{SpaceCommand, print_space_page};
+use space::{SpaceCommand, print_space_history, print_space_page};
 use sync::SyncCommand;
 
 use std::{
@@ -81,6 +81,14 @@ enum Command {
 type PinInput = ([u8; 65], [u8; 32]);
 type SpaceMessageInput = ([u8; 16], [u8; 32], [u8; 16]);
 type SpaceEditInput = ([u8; 16], [u8; 32], [u8; 16], [u8; 32]);
+type SpaceHistoryInput = ([u8; 16], [u8; 32], [u8; 16]);
+#[derive(Clone, Copy)]
+enum SpaceCommandInput {
+    None,
+    Message(SpaceMessageInput),
+    Edit(SpaceEditInput),
+    History(SpaceHistoryInput),
+}
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -233,8 +241,7 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let pin_input = parse_pin_input(&cli.command)?;
     let lookup_fingerprint = parse_lookup_fingerprint(&cli.command)?;
     validate_command_inputs(&cli.command)?;
-    let message_input = parse_space_message_input(&cli.command)?;
-    let edit_input = parse_space_edit_input(&cli.command)?;
+    let space_input = parse_space_command_input(&cli.command)?;
     let space_credential = read_space_credential(&cli.command)?;
     let data_dir = match cli.data_dir {
         Some(path) => path,
@@ -267,8 +274,7 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 &protector,
                 json,
                 space_credential,
-                message_input,
-                edit_input,
+                space_input,
             )
         }
         Command::Status => {
@@ -394,6 +400,44 @@ fn parse_space_edit_input(command: &Command) -> Result<Option<SpaceEditInput>, C
     }
 }
 
+fn parse_space_history_input(command: &Command) -> Result<Option<SpaceHistoryInput>, CliError> {
+    match command {
+        Command::Space {
+            command:
+                SpaceCommand::History {
+                    space_id,
+                    group_reference,
+                    channel_id,
+                },
+        } => Ok(Some((
+            parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<32>(group_reference, "group reference")
+                .map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<16>(channel_id, "channel ID").map_err(CliError::invalid_input)?,
+        ))),
+        _ => Ok(None),
+    }
+}
+fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, CliError> {
+    match command {
+        Command::Space {
+            command: SpaceCommand::Message { .. },
+        } => parse_space_message_input(command)?
+            .map(SpaceCommandInput::Message)
+            .ok_or_else(|| CliError::invalid_input("message identifiers were not parsed")),
+        Command::Space {
+            command: SpaceCommand::Edit { .. },
+        } => parse_space_edit_input(command)?
+            .map(SpaceCommandInput::Edit)
+            .ok_or_else(|| CliError::invalid_input("edit identifiers were not parsed")),
+        Command::Space {
+            command: SpaceCommand::History { .. },
+        } => parse_space_history_input(command)?
+            .map(SpaceCommandInput::History)
+            .ok_or_else(|| CliError::invalid_input("history identifiers were not parsed")),
+        _ => Ok(SpaceCommandInput::None),
+    }
+}
 fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
     let Command::Space {
         command:
@@ -517,8 +561,7 @@ fn execute_space(
     protector: &OsKeyringProtector,
     json: bool,
     credential_bytes: Option<Vec<u8>>,
-    message_input: Option<SpaceMessageInput>,
-    edit_input: Option<SpaceEditInput>,
+    input: SpaceCommandInput,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         SpaceCommand::Create { channels, .. } => {
@@ -547,8 +590,9 @@ fn execute_space(
         SpaceCommand::Message { text, .. } => {
             let credential_bytes = credential_bytes
                 .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
-            let (space_id, group_reference, channel_id) = message_input
-                .ok_or_else(|| CliError::invalid_input("message identifiers were not parsed"))?;
+            let SpaceCommandInput::Message((space_id, group_reference, channel_id)) = input else {
+                return Err(CliError::invalid_input("message identifiers were not parsed").into());
+            };
             let mut client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
@@ -568,8 +612,10 @@ fn execute_space(
         SpaceCommand::Edit { text, .. } => {
             let credential_bytes = credential_bytes
                 .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
-            let (space_id, group_reference, channel_id, target) = edit_input
-                .ok_or_else(|| CliError::invalid_input("edit identifiers were not parsed"))?;
+            let SpaceCommandInput::Edit((space_id, group_reference, channel_id, target)) = input
+            else {
+                return Err(CliError::invalid_input("edit identifiers were not parsed").into());
+            };
             let mut client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
@@ -586,6 +632,21 @@ fn execute_space(
                 &text,
             )?;
             print_queued_event(json, "space_edit", "Edit queued", queued.event_id());
+        }
+        SpaceCommand::History { .. } => {
+            let SpaceCommandInput::History((space_id, group_reference, channel_id)) = input else {
+                return Err(CliError::invalid_input("history identifiers were not parsed").into());
+            };
+            let mut client = match Client::open_existing(database_path, protector) {
+                Ok(client) => client,
+                Err(CoreError::MissingIdentity) => {
+                    return Err(CliError::missing_identity().into());
+                }
+                Err(error) => return Err(Box::new(error)),
+            };
+            let messages =
+                client.local_text_message_history(&space_id, &group_reference, &channel_id)?;
+            print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
         }
     }
     Ok(())
@@ -901,7 +962,7 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex, parse_space_cursor,
-        parse_space_edit_input, space_cursor_hex,
+        parse_space_edit_input, parse_space_history_input, space_cursor_hex,
     };
     use clap::Parser;
     use lattice_core::SpaceGenesisCursor;
@@ -1004,6 +1065,35 @@ mod tests {
             panic!("expected space edit command");
         }
         assert!(parse_space_edit_input(&parsed.command).is_err());
+    }
+
+    #[test]
+    fn space_history_parses_and_validates_immutable_identifiers() {
+        let mut parsed = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "history",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--channel-id",
+            &"33".repeat(16),
+        ])
+        .expect("history arguments parse");
+        assert_eq!(
+            parse_space_history_input(&parsed.command).expect("fixed IDs parse"),
+            Some(([0x11; 16], [0x22; 32], [0x33; 16]))
+        );
+        if let Command::Space {
+            command: SpaceCommand::History { channel_id, .. },
+        } = &mut parsed.command
+        {
+            *channel_id = "33".repeat(15);
+        } else {
+            panic!("expected space history command");
+        }
+        assert!(parse_space_history_input(&parsed.command).is_err());
     }
 
     #[test]

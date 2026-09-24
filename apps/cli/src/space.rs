@@ -21,6 +21,21 @@ pub(super) enum SpaceCommand {
         #[arg(long)]
         after: Option<String>,
     },
+    /// Read the bounded encrypted local outgoing-message cache.
+    ///
+    /// The cache is device-local and does not include incoming or synchronized
+    /// history.
+    History {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Random 16-byte channel ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        channel_id: String,
+    },
     /// Queue a text message locally without contacting the network.
     ///
     /// The credential must be a bounded RFC 9420 X.509 credential vector.
@@ -141,5 +156,69 @@ pub(super) fn print_space_page(page: &lattice_core::RestoredSpacePage, json: boo
         if let Some(cursor) = next_cursor {
             println!("Next page cursor: {cursor}");
         }
+    }
+}
+pub(super) fn print_space_history(
+    space_id: &[u8; 16],
+    group_reference: &[u8; 32],
+    channel_id: &[u8; 16],
+    messages: &[lattice_core::LocalTextMessageRecord],
+    json: bool,
+) {
+    let outbox_state = |state: Option<lattice_core::OutboxState>| {
+        state.map(|state| match state {
+            lattice_core::OutboxState::Queued => "queued",
+            lattice_core::OutboxState::Forwarded => "forwarded",
+            lattice_core::OutboxState::Delivered => "delivered",
+            lattice_core::OutboxState::Failed => "failed",
+        })
+    };
+    if json {
+        let messages = messages
+            .iter()
+            .map(|message| {
+                serde_json::json!({
+                    "event_id": hex(&message.event_id),
+                    "channel_id": hex(&message.channel_id),
+                    "author_id": hex(&message.author_id),
+                    "author_sequence": message.author_sequence,
+                    "lamport": message.lamport,
+                    "content": message.content,
+                    "outbox_state": outbox_state(message.outbox_state),
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_history",
+                "space_id": hex(space_id),
+                "group_reference": hex(group_reference),
+                "channel_id": hex(channel_id),
+                "source": "encrypted_local_outgoing_cache",
+                "network_contacted": false,
+                "messages": messages,
+            })
+        );
+    } else if messages.is_empty() {
+        println!(
+            "No locally retained outgoing messages for channel {}.",
+            hex(channel_id)
+        );
+    } else {
+        println!(
+            "Recent locally retained outgoing messages for channel {}:",
+            hex(channel_id)
+        );
+        for message in messages {
+            let state = outbox_state(message.outbox_state).unwrap_or("retained locally");
+            println!(
+                "{} [{state}] {}",
+                hex(&message.event_id),
+                message.content.escape_default()
+            );
+        }
+        println!("No synchronized or incoming history was loaded; no network contact was made.");
     }
 }
