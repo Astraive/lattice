@@ -494,6 +494,28 @@ impl VoiceSession {
         self.commit_control(VoiceState::Failed(reason))
     }
 
+    /// Ends the session when the caller reports that a voice permission was revoked.
+    ///
+    /// This is a terminal local transition for either join or speak permission;
+    /// it does not independently determine policy or authenticate the report.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, incarnation, sequence, or timestamp is
+    /// invalid.
+    pub fn revoke_permission(
+        &mut self,
+        incarnation: SessionIncarnation,
+        sequence: u64,
+        now: Duration,
+        permission: VoicePermission,
+    ) -> Result<(), VoiceError> {
+        self.check_control(incarnation, sequence, now, VoicePermissions::default(), false)?;
+        self.commit_control(VoiceState::Failed(VoiceFailure::PermissionRevoked(
+            permission,
+        )))
+    }
+
     /// Checks join and speak policy before a caller requests speaking capability.
     ///
     /// This is a policy check only. It does not capture audio, change media state,
@@ -990,6 +1012,49 @@ mod tests {
         assert_eq!(
             session.advance_time(Duration::from_secs(30)),
             Ok(VoiceState::Failed(failure))
+        );
+    }
+
+    #[test]
+    fn permission_revocation_is_incarnation_bound_and_terminal() {
+        let mut session = session();
+        let incarnation = session.incarnation();
+        session
+            .join(incarnation, 1, Duration::from_secs(1), ALLOW_ALL)
+            .unwrap();
+        let mut stale_bytes = *incarnation.as_bytes();
+        stale_bytes[0] ^= 1;
+        assert_eq!(
+            session.revoke_permission(
+                SessionIncarnation::from_bytes(stale_bytes),
+                2,
+                Duration::from_secs(2),
+                VoicePermission::Speak,
+            ),
+            Err(VoiceError::StaleIncarnation)
+        );
+        assert_eq!(session.state(), VoiceState::Joined);
+        assert_eq!(session.next_sequence(), 2);
+
+        let failure = VoiceFailure::PermissionRevoked(VoicePermission::Speak);
+        session
+            .revoke_permission(
+                incarnation,
+                2,
+                Duration::from_secs(3),
+                VoicePermission::Speak,
+            )
+            .unwrap();
+        assert_eq!(session.state(), VoiceState::Failed(failure));
+        assert_eq!(session.next_sequence(), 3);
+        assert_eq!(
+            session.leave(
+                incarnation,
+                3,
+                Duration::from_secs(4),
+                VoicePermissions::default(),
+            ),
+            Err(VoiceError::SessionEnded)
         );
     }
 

@@ -14,9 +14,11 @@ Voice rooms are ephemeral sessions in a Space. Authenticated Lattice events carr
 | VOC-008 | Small-room topology shall publish a measured safe participant limit. | CPU/network/audio tests on defined mobile matrix determine limit; no unlimited-room claim. | M8 |
 
 Direct WebRTC peer connections can grow costly with group size; a volunteer SFU is deferred and requires its own trust and deployment ADR. [ICE RFC 8445](https://www.rfc-editor.org/rfc/rfc8445), [TURN RFC 8656](https://www.rfc-editor.org/rfc/rfc8656), and [Opus RFC 6716](https://www.rfc-editor.org/rfc/rfc6716) are the baseline references.
-Current implementation is limited to `lattice-voice`'s bounded, caller-clocked signaling state machine. It validates sequence, incarnation, permission inputs, expiry and SDP/candidate size but does not authenticate peers, process signaling over Lattice, parse ICE/SDP, establish WebRTC, handle media/audio, or expose an implemented media path. `SignalingConnected` is not call-connected evidence; all VOC end-to-end and physical-device gates remain open.
+Current implementation is limited to `lattice-voice`'s bounded, caller-clocked signaling state machine. It enforces per-session sequence order, random room-incarnation matching, permission inputs for signaling, explicit caller-reported terminal permission revocation/failure, leave, expiry, and SDP/candidate size bounds. Revocation is a caller-reported local transition, not policy evaluation or peer authentication. It does not authenticate peers, process signaling over Lattice, parse ICE/SDP, establish WebRTC, handle media/audio, or expose an implemented media path. `SignalingConnected` records signaling completion only and is not call-connected evidence. All VOC end-to-end and physical-device gates remain open.
+The runtime flow and state/scalability sections below describe the target behavior, not implemented features.
 
-## Join-to-leave runtime
+## Target join-to-leave runtime
+
 
 1. Check current Space membership, `VOICE_JOIN`, optional `VOICE_SPEAK`, local microphone permission and room incarnation.
 2. Publish authenticated `VOICE_JOIN` over a current Lattice data path; presence is short-lived and never backfilled as durable room history.
