@@ -3041,11 +3041,20 @@ dependencies = [
 name = "lattice-cli"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "clap",
  "directories",
  "lattice-core",
+ "lattice-identity",
+ "lattice-mls",
  "lattice-platform",
+ "lattice-relay",
+ "lattice-storage",
+ "openmls",
  "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3080,6 +3089,7 @@ dependencies = [
 name = "lattice-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "directories",
  "lattice-core",
  "lattice-platform",
@@ -3133,6 +3143,9 @@ dependencies = [
  "openmls_sqlite_storage",
  "openmls_traits",
  "rusqlite",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.10.9",
