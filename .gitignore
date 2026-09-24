@@ -19,6 +19,7 @@ out/
 .cxx/
 .externalNativeBuild/
 captures/
+apps/android/app/src/main/jniLibs/
 
 apps/desktop/src-tauri/gen/
 
