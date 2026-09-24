@@ -19,7 +19,9 @@ internal data class IdentityPinUiState(
     val peerFingerprintHexInput: String = "",
     val identityPinStatus: String = "No peer identity is pinned in this profile.",
     val pinnedPeerFingerprint: String? = null,
+    val pinnedPeerBundleHex: String? = null,
     val pinningIdentity: Boolean = false,
+    val lookingUpPinnedIdentity: Boolean = false,
 )
 
 @Composable
@@ -29,6 +31,8 @@ internal fun IdentityPinCard(
     onPeerBundleHexChanged: (String) -> Unit,
     onPeerFingerprintHexChanged: (String) -> Unit,
     onPinPeerIdentity: () -> Unit,
+    onLookupPinnedIdentity: () -> Unit,
+    onCopyPinnedBundle: (String) -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -49,6 +53,7 @@ internal fun IdentityPinCard(
                 value = state.peerBundleHexInput,
                 onValueChange = onPeerBundleHexChanged,
                 label = { Text("65-byte public bundle (hex)") },
+                enabled = profileReady && !state.pinningIdentity && !state.lookingUpPinnedIdentity,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -56,12 +61,20 @@ internal fun IdentityPinCard(
                 value = state.peerFingerprintHexInput,
                 onValueChange = onPeerFingerprintHexChanged,
                 label = { Text("Full 32-byte fingerprint (hex)") },
+                enabled = profileReady && !state.pinningIdentity && !state.lookingUpPinnedIdentity,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             Button(
+                onClick = onLookupPinnedIdentity,
+                enabled = !state.lookingUpPinnedIdentity && !state.pinningIdentity && profileReady,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.lookingUpPinnedIdentity) "Checking saved pin…" else "Look up saved pin")
+            }
+            Button(
                 onClick = onPinPeerIdentity,
-                enabled = !state.pinningIdentity && profileReady,
+                enabled = !state.pinningIdentity && !state.lookingUpPinnedIdentity && profileReady,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (state.pinningIdentity) "Saving identity pin…" else "Pin exact identity")
@@ -70,9 +83,21 @@ internal fun IdentityPinCard(
             state.pinnedPeerFingerprint?.let { fingerprint ->
                 SelectionContainer {
                     Text(
-                        "Pinned full fingerprint: $fingerprint",
+                        "Saved full fingerprint: $fingerprint",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                }
+            }
+            state.pinnedPeerBundleHex?.let { bundle ->
+                Text("Exact saved public bundle", style = MaterialTheme.typography.bodySmall)
+                SelectionContainer {
+                    Text(bundle, style = MaterialTheme.typography.bodySmall)
+                }
+                Button(
+                    onClick = { onCopyPinnedBundle(bundle) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Copy saved public bundle")
                 }
             }
         }

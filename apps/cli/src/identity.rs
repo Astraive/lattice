@@ -1,3 +1,11 @@
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+use base64::Engine as _;
+
 use clap::Subcommand;
 
 use crate::hex;
@@ -6,6 +14,12 @@ use crate::hex;
 pub(super) enum IdentityCommand {
     /// Create a device identity once, or reopen the existing one.
     Init,
+    /// Create a DER-backed PKCS#10 request for the local device identity.
+    Csr {
+        /// Write PEM output to a new file without overwriting existing data.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Show public identity data for an initialized profile.
     Show,
     /// Pin a public bundle after caller-performed full-fingerprint comparison.
@@ -74,4 +88,21 @@ pub(super) fn print_pinned_identity(
             }
         }
     }
+}
+
+pub(super) fn certificate_request_pem(csr_der: &[u8]) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(csr_der);
+    let mut pem = String::with_capacity(encoded.len() + 80);
+    pem.push_str("-----BEGIN CERTIFICATE REQUEST-----\n");
+    for line in encoded.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(line).expect("base64 output is ASCII"));
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE REQUEST-----\n");
+    pem
+}
+
+pub(super) fn write_certificate_request_pem(path: &Path, pem: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(pem.as_bytes())
 }

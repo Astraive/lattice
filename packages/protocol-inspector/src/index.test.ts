@@ -123,6 +123,18 @@ describe("inspectCandidateSignedEvent", () => {
       "INSPECTOR_INVALID_SIGNATURE",
     );
   });
+  test("rejects parent event IDs that are not 32 bytes", async () => {
+    const malformedPreimage = SIGNED_EVENT_PREIMAGE.replace("078008", "078141aa08");
+    const malformedOuter = SIGNED_EVENT_OUTER.replace(
+      `015878${SIGNED_EVENT_PREIMAGE}`,
+      `01587a${malformedPreimage}`,
+    );
+
+    await expectAsyncErrorCode(
+      () => inspectCandidateSignedEvent(malformedOuter, "hex"),
+      "INSPECTOR_INVALID_EVENT_SHAPE",
+    );
+  });
 
   test("rejects a changed preimage author fingerprint", async () => {
     const changedPreimage = SIGNED_EVENT_PREIMAGE.replace("58205f", "58204f");

@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use lattice_core::{Client, DeviceIdentityInfo};
 use serde::Serialize;
 
@@ -42,6 +43,25 @@ pub(crate) fn get_device_identity() -> Result<DeviceIdentityStatus, String> {
     let client =
         Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
     status_from_client(&client)
+}
+
+#[tauri::command]
+pub(crate) fn get_device_certificate_signing_request() -> Result<String, String> {
+    let (database_path, protector) = profile::open_profile()?;
+    let client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let csr = client
+        .certificate_signing_request()
+        .map_err(|error| error.to_string())?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(csr);
+    let mut pem = String::with_capacity(encoded.len() + 80);
+    pem.push_str("-----BEGIN CERTIFICATE REQUEST-----\n");
+    for line in encoded.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(line).expect("base64 output is ASCII"));
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE REQUEST-----\n");
+    Ok(pem)
 }
 
 // Tauri decodes command arguments into owned strings.

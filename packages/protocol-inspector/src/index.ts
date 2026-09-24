@@ -480,13 +480,15 @@ export async function inspectCandidateSignedEvent(
   ) {
     return invalidCandidateShape();
   }
+  for (const parent of parents) {
+    if (parent.length !== 32) return invalidCandidateShape();
+  }
   for (let index = 1; index < parents.length; index += 1) {
     const previous = parents[index - 1];
     const current = parents[index];
     if (previous === undefined || current === undefined || compareCanonical(previous, current) >= 0)
       return invalidCandidateShape();
   }
-
   const subtle = globalThis.crypto?.subtle;
   if (subtle === undefined) {
     return fail(
