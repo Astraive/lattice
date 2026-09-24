@@ -1,6 +1,6 @@
 # Candidate 1 — signed immutable event framing
 
-**Status:** implemented-in-progress; must match `crates/lattice-events` and vectors before it is considered specified. Not an interoperability claim. The event body is opaque protected bytes; no plaintext encryption/decryption or Space policy authorization is performed by the event-signature layer.
+**Status:** candidate; outer framing and signature verification are implemented in `crates/lattice-events`. Event bodies remain opaque to that layer. The core has a fail-closed candidate authorization gate for kinds 1–5 and 8 using the plaintext maps in [`07-permissions.md`](07-permissions.md); it does not implement their message-state projections. Voice authorization remains unsupported.
 
 ## Candidate canonical preimage
 
@@ -27,15 +27,15 @@ The complete map encoding is the signed preimage. A zero sequence, duplicate/uns
 
 | Value | Meaning | Additional limitations |
 | ---: | --- | --- |
-| 1 | Message | Body is opaque; authorization/decryption external |
-| 2 | Edit | Target causality/policy external |
-| 3 | Tombstone | Does not erase retained copies |
-| 4 | Reaction | Element semantics/reducer external |
-| 5 | Pin | Permission/reducer external |
-| 6 | Membership | Not proof of valid MLS transition or role authority |
+| 1 | Message | Candidate authorization schema in `07-permissions.md`; projection external |
+| 2 | Edit | Candidate target/permission checks in `07-permissions.md`; edit projection external |
+| 3 | Tombstone | Candidate target/permission checks; does not erase retained copies |
+| 4 | Reaction | Candidate target/permission checks; element-tagged projection external |
+| 5 | Pin | Candidate target/permission checks; convergent projection external |
+| 6 | Membership | Candidate Space policy schema in `06-spaces.md`; no MLS membership proof |
 | 7 | MLS control | MLS engine validates its TLS message separately |
-| 8 | File manifest | File parser/hash verification and authorization external |
-| 9 | Voice signal | Current incarnation and voice permission external |
+| 8 | File manifest | Exact candidate metadata validation and authorization in `07-permissions.md`; chunk transfer and file projection external |
+| 9 | Voice signal | Authorization is unsupported until session/action schema is specified |
 
 ## Candidate signed outer object
 

@@ -1,6 +1,6 @@
 # Candidate 1: Space permissions and reduction
 
-**Status:** executable candidate, not a frozen interoperability contract. This document does not claim that the candidate is implemented, interoperable, or requirement-verified. Payload layouts and existing event kinds are in [`06-spaces.md`](06-spaces.md) and [`05-events.md`](05-events.md).
+**Status:** executable candidate, not a frozen interoperability contract. `lattice-core` implements kind-6 policy reduction and candidate authorization for kinds 1–5 and 8; voice authorization fails closed as unsupported. MLS/trust integration, message-state projection, interoperability, and full requirement verification remain incomplete. Payload layouts and event kinds are in [`06-spaces.md`](06-spaces.md) and [`05-events.md`](05-events.md).
 
 ## Permission registry version 1
 
@@ -101,7 +101,26 @@ For channel-scoped application actions, evaluate these candidate requirements at
 | Kind 8 file manifest | `MESSAGE_SEND` and `MESSAGE_ATTACH`. |
 | Kind 9 voice signal | `VOICE_JOIN`; publishing voice media also requires `VOICE_SPEAK`. |
 
-An operation with more than one action requires every listed bit. This table assigns no new event kind or message-body schema. An implementation that cannot identify the action from its already-defined event semantics MUST reject rather than infer permission from a UI action or event timestamp. Voice moderation requires `VOICE_MODERATE` in the voice channel context.
+An operation with more than one action requires every listed bit. This table assigns no new event kind. Candidate payload schemas are specified below; implementations MUST reject a body they cannot parse exactly rather than infer permission from a UI action or event timestamp. Voice moderation requires `VOICE_MODERATE` in the voice channel context.
+
+## Candidate authorization payloads for kinds 1–5 and 8
+
+These exact canonical-CBOR plaintext maps are a candidate authorization schema; the signature-only event layer remains body-opaque. The `SpaceReducer` checks these layouts only after the exact outer event and MLS plaintext are bound. The feature projection for edits, tombstones, reactions, pins, files, voice, and message content remains separate.
+
+Every map uses key `0` for body version `1`; all keys are exact and increasing. Unknown, missing, or additional keys fail closed.
+
+| Kind | Exact keys | Remaining fields |
+| ---: | --- | --- |
+| 1 Message | `{0,1,2,3,4}` | `1`: UTF-8 text content; `2`: null or 32-byte thread-root event ID; `3`: boolean everyone-mention action; `4`: array of at most 64 strictly bytewise-sorted unique 32-byte file-manifest event IDs. |
+| 2 Edit | `{0,1,2}` | `1`: 32-byte target message event ID; `2`: replacement UTF-8 text content. |
+| 3 Tombstone | `{0,1}` | `1`: 32-byte target message event ID. |
+| 4 Reaction | `{0,1,2}` | `1`: 32-byte target message event ID; `2`: nonempty UTF-8 reaction token of at most 64 bytes. |
+| 5 Pin | `{0,1,2}` | `1`: 32-byte target message event ID; `2`: boolean pin state. |
+| 8 File manifest | `{0,1,2,3,4,5}` | `1`: UTF-8 filename hint (at most 255 bytes); `2`: null or UTF-8 MIME hint (at most 127 bytes); `3`: unsigned file length (at most 1 GiB); `4`: 32-byte whole-file SHA-256; `5`: ordered array of at most 16,384 32-byte chunk SHA-256 digests for fixed 64 KiB chunks. |
+
+Kind 1 requires `MESSAGE_SEND`; a non-null thread root also requires `THREAD_CREATE`, a true everyone-mention action requires `MENTION_EVERYONE`, and a nonempty attachment array requires `MESSAGE_ATTACH`. Every referenced thread root and manifest MUST be an ancestor in the same Space, MLS generation, and channel, with the matching event kind and prior authorization. Kind 2 targets an ancestor Message in the same channel and requires `MESSAGE_SEND` when the target author is the event author, otherwise `MESSAGE_MODERATE`. Kind 3 requires `MESSAGE_MODERATE`, including for the author's own target. Kind 4 requires `MESSAGE_SEND`; kind 5 requires `MESSAGE_PIN`. Their target MUST be an ancestor Message in the same channel and generation. Kind 8 requires both `MESSAGE_SEND` and `MESSAGE_ATTACH`; its manifest metadata and chunk-count bounds are validated by `lattice-files`. Chunk bytes and whole-file consistency are checked during transfer, not by event authorization.
+
+All application events require the complete current policy-head set as ancestors, an active member, and a non-archived text or announcement channel. The current reducer rejects kind 9 as `UnsupportedAction`; it does not infer voice actions from opaque bytes. This is fail-closed behavior, not voice authorization support. The payloads above do not define the convergent message/edit/tombstone/reaction/pin projection or element-tagged reaction semantics.
 
 ## No self-escalation and owner protection
 

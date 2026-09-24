@@ -1,17 +1,25 @@
 //! Lattice local device core.
 //!
-//! The facade owns one durable store and one device identity. It exposes no
-//! message or Space operation until MLS validation, event authorization, and
-//! their atomic persistence boundary are connected.
+//! The facade owns a durable store and device identity. It binds verified
+//! events to MLS results and can stage candidate application authorization
+//! with exact event bytes in a caller-owned `SQLite` transaction. Space
+//! creation/join and durable policy-state restore remain incomplete.
 
 use std::path::Path;
 
+use rusqlite::Transaction;
+
 use lattice_events::VerifiedSignatureOnlyEvent;
 use lattice_identity::{DeviceIdentity, IdentityError, IdentityPublicBundle, PrivateKeyProtector};
-use lattice_mls::api::MlsApplication;
-use lattice_storage::{Store, StoreError};
+use lattice_mls::{
+    ProtectedCodecError, ProtectedSqliteProvider, api::MlsApplication, migrate_protected_sqlite,
+    with_mls_storage_key,
+};
+use lattice_storage::{CommitOutcome, Store, StoreError};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
+pub mod space;
 /// Stable name of this local orchestration facade.
 pub const CRATE_NAME: &str = "lattice-core";
 
@@ -62,7 +70,6 @@ impl MlsBoundEvent {
 ///
 /// Returns [`CoreError::MlsEventBindingFailed`] if sender identity, exact
 /// ciphertext bytes, MLS epoch, or group reference do not match the signed event.
-#[must_use]
 pub fn bind_mls_application(
     event: VerifiedSignatureOnlyEvent,
     application: MlsApplication,
@@ -82,7 +89,52 @@ pub fn bind_mls_application(
     })
 }
 
-/// Local core setup and durable-store failures.
+/// Authorizes a bound application event and stores its exact outer bytes in the
+/// caller's `SQLite` transaction.
+///
+/// The returned reducer is a staged copy. Install it only after the enclosing
+/// transaction commits; on an authorization result other than `Authorized`, no
+/// event row is written. Pending dependency bytes must be retained through the
+/// bounded pending-event API rather than treated as accepted history.
+///
+/// # Errors
+///
+/// Returns [`CoreError::Storage`] for storage failures or
+/// [`CoreError::ReceivedEventEquivocation`] if the authenticated author sequence
+/// is already occupied by another event.
+pub fn authorize_and_store_application_event(
+    transaction: &Transaction<'_>,
+    reducer: &space::SpaceReducer,
+    event: &MlsBoundEvent,
+) -> Result<(space::SpaceReducer, space::EventAuthorization), CoreError> {
+    let mut staged_reducer = reducer.clone();
+    let authorization = staged_reducer.authorize_application_event(event);
+    if let space::EventAuthorization::Authorized { .. } = authorization {
+        let verified = event.event();
+        let event_id = *verified.event_id().as_bytes();
+        let author_id = *verified.author_fingerprint();
+        let parents = verified
+            .parents()
+            .iter()
+            .map(|parent| *parent.as_bytes())
+            .collect::<Vec<_>>();
+        if let CommitOutcome::Equivocation { existing_event_id } =
+            Store::commit_received_in_transaction(
+                transaction,
+                author_id,
+                event_id,
+                verified.author_sequence(),
+                verified.encoded_bytes(),
+                &parents,
+            )?
+        {
+            return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
+        }
+    }
+    Ok((staged_reducer, authorization))
+}
+
+/// Local core setup, protected MLS state, and durable-store failures.
 #[derive(Debug, Error)]
 pub enum CoreError {
     /// Opening or writing the durable event/identity store failed.
@@ -91,58 +143,81 @@ pub enum CoreError {
     /// Creating or reopening the protected device identity failed.
     #[error(transparent)]
     Identity(#[from] IdentityError),
+    /// A protected MLS storage key did not contain exactly 32 bytes.
+    #[error("protected MLS storage key is invalid")]
+    MlsStorageKeyInvalid,
+    /// The OS random source could not provide an MLS storage key.
+    #[error("OS randomness failed while initializing protected MLS storage")]
+    MlsStorageKeyRandomness,
+    /// `OpenMLS` database schema migration failed.
+    #[error("protected MLS storage schema migration failed")]
+    MlsStorageMigration,
+    /// A protected MLS provider operation ran without a valid key scope.
+    #[error(transparent)]
+    MlsStorageCodec(#[from] ProtectedCodecError),
+    /// An MLS operation failed and its enclosing transaction was rolled back.
+    #[error(transparent)]
+    Mls(#[from] lattice_mls::api::MlsError),
     /// An existing identity was required, but this data directory has none.
     #[error("no protected device identity is initialized")]
     MissingIdentity,
     /// A verified event did not match its authenticated MLS application result.
     #[error("event does not match the authenticated MLS application")]
     MlsEventBindingFailed,
+    /// A received author sequence is occupied by a different event ID.
+    #[error("received author sequence conflicts with event {existing_event_id:02x?}")]
+    ReceivedEventEquivocation { existing_event_id: [u8; 32] },
 }
 
-/// Local device core with an OS-protected identity and durable event store.
+/// Local device core with OS-protected identity and encrypted durable MLS state.
 ///
-/// Private identity bytes never enter SQLite through this facade. Only the
-/// ciphertext returned by the caller-supplied OS protector is persisted.
+/// Private identity bytes and the MLS storage key never enter `SQLite` in
+/// plaintext. Every MLS provider operation must run through
+/// [`Client::with_mls_transaction`], which scopes the decrypted key and commits
+/// provider and application writes in the same `SQLite` transaction.
 pub struct Client {
     store: Store,
     identity: DeviceIdentity,
+    mls_storage_key: Zeroizing<[u8; 32]>,
 }
 
 impl Client {
     /// Opens a profile and initializes its device identity if it does not exist.
     ///
-    /// Concurrent initializers are serialized by SQLite's unique identity slot;
-    /// the losing initializer reopens the ciphertext committed by the winner.
+    /// Concurrent initializers are serialized by `SQLite`'s unique identity and
+    /// MLS-key slots; a losing initializer reopens the committed ciphertext.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the store cannot be opened, protected identity
+    /// cannot be loaded or created, or protected MLS storage cannot be initialized.
     pub fn open_or_create<P: PrivateKeyProtector>(
         database_path: impl AsRef<Path>,
         protector: &P,
     ) -> Result<Self, CoreError> {
         let mut store = Store::open(database_path)?;
-        if let Some(ciphertext) = store.load_protected_identity()? {
-            return Ok(Self {
-                identity: DeviceIdentity::load_protected(protector, &ciphertext)?,
-                store,
-            });
-        }
-
-        let (generated, ciphertext) = DeviceIdentity::generate_protected(protector)?;
-        if store.save_protected_identity(&ciphertext)? {
-            return Ok(Self {
-                store,
-                identity: generated,
-            });
-        }
-
-        let persisted = store
-            .load_protected_identity()?
-            .ok_or(CoreError::MissingIdentity)?;
-        Ok(Self {
-            identity: DeviceIdentity::load_protected(protector, &persisted)?,
-            store,
-        })
+        let identity = if let Some(ciphertext) = store.load_protected_identity()? {
+            DeviceIdentity::load_protected(protector, &ciphertext)?
+        } else {
+            let (generated, ciphertext) = DeviceIdentity::generate_protected(protector)?;
+            if store.save_protected_identity(&ciphertext)? {
+                generated
+            } else {
+                let persisted = store
+                    .load_protected_identity()?
+                    .ok_or(CoreError::MissingIdentity)?;
+                DeviceIdentity::load_protected(protector, &persisted)?
+            }
+        };
+        Self::finish_open(store, identity, protector)
     }
 
     /// Opens a profile only when its protected device identity already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the store, protected identity, or protected MLS
+    /// storage cannot be opened.
     pub fn open_existing<P: PrivateKeyProtector>(
         database_path: impl AsRef<Path>,
         protector: &P,
@@ -152,7 +227,53 @@ impl Client {
             .load_protected_identity()?
             .ok_or(CoreError::MissingIdentity)?;
         let identity = DeviceIdentity::load_protected(protector, &ciphertext)?;
-        Ok(Self { store, identity })
+        Self::finish_open(store, identity, protector)
+    }
+
+    fn finish_open<P: PrivateKeyProtector>(
+        mut store: Store,
+        identity: DeviceIdentity,
+        protector: &P,
+    ) -> Result<Self, CoreError> {
+        store.with_connection_mut(|connection| {
+            migrate_protected_sqlite(connection).map_err(|_| CoreError::MlsStorageMigration)
+        })?;
+        let mls_storage_key = load_or_create_mls_storage_key(&mut store, protector)?;
+        Ok(Self {
+            store,
+            identity,
+            mls_storage_key,
+        })
+    }
+    /// Runs protected `OpenMLS` and application writes in one `SQLite` transaction.
+    ///
+    /// The key is scoped only for this callback. Returning an error rolls back
+    /// both MLS provider state and event/outbox writes made through `transaction`.
+    /// The caller remains responsible for credential trust, authorization, and
+    /// durable handling of process-local MLS conflict evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the action's error or a converted [`StoreError`] or [`CoreError`].
+    pub fn with_mls_transaction<T, E>(
+        &mut self,
+        action: impl FnOnce(
+            &DeviceIdentity,
+            &ProtectedSqliteProvider<'_>,
+            &Transaction<'_>,
+        ) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<StoreError> + From<CoreError>,
+    {
+        self.store.with_transaction(|transaction| {
+            let provider = ProtectedSqliteProvider::new(transaction);
+            with_mls_storage_key(&self.mls_storage_key[..], || {
+                action(&self.identity, &provider, transaction)
+            })
+            .map_err(CoreError::from)
+            .map_err(E::from)?
+        })
     }
 
     /// Returns the non-secret public identity bundle and fingerprint.
@@ -166,11 +287,48 @@ impl Client {
     }
 
     /// Returns the next local author sequence reserved by the durable store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the durable sequence reservation fails.
     pub fn next_author_sequence(&self) -> Result<u64, CoreError> {
         Ok(self
             .store
             .next_author_sequence(&self.identity.fingerprint())?)
     }
+}
+fn load_or_create_mls_storage_key<P: PrivateKeyProtector>(
+    store: &mut Store,
+    protector: &P,
+) -> Result<Zeroizing<[u8; 32]>, CoreError> {
+    if let Some(ciphertext) = store.load_protected_mls_storage_key()? {
+        return unwrap_mls_storage_key(protector, &ciphertext);
+    }
+
+    let mut key = Zeroizing::new([0_u8; 32]);
+    getrandom::fill(&mut key[..]).map_err(|_| CoreError::MlsStorageKeyRandomness)?;
+    let ciphertext = protector.wrap(&key[..]).map_err(IdentityError::from)?;
+    if store.save_protected_mls_storage_key(&ciphertext)? {
+        return Ok(key);
+    }
+
+    let persisted = store
+        .load_protected_mls_storage_key()?
+        .ok_or(CoreError::MlsStorageKeyInvalid)?;
+    unwrap_mls_storage_key(protector, &persisted)
+}
+
+fn unwrap_mls_storage_key<P: PrivateKeyProtector>(
+    protector: &P,
+    ciphertext: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, CoreError> {
+    let plaintext = Zeroizing::new(protector.unwrap(ciphertext).map_err(IdentityError::from)?);
+    let mut key = Zeroizing::new([0_u8; 32]);
+    if plaintext.len() != key.len() {
+        return Err(CoreError::MlsStorageKeyInvalid);
+    }
+    key.copy_from_slice(&plaintext);
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -344,6 +502,109 @@ mod tests {
         assert_eq!(
             bound.event().identity_bundle().ed25519_public_key(),
             alice_identity.public_key()
+        );
+    }
+    #[test]
+    fn openmls_group_and_event_share_a_durable_transaction() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize client");
+        let credential = test_credential(&client.identity);
+        let mut rolled_back_group_id = None;
+        let rolled_back_event_id = [0x41; 32];
+
+        let aborted: Result<(), CoreError> =
+            client.with_mls_transaction(|identity, provider, transaction| {
+                let group = GroupState::create(provider, identity, &credential)?;
+                rolled_back_group_id = Some(group.group_id());
+                lattice_storage::Store::commit_authored_in_transaction(
+                    transaction,
+                    identity.fingerprint(),
+                    rolled_back_event_id,
+                    1,
+                    &[0x01],
+                    &[],
+                )?;
+                Err(CoreError::Mls(lattice_mls::api::MlsError::OpenMlsFailure))
+            });
+        assert!(matches!(aborted, Err(CoreError::Mls(_))));
+        let rolled_back_group_id = rolled_back_group_id.expect("created group before abort");
+        let missing_group: Result<(), CoreError> = client.with_mls_transaction(|_, provider, _| {
+            match GroupState::load(provider, &rolled_back_group_id) {
+                Ok(_) => Ok(()),
+                Err(error) => Err(CoreError::Mls(error)),
+            }
+        });
+        assert!(matches!(
+            missing_group,
+            Err(CoreError::Mls(lattice_mls::api::MlsError::GroupNotFound))
+        ));
+
+        let event_id = [0x42; 32];
+        let group_id = client
+            .with_mls_transaction(|identity, provider, transaction| {
+                let group = GroupState::create(provider, identity, &credential)?;
+                let group_id = group.group_id();
+                let stored_rows: i64 = transaction
+                    .query_row("SELECT COUNT(*) FROM openmls_group_data", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(lattice_storage::StoreError::from)?;
+                assert!(stored_rows > 0);
+                let unencrypted_records: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM openmls_group_data
+                         WHERE substr(group_data, 1, 1) != X'01'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(lattice_storage::StoreError::from)?;
+                assert_eq!(unencrypted_records, 0);
+                lattice_storage::Store::commit_authored_in_transaction(
+                    transaction,
+                    identity.fingerprint(),
+                    event_id,
+                    1,
+                    &[0x02],
+                    &[],
+                )?;
+                Ok::<Vec<u8>, CoreError>(group_id)
+            })
+            .expect("commit MLS group and event together");
+        drop(client);
+
+        let mut store = lattice_storage::Store::open(&database.0).expect("open MLS database");
+        let persisted_rows = store
+            .with_connection_mut(|connection| {
+                connection
+                    .query_row("SELECT COUNT(*) FROM openmls_group_data", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(lattice_storage::StoreError::from)
+            })
+            .expect("query persisted MLS rows");
+        assert!(persisted_rows > 0);
+        let mut reopened =
+            Client::open_existing(&database.0, &protector).expect("reopen protected MLS state");
+        let epoch: Result<u64, CoreError> = reopened.with_mls_transaction(|_, provider, _| {
+            GroupState::load(provider, &group_id)
+                .map(|group| group.epoch())
+                .map_err(CoreError::Mls)
+        });
+        assert_eq!(epoch.expect("load persisted group"), 0);
+        let store = lattice_storage::Store::open(&database.0).expect("open event store");
+        assert!(
+            store
+                .load_event(&event_id)
+                .expect("load event committed with group")
+                .is_some()
+        );
+        assert!(
+            store
+                .load_event(&rolled_back_event_id)
+                .expect("load rolled-back event")
+                .is_none()
         );
     }
 

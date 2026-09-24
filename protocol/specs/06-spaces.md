@@ -1,6 +1,6 @@
 # Candidate 1: Space and membership payloads
 
-**Status:** executable candidate, not a frozen interoperability contract. These schemas do not establish interoperability or verify any Space requirement. They define candidate plaintext records for the existing signed event kinds in [`05-events.md`](05-events.md).
+**Status:** executable candidate, not a frozen interoperability contract. `lattice-core` implements the kind-6 policy reducer and conflict checks, but its membership transition and recovery gates fail closed without typed MLS/trust proofs. This spec does not establish interoperability or verify every Space requirement. It defines candidate plaintext records for the existing signed event kinds in [`05-events.md`](05-events.md).
 
 ## Event and encoding boundary
 

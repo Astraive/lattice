@@ -40,14 +40,17 @@ communication product or an interoperability release. Current components cover
 canonical encoding and event signatures, device identity protection and local
 storage, OpenMLS state operations, signature-to-MLS ciphertext binding, bounded
 routing/courier accounting, attachment verification, voice signaling, and
-platform adapter contracts. CLI and desktop currently expose protected device
-identity workflows; Android currently exposes permission-aware generic BLE
-discovery and fragment framing.
+platform adapter contracts. The core includes a candidate kind-6 policy reducer,
+kind-1–5 and kind-8 authorization, and transaction-staged persistence of an
+authorized event. Reducer-state restore and message projection are incomplete.
+CLI and desktop currently expose protected device identity workflows; Android
+currently exposes permission-aware generic BLE discovery and fragment framing.
 
-Secure Space creation/join, the authorization and projection reducers, durable
-MLS conflict recovery, native BLE GATT exchange, LAN/Wi-Fi adapters, relay
-interoperability, and end-to-end message workflows remain incomplete. The
-OpenMLS API still relies on the caller to verify external credentials and
+Secure Space creation/join, MLS membership validation and commit coupling,
+application message-state projections, voice authorization, durable MLS conflict
+recovery, native BLE GATT exchange, LAN/Wi-Fi adapters, relay interoperability,
+and end-to-end message workflows remain incomplete.
+The OpenMLS API still relies on the caller to verify external credentials and
 persist protected group state and recovery metadata. ADR-001 and ADR-002 record
 the conflict and channel-read decisions; their full operational workflows and
 acceptance evidence remain open. Treat all performance numbers in `spec.md` as
