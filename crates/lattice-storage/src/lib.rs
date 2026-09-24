@@ -24,6 +24,8 @@ pub const MAX_OUTBOX_EVENTS: usize = 1024;
 pub const MAX_OUTBOX_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum entries returned by one outbox page.
 pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
+/// Maximum locally created Space Genesis records returned by one page.
+pub const MAX_SPACE_GENESIS_PAGE_SIZE: usize = 32;
 
 const ID_BYTES: usize = 32;
 const SCHEMA_VERSION: i64 = 5;
@@ -77,6 +79,14 @@ pub struct SpaceGenesisSnapshot {
     pub group_id: Vec<u8>,
     pub event_id: [u8; 32],
     pub encrypted_state: Vec<u8>,
+}
+/// Exclusive keyset cursor for bounded local Space Genesis enumeration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpaceGenesisCursor {
+    /// Persisted Space identifier.
+    pub space_id: [u8; 16],
+    /// Persisted MLS group reference for this Space generation.
+    pub group_reference: [u8; 32],
 }
 
 /// Result of attempting to commit an authored event.
@@ -625,6 +635,54 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Lists local Space Genesis keys in bounded, stable keyset pages.
+    ///
+    /// Pass the final cursor from one page to continue after it. Rows are
+    /// ordered by Space ID and then MLS group reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit cannot be represented by `SQLite`, the
+    /// query fails, or stored keys are malformed.
+    pub fn list_space_genesis_page(
+        &self,
+        after: Option<SpaceGenesisCursor>,
+    ) -> Result<Vec<SpaceGenesisCursor>> {
+        let after_space_id = after.map(|cursor| cursor.space_id);
+        let after_group_reference = after.map(|cursor| cursor.group_reference);
+        let page_limit = i64::try_from(MAX_SPACE_GENESIS_PAGE_SIZE)
+            .map_err(|_| StoreError::CorruptData("invalid Space Genesis page limit"))?;
+        let mut statement = self.connection.prepare(
+            "SELECT space_id, group_reference
+             FROM space_genesis_snapshots
+             WHERE (?1 IS NULL OR (space_id, group_reference) > (?1, ?2))
+             ORDER BY space_id, group_reference
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![
+                after_space_id.as_ref().map(|space_id| &space_id[..]),
+                after_group_reference
+                    .as_ref()
+                    .map(|group_reference| &group_reference[..]),
+                page_limit
+            ],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )?;
+        rows.map(|row| {
+            let (space_id, group_reference) = row?;
+            Ok(SpaceGenesisCursor {
+                space_id: space_id.try_into().map_err(|_| {
+                    StoreError::CorruptData("invalid space Genesis snapshot space ID")
+                })?,
+                group_reference: group_reference.try_into().map_err(|_| {
+                    StoreError::CorruptData("invalid space Genesis snapshot group reference")
+                })?,
+            })
+        })
+        .collect()
     }
 
     /// Loads and validates a snapshot for one space and MLS group reference.
@@ -1594,6 +1652,56 @@ mod tests {
                 .load_space_genesis_snapshot(&snapshot.space_id, &snapshot.group_reference)
                 .expect("load saved snapshot"),
             Some(snapshot)
+        );
+    }
+
+    #[test]
+    fn genesis_snapshot_pages_are_bounded_stable_and_exclusive() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        for value in 1_u8..=33 {
+            let event_id = id(value);
+            store
+                .commit_authored(id(200), event_id, u64::from(value), &[value], &[])
+                .expect("commit fixture event");
+            store
+                .with_transaction(|transaction| {
+                    Store::save_space_genesis_snapshot_in_transaction(
+                        transaction,
+                        &SpaceGenesisSnapshot {
+                            space_id: [value; 16],
+                            group_reference: [value; 32],
+                            group_id: vec![value],
+                            event_id,
+                            encrypted_state: vec![0xA5],
+                        },
+                    )
+                })
+                .expect("save fixture snapshot");
+        }
+
+        let first_page = store
+            .list_space_genesis_page(None)
+            .expect("list first page");
+        assert_eq!(first_page.len(), super::MAX_SPACE_GENESIS_PAGE_SIZE);
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|cursor| cursor.space_id[0])
+                .collect::<Vec<_>>(),
+            (1_u8..=32).collect::<Vec<_>>()
+        );
+
+        let second_page = store
+            .list_space_genesis_page(first_page.last().copied())
+            .expect("list second page");
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].space_id, [33; 16]);
+        assert!(
+            store
+                .list_space_genesis_page(second_page.last().copied())
+                .expect("list exhausted page")
+                .is_empty()
         );
     }
 

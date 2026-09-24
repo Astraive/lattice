@@ -11,6 +11,8 @@ Tauri v2 embeds the same Rust core; React/TypeScript/Vite present state through 
 | DSK-005 | Desktop shall be able to opt into persistent courier/peer behavior with quotas. | On/off toggle, restart-safe queue and no Space privilege elevation. | M7 |
 | DSK-006 | Desktop builds shall be reproducible enough to compare generated bindings and protocol vectors. | Clean build matches committed vector outputs on supported OS matrix. | M8 |
 
+The current desktop prototype protects device identity and exposes a bounded, read-only listing of local Genesis snapshots through Tauri. Listing verifies local event and snapshot integrity; it does not establish current membership. Space creation/join, authenticated messaging, discovery, relay configuration, persistent courier behavior and release-matrix verification remain incomplete.
+
 Tauri security boundary and local content rendering are reviewed separately from Rust protocol correctness. A persistent desktop helps availability but never becomes mandatory for a Space.
 
 ## Process and security boundary

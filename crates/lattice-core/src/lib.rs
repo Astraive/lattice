@@ -18,7 +18,10 @@ use lattice_mls::{
     with_mls_storage_key,
 };
 use lattice_protocol::{Value, encode_canonical};
-use lattice_storage::{CommitOutcome, SpaceGenesisSnapshot, Store, StoreError};
+pub use lattice_storage::SpaceGenesisCursor;
+use lattice_storage::{
+    CommitOutcome, MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, Store, StoreError,
+};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -92,6 +95,27 @@ impl CreatedSpace {
     #[must_use]
     pub const fn reducer(&self) -> &space::SpaceReducer {
         &self.reducer
+    }
+}
+
+/// One bounded page of locally recoverable Space generations.
+#[must_use]
+pub struct RestoredSpacePage {
+    spaces: Vec<CreatedSpace>,
+    next_cursor: Option<SpaceGenesisCursor>,
+}
+
+impl RestoredSpacePage {
+    /// Returns the verified local Space generations in this page.
+    #[must_use]
+    pub fn spaces(&self) -> &[CreatedSpace] {
+        &self.spaces
+    }
+
+    /// Returns the exclusive cursor for the next page, if this page is full.
+    #[must_use]
+    pub const fn next_cursor(&self) -> Option<SpaceGenesisCursor> {
+        self.next_cursor
     }
 }
 
@@ -638,6 +662,37 @@ impl Client {
         })
     }
 
+    /// Restores a bounded page of locally created Space generations.
+    ///
+    /// Every result passes through [`Client::restore_space`], including its
+    /// signature, MLS group, and authenticated snapshot checks. A full page
+    /// returns an exclusive cursor; the final page can therefore require one
+    /// additional empty query when the record count is an exact page multiple.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index query or any generation's integrity checks
+    /// fail. No partial page is returned.
+    pub fn restore_space_page(
+        &mut self,
+        after: Option<SpaceGenesisCursor>,
+    ) -> Result<RestoredSpacePage, CoreError> {
+        let cursors = self.store.list_space_genesis_page(after)?;
+        let next_cursor = if cursors.len() == MAX_SPACE_GENESIS_PAGE_SIZE {
+            cursors.last().copied()
+        } else {
+            None
+        };
+        let mut spaces = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            spaces.push(self.restore_space(&cursor.space_id, &cursor.group_reference)?);
+        }
+        Ok(RestoredSpacePage {
+            spaces,
+            next_cursor,
+        })
+    }
+
     /// Returns the non-secret public identity bundle and fingerprint.
     #[must_use]
     pub fn identity_info(&self) -> DeviceIdentityInfo {
@@ -1071,12 +1126,15 @@ mod tests {
         );
         assert_eq!(client.next_author_sequence().expect("next sequence"), 2);
         drop(client);
-
         let mut reopened =
             Client::open_existing(&database.0, &protector).expect("reopen protected profile");
-        let restored = reopened
-            .restore_space(created.space_id(), created.group_reference())
-            .expect("restore durable local Space policy");
+
+        let restored_page = reopened
+            .restore_space_page(None)
+            .expect("discover and restore local Space policy");
+        assert_eq!(restored_page.spaces().len(), 1);
+        assert_eq!(restored_page.next_cursor(), None);
+        let restored = &restored_page.spaces()[0];
         assert_eq!(restored.group_id(), created.group_id());
         assert_eq!(
             restored

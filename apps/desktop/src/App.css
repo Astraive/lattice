@@ -28,6 +28,29 @@ button,
 a {
   font: inherit;
 }
+button {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #0b100d;
+  background: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button + button {
+  margin-inline-start: 8px;
+}
+
+button:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 3px;
+}
+
+button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
 
 a {
   color: inherit;
@@ -228,6 +251,62 @@ h2 {
   line-height: 1.5;
 }
 
+.space-browser {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.space-browser-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.space-browser-heading button {
+  white-space: nowrap;
+}
+
+.space-browser-heading h3 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.space-browser-heading p,
+.space-browser > p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.space-list {
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.space-list li {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 7px 12px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.space-list span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.space-list code {
+  overflow-wrap: anywhere;
+  color: #dce8de;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
 footer {
   display: flex;
   justify-content: space-between;
@@ -264,8 +343,13 @@ footer {
   }
 
   .section-heading,
-  footer {
+  footer,
+  .space-browser-heading {
     flex-direction: column;
+  }
+
+  .space-browser-heading button {
+    width: 100%;
   }
 
   .status-panel {
