@@ -2,6 +2,8 @@ package com.astraive.lattice
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,6 +13,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Base64
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -44,6 +47,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.lattice_uniffi.MobileException
 import uniffi.lattice_uniffi.MobileSpaceCursor
+import uniffi.lattice_uniffi.MobileSpaceSummary
+import uniffi.lattice_uniffi.MobileChannelType
+import uniffi.lattice_uniffi.MobileInitialChannel
 import com.astraive.lattice.identity.IdentityPinCard
 import com.astraive.lattice.identity.IdentityPinUiState
 import com.astraive.lattice.identity.decodeIdentityHex
@@ -68,11 +74,20 @@ internal data class NearbyScreenState(
     val identityFingerprint: String? = null,
     val identityBundleHex: String? = null,
     val identityPin: IdentityPinUiState = IdentityPinUiState(),
-    val localSpaceIds: List<String> = emptyList(),
+    val certificateRequestPem: String? = null,
+    val certificateRequestStatus: String? = null,
+    val generatingCertificateRequest: Boolean = false,
+    val localSpaces: List<MobileSpaceSummary> = emptyList(),
     val localSpacesStatus: String = "Local Space snapshots are loading.",
     val nextSpaceCursor: MobileSpaceCursor? = null,
     val loadingSpacePage: Boolean = false,
+    val spaceCreation: SpaceCreationUiState = SpaceCreationUiState(),
+    val identityClipboardStatus: String? = null,
+    val messageComposers: Map<String, LocalMessageComposerState> = emptyMap(),
 )
+
+private fun localSpaceKey(space: MobileSpaceSummary): String =
+    "${space.spaceId.toLowerHex()}:${space.groupReference.toLowerHex()}"
 
 class MainActivity : ComponentActivity() {
     private val preferences by lazy { getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE) }
@@ -169,7 +184,25 @@ class MainActivity : ComponentActivity() {
                     onPrimaryAction = ::onPrimaryAction,
                     onDismissRationale = { screenState = screenState.copy(showPermissionRationale = false) },
                     onContinuePermission = ::continuePermissionFlow,
+                    onMessageCredentialHexChanged = ::onMessageCredentialHexChanged,
+                    onMessageContentChanged = ::onMessageContentChanged,
+                    onMessageChannelSelected = ::onMessageChannelSelected,
+                    onQueueLocalMessage = ::queueLocalMessage,
+                    onLoadMessageHistory = ::loadLocalMessageHistory,
                     onLoadMoreSpaces = ::loadMoreLocalSpaces,
+                    onCredentialVectorHexChanged = ::onCredentialVectorHexChanged,
+                    onSpaceChannelNameChanged = ::onSpaceChannelNameChanged,
+                    onCreateLocalSpace = ::createLocalSpace,
+                    onGenerateCertificateRequest = ::generateCertificateRequest,
+                    onCopyCertificateRequest = ::copyCertificateRequest,
+                    onLookupPinnedIdentity = ::lookupPinnedIdentity,
+                    onCopyPinnedBundle = { bundle -> copyPublicValue("peer identity bundle", bundle) },
+                    onCopyIdentityBundle = {
+                        screenState.identityBundleHex?.let { copyPublicValue("device public bundle", it) }
+                    },
+                    onCopyIdentityFingerprint = {
+                        screenState.identityFingerprint?.let { copyPublicValue("device fingerprint", it) }
+                    },
                     onPeerBundleHexChanged = ::onPeerBundleHexChanged,
                     onPeerFingerprintHexChanged = ::onPeerFingerprintHexChanged,
                     onPinPeerIdentity = ::pinPeerIdentity,
@@ -206,7 +239,7 @@ class MainActivity : ComponentActivity() {
                     profileStatus = "Protected local identity is available on this device.",
                     identityFingerprint = identity.fingerprint.toLowerHex(),
                     identityBundleHex = identity.publicBundle.toLowerHex(),
-                    localSpaceIds = firstSpacePage.spaces.map { it.spaceId.toLowerHex() },
+                    localSpaces = firstSpacePage.spaces,
                     localSpacesStatus = localSpacesStatus(firstSpacePage.spaces.size, firstSpacePage.nextCursor != null),
                     nextSpaceCursor = firstSpacePage.nextCursor,
                 )
@@ -224,7 +257,12 @@ class MainActivity : ComponentActivity() {
                             is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
                             is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
                             is MobileException.ProfileUnavailable -> "The protected local profile is unavailable."
+                            is MobileException.CertificateSigningRequestFailed -> "The device certificate request could not be generated."
+                            is MobileException.InvalidSpaceCredential -> "The X.509 credential is not trusted or does not match this device."
+                            is MobileException.InvalidSpaceInput -> "The initial Space channel is invalid."
+                            is MobileException.SpaceCreationFailed -> "The local Space transaction failed."
                             is MobileException.InvalidSpaceCursor -> "The local Space cursor is invalid."
+                            else -> "The protected local profile could not be opened."
                         },
                     )
                 }
@@ -249,8 +287,11 @@ class MainActivity : ComponentActivity() {
                 }
                 if (!isFinishing && !isDestroyed) {
                     screenState = screenState.copy(
-                        localSpaceIds = screenState.localSpaceIds + page.spaces.map { it.spaceId.toLowerHex() },
-                        localSpacesStatus = localSpacesStatus(page.spaces.size, page.nextCursor != null),
+                        localSpaces = screenState.localSpaces + page.spaces,
+                        localSpacesStatus = localSpacesStatus(
+                            screenState.localSpaces.size + page.spaces.size,
+                            page.nextCursor != null,
+                        ),
                         nextSpaceCursor = page.nextCursor,
                         loadingSpacePage = false,
                     )
@@ -268,10 +309,457 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun updateMessageComposer(spaceKey: String, update: (LocalMessageComposerState) -> LocalMessageComposerState) {
+        val composers = screenState.messageComposers
+        screenState = screenState.copy(
+            messageComposers = composers + (spaceKey to update(composers[spaceKey] ?: LocalMessageComposerState())),
+        )
+    }
+
+    private fun onMessageCredentialHexChanged(spaceKey: String, value: String) {
+        if (value.length > MAX_LOCAL_MESSAGE_CREDENTIAL_HEX_LENGTH) {
+            updateMessageComposer(spaceKey) {
+                it.copy(status = "Credential vector exceeds the 16 KiB decoded input limit.")
+            }
+            return
+        }
+        updateMessageComposer(spaceKey) {
+            it.copy(credentialVectorHex = value, eventIdHex = null, status = "Credential input changed; not yet validated.")
+        }
+    }
+
+    private fun onMessageContentChanged(spaceKey: String, value: String) {
+        if (value.length > MAX_LOCAL_MESSAGE_BYTES) {
+            updateMessageComposer(spaceKey) {
+                it.copy(status = "Message exceeds the 16 KiB UTF-8 input limit.")
+            }
+            return
+        }
+        updateMessageComposer(spaceKey) {
+            it.copy(content = value, eventIdHex = null, status = "Message input changed; not yet queued.")
+        }
+    }
+
+    private fun onMessageChannelSelected(spaceKey: String, channelIdHex: String) {
+        updateMessageComposer(spaceKey) {
+            it.copy(
+                selectedChannelIdHex = channelIdHex,
+                eventIdHex = null,
+                historyChannelIdHex = null,
+                historyStatus = null,
+                status = "Channel selected; message not yet queued.",
+            )
+        }
+    }
+    private fun loadLocalMessageHistory(spaceKey: String) {
+        val profile = mobileProfile ?: run {
+            updateMessageComposer(spaceKey) {
+                it.copy(historyStatus = "The protected profile is not ready.")
+            }
+            return
+        }
+        val space = screenState.localSpaces.firstOrNull { localSpaceKey(it) == spaceKey } ?: run {
+            updateMessageComposer(spaceKey) {
+                it.copy(historyStatus = "This local Space is no longer available.")
+            }
+            return
+        }
+        val composer = screenState.messageComposers[spaceKey] ?: LocalMessageComposerState()
+        if (composer.loadingHistory) return
+        val channels = space.channels.filter {
+            !it.archived &&
+                (it.channelType == MobileChannelType.TEXT ||
+                    it.channelType == MobileChannelType.ANNOUNCEMENT)
+        }
+        val channel = channels.firstOrNull {
+            it.id.toLowerHex() == composer.selectedChannelIdHex
+        } ?: if (composer.selectedChannelIdHex == null) channels.firstOrNull() else null
+        if (channel == null) {
+            updateMessageComposer(spaceKey) {
+                it.copy(historyStatus = "Select an active text or announcement channel.")
+            }
+            return
+        }
+        val channelIdHex = channel.id.toLowerHex()
+        updateMessageComposer(spaceKey) {
+            it.copy(loadingHistory = true, historyStatus = "Authenticating local message history…")
+        }
+        lifecycleScope.launch {
+            try {
+                val history = withContext(Dispatchers.IO) {
+                    profile.localTextMessages(space.spaceId, space.groupReference, channel.id)
+                }
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(
+                            loadingHistory = false,
+                            history = history,
+                            historyChannelIdHex = channelIdHex,
+                            historyStatus = if (history.isEmpty()) {
+                                "No locally retained outgoing messages for this channel."
+                            } else {
+                                "Showing ${history.size} recent locally retained outgoing message(s)."
+                            },
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(
+                            loadingHistory = false,
+                            historyStatus = mobileErrorStatus(error),
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(
+                            loadingHistory = false,
+                            historyStatus = "Local message history could not be authenticated.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun queueLocalMessage(spaceKey: String) {
+        val profile = mobileProfile ?: run {
+            updateMessageComposer(spaceKey) { it.copy(status = "The protected profile is not ready.") }
+            return
+        }
+        val composer = screenState.messageComposers[spaceKey] ?: LocalMessageComposerState()
+        if (composer.submitting) return
+        val space = screenState.localSpaces.firstOrNull { localSpaceKey(it) == spaceKey } ?: run {
+            updateMessageComposer(spaceKey) { it.copy(status = "This local Space is no longer available.") }
+            return
+        }
+        val eligibleChannels = space.channels.filter {
+            !it.archived && (it.channelType == MobileChannelType.TEXT || it.channelType == MobileChannelType.ANNOUNCEMENT)
+        }
+        val channel = eligibleChannels.firstOrNull { it.id.toLowerHex() == composer.selectedChannelIdHex }
+            ?: if (composer.selectedChannelIdHex == null) eligibleChannels.firstOrNull() else null
+        if (channel == null) {
+            updateMessageComposer(spaceKey) { it.copy(status = "Select an active text or announcement channel.") }
+            return
+        }
+        val hex = composer.credentialVectorHex
+        if (hex.isEmpty() || hex.length > MAX_LOCAL_MESSAGE_CREDENTIAL_HEX_LENGTH || hex.length % 2 != 0) {
+            updateMessageComposer(spaceKey) { it.copy(status = "Enter non-empty, even-length credential hex (at most 16 KiB decoded).") }
+            return
+        }
+        val credentialVector = decodeStrictBoundedHex(hex) ?: run {
+            updateMessageComposer(spaceKey) { it.copy(status = "Credential vector must contain hexadecimal characters only.") }
+            return
+        }
+        if (composer.content.isEmpty()) {
+            credentialVector.fill(0)
+            updateMessageComposer(spaceKey) { it.copy(status = "Enter a message before queueing.") }
+            return
+        }
+        if (composer.content.length > MAX_LOCAL_MESSAGE_BYTES) {
+            credentialVector.fill(0)
+            updateMessageComposer(spaceKey) { it.copy(status = "Message exceeds the 16 KiB input limit.") }
+            return
+        }
+        val contentBytes = composer.content.toByteArray(Charsets.UTF_8)
+        if (contentBytes.size > MAX_LOCAL_MESSAGE_BYTES) {
+            credentialVector.fill(0)
+            contentBytes.fill(0)
+            updateMessageComposer(spaceKey) { it.copy(status = "Message exceeds the 16 KiB UTF-8 input limit.") }
+            return
+        }
+        updateMessageComposer(spaceKey) {
+            it.copy(submitting = true, eventIdHex = null, status = "Validating certificate and committing a local outbox event…")
+        }
+        lifecycleScope.launch {
+            try {
+                val queued = withContext(Dispatchers.IO) {
+                    profile.queueLocalTextMessage(
+                        space.spaceId,
+                        space.groupReference,
+                        credentialVector,
+                        channel.id,
+                        composer.content,
+                    )
+                }
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(
+                            submitting = false,
+                            eventIdHex = queued.eventId.toLowerHex(),
+                            status = "Queued locally in the durable outbox. Network forwarding and recipient delivery are unknown.",
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(submitting = false, status = mobileQueueErrorStatus(error))
+                    }
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(submitting = false, status = "The message could not be confirmed as queued locally.")
+                    }
+                }
+            } finally {
+                credentialVector.fill(0)
+                contentBytes.fill(0)
+            }
+        }
+    }
+
+    private fun decodeStrictBoundedHex(value: String): ByteArray? {
+        if (value.isEmpty() || value.length > MAX_LOCAL_MESSAGE_CREDENTIAL_HEX_LENGTH || value.length % 2 != 0) return null
+        val bytes = ByteArray(value.length / 2)
+        fun hexValue(char: Char): Int = when (char) {
+            in '0'..'9' -> char - '0'
+            in 'a'..'f' -> char - 'a' + 10
+            in 'A'..'F' -> char - 'A' + 10
+            else -> -1
+        }
+        for (index in bytes.indices) {
+            val high = hexValue(value[index * 2])
+            val low = hexValue(value[index * 2 + 1])
+            if (high < 0 || low < 0) {
+                bytes.fill(0)
+                return null
+            }
+            bytes[index] = ((high shl 4) or low).toByte()
+        }
+        return bytes
+    }
+
+    private fun mobileQueueErrorStatus(error: MobileException): String = when (error) {
+        is MobileException.InvalidSpaceMessageId -> "The restored Space identifiers are invalid; no message was queued."
+        is MobileException.InvalidSpaceCredential -> "The certificate is invalid, untrusted, or does not match this device; no message was queued."
+        is MobileException.InvalidMessageInput -> "The channel or message input is invalid; no message was queued."
+        is MobileException.MessageRejected -> "The local Space rejected this message; no event was queued."
+        is MobileException.MessageQueueFailed -> "The local durable outbox operation failed; no queued event was confirmed."
+        else -> mobileErrorStatus(error)
+    }
+
+    private fun onCredentialVectorHexChanged(value: String) {
+        if (value.length > MAX_CREDENTIAL_HEX_LENGTH) {
+            screenState = screenState.copy(
+                spaceCreation = screenState.spaceCreation.copy(
+                    status = "The credential vector exceeds the 16 KiB input limit.",
+                ),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceCreation = screenState.spaceCreation.copy(
+                credentialVectorHex = value,
+                status = "Credential input changed; it has not been validated.",
+                created = null,
+            ),
+        )
+    }
+
+    private fun onSpaceChannelNameChanged(value: String) {
+        if (value.length > MAX_INITIAL_CHANNEL_NAME_BYTES) {
+            screenState = screenState.copy(
+                spaceCreation = screenState.spaceCreation.copy(
+                    status = "The channel name exceeds the 128-character input bound.",
+                ),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceCreation = screenState.spaceCreation.copy(
+                channelName = value,
+                status = "Channel input changed; it has not been validated.",
+                created = null,
+            ),
+        )
+    }
+
+    private fun createLocalSpace() {
+        val current = screenState.spaceCreation
+        if (current.creating) return
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                spaceCreation = current.copy(status = "The protected local profile is not ready."),
+            )
+            return
+        }
+        val credentialHex = current.credentialVectorHex
+        if (credentialHex.isEmpty() ||
+            credentialHex.length > MAX_CREDENTIAL_HEX_LENGTH ||
+            credentialHex.length % 2 != 0
+        ) {
+            screenState = screenState.copy(
+                spaceCreation = current.copy(status = "Enter a bounded, even-length hexadecimal X.509 credential vector."),
+            )
+            return
+        }
+        val credentialVector = decodeIdentityHex(credentialHex, credentialHex.length / 2)
+        if (credentialVector == null || !isValidInitialChannelName(current.channelName)) {
+            screenState = screenState.copy(
+                spaceCreation = current.copy(status = "Check the credential hex and channel name (1–128 UTF-8 bytes, no NUL)."),
+            )
+            return
+        }
+
+        screenState = screenState.copy(
+            spaceCreation = current.copy(creating = true, status = "Checking OS trust and creating local MLS state.", created = null),
+        )
+        lifecycleScope.launch {
+            try {
+                val created = withContext(Dispatchers.IO) {
+                    profile.createLocalSpace(
+                        credentialVector,
+                        listOf(
+                            MobileInitialChannel(
+                                MobileChannelType.TEXT,
+                                current.channelName,
+                                0uL,
+                                0uL,
+                            ),
+                        ),
+                    )
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceCreation = current.copy(
+                            credentialVectorHex = "",
+                            creating = true,
+                            status = "Local Genesis committed; no network was contacted and no remote member joined.",
+                            created = created,
+                        ),
+                    )
+                }
+                val page = withContext(Dispatchers.IO) {
+                    profile.localSpaces()
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        localSpaces = page.spaces,
+                        localSpacesStatus = localSpacesStatus(page.spaces.size, page.nextCursor != null),
+                        nextSpaceCursor = page.nextCursor,
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    val created = screenState.spaceCreation.created
+                    screenState = screenState.copy(
+                        spaceCreation = screenState.spaceCreation.copy(
+                            status = if (created == null) {
+                                mobileErrorStatus(error)
+                            } else {
+                                "Local Genesis committed, but the snapshot list could not be refreshed."
+                            },
+                            created = created,
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    val created = screenState.spaceCreation.created
+                    screenState = screenState.copy(
+                        spaceCreation = screenState.spaceCreation.copy(
+                            status = if (created == null) {
+                                "The local Space could not be created."
+                            } else {
+                                "Local Genesis committed, but the snapshot list could not be refreshed."
+                            },
+                            created = created,
+                        ),
+                    )
+                }
+            } finally {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceCreation = screenState.spaceCreation.copy(creating = false),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun generateCertificateRequest() {
+        val profile = mobileProfile ?: return
+        if (screenState.generatingCertificateRequest) return
+        screenState = screenState.copy(
+            generatingCertificateRequest = true,
+            certificateRequestStatus = null,
+        )
+        lifecycleScope.launch {
+            try {
+                val der = withContext(Dispatchers.IO) {
+                    profile.certificateSigningRequest()
+                }
+                val encoded = Base64.encodeToString(der, Base64.NO_WRAP)
+                val pem = buildString {
+                    append("-----BEGIN CERTIFICATE REQUEST-----\n")
+                    encoded.chunked(64).forEach { append(it).append('\n') }
+                    append("-----END CERTIFICATE REQUEST-----\n")
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        certificateRequestPem = pem,
+                        certificateRequestStatus = "Certificate request ready. It contains the public key and identity fingerprint, not the private key.",
+                        generatingCertificateRequest = false,
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        certificateRequestStatus = when (error) {
+                            is MobileException.CertificateSigningRequestFailed ->
+                                "The protected device key could not create a certificate request."
+                            is MobileException.ProfileUnavailable ->
+                                "The protected local profile is unavailable."
+                            else -> "The certificate request could not be generated."
+                        },
+                        generatingCertificateRequest = false,
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        certificateRequestStatus = "The certificate request could not be generated.",
+                        generatingCertificateRequest = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun copyCertificateRequest() {
+        val pem = screenState.certificateRequestPem ?: return
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboard == null) {
+            screenState = screenState.copy(certificateRequestStatus = "The Android clipboard is unavailable.")
+            return
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("Lattice certificate request", pem))
+        screenState = screenState.copy(certificateRequestStatus = "Certificate request copied to the clipboard.")
+    }
     private fun onPeerBundleHexChanged(value: String) {
         val pin = screenState.identityPin
         screenState = if (value.length <= 130) {
-            screenState.copy(identityPin = pin.copy(peerBundleHexInput = value))
+            screenState.copy(
+                identityPin = pin.copy(
+                    peerBundleHexInput = value,
+                    pinnedPeerFingerprint = null,
+                    pinnedPeerBundleHex = null,
+                    identityPinStatus = "Compare the full fingerprint out of band before pinning.",
+                ),
+            )
         } else {
             screenState.copy(
                 identityPin = pin.copy(
@@ -284,7 +772,14 @@ class MainActivity : ComponentActivity() {
     private fun onPeerFingerprintHexChanged(value: String) {
         val pin = screenState.identityPin
         screenState = if (value.length <= 64) {
-            screenState.copy(identityPin = pin.copy(peerFingerprintHexInput = value))
+            screenState.copy(
+                identityPin = pin.copy(
+                    peerFingerprintHexInput = value,
+                    pinnedPeerFingerprint = null,
+                    pinnedPeerBundleHex = null,
+                    identityPinStatus = "Compare the full fingerprint out of band before pinning.",
+                ),
+            )
         } else {
             screenState.copy(
                 identityPin = pin.copy(
@@ -294,7 +789,115 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun lookupPinnedIdentity() {
+        val currentPinState = screenState.identityPin
+        if (currentPinState.lookingUpPinnedIdentity || currentPinState.pinningIdentity) return
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                identityPin = screenState.identityPin.copy(
+                    identityPinStatus = "The protected profile is not ready.",
+                ),
+            )
+            return
+        }
+        val pin = screenState.identityPin
+        val fingerprint = decodeIdentityHex(pin.peerFingerprintHexInput, 32)
+        if (fingerprint == null) {
+            screenState = screenState.copy(
+                identityPin = pin.copy(
+                    identityPinStatus = "Enter the saved peer's full 32-byte fingerprint as hexadecimal.",
+                ),
+            )
+            return
+        }
+
+        screenState = screenState.copy(
+            identityPin = pin.copy(
+                lookingUpPinnedIdentity = true,
+                identityPinStatus = "Checking this fingerprint against locally saved pins…",
+            ),
+        )
+        lifecycleScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    profile.pinnedIdentity(fingerprint)
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            lookingUpPinnedIdentity = false,
+                            pinnedPeerFingerprint = saved?.fingerprint?.toLowerHex(),
+                            pinnedPeerBundleHex = saved?.publicBundle?.toLowerHex(),
+                            identityPinStatus = if (saved == null) {
+                                "No local pin exists for this fingerprint. No connection or membership was checked."
+                            } else {
+                                "Exact locally pinned bytes were revalidated. This does not authenticate a session or grant Space membership."
+                            },
+                        ),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            lookingUpPinnedIdentity = false,
+                            identityPinStatus = mobileErrorStatus(error),
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            lookingUpPinnedIdentity = false,
+                            identityPinStatus = "The local identity pin could not be read.",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun copyPublicValue(label: String, value: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboard == null) {
+            screenState = screenState.copy(identityClipboardStatus = "The Android clipboard is unavailable.")
+            return
+        }
+        try {
+            clipboard.setPrimaryClip(ClipData.newPlainText("Lattice $label", value))
+            screenState = screenState.copy(identityClipboardStatus = "$label copied to the clipboard.")
+        } catch (_: Exception) {
+            screenState = screenState.copy(identityClipboardStatus = "The $label could not be copied.")
+        }
+    }
+
+    private fun mobileErrorStatus(error: MobileException): String = when (error) {
+        is MobileException.InvalidIdentityBundle -> "The public bundle is malformed or has an unusable X25519 key."
+        is MobileException.InvalidFingerprint -> "The full fingerprint must be exactly 32 bytes."
+        is MobileException.FingerprintMismatch -> "Fingerprint mismatch. No pin was saved."
+        is MobileException.PinnedIdentityConflict -> "This fingerprint is already pinned to different bundle bytes. The existing pin was not changed."
+        is MobileException.InvalidProfileId -> "The local profile identifier is invalid."
+        is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
+        is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
+        is MobileException.ProfileUnavailable -> "The protected local profile is unavailable."
+        is MobileException.CertificateSigningRequestFailed -> "The device certificate request could not be generated."
+        is MobileException.InvalidSpaceCredential -> "The X.509 credential is untrusted or does not match this device identity."
+        is MobileException.InvalidSpaceInput -> "The initial Space channel inputs are invalid."
+        is MobileException.SpaceCreationFailed -> "The local Space transaction failed."
+        is MobileException.InvalidSpaceCursor -> "The local Space cursor is invalid."
+        is MobileException.InvalidSpaceMessageId -> "The local Space message identifiers are invalid."
+        is MobileException.InvalidMessageInput -> "The local message or channel input is invalid."
+        is MobileException.MessageRejected -> "Local MLS rejected the message."
+        is MobileException.MessageQueueFailed -> "The local message could not be durably queued."
+        is MobileException.MessageHistoryUnavailable -> "The locally retained message history is unavailable or failed authentication."
+    }
+
     private fun pinPeerIdentity() {
+        val currentPinState = screenState.identityPin
+        if (currentPinState.pinningIdentity || currentPinState.lookingUpPinnedIdentity) return
         val profile = mobileProfile ?: run {
             screenState = screenState.copy(
                 identityPin = screenState.identityPin.copy(
@@ -331,6 +934,7 @@ class MainActivity : ComponentActivity() {
                         identityPin = screenState.identityPin.copy(
                             pinningIdentity = false,
                             pinnedPeerFingerprint = pinned.fingerprint.toLowerHex(),
+                            pinnedPeerBundleHex = pinned.publicBundle.toLowerHex(),
                             identityPinStatus = "Exact bundle/fingerprint match stored locally. This does not authenticate a session or grant Space membership.",
                         ),
                     )
@@ -342,17 +946,7 @@ class MainActivity : ComponentActivity() {
                     screenState = screenState.copy(
                         identityPin = screenState.identityPin.copy(
                             pinningIdentity = false,
-                            identityPinStatus = when (error) {
-                                is MobileException.InvalidIdentityBundle -> "The public bundle is malformed or has an unusable X25519 key."
-                                is MobileException.InvalidFingerprint -> "The full fingerprint must be exactly 32 bytes."
-                                is MobileException.FingerprintMismatch -> "Fingerprint mismatch. No pin was saved."
-                                is MobileException.PinnedIdentityConflict -> "This fingerprint is already pinned to different bundle bytes. The existing pin was not changed."
-                                is MobileException.InvalidProfileId -> "The local profile identifier is invalid."
-                                is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
-                                is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
-                                is MobileException.ProfileUnavailable -> "The protected local profile is unavailable."
-                                is MobileException.InvalidSpaceCursor -> "The local Space cursor is invalid."
-                            },
+                            identityPinStatus = mobileErrorStatus(error),
                         ),
                     )
                 }
@@ -369,22 +963,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun localSpacesStatus(pageSize: Int, hasNextPage: Boolean): String = when {
-        pageSize == 0 && screenState.localSpaceIds.isEmpty() -> "No local Space Genesis snapshots were found."
-        hasNextPage -> "More locally recoverable Spaces are available."
+    private fun localSpacesStatus(loadedCount: Int, hasNextPage: Boolean): String = when {
+        hasNextPage -> "More locally recoverable Genesis snapshots are available."
+        loadedCount == 0 -> "No local Space Genesis snapshots were found."
         else -> "All locally recoverable Genesis snapshots are shown."
     }
 
-    private fun ByteArray.toLowerHex(): String {
-        val digits = "0123456789abcdef"
-        return buildString(size * 2) {
-            for (byte in this@toLowerHex) {
-                val value = byte.toInt() and 0xff
-                append(digits[value ushr 4])
-                append(digits[value and 0x0f])
-            }
-        }
-    }
 
     override fun onStart() {
         super.onStart()
@@ -615,6 +1199,16 @@ class MainActivity : ComponentActivity() {
         const val KEY_PREVIOUSLY_GRANTED = "permission_previously_granted"
     }
 }
+internal fun ByteArray.toLowerHex(): String {
+    val digits = "0123456789abcdef"
+    return buildString(size * 2) {
+        for (byte in this@toLowerHex) {
+            val value = byte.toInt() and 0xff
+            append(digits[value ushr 4])
+            append(digits[value and 0x0f])
+        }
+    }
+}
 
 
 @Composable
@@ -625,10 +1219,24 @@ private fun NearbyReadinessScreen(
     onDismissRationale: () -> Unit,
     onContinuePermission: () -> Unit,
     onLoadMoreSpaces: (MobileSpaceCursor) -> Unit,
+    onCredentialVectorHexChanged: (String) -> Unit,
+    onSpaceChannelNameChanged: (String) -> Unit,
+    onCreateLocalSpace: () -> Unit,
     onPeerBundleHexChanged: (String) -> Unit,
     onPeerFingerprintHexChanged: (String) -> Unit,
     onPinPeerIdentity: () -> Unit,
-) {
+    onLookupPinnedIdentity: () -> Unit,
+    onCopyPinnedBundle: (String) -> Unit,
+    onGenerateCertificateRequest: () -> Unit,
+    onCopyCertificateRequest: () -> Unit,
+    onCopyIdentityBundle: () -> Unit,
+    onCopyIdentityFingerprint: () -> Unit,
+    onMessageCredentialHexChanged: (String, String) -> Unit,
+    onMessageContentChanged: (String, String) -> Unit,
+    onMessageChannelSelected: (String, String) -> Unit,
+    onQueueLocalMessage: (String) -> Unit,
+    onLoadMessageHistory: (String) -> Unit,
+){
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -665,6 +1273,17 @@ private fun NearbyReadinessScreen(
                         SelectionContainer {
                             Text(publicBundle, style = MaterialTheme.typography.bodySmall)
                         }
+                        Button(onClick = onCopyIdentityBundle, modifier = Modifier.fillMaxWidth()) {
+                            Text("Copy device public bundle")
+                        }
+                    }
+                    state.identityFingerprint?.let {
+                        Button(onClick = onCopyIdentityFingerprint, modifier = Modifier.fillMaxWidth()) {
+                            Text("Copy full device fingerprint")
+                        }
+                    }
+                    state.identityClipboardStatus?.let { status ->
+                        Text(status, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -675,6 +1294,53 @@ private fun NearbyReadinessScreen(
                 onPeerBundleHexChanged = onPeerBundleHexChanged,
                 onPeerFingerprintHexChanged = onPeerFingerprintHexChanged,
                 onPinPeerIdentity = onPinPeerIdentity,
+                onLookupPinnedIdentity = onLookupPinnedIdentity,
+                onCopyPinnedBundle = onCopyPinnedBundle,
+            )
+            Spacer(Modifier.height(20.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 2.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Certificate request", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Create a PKCS#10 request for certificate issuance. A certificate authority must return a trusted chain before local Space creation.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = onGenerateCertificateRequest,
+                        enabled = state.profileStatus == "Protected local identity is available on this device." &&
+                            !state.generatingCertificateRequest,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (state.generatingCertificateRequest) "Generating…" else "Generate certificate request")
+                    }
+                    state.certificateRequestStatus?.let { status ->
+                        Text(status, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    state.certificateRequestPem?.let { pem ->
+                        SelectionContainer {
+                            Text(pem, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Button(onClick = onCopyCertificateRequest, modifier = Modifier.fillMaxWidth()) {
+                            Text("Copy certificate request")
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+            SpaceCreationCard(
+                state = state.spaceCreation,
+                profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                onCredentialVectorHexChanged = onCredentialVectorHexChanged,
+                onChannelNameChanged = onSpaceChannelNameChanged,
+                onCreateLocalSpace = onCreateLocalSpace,
             )
             Spacer(Modifier.height(20.dp))
             Surface(
@@ -688,13 +1354,33 @@ private fun NearbyReadinessScreen(
                 ) {
                     Text("Local Spaces", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Verified local Genesis snapshots only; this does not establish current membership.",
+                        "These are locally restored Genesis generations, not current membership. Membership and later policy state are unavailable here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(state.localSpacesStatus, style = MaterialTheme.typography.bodyMedium)
-                    state.localSpaceIds.forEach { spaceId ->
-                        Text("Space $spaceId", style = MaterialTheme.typography.bodySmall)
+                    state.localSpaces.forEachIndexed { index, space ->
+                        Text("Local Genesis snapshot ${index + 1}", style = MaterialTheme.typography.titleSmall)
+                        SelectionContainer {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Space ID: ${space.spaceId.toLowerHex()}", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    "Generation group reference: ${space.groupReference.toLowerHex()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                        val spaceKey = localSpaceKey(space)
+                        SpaceMessageComposer(
+                            channels = space.channels,
+                            state = state.messageComposers[spaceKey] ?: LocalMessageComposerState(),
+                            profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                            onCredentialVectorHexChanged = { onMessageCredentialHexChanged(spaceKey, it) },
+                            onContentChanged = { onMessageContentChanged(spaceKey, it) },
+                            onChannelSelected = { onMessageChannelSelected(spaceKey, it) },
+                            onQueue = { onQueueLocalMessage(spaceKey) },
+                            onLoadHistory = { onLoadMessageHistory(spaceKey) },
+                        )
                     }
                     state.nextSpaceCursor?.let { cursor ->
                         Button(
@@ -737,7 +1423,7 @@ private fun NearbyReadinessScreen(
             }
             Spacer(Modifier.height(20.dp))
             Text(
-                "Nearby service sightings remain unverified and are not linked to manually pinned identities. No device is connected; GATT exchange and messaging are not implemented.",
+                "Nearby sightings remain unverified and no peer connection or transport is available. Space messages can be queued locally only; forwarding and recipient delivery are unknown.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

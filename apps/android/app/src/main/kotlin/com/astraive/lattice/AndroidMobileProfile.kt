@@ -2,13 +2,17 @@ package com.astraive.lattice
 
 import android.content.Context
 import java.io.File
+import uniffi.lattice_uniffi.MobileQueuedMessage
 import uniffi.lattice_uniffi.MobileClient
 import uniffi.lattice_uniffi.MobileIdentityInfo
+import uniffi.lattice_uniffi.MobileCreatedSpace
+import uniffi.lattice_uniffi.MobileInitialChannel
 import uniffi.lattice_uniffi.MobilePinnedIdentity
 import uniffi.lattice_uniffi.MobileSpaceCursor
 import uniffi.lattice_uniffi.MobileSpacePage
 import uniffi.lattice_uniffi.PlatformKeyProtector
 import uniffi.lattice_uniffi.ProtectorException
+import uniffi.lattice_uniffi.MobileLocalTextMessage
 
 /** AndroidKeyStore-backed callback required by the shared Rust profile. */
 internal class AndroidPlatformKeyProtector : PlatformKeyProtector {
@@ -36,6 +40,13 @@ internal class AndroidMobileProfile private constructor(
 ) : AutoCloseable {
     fun identityInfo(): MobileIdentityInfo = client.identityInfo()
 
+    fun certificateSigningRequest(): ByteArray = client.certificateSigningRequest()
+
+    fun createLocalSpace(
+        credentialVector: ByteArray,
+        channels: List<MobileInitialChannel>,
+    ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels)
+
     fun pinIdentity(publicBundle: ByteArray, expectedFingerprint: ByteArray): MobilePinnedIdentity =
         client.pinIdentity(publicBundle, expectedFingerprint)
 
@@ -44,6 +55,25 @@ internal class AndroidMobileProfile private constructor(
 
     fun localSpaces(after: MobileSpaceCursor? = null): MobileSpacePage =
         client.listLocalSpaces(after)
+
+    fun localTextMessages(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        channelId: ByteArray,
+    ): List<MobileLocalTextMessage> = client.listLocalTextMessages(spaceId, groupReference, channelId)
+    fun queueLocalTextMessage(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        content: String,
+    ): MobileQueuedMessage = client.queueLocalTextMessage(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        content,
+    )
 
     override fun close() {
         client.close()

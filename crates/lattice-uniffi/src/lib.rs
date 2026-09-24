@@ -99,6 +99,76 @@ pub struct MobileSpaceSummary {
     pub space_id: Vec<u8>,
     /// MLS group reference bytes.
     pub group_reference: Vec<u8>,
+    /// Channels in the locally restored Genesis policy.
+    pub channels: Vec<MobileChannelSummary>,
+}
+/// Supported candidate channel types for local Space creation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum MobileChannelType {
+    Text,
+    Announcement,
+    Voice,
+}
+
+/// Non-secret projection of one channel in the local Genesis policy.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileChannelSummary {
+    /// Random channel identifier bytes.
+    pub id: Vec<u8>,
+    /// Display name.
+    pub name: String,
+    /// Channel type.
+    pub channel_type: MobileChannelType,
+    /// Whether the channel was archived in Genesis.
+    pub archived: bool,
+}
+
+/// Result of committing a text event to the local durable outbox.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileQueuedMessage {
+    /// Immutable identifier of the committed event.
+    pub event_id: Vec<u8>,
+}
+/// One locally decrypted outgoing message from the bounded recent history.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileLocalTextMessage {
+    /// Immutable signed message event identifier.
+    pub event_id: Vec<u8>,
+    /// Stable author fingerprint.
+    pub author_id: Vec<u8>,
+    /// Author sequence for detecting local gaps.
+    pub author_sequence: u64,
+    /// Causal Lamport value.
+    pub lamport: u64,
+    /// Decrypted text retained by the local encrypted cache.
+    pub content: String,
+    /// Local outbox state, when the envelope remains queued.
+    pub outbox_state: Option<String>,
+}
+
+/// Bounded caller-selected policy inputs for one initial channel.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileInitialChannel {
+    /// Candidate channel type.
+    pub channel_type: MobileChannelType,
+    /// Display-only channel name, limited to 128 UTF-8 bytes.
+    pub name: String,
+    /// Initial channel-level permission allow mask.
+    pub default_allow: u64,
+    /// Initial channel-level permission deny mask.
+    pub default_deny: u64,
+}
+/// Non-secret identifiers returned after a local Space transaction commits.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileCreatedSpace {
+    /// Randomly generated Space identifier.
+    pub space_id: Vec<u8>,
+    /// Event-visible MLS group reference.
+    pub group_reference: Vec<u8>,
+    /// Identifier of the committed signed Genesis event.
+    pub genesis_event_id: Vec<u8>,
+    /// Initial channels committed in Genesis.
+    pub channels: Vec<MobileChannelSummary>,
 }
 
 /// Bounded page of locally verified Space Genesis snapshots.
@@ -125,6 +195,9 @@ pub enum MobileError {
     /// The profile lock was poisoned by a prior Rust panic.
     #[error("profile is unavailable")]
     ProfileUnavailable,
+    /// The protected device key could not create a certificate signing request.
+    #[error("device certificate signing request could not be generated")]
+    CertificateSigningRequestFailed,
     /// The caller supplied a Space cursor with an invalid identifier length.
     #[error("invalid Space page cursor")]
     InvalidSpaceCursor,
@@ -140,6 +213,30 @@ pub enum MobileError {
     /// A previously stored fingerprint is mapped to different bundle bytes.
     #[error("identity fingerprint is already pinned to another bundle")]
     PinnedIdentityConflict,
+    /// The supplied RFC 9420 X.509 credential is malformed, untrusted, or mismatched.
+    #[error("invalid Space X.509 credential")]
+    InvalidSpaceCredential,
+    /// Initial channel inputs exceed bounds or violate Space policy.
+    #[error("invalid Space creation inputs")]
+    InvalidSpaceInput,
+    /// The local Space transaction could not be committed.
+    #[error("Space creation failed")]
+    SpaceCreationFailed,
+    /// A supplied Space, group, or channel identifier has the wrong byte length.
+    #[error("invalid Space message identifier")]
+    InvalidSpaceMessageId,
+    /// Text exceeds the bounded Space application payload size.
+    #[error("invalid text message size")]
+    InvalidMessageInput,
+    /// The valid message was not authorized by the locally restored policy.
+    #[error("local message rejected by Space policy")]
+    MessageRejected,
+    /// A local message could not be committed to the durable outbox.
+    #[error("local message queue failed")]
+    MessageQueueFailed,
+    /// Local encrypted message history could not be authenticated or restored.
+    #[error("local message history is unavailable")]
+    MessageHistoryUnavailable,
 }
 
 #[cfg(test)]
@@ -343,6 +440,127 @@ mod tests {
             })),
             Err(MobileError::InvalidSpaceCursor)
         ));
+    }
+
+    #[test]
+    fn queue_local_message_rejects_malformed_ids_and_invalid_credentials() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let database_path = directory
+            .path()
+            .join("profile.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let client = MobileClient::open_or_create(
+            database_path,
+            "android-queue-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        assert!(matches!(
+            client.queue_local_text_message(
+                vec![0; 15],
+                vec![0; 32],
+                vec![1],
+                vec![0; 16],
+                "hello".into()
+            ),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.queue_local_text_message(
+                vec![0; 16],
+                vec![0; 31],
+                vec![1],
+                vec![0; 16],
+                "hello".into()
+            ),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.queue_local_text_message(
+                vec![0; 16],
+                vec![0; 32],
+                vec![],
+                vec![0; 16],
+                "hello".into()
+            ),
+            Err(MobileError::InvalidSpaceCredential)
+        ));
+        assert!(matches!(
+            client.queue_local_text_message(
+                vec![0; 16],
+                vec![0; 32],
+                b"not an X.509 credential".to_vec(),
+                vec![0; 16],
+                "hello".into()
+            ),
+            Err(MobileError::InvalidSpaceCredential)
+        ));
+        assert!(matches!(
+            client.queue_local_text_message(
+                vec![0; 16],
+                vec![0; 32],
+                vec![1],
+                vec![0; 15],
+                "hello".into()
+            ),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.queue_local_text_message(
+                vec![0; 16],
+                vec![0; 32],
+                vec![1],
+                vec![0; 16],
+                "x".repeat(lattice_core::space::MAX_SPACE_PAYLOAD_BYTES + 1),
+            ),
+            Err(MobileError::InvalidMessageInput)
+        ));
+        assert!(matches!(
+            client.list_local_text_messages(vec![0; 15], vec![0; 32], vec![0; 16]),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.list_local_text_messages(vec![0; 16], vec![0; 32], vec![0; 16]),
+            Err(MobileError::MessageHistoryUnavailable)
+        ));
+    }
+
+    #[test]
+    fn rejects_untrusted_space_credential_without_creating_a_local_space() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let database_path = directory
+            .path()
+            .join("profile.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let client = MobileClient::open_or_create(
+            database_path,
+            "android-space-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        assert!(matches!(
+            client.create_local_space(
+                b"test-only untrusted X.509 placeholder".to_vec(),
+                vec![super::MobileInitialChannel {
+                    channel_type: super::MobileChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                }],
+            ),
+            Err(MobileError::InvalidSpaceCredential)
+        ));
+        assert!(
+            client
+                .list_local_spaces(None)
+                .expect("list local spaces")
+                .spaces
+                .is_empty()
+        );
     }
     #[test]
     fn rejects_profile_identifier_before_calling_the_platform_protector() {
