@@ -1010,7 +1010,7 @@ struct StagedCredentialChanges {
 /// This proof is available only while the exact Commit remains staged. It
 /// binds the group, parent epoch, authenticated author, exact wire digest,
 /// target identity and, for an Add, the exact TLS `KeyPackage` hash.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedMlsMembershipChange {
     group_reference: [u8; 32],
     parent_epoch: u64,
@@ -1140,6 +1140,8 @@ pub struct ConflictEvidence {
     parent_epoch: u64,
     first_commit: Vec<u8>,
     second_commit: Vec<u8>,
+    first_membership_change: Option<ValidatedMlsMembershipChange>,
+    second_membership_change: Option<ValidatedMlsMembershipChange>,
 }
 
 impl ConflictEvidence {
@@ -1159,6 +1161,18 @@ impl ConflictEvidence {
     #[must_use]
     pub fn second_commit(&self) -> &[u8] {
         &self.second_commit
+    }
+
+    /// Returns the authenticated first-branch membership proof, if present.
+    #[must_use]
+    pub const fn first_membership_change(&self) -> Option<&ValidatedMlsMembershipChange> {
+        self.first_membership_change.as_ref()
+    }
+
+    /// Returns the authenticated competing-branch membership proof, if present.
+    #[must_use]
+    pub const fn second_membership_change(&self) -> Option<&ValidatedMlsMembershipChange> {
+        self.second_membership_change.as_ref()
     }
 }
 
@@ -1762,6 +1776,8 @@ impl GroupState {
                 parent_epoch,
                 first_commit: existing.encoded,
                 second_commit: bounded_copy(wire)?,
+                first_membership_change: existing.membership_change,
+                second_membership_change: membership_change,
             });
             return Err(MlsError::ConflictDetected { parent_epoch });
         }

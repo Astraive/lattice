@@ -35,11 +35,13 @@ pub const MAX_LOCAL_SPACE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum locally retained messages returned by one query.
 pub const MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE: usize = 100;
 
-/// Maximum locally retained accepted MLS membership transitions per generation.
+/// Maximum locally accepted membership transitions per generation.
 pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
+/// Maximum locally recorded generation conflict rows.
+pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -119,6 +121,17 @@ pub struct SpaceMembershipTransitionSnapshot {
     pub transition_event_id: [u8; ID_BYTES],
     pub encrypted_state: Vec<u8>,
 }
+
+/// Exact signed control events that established two valid sibling MLS commits.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceMembershipConflictSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub parent_epoch: u64,
+    pub first_control_event_id: [u8; ID_BYTES],
+    pub second_control_event_id: [u8; ID_BYTES],
+}
+
 /// Exclusive keyset cursor for bounded local Space Genesis enumeration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SpaceGenesisCursor {
@@ -166,6 +179,8 @@ pub enum StoreError {
     InvalidSpaceGenesisSnapshot,
     InvalidSpaceMembershipTransitionSnapshot,
     SpaceMembershipTransitionLimit,
+    InvalidSpaceMembershipConflictSnapshot,
+    SpaceMembershipConflictLimit,
     CachedSpaceMessageLimit,
     CachedSpaceMessageByteLimit,
     CachedSpaceMessagePageLimit,
@@ -230,6 +245,12 @@ impl std::fmt::Display for StoreError {
             }
             Self::SpaceMembershipTransitionLimit => {
                 formatter.write_str("space membership transition limit exceeded")
+            }
+            Self::InvalidSpaceMembershipConflictSnapshot => {
+                formatter.write_str("space membership conflict snapshot is invalid")
+            }
+            Self::SpaceMembershipConflictLimit => {
+                formatter.write_str("space membership conflict limit exceeded")
             }
             Self::CachedSpaceMessageLimit => {
                 formatter.write_str("cached Space message count limit exceeded")
@@ -485,6 +506,32 @@ impl Store {
                     CHECK(control_event_id <> transition_event_id)
                 );
                 PRAGMA user_version = 8;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 9 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_membership_conflicts (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    parent_epoch INTEGER NOT NULL CHECK(parent_epoch >= 0),
+                    first_control_event_id BLOB NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(first_control_event_id) = 'blob'
+                            AND length(first_control_event_id) = 32),
+                    second_control_event_id BLOB NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(second_control_event_id) = 'blob'
+                            AND length(second_control_event_id) = 32),
+                    PRIMARY KEY(space_id, group_reference),
+                    CHECK(first_control_event_id <> second_control_event_id)
+                );
+                PRAGMA user_version = 9;",
             )?;
             transaction.commit()?;
         }
@@ -869,6 +916,48 @@ impl Store {
         )?;
         Ok(())
     }
+    /// Saves one verified competing-Commit record with both signed controls.
+    ///
+    /// Callers must have validated both exact MLS Commits against the same
+    /// locally current parent before invoking this transaction helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid metadata, missing control events, duplicate
+    /// generation state, the global row limit, or a `SQLite` write failure.
+    pub fn save_space_membership_conflict_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceMembershipConflictSnapshot,
+    ) -> Result<()> {
+        if snapshot.first_control_event_id == snapshot.second_control_event_id {
+            return Err(StoreError::InvalidSpaceMembershipConflictSnapshot);
+        }
+        let parent_epoch = i64::try_from(snapshot.parent_epoch)
+            .map_err(|_| StoreError::InvalidSpaceMembershipConflictSnapshot)?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM space_membership_conflicts",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_SPACE_MEMBERSHIP_CONFLICTS {
+            return Err(StoreError::SpaceMembershipConflictLimit);
+        }
+        transaction.execute(
+            "INSERT INTO space_membership_conflicts(
+                space_id, group_reference, parent_epoch,
+                first_control_event_id, second_control_event_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                parent_epoch,
+                &snapshot.first_control_event_id[..],
+                &snapshot.second_control_event_id[..],
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Saves one locally encrypted text message in its authored-event transaction.
     ///
     /// # Errors
@@ -1295,6 +1384,53 @@ impl Store {
                 },
             )
             .collect()
+    }
+    /// Loads durable competing-Commit markers for one generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the row is malformed or storage cannot be read.
+    pub fn load_space_membership_conflict(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Option<SpaceMembershipConflictSnapshot>> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT parent_epoch, first_control_event_id, second_control_event_id
+                 FROM space_membership_conflicts
+                 WHERE space_id = ?1 AND group_reference = ?2",
+                params![&space_id[..], &group_reference[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((parent_epoch, first_control_event_id, second_control_event_id)) = stored else {
+            return Ok(None);
+        };
+        if parent_epoch < 0 || first_control_event_id == second_control_event_id {
+            return Err(StoreError::CorruptData(
+                "invalid membership conflict snapshot",
+            ));
+        }
+        Ok(Some(SpaceMembershipConflictSnapshot {
+            space_id: *space_id,
+            group_reference: *group_reference,
+            parent_epoch: u64::try_from(parent_epoch)
+                .map_err(|_| StoreError::CorruptData("invalid membership conflict epoch"))?,
+            first_control_event_id: first_control_event_id.try_into().map_err(|_| {
+                StoreError::CorruptData("invalid first membership conflict event ID")
+            })?,
+            second_control_event_id: second_control_event_id.try_into().map_err(|_| {
+                StoreError::CorruptData("invalid second membership conflict event ID")
+            })?,
+        }))
     }
 
     /// Loads one event, including its ordered parent references.
@@ -1950,8 +2086,8 @@ mod tests {
 
     use super::{
         CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
-        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, SpaceMembershipTransitionSnapshot,
-        Store, StoreError, TrustedIdentityRecord,
+        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
+        SpaceMembershipTransitionSnapshot, Store, StoreError, TrustedIdentityRecord,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -2121,7 +2257,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_membership_transition_snapshots;
+                    "DROP TABLE space_membership_conflicts;
+                     DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
                      DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
@@ -2179,7 +2316,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_membership_transition_snapshots;
+                    "DROP TABLE space_membership_conflicts;
+                     DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
                      DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
@@ -2193,7 +2331,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2224,7 +2362,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_membership_transition_snapshots;
+                    "DROP TABLE space_membership_conflicts;
+                     DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 5;",
@@ -2236,7 +2375,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2403,6 +2542,47 @@ mod tests {
                 )
                 .expect("read membership transition evidence"),
             vec![snapshot]
+        );
+    }
+
+    #[test]
+    fn membership_conflict_snapshot_round_trips_with_both_control_rows() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let snapshot = SpaceMembershipConflictSnapshot {
+            space_id: [0x31; 16],
+            group_reference: [0x42; 32],
+            parent_epoch: 7,
+            first_control_event_id: id(101),
+            second_control_event_id: id(102),
+        };
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(103),
+                    snapshot.first_control_event_id,
+                    1,
+                    &[0xA1],
+                    &[],
+                )?;
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(103),
+                    snapshot.second_control_event_id,
+                    2,
+                    &[0xA2],
+                    &[],
+                )?;
+                Store::save_space_membership_conflict_in_transaction(transaction, &snapshot)
+            })
+            .expect("commit controls and conflict marker together");
+
+        assert_eq!(
+            store
+                .load_space_membership_conflict(&snapshot.space_id, &snapshot.group_reference)
+                .expect("load conflict marker"),
+            Some(snapshot)
         );
     }
 

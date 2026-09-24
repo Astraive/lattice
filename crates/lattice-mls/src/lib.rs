@@ -1442,6 +1442,8 @@ pub mod test_interop {
             assert_eq!(evidence.parent_epoch(), 2);
             assert_eq!(evidence.first_commit(), alice_commit);
             assert_eq!(evidence.second_commit(), bob_commit);
+            assert!(evidence.first_membership_change().is_some());
+            assert!(evidence.second_membership_change().is_some());
             assert_eq!(
                 charlie.encrypt_application(
                     &charlie_provider,
