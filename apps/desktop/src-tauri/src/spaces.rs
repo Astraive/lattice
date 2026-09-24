@@ -17,6 +17,8 @@ pub(crate) struct LocalSpacePage {
     next_cursor: Option<String>,
 }
 
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub(crate) fn list_local_spaces(after: Option<String>) -> Result<LocalSpacePage, String> {
     let after = after

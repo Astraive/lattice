@@ -44,6 +44,8 @@ pub(crate) fn get_device_identity() -> Result<DeviceIdentityStatus, String> {
     status_from_client(&client)
 }
 
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub(crate) fn pin_peer_identity(
     bundle_hex: String,
@@ -64,6 +66,8 @@ pub(crate) fn pin_peer_identity(
     })
 }
 
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub(crate) fn get_pinned_identity(
     fingerprint_hex: String,
