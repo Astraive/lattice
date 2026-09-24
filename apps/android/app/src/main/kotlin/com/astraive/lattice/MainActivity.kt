@@ -42,6 +42,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.lattice_uniffi.MobileException
+import uniffi.lattice_uniffi.MobileSpaceCursor
 
 internal enum class BluetoothReadiness {
     PERMISSION_REQUIRED,
@@ -61,6 +62,10 @@ internal data class NearbyScreenState(
     val showPermissionRationale: Boolean = false,
     val profileStatus: String = "Preparing protected device profile.",
     val identityFingerprint: String? = null,
+    val localSpaceIds: List<String> = emptyList(),
+    val localSpacesStatus: String = "Local Space snapshots are loading.",
+    val nextSpaceCursor: MobileSpaceCursor? = null,
+    val loadingSpacePage: Boolean = false,
 )
 
 class MainActivity : ComponentActivity() {
@@ -158,6 +163,7 @@ class MainActivity : ComponentActivity() {
                     onPrimaryAction = ::onPrimaryAction,
                     onDismissRationale = { screenState = screenState.copy(showPermissionRationale = false) },
                     onContinuePermission = ::continuePermissionFlow,
+                    onLoadMoreSpaces = ::loadMoreLocalSpaces,
                 )
             }
         }
@@ -174,16 +180,25 @@ class MainActivity : ComponentActivity() {
                     profile.close()
                     return@launch
                 }
-                val identity = try {
-                    profile.identityInfo()
+                val (identity, firstSpacePage) = try {
+                    withContext(Dispatchers.IO) {
+                        profile.identityInfo() to profile.localSpaces()
+                    }
                 } catch (error: Exception) {
                     profile.close()
                     throw error
+                }
+                if (isFinishing || isDestroyed) {
+                    profile.close()
+                    return@launch
                 }
                 mobileProfile = profile
                 screenState = screenState.copy(
                     profileStatus = "Protected device identity is ready.",
                     identityFingerprint = identity.fingerprint.toLowerHex(),
+                    localSpaceIds = firstSpacePage.spaces.map { it.spaceId.toLowerHex() },
+                    localSpacesStatus = localSpacesStatus(firstSpacePage.spaces.size, firstSpacePage.nextCursor != null),
+                    nextSpaceCursor = firstSpacePage.nextCursor,
                 )
             } catch (error: CancellationException) {
                 throw error
@@ -195,6 +210,7 @@ class MainActivity : ComponentActivity() {
                             is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
                             is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
                             is MobileException.ProfileUnavailable -> "The protected local profile is unavailable."
+                            is MobileException.InvalidSpaceCursor -> "The local Space cursor is invalid."
                         },
                     )
                 }
@@ -206,6 +222,42 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun loadMoreLocalSpaces(after: MobileSpaceCursor) {
+        val profile = mobileProfile ?: return
+        if (screenState.loadingSpacePage) return
+        screenState = screenState.copy(loadingSpacePage = true)
+        lifecycleScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) {
+                    profile.localSpaces(after)
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        localSpaceIds = screenState.localSpaceIds + page.spaces.map { it.spaceId.toLowerHex() },
+                        localSpacesStatus = localSpacesStatus(page.spaces.size, page.nextCursor != null),
+                        nextSpaceCursor = page.nextCursor,
+                        loadingSpacePage = false,
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        localSpacesStatus = "The next local Space page could not be restored.",
+                        loadingSpacePage = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun localSpacesStatus(pageSize: Int, hasNextPage: Boolean): String = when {
+        pageSize == 0 && screenState.localSpaceIds.isEmpty() -> "No local Space Genesis snapshots were found."
+        hasNextPage -> "More locally recoverable Spaces are available."
+        else -> "All locally recoverable Genesis snapshots are shown."
     }
 
     private fun ByteArray.toLowerHex(): String {
@@ -456,6 +508,7 @@ private fun NearbyReadinessScreen(
     onPrimaryAction: () -> Unit,
     onDismissRationale: () -> Unit,
     onContinuePermission: () -> Unit,
+    onLoadMoreSpaces: (MobileSpaceCursor) -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -463,7 +516,7 @@ private fun NearbyReadinessScreen(
                 .fillMaxSize()
                 .padding(horizontal = 24.dp, vertical = 32.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.Top,
         ) {
             Text("Lattice", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
@@ -485,6 +538,37 @@ private fun NearbyReadinessScreen(
                             "Fingerprint: $fingerprint",
                             style = MaterialTheme.typography.bodySmall,
                         )
+                    }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 2.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Local Spaces", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Verified local Genesis snapshots only; this does not establish current membership.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(state.localSpacesStatus, style = MaterialTheme.typography.bodyMedium)
+                    state.localSpaceIds.forEach { spaceId ->
+                        Text("Space $spaceId", style = MaterialTheme.typography.bodySmall)
+                    }
+                    state.nextSpaceCursor?.let { cursor ->
+                        Button(
+                            onClick = { onLoadMoreSpaces(cursor) },
+                            enabled = !state.loadingSpacePage,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(if (state.loadingSpacePage) "Loading Spaces…" else "Load more Spaces")
+                        }
                     }
                 }
             }

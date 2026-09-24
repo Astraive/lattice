@@ -55,8 +55,8 @@ independent-relay interoperability.
 Later policy replay, conflict-state recovery, and message projection remain
 incomplete. The CLI and desktop expose protected device identity and bounded,
 read-only local Space Genesis listing; neither can create or join Spaces yet.
-Android exposes the protected local identity snapshot alongside
-permission-aware generic BLE discovery and fragment framing.
+Android exposes the protected local identity snapshot, bounded local Space
+Genesis listing, and permission-aware generic BLE discovery and fragment framing.
 
 Space join, membership validation and commit coupling, message-state projection,
 voice authorization, durable MLS conflict recovery, native BLE GATT exchange,

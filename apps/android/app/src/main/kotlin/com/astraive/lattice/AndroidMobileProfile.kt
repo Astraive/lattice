@@ -4,6 +4,8 @@ import android.content.Context
 import java.io.File
 import uniffi.lattice_uniffi.MobileClient
 import uniffi.lattice_uniffi.MobileIdentityInfo
+import uniffi.lattice_uniffi.MobileSpaceCursor
+import uniffi.lattice_uniffi.MobileSpacePage
 import uniffi.lattice_uniffi.PlatformKeyProtector
 import uniffi.lattice_uniffi.ProtectorException
 
@@ -32,6 +34,9 @@ internal class AndroidMobileProfile private constructor(
     @Suppress("unused") private val keyProtector: AndroidPlatformKeyProtector,
 ) : AutoCloseable {
     fun identityInfo(): MobileIdentityInfo = client.identityInfo()
+
+    fun localSpaces(after: MobileSpaceCursor? = null): MobileSpacePage =
+        client.listLocalSpaces(after)
 
     override fun close() {
         client.close()

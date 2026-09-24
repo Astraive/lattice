@@ -752,6 +752,8 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is
 // rather `InterfaceTooLargeException`, caused by too many methods
@@ -768,6 +770,8 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(
 ): Short
@@ -834,6 +838,8 @@ fun uniffi_lattice_uniffi_fn_free_mobileclient(`ptr`: Pointer,uniffi_out_err: Un
 fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus,
 ): Pointer
 fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointer,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
 ): Long
@@ -974,6 +980,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces() != 30649.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence() != 50784.toShort()) {
@@ -1375,6 +1384,19 @@ public interface MobileClientInterface {
     fun `identityInfo`(): MobileIdentityInfo
 
     /**
+     * Restores one bounded page of local Genesis snapshots.
+     *
+     * This lists locally created candidate generations only. It does not
+     * establish current membership or restore later policy events.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceCursor` for malformed cursor byte lengths or
+     * `ProfileUnavailable` when a snapshot or profile cannot be restored.
+     */
+    fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage
+
+    /**
      * Returns the next durable author sequence for this identity.
      *
      * # Errors
@@ -1485,6 +1507,30 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(
         it, _status)
+}
+    }
+    )
+    }
+
+
+
+    /**
+     * Restores one bounded page of local Genesis snapshots.
+     *
+     * This lists locally created candidate generations only. It does not
+     * establish current membership or restore later policy events.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceCursor` for malformed cursor byte lengths or
+     * `ProfileUnavailable` when a snapshot or profile cannot be restored.
+     */
+    @Throws(MobileException::class)override fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage {
+            return FfiConverterTypeMobileSpacePage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(
+        it, FfiConverterOptionalTypeMobileSpaceCursor.lower(`after`),_status)
 }
     }
     )
@@ -1956,6 +2002,129 @@ public object FfiConverterTypeMobileIdentityInfo: FfiConverterRustBuffer<MobileI
 
 
 
+/**
+ * Stable cursor for paginating locally recoverable Space generations.
+ */
+data class MobileSpaceCursor (
+    /**
+     * Space identifier bytes.
+     */
+    var `spaceId`: kotlin.ByteArray,
+    /**
+     * MLS group reference bytes.
+     */
+    var `groupReference`: kotlin.ByteArray
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSpaceCursor: FfiConverterRustBuffer<MobileSpaceCursor> {
+    override fun read(buf: ByteBuffer): MobileSpaceCursor {
+        return MobileSpaceCursor(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSpaceCursor) = (
+            FfiConverterByteArray.allocationSize(value.`spaceId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`)
+    )
+
+    override fun write(value: MobileSpaceCursor, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+    }
+}
+
+
+
+/**
+ * Bounded page of locally verified Space Genesis snapshots.
+ */
+data class MobileSpacePage (
+    /**
+     * Restored generations in this page.
+     */
+    var `spaces`: List<MobileSpaceSummary>,
+    /**
+     * Exclusive cursor to request the next page.
+     */
+    var `nextCursor`: MobileSpaceCursor?
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSpacePage: FfiConverterRustBuffer<MobileSpacePage> {
+    override fun read(buf: ByteBuffer): MobileSpacePage {
+        return MobileSpacePage(
+            FfiConverterSequenceTypeMobileSpaceSummary.read(buf),
+            FfiConverterOptionalTypeMobileSpaceCursor.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSpacePage) = (
+            FfiConverterSequenceTypeMobileSpaceSummary.allocationSize(value.`spaces`) +
+            FfiConverterOptionalTypeMobileSpaceCursor.allocationSize(value.`nextCursor`)
+    )
+
+    override fun write(value: MobileSpacePage, buf: ByteBuffer) {
+            FfiConverterSequenceTypeMobileSpaceSummary.write(value.`spaces`, buf)
+            FfiConverterOptionalTypeMobileSpaceCursor.write(value.`nextCursor`, buf)
+    }
+}
+
+
+
+/**
+ * Non-secret identifier summary for one locally restored Space generation.
+ */
+data class MobileSpaceSummary (
+    /**
+     * Space identifier bytes.
+     */
+    var `spaceId`: kotlin.ByteArray,
+    /**
+     * MLS group reference bytes.
+     */
+    var `groupReference`: kotlin.ByteArray
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSpaceSummary: FfiConverterRustBuffer<MobileSpaceSummary> {
+    override fun read(buf: ByteBuffer): MobileSpaceSummary {
+        return MobileSpaceSummary(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSpaceSummary) = (
+            FfiConverterByteArray.allocationSize(value.`spaceId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`)
+    )
+
+    override fun write(value: MobileSpaceSummary, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+    }
+}
+
+
+
 
 
 /**
@@ -1999,6 +2168,15 @@ sealed class MobileException: kotlin.Exception() {
             get() = ""
     }
 
+    /**
+     * The caller supplied a Space cursor with an invalid identifier length.
+     */
+    class InvalidSpaceCursor(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileException> {
         override fun lift(error_buf: RustBuffer.ByValue): MobileException = FfiConverterTypeMobileError.lift(error_buf)
@@ -2019,6 +2197,7 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             2 -> MobileException.ProfileOpenFailed()
             3 -> MobileException.KeyProtectionFailed()
             4 -> MobileException.ProfileUnavailable()
+            5 -> MobileException.InvalidSpaceCursor()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -2041,6 +2220,10 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
+            is MobileException.InvalidSpaceCursor -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
         }
     }
 
@@ -2060,6 +2243,10 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             }
             is MobileException.ProfileUnavailable -> {
                 buf.putInt(4)
+                Unit
+            }
+            is MobileException.InvalidSpaceCursor -> {
+                buf.putInt(5)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -2125,4 +2312,64 @@ public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorE
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileSpaceCursor: FfiConverterRustBuffer<MobileSpaceCursor?> {
+    override fun read(buf: ByteBuffer): MobileSpaceCursor? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileSpaceCursor.read(buf)
+    }
+
+    override fun allocationSize(value: MobileSpaceCursor?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileSpaceCursor.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileSpaceCursor?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileSpaceCursor.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileSpaceSummary: FfiConverterRustBuffer<List<MobileSpaceSummary>> {
+    override fun read(buf: ByteBuffer): List<MobileSpaceSummary> {
+        val len = buf.getInt()
+        return List<MobileSpaceSummary>(len) {
+            FfiConverterTypeMobileSpaceSummary.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileSpaceSummary>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileSpaceSummary.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileSpaceSummary>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileSpaceSummary.write(it, buf)
+        }
+    }
 }
