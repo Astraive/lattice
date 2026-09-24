@@ -76,7 +76,7 @@ pub fn bind_mls_application(
 
     Ok(MlsBoundEvent {
         event,
-        plaintext: application.plaintext().to_vec(),
+        plaintext: application.into_plaintext(),
     })
 }
 

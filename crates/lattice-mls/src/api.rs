@@ -327,6 +327,12 @@ impl MlsApplication {
         &self.plaintext
     }
 
+    /// Consumes this result and transfers ownership of its plaintext.
+    #[must_use]
+    pub fn into_plaintext(self) -> Vec<u8> {
+        self.plaintext
+    }
+
     /// Returns the MLS member's Ed25519 key, if the message came from a group member.
     pub const fn member_signature_key(&self) -> Option<&[u8; 32]> {
         self.member_signature_key.as_ref()
