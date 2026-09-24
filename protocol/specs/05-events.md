@@ -18,7 +18,7 @@ A candidate event preimage is one canonical CBOR integer-key map with exactly ke
 | 7 | array of byte strings | at most 64 unique 32-byte parent event IDs, bytewise strictly increasing |
 | 8 | unsigned integer | known candidate event kind; unknown values fail closed |
 | 9 | byte string | nonempty bounded protected-body ciphertext supplied by an MLS/application layer |
-| 10 | byte string | 32-byte group reference |
+| 10 | byte string | 32-byte MLS group reference derived as specified in [`08-mls.md`](08-mls.md) |
 | 11 | unsigned integer | MLS epoch number |
 
 The complete map encoding is the signed preimage. A zero sequence, duplicate/unsorted parents, unsupported kind, unexpected key/length/type, or any over-limit value is rejected. Event IDs use the `lattice:event:v1` domain-separated hash over these exact canonical bytes. Parent order canonicalization does not change event identity: producers sort before signing, consumers reject unsorted arrays.

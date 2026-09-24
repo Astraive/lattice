@@ -308,6 +308,9 @@ pub enum SpaceAuthorization {
     NotEvaluated,
 }
 
+/// Domain prefix used to derive the event-visible MLS group reference.
+pub const MLS_GROUP_REFERENCE_DOMAIN: &[u8] = b"lattice:mls-group-reference:v1\0";
+
 /// Decrypted data bound to the exact input ciphertext and authenticated MLS member key.
 ///
 /// This proves MLS membership-key possession only. The caller must match the
@@ -319,6 +322,7 @@ pub struct MlsApplication {
     member_signature_key: Option<[u8; 32]>,
     ciphertext_sha256: [u8; 32],
     epoch: u64,
+    group_reference: [u8; 32],
 }
 
 impl MlsApplication {
@@ -347,6 +351,12 @@ impl MlsApplication {
     #[must_use]
     pub const fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Returns the candidate event-visible reference for this MLS group.
+    #[must_use]
+    pub const fn group_reference(&self) -> &[u8; 32] {
+        &self.group_reference
     }
 
     /// Whether `ciphertext` is the exact bounded object that produced this plaintext.
@@ -587,6 +597,12 @@ impl GroupState {
         self.inner.group_id().to_vec()
     }
 
+    /// Returns the candidate event-visible reference for this MLS group.
+    #[must_use]
+    pub fn group_reference(&self) -> [u8; 32] {
+        derive_group_reference(self.inner.group_id().as_slice())
+    }
+
     /// Returns the current MLS epoch.
     pub fn epoch(&self) -> u64 {
         self.inner.epoch().as_u64()
@@ -713,6 +729,7 @@ impl GroupState {
         if protocol.group_id() != self.inner.group_id() {
             return Err(MlsError::WrongGroup);
         }
+        let group_reference = self.group_reference();
         let kind = wire_kind(protocol.content_type());
         let current_epoch = self.inner.epoch();
         let received_epoch = protocol.epoch();
@@ -788,6 +805,7 @@ impl GroupState {
                     member_signature_key,
                     ciphertext_sha256,
                     received_epoch.as_u64(),
+                    group_reference,
                 ),
             };
         }
@@ -797,6 +815,7 @@ impl GroupState {
             member_signature_key,
             ciphertext_sha256,
             received_epoch.as_u64(),
+            group_reference,
         )
     }
 
@@ -961,11 +980,18 @@ fn wire_kind(content_type: ContentType) -> MlsWireKind {
     }
 }
 
+fn derive_group_reference(group_id: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(MLS_GROUP_REFERENCE_DOMAIN);
+    hasher.update(group_id);
+    hasher.finalize().into()
+}
 fn classify_non_commit(
     content: ProcessedMessageContent,
     member_signature_key: Option<[u8; 32]>,
     ciphertext_sha256: [u8; 32],
     epoch: u64,
+    group_reference: [u8; 32],
 ) -> MlsResult<IncomingResult> {
     match content {
         ProcessedMessageContent::ApplicationMessage(message) => {
@@ -976,6 +1002,7 @@ fn classify_non_commit(
                 member_signature_key,
                 ciphertext_sha256,
                 epoch,
+                group_reference,
             }))
         }
         ProcessedMessageContent::ProposalMessage(_) => Ok(IncomingResult::Proposal {
@@ -987,5 +1014,22 @@ fn classify_non_commit(
             space_authorization: SpaceAuthorization::NotEvaluated,
         }),
         _ => Err(MlsError::UnsupportedMessage),
+    }
+}
+
+#[cfg(test)]
+mod group_reference_tests {
+    use super::derive_group_reference;
+
+    #[test]
+    fn candidate_group_reference_matches_published_vector() {
+        assert_eq!(
+            derive_group_reference(b"test-group"),
+            [
+                0xbf, 0xc5, 0x8f, 0xc3, 0x2f, 0x3a, 0x43, 0xd8, 0xf8, 0xb2, 0x0e, 0xd9, 0xfa, 0x48,
+                0x0a, 0xb8, 0xec, 0x45, 0x6d, 0x90, 0x87, 0x7e, 0x48, 0x6c, 0xcf, 0x3c, 0x0e, 0x0e,
+                0x0e, 0x34, 0x4a, 0x02,
+            ]
+        );
     }
 }

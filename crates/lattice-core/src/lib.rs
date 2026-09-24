@@ -53,14 +53,15 @@ impl MlsBoundEvent {
 
 /// Binds a signature-verified event to a successful MLS application result.
 ///
-/// The binding rejects events whose author key, protected body, or MLS epoch
-/// differs from the authenticated MLS result. A successful value is not
-/// authorization and must not be treated as permission to mutate a Space.
+/// The binding rejects events whose author key, protected body, MLS epoch, or
+/// event-visible MLS group reference differs from the authenticated MLS result.
+/// A successful value is not authorization and must not be treated as
+/// permission to mutate a Space.
 ///
 /// # Errors
 ///
 /// Returns [`CoreError::MlsEventBindingFailed`] if sender identity, exact
-/// ciphertext bytes, or MLS epoch do not match the signed event.
+/// ciphertext bytes, MLS epoch, or group reference do not match the signed event.
 #[must_use]
 pub fn bind_mls_application(
     event: VerifiedSignatureOnlyEvent,
@@ -70,6 +71,7 @@ pub fn bind_mls_application(
     if application.member_signature_key() != Some(&author_key)
         || !application.matches_ciphertext(event.protected_body())
         || application.epoch() != event.mls_epoch()
+        || application.group_reference() != event.mls_group_reference()
     {
         return Err(CoreError::MlsEventBindingFailed);
     }
@@ -230,7 +232,12 @@ mod tests {
             .expect("device signer matches test credential")
     }
 
-    fn event(identity: &DeviceIdentity, body: Vec<u8>, epoch: u64) -> VerifiedSignatureOnlyEvent {
+    fn event(
+        identity: &DeviceIdentity,
+        body: Vec<u8>,
+        epoch: u64,
+        group_reference: [u8; 32],
+    ) -> VerifiedSignatureOnlyEvent {
         VerifiedSignatureOnlyEvent::create(
             identity,
             EventDraft {
@@ -242,7 +249,7 @@ mod tests {
                 parents: Vec::new(),
                 kind: EventKind::Message,
                 protected_body: body,
-                mls_group_reference: [2; 32],
+                mls_group_reference: group_reference,
                 mls_epoch: epoch,
             },
         )
@@ -299,22 +306,39 @@ mod tests {
             other => panic!("expected application result, got {other:?}"),
         };
 
+        let group_reference = alice.group_reference();
         let mut altered_wire = wire.clone();
         altered_wire[0] ^= 1;
         assert!(matches!(
-            bind_mls_application(event(&alice_identity, altered_wire, 1), proof.clone()),
+            bind_mls_application(
+                event(&alice_identity, altered_wire, 1, group_reference),
+                proof.clone()
+            ),
             Err(CoreError::MlsEventBindingFailed)
         ));
         assert!(matches!(
-            bind_mls_application(event(&bob_identity, wire.clone(), 1), proof.clone()),
+            bind_mls_application(
+                event(&bob_identity, wire.clone(), 1, group_reference),
+                proof.clone()
+            ),
             Err(CoreError::MlsEventBindingFailed)
         ));
         assert!(matches!(
-            bind_mls_application(event(&alice_identity, wire.clone(), 2), proof.clone()),
+            bind_mls_application(
+                event(&alice_identity, wire.clone(), 2, group_reference),
+                proof.clone()
+            ),
+            Err(CoreError::MlsEventBindingFailed)
+        ));
+        assert!(matches!(
+            bind_mls_application(
+                event(&alice_identity, wire.clone(), 1, [9; 32]),
+                proof.clone()
+            ),
             Err(CoreError::MlsEventBindingFailed)
         ));
 
-        let bound = bind_mls_application(event(&alice_identity, wire, 1), proof)
+        let bound = bind_mls_application(event(&alice_identity, wire, 1, group_reference), proof)
             .expect("matching event and MLS proof bind");
         assert_eq!(bound.plaintext(), b"authenticated event plaintext");
         assert_eq!(

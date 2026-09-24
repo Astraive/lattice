@@ -1198,6 +1198,7 @@ pub mod test_interop {
                     assert_eq!(decrypted.member_signature_key(), Some(&alice_public_key));
                     assert_eq!(decrypted.ciphertext_sha256(), &ciphertext_sha256);
                     assert_eq!(decrypted.epoch(), 1);
+                    assert_eq!(decrypted.group_reference(), &alice.group_reference());
                     assert!(decrypted.matches_ciphertext(application.as_bytes()));
                 }
                 other => panic!("expected MLS application data, got {other:?}"),
