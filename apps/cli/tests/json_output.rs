@@ -21,10 +21,17 @@ fn about_json_reports_versioned_capability_boundaries() {
             .any(|capability| capability == "protected_device_identity")
     );
     assert!(
+        value["available"]
+            .as_array()
+            .expect("available capabilities should be an array")
+            .iter()
+            .any(|capability| capability == "local_space_one_member_recovery")
+    );
+    assert!(
         value["unavailable"]
             .as_array()
             .expect("unavailable capabilities should be an array")
             .iter()
-            .any(|capability| capability == "authenticated_spaces")
+            .any(|capability| capability == "authenticated_space_join_or_leave")
     );
 }

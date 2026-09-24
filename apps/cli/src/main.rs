@@ -57,7 +57,7 @@ enum Command {
         #[command(subcommand)]
         command: IdentityCommand,
     },
-    /// Create, list, or restore locally persisted Space Genesis generations.
+    /// Create, list, restore, or recover local Space generations.
     Space {
         #[command(subcommand)]
         command: SpaceCommand,
@@ -972,6 +972,7 @@ fn print_about(json: bool) {
                     "local_event_storage",
                     "local_space_genesis_creation",
                     "local_space_genesis_listing_and_restoration",
+                    "local_space_one_member_recovery",
                     "local_text_message_queue_and_edit",
                     "local_outgoing_message_history",
                     "local_outbox_state_inspection",
@@ -991,7 +992,7 @@ fn print_about(json: bool) {
     } else {
         println!("Lattice local-first communication");
         println!(
-            "Available: protected device identity, CSR export and local identity pins; local Space Genesis create/list/restore; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
+            "Available: protected device identity, CSR export and local identity pins; local Space Genesis create/list/restore and one-member recovery; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
         );
         println!(
             "Not available: authenticated Space join/leave, certificate issuance/import, peer synchronization, message forwarding/delivery, or voice media."
