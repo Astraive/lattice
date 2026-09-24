@@ -222,6 +222,10 @@ pub enum MobileError {
     /// The local Space transaction could not be committed.
     #[error("Space creation failed")]
     SpaceCreationFailed,
+    /// A local Space generation could not be restored or recovered.
+    #[error("local Space recovery generation failed")]
+    SpaceRecoveryFailed,
+
     /// A supplied Space, group, or channel identifier has the wrong byte length.
     #[error("invalid Space message identifier")]
     InvalidSpaceMessageId,
@@ -347,6 +351,34 @@ mod tests {
             reopened.identity_info().expect("restored identity"),
             identity
         );
+    }
+
+    #[test]
+    fn recovery_api_rejects_malformed_ids_and_unusable_credentials() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let client = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("profile.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "android-recovery-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        assert!(matches!(
+            client.recover_local_space_generation(vec![0; 15], vec![0; 32], vec![1]),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.recover_local_space_generation(vec![0; 16], vec![0; 31], vec![1]),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.recover_local_space_generation(vec![0; 16], vec![0; 32], Vec::new()),
+            Err(MobileError::InvalidSpaceCredential)
+        ));
     }
 
     #[test]

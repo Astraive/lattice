@@ -2,6 +2,7 @@ package com.astraive.lattice
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
@@ -9,15 +10,117 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileCreatedSpace
+import uniffi.lattice_uniffi.MobileSpaceSummary
 
+
+internal data class LocalSpaceRecoveryUiState(
+    val selectedSpaceKey: String? = null,
+    val credentialVectorHex: String = "",
+    val recovering: Boolean = false,
+    val status: String = "Select a locally stored generation to recover.",
+    val recovered: MobileCreatedSpace? = null,
+)
+
+internal fun recoverySpaceKey(space: MobileSpaceSummary): String =
+    "${space.spaceId.toLowerHex()}:${space.groupReference.toLowerHex()}"
+
+@Composable
+internal fun LocalSpaceRecoveryCard(
+    spaces: List<MobileSpaceSummary>,
+    state: LocalSpaceRecoveryUiState,
+    profileReady: Boolean,
+    onSpaceSelected: (String) -> Unit,
+    onCredentialVectorHexChanged: (String) -> Unit,
+    onRecover: () -> Unit,
+) {
+    val selectedSpace = spaces.firstOrNull { recoverySpaceKey(it) == state.selectedSpaceKey }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Recover a local Space generation", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Recovery requires a generation already stored locally and its trusted X.509 credential. It creates a new local one-member recovery root; it does not import a Space, restore membership, contact a relay, or synchronize.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (spaces.isEmpty()) {
+                Text("No locally stored generation is available to recover.")
+            } else {
+                spaces.forEachIndexed { index, space ->
+                    val key = recoverySpaceKey(space)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = state.selectedSpaceKey == key,
+                            onClick = { onSpaceSelected(key) },
+                            enabled = !state.recovering,
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Local generation ${index + 1}", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Space ${space.spaceId.toLowerHex()} · group ${space.groupReference.toLowerHex()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = state.credentialVectorHex,
+                    onValueChange = onCredentialVectorHexChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Trusted X.509 credential vector (hex)") },
+                    supportingText = { Text("Up to 16 KiB decoded. Do not paste a PEM-encoded certificate.") },
+                    enabled = profileReady && !state.recovering,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        keyboardType = KeyboardType.Ascii,
+                    ),
+                    minLines = 4,
+                    maxLines = 8,
+                )
+                Button(
+                    onClick = onRecover,
+                    enabled = profileReady && selectedSpace != null &&
+                        isCredentialVectorHex(state.credentialVectorHex) && !state.recovering,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (state.recovering) "Recovering locally…" else "Create local recovery generation")
+                }
+            }
+            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            state.recovered?.let { recovered ->
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("A new local recovery generation was committed. No network was contacted.")
+                        Text("Space ID: ${recovered.spaceId.toLowerHex()}")
+                        Text("New group reference: ${recovered.groupReference.toLowerHex()}")
+                        Text("Recovery Genesis event ID: ${recovered.genesisEventId.toLowerHex()}")
+                    }
+                }
+            }
+        }
+    }
+}
 internal data class SpaceCreationUiState(
     val credentialVectorHex: String = "",
     val channelName: String = "general",

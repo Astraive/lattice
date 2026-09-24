@@ -83,6 +83,7 @@ internal data class NearbyScreenState(
     val nextSpaceCursor: MobileSpaceCursor? = null,
     val loadingSpacePage: Boolean = false,
     val spaceCreation: SpaceCreationUiState = SpaceCreationUiState(),
+    val spaceRecovery: LocalSpaceRecoveryUiState = LocalSpaceRecoveryUiState(),
     val identityClipboardStatus: String? = null,
     val messageComposers: Map<String, LocalMessageComposerState> = emptyMap(),
 )
@@ -192,9 +193,13 @@ class MainActivity : ComponentActivity() {
                     onLoadMessageHistory = ::loadLocalMessageHistory,
                     onEditLocalMessage = ::editLocalMessage,
                     onCancelMessageEdit = ::cancelLocalMessageEdit,
+                    onRefreshLocalSpaces = ::refreshLocalSpaces,
                     onLoadMoreSpaces = ::loadMoreLocalSpaces,
                     onCredentialVectorHexChanged = ::onCredentialVectorHexChanged,
                     onSpaceChannelNameChanged = ::onSpaceChannelNameChanged,
+                    onRecoverySpaceSelected = ::onRecoverySpaceSelected,
+                    onRecoveryCredentialChanged = ::onRecoveryCredentialChanged,
+                    onRecoverLocalSpace = ::recoverLocalSpace,
                     onCreateLocalSpace = ::createLocalSpace,
                     onGenerateCertificateRequest = ::generateCertificateRequest,
                     onCopyCertificateRequest = ::copyCertificateRequest,
@@ -273,6 +278,36 @@ class MainActivity : ComponentActivity() {
                 if (!isFinishing && !isDestroyed) {
                     screenState = screenState.copy(
                         profileStatus = "The protected local profile could not be opened.",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun refreshLocalSpaces() {
+        val profile = mobileProfile ?: return
+        if (screenState.loadingSpacePage) return
+        screenState = screenState.copy(loadingSpacePage = true)
+        lifecycleScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) {
+                    profile.localSpaces()
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        localSpaces = page.spaces,
+                        localSpacesStatus = localSpacesStatus(page.spaces.size, page.nextCursor != null),
+                        nextSpaceCursor = page.nextCursor,
+                        loadingSpacePage = false,
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        localSpacesStatus = "Local Space snapshots could not be restored.",
+                        loadingSpacePage = false,
                     )
                 }
             }
@@ -737,6 +772,132 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun onRecoverySpaceSelected(spaceKey: String) {
+        val space = screenState.localSpaces.firstOrNull { localSpaceKey(it) == spaceKey } ?: return
+        screenState = screenState.copy(
+            spaceRecovery = screenState.spaceRecovery.copy(
+                selectedSpaceKey = spaceKey,
+                recovered = null,
+                status = "Selected local generation ${space.spaceId.toLowerHex()} for recovery.",
+            ),
+        )
+    }
+
+    private fun onRecoveryCredentialChanged(value: String) {
+        val recovery = screenState.spaceRecovery
+        if (value.length > MAX_CREDENTIAL_HEX_LENGTH) {
+            screenState = screenState.copy(
+                spaceRecovery = recovery.copy(
+                    status = "The recovery credential vector exceeds the 16 KiB input limit.",
+                ),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceRecovery = recovery.copy(
+                credentialVectorHex = value,
+                recovered = null,
+                status = "Recovery credential input changed; it has not been validated.",
+            ),
+        )
+    }
+
+    private fun recoverLocalSpace() {
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                spaceRecovery = screenState.spaceRecovery.copy(status = "The protected local profile is not ready."),
+            )
+            return
+        }
+        val recovery = screenState.spaceRecovery
+        if (recovery.recovering) return
+        val space = screenState.localSpaces.firstOrNull {
+            localSpaceKey(it) == recovery.selectedSpaceKey
+        } ?: run {
+            screenState = screenState.copy(
+                spaceRecovery = recovery.copy(status = "Select a locally stored generation to recover."),
+            )
+            return
+        }
+        if (!isCredentialVectorHex(recovery.credentialVectorHex)) {
+            screenState = screenState.copy(
+                spaceRecovery = recovery.copy(status = "Enter a bounded, even-length hexadecimal X.509 credential vector."),
+            )
+            return
+        }
+        val credentialVector = decodeStrictBoundedHex(recovery.credentialVectorHex) ?: run {
+            screenState = screenState.copy(
+                spaceRecovery = recovery.copy(status = "Credential vector must contain hexadecimal characters only."),
+            )
+            return
+        }
+        if (space.spaceId.size != 16 || space.groupReference.size != 32) {
+            credentialVector.fill(0)
+            screenState = screenState.copy(
+                spaceRecovery = recovery.copy(status = "The selected local generation identifiers have invalid lengths."),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceRecovery = recovery.copy(
+                recovering = true,
+                recovered = null,
+                status = "Validating the credential and creating a local recovery generation…",
+            ),
+        )
+        lifecycleScope.launch {
+            try {
+                val recovered = withContext(Dispatchers.IO) {
+                    profile.recoverLocalSpaceGeneration(
+                        space.spaceId,
+                        space.groupReference,
+                        credentialVector,
+                    )
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceRecovery = screenState.spaceRecovery.copy(
+                            recovering = false,
+                            credentialVectorHex = "",
+                            recovered = recovered,
+                            status = "Recovery root committed locally. No network was contacted and no remote membership was restored.",
+                        ),
+                    )
+                    refreshLocalSpaces()
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceRecovery = screenState.spaceRecovery.copy(
+                            recovering = false,
+                            status = mobileRecoveryErrorStatus(error),
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceRecovery = screenState.spaceRecovery.copy(
+                            recovering = false,
+                            status = "The local Space generation could not be recovered.",
+                        ),
+                    )
+                }
+            } finally {
+                credentialVector.fill(0)
+            }
+        }
+    }
+
+    private fun mobileRecoveryErrorStatus(error: MobileException): String = when (error) {
+        is MobileException.InvalidSpaceMessageId -> "The selected Space ID or generation reference is invalid."
+        is MobileException.InvalidSpaceCredential -> "The recovery credential is invalid, untrusted, or does not match this device."
+        is MobileException.SpaceRecoveryFailed -> "The prior local generation could not be restored or authorized for recovery."
+        else -> mobileErrorStatus(error)
+    }
+
     private fun generateCertificateRequest() {
         val profile = mobileProfile ?: return
         if (screenState.generatingCertificateRequest) return
@@ -942,6 +1103,7 @@ class MainActivity : ComponentActivity() {
         is MobileException.MessageRejected -> "Local MLS rejected the message."
         is MobileException.MessageQueueFailed -> "The local message could not be durably queued."
         is MobileException.MessageHistoryUnavailable -> "The locally retained message history is unavailable or failed authentication."
+        is MobileException.SpaceRecoveryFailed -> "The prior local generation could not be restored or authorized for recovery."
     }
 
     private fun pinPeerIdentity() {
@@ -1267,10 +1429,14 @@ private fun NearbyReadinessScreen(
     onPrimaryAction: () -> Unit,
     onDismissRationale: () -> Unit,
     onContinuePermission: () -> Unit,
+    onRefreshLocalSpaces: () -> Unit,
     onLoadMoreSpaces: (MobileSpaceCursor) -> Unit,
     onCredentialVectorHexChanged: (String) -> Unit,
     onSpaceChannelNameChanged: (String) -> Unit,
     onCreateLocalSpace: () -> Unit,
+    onRecoverySpaceSelected: (String) -> Unit,
+    onRecoveryCredentialChanged: (String) -> Unit,
+    onRecoverLocalSpace: () -> Unit,
     onPeerBundleHexChanged: (String) -> Unit,
     onPeerFingerprintHexChanged: (String) -> Unit,
     onPinPeerIdentity: () -> Unit,
@@ -1404,8 +1570,16 @@ private fun NearbyReadinessScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text("Local Spaces", style = MaterialTheme.typography.titleMedium)
+                    Button(
+                        onClick = onRefreshLocalSpaces,
+                        enabled = state.profileStatus == "Protected local identity is available on this device." &&
+                            !state.loadingSpacePage,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (state.loadingSpacePage) "Restoring local snapshots…" else "Restore local snapshot list")
+                    }
                     Text(
-                        "These are locally restored Genesis generations, not current membership. Membership and later policy state are unavailable here.",
+                        "These locally restored Genesis snapshots are records on this device, not current membership. Authenticated join/leave, later policy state, relay publishing, and synchronization are not supported.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1447,6 +1621,14 @@ private fun NearbyReadinessScreen(
                     }
                 }
             }
+            LocalSpaceRecoveryCard(
+                spaces = state.localSpaces,
+                state = state.spaceRecovery,
+                profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                onSpaceSelected = onRecoverySpaceSelected,
+                onCredentialVectorHexChanged = onRecoveryCredentialChanged,
+                onRecover = onRecoverLocalSpace,
+            )
             Spacer(Modifier.height(20.dp))
 
             Surface(

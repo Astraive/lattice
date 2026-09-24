@@ -216,6 +216,55 @@ impl MobileClient {
             ),
         })
     }
+    /// Restores a named local generation, then creates its authorized one-member recovery generation.
+    ///
+    /// This creates a new local root for the same Space; it does not rejoin
+    /// prior members or establish network membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for incorrectly sized identifiers,
+    /// `InvalidSpaceCredential` for an empty, oversized, malformed, or untrusted
+    /// credential, `ProfileUnavailable` if the profile lock is poisoned, and
+    /// `SpaceRecoveryFailed` if restoring the prior generation or creating the
+    /// recovery generation fails.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn recover_local_space_generation(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+    ) -> Result<MobileCreatedSpace, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let created = self
+            .lock_client()?
+            .recover_space_generation_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+            )
+            .map_err(|error| map_recovery_space_error(&error))?;
+        Ok(MobileCreatedSpace {
+            space_id: created.space_id().to_vec(),
+            group_reference: created.group_reference().to_vec(),
+            genesis_event_id: created.genesis_event().event_id().as_bytes().to_vec(),
+            channels: channel_summaries(
+                created
+                    .reducer()
+                    .policy()
+                    .into_iter()
+                    .flat_map(|policy| &policy.channels),
+            ),
+        })
+    }
 
     /// Restores one bounded page of local Genesis snapshots.
     ///
@@ -444,6 +493,13 @@ fn map_create_space_error(error: &CoreError) -> MobileError {
         CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
         CoreError::SpaceGenesisRejected(_) => MobileError::InvalidSpaceInput,
         _ => MobileError::SpaceCreationFailed,
+    }
+}
+
+fn map_recovery_space_error(error: &CoreError) -> MobileError {
+    match error {
+        CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
+        _ => MobileError::SpaceRecoveryFailed,
     }
 }
 

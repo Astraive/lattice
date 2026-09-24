@@ -47,6 +47,16 @@ internal class AndroidMobileProfile private constructor(
         channels: List<MobileInitialChannel>,
     ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels)
 
+    fun recoverLocalSpaceGeneration(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+    ): MobileCreatedSpace = client.recoverLocalSpaceGeneration(
+        spaceId,
+        groupReference,
+        credentialVector,
+    )
+
     fun pinIdentity(publicBundle: ByteArray, expectedFingerprint: ByteArray): MobilePinnedIdentity =
         client.pinIdentity(publicBundle, expectedFingerprint)
 

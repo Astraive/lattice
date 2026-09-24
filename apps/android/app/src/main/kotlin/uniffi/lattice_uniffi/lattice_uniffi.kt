@@ -770,6 +770,8 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -804,6 +806,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
 ): Short
@@ -886,6 +890,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
@@ -1051,6 +1057,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit() != 5149.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation() != 15281.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() != 64121.toShort()) {
@@ -1592,6 +1601,22 @@ public interface MobileClientInterface {
      */
     fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
     
+    /**
+     * Restores a named local generation, then creates its authorized one-member recovery generation.
+     *
+     * This creates a new local root for the same Space; it does not rejoin
+     * prior members or establish network membership.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for incorrectly sized identifiers,
+     * `InvalidSpaceCredential` for an empty, oversized, malformed, or untrusted
+     * credential, `ProfileUnavailable` if the profile lock is poisoned, and
+     * `SpaceRecoveryFailed` if restoring the prior generation or creating the
+     * recovery generation fails.
+     */
+    fun `recoverLocalSpaceGeneration`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace
+    
     companion object
 }
 
@@ -1914,6 +1939,33 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(
         it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`targetMessageId`),FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Restores a named local generation, then creates its authorized one-member recovery generation.
+     *
+     * This creates a new local root for the same Space; it does not rejoin
+     * prior members or establish network membership.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for incorrectly sized identifiers,
+     * `InvalidSpaceCredential` for an empty, oversized, malformed, or untrusted
+     * credential, `ProfileUnavailable` if the profile lock is poisoned, and
+     * `SpaceRecoveryFailed` if restoring the prior generation or creating the
+     * recovery generation fails.
+     */
+    @Throws(MobileException::class)override fun `recoverLocalSpaceGeneration`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace {
+            return FfiConverterTypeMobileCreatedSpace.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),_status)
 }
     }
     )
@@ -2966,6 +3018,15 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
+     * A local Space generation could not be restored or recovered.
+     */
+    class SpaceRecoveryFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
      * A supplied Space, group, or channel identifier has the wrong byte length.
      */
     class InvalidSpaceMessageId(
@@ -3039,11 +3100,12 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             11 -> MobileException.InvalidSpaceCredential()
             12 -> MobileException.InvalidSpaceInput()
             13 -> MobileException.SpaceCreationFailed()
-            14 -> MobileException.InvalidSpaceMessageId()
-            15 -> MobileException.InvalidMessageInput()
-            16 -> MobileException.MessageRejected()
-            17 -> MobileException.MessageQueueFailed()
-            18 -> MobileException.MessageHistoryUnavailable()
+            14 -> MobileException.SpaceRecoveryFailed()
+            15 -> MobileException.InvalidSpaceMessageId()
+            16 -> MobileException.InvalidMessageInput()
+            17 -> MobileException.MessageRejected()
+            18 -> MobileException.MessageQueueFailed()
+            19 -> MobileException.MessageHistoryUnavailable()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -3099,6 +3161,10 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.SpaceCreationFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.SpaceRecoveryFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -3179,24 +3245,28 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(13)
                 Unit
             }
-            is MobileException.InvalidSpaceMessageId -> {
+            is MobileException.SpaceRecoveryFailed -> {
                 buf.putInt(14)
                 Unit
             }
-            is MobileException.InvalidMessageInput -> {
+            is MobileException.InvalidSpaceMessageId -> {
                 buf.putInt(15)
                 Unit
             }
-            is MobileException.MessageRejected -> {
+            is MobileException.InvalidMessageInput -> {
                 buf.putInt(16)
                 Unit
             }
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.MessageRejected -> {
                 buf.putInt(17)
                 Unit
             }
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.MessageQueueFailed -> {
                 buf.putInt(18)
+                Unit
+            }
+            is MobileException.MessageHistoryUnavailable -> {
+                buf.putInt(19)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
