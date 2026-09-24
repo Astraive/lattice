@@ -5,8 +5,9 @@
 //! stage application authorization with exact event bytes in a caller-owned
 //! `SQLite` transaction. It also atomically validates a parent-epoch member
 //! transition, merges its staged MLS Commit, and stores both exact signed event
-//! records. Durable reducer replay, Welcome-based Space join, and durable MLS
-//! conflict recovery remain incomplete.
+//! records. Accepted local membership transitions can replay their protected
+//! policy history; Welcome-based Space join, general reducer projection replay,
+//! and durable MLS conflict recovery remain incomplete.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -23,7 +24,8 @@ use lattice_mls::{
 use lattice_protocol::{Value, decode_canonical, encode_canonical};
 use lattice_storage::{
     CachedSpaceMessage, CommitOutcome, MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
-    MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, Store, StoreError,
+    MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, SpaceMembershipTransitionSnapshot, Store,
+    StoreError,
 };
 pub use lattice_storage::{OutboxState, SpaceGenesisCursor};
 use openmls::credentials::Credential;
@@ -337,6 +339,9 @@ pub enum CoreError {
     /// The policy membership transition was not applied.
     #[error("Space membership policy transition not applied: {0:?}")]
     SpaceMembershipNotApplied(space::ApplyResult),
+    /// A locally authenticated membership replay record failed validation.
+    #[error("local Space membership transition snapshot is invalid")]
+    SpaceMembershipSnapshotInvalid,
     /// A received author sequence is occupied by a different event ID.
     #[error("received author sequence conflicts with event {existing_event_id:02x?}")]
     ReceivedEventEquivocation { existing_event_id: [u8; 32] },
@@ -424,6 +429,281 @@ fn space_genesis_context(
     context.extend_from_slice(group_reference);
     context.extend_from_slice(event_id);
     context
+}
+
+fn space_membership_context(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+    parent_epoch: u64,
+    control_event_id: &[u8; 32],
+    transition_event_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut context = Vec::with_capacity(45 + 16 + 32 + 8 + 32 + 32);
+    context.extend_from_slice(b"lattice-space-membership-transition-v1\0");
+    context.extend_from_slice(space_id);
+    context.extend_from_slice(group_reference);
+    context.extend_from_slice(&parent_epoch.to_be_bytes());
+    context.extend_from_slice(control_event_id);
+    context.extend_from_slice(transition_event_id);
+    context
+}
+
+struct SpaceMembershipReplayData {
+    parent_epoch: u64,
+    policy_revision: u64,
+    action: lattice_mls::api::MlsMembershipAction,
+    target: [u8; 32],
+    key_package_hash: Option<[u8; 32]>,
+    plaintext: Vec<u8>,
+    policy_events: Vec<space::SpacePolicyReplayEvent>,
+}
+
+fn encode_space_membership_replay_data(
+    parent_epoch: u64,
+    policy_revision: u64,
+    action: lattice_mls::api::MlsMembershipAction,
+    target: [u8; 32],
+    key_package_hash: Option<[u8; 32]>,
+    plaintext: &[u8],
+    policy_events: Vec<space::SpacePolicyReplayEvent>,
+) -> Result<Vec<u8>, CoreError> {
+    if plaintext.is_empty()
+        || plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES
+        || (action == lattice_mls::api::MlsMembershipAction::Add) != key_package_hash.is_some()
+        || policy_events.len() > 64
+    {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    }
+    let action = match action {
+        lattice_mls::api::MlsMembershipAction::Add => 0,
+        lattice_mls::api::MlsMembershipAction::Remove => 1,
+    };
+    let policy_events = policy_events
+        .into_iter()
+        .map(|event| {
+            Value::Map(vec![
+                (0, Value::Bytes(event.event_bytes)),
+                (1, Value::Bytes(event.plaintext)),
+            ])
+        })
+        .collect();
+    encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(2)),
+        (1, Value::Unsigned(parent_epoch)),
+        (2, Value::Unsigned(action)),
+        (3, Value::Bytes(target.to_vec())),
+        (
+            4,
+            key_package_hash.map_or(Value::Null, |hash| Value::Bytes(hash.to_vec())),
+        ),
+        (5, Value::Bytes(plaintext.to_vec())),
+        (6, Value::Unsigned(policy_revision)),
+        (7, Value::Array(policy_events)),
+    ]))
+    .map_err(CoreError::from)
+}
+
+fn decode_space_membership_replay_data(
+    bytes: &[u8],
+) -> Result<SpaceMembershipReplayData, CoreError> {
+    let Value::Map(fields) =
+        decode_canonical(bytes).map_err(|_| CoreError::SpaceMembershipSnapshotInvalid)?
+    else {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    };
+    let mut fields = fields.into_iter();
+    if fields.next() != Some((0, Value::Unsigned(2))) {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    }
+    let Some((1, Value::Unsigned(parent_epoch))) = fields.next() else {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    };
+    let action = match fields.next() {
+        Some((2, Value::Unsigned(0))) => lattice_mls::api::MlsMembershipAction::Add,
+        Some((2, Value::Unsigned(1))) => lattice_mls::api::MlsMembershipAction::Remove,
+        _ => return Err(CoreError::SpaceMembershipSnapshotInvalid),
+    };
+    let Some((3, Value::Bytes(target))) = fields.next() else {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    };
+    let target = target
+        .try_into()
+        .map_err(|_| CoreError::SpaceMembershipSnapshotInvalid)?;
+    let key_package_hash = match fields.next() {
+        Some((4, Value::Null)) => None,
+        Some((4, Value::Bytes(hash))) => Some(
+            hash.try_into()
+                .map_err(|_| CoreError::SpaceMembershipSnapshotInvalid)?,
+        ),
+        _ => return Err(CoreError::SpaceMembershipSnapshotInvalid),
+    };
+    let Some((5, Value::Bytes(plaintext))) = fields.next() else {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    };
+    let Some((6, Value::Unsigned(policy_revision))) = fields.next() else {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    };
+    let Some((7, Value::Array(policy_events))) = fields.next() else {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    };
+    if fields.next().is_some()
+        || plaintext.is_empty()
+        || plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES
+        || policy_events.len() > 64
+        || (action == lattice_mls::api::MlsMembershipAction::Add) != key_package_hash.is_some()
+    {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    }
+    let policy_events = policy_events
+        .into_iter()
+        .map(|value| {
+            let Value::Map(fields) = value else {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            };
+            let mut fields = fields.into_iter();
+            let Some((0, Value::Bytes(event_bytes))) = fields.next() else {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            };
+            let Some((1, Value::Bytes(plaintext))) = fields.next() else {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            };
+            if fields.next().is_some() || plaintext.is_empty() {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            }
+            Ok(space::SpacePolicyReplayEvent {
+                event_bytes,
+                plaintext,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SpaceMembershipReplayData {
+        parent_epoch,
+        policy_revision,
+        action,
+        target,
+        key_package_hash,
+        plaintext,
+        policy_events,
+    })
+}
+
+fn replay_space_membership_transitions(
+    reducer: &mut space::SpaceReducer,
+    transitions: Vec<(SpaceMembershipTransitionSnapshot, Vec<u8>, Vec<u8>)>,
+) -> Result<(), CoreError> {
+    let base_epoch = transitions
+        .first()
+        .map_or(0, |(snapshot, _, _)| snapshot.parent_epoch);
+    for (offset, (snapshot, control_bytes, transition_bytes)) in transitions.into_iter().enumerate()
+    {
+        let expected_epoch = base_epoch
+            .checked_add(
+                u64::try_from(offset).map_err(|_| CoreError::SpaceMembershipSnapshotInvalid)?,
+            )
+            .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?;
+        if snapshot.parent_epoch != expected_epoch {
+            return Err(CoreError::SpaceMembershipSnapshotInvalid);
+        }
+        let control_event = VerifiedSignatureOnlyEvent::decode_verify(&control_bytes)?;
+        let transition_event = VerifiedSignatureOnlyEvent::decode_verify(&transition_bytes)?;
+        if control_event.event_id().as_bytes() != &snapshot.control_event_id
+            || transition_event.event_id().as_bytes() != &snapshot.transition_event_id
+            || control_event.space_id() != &snapshot.space_id
+            || transition_event.space_id() != &snapshot.space_id
+            || control_event.mls_group_reference() != &snapshot.group_reference
+            || transition_event.mls_group_reference() != &snapshot.group_reference
+            || control_event.kind() != EventKind::MlsControl
+            || transition_event.kind() != EventKind::Membership
+            || control_event.channel_id().is_some()
+            || transition_event.channel_id().is_some()
+            || control_event.mls_epoch() != expected_epoch
+            || transition_event.mls_epoch() != expected_epoch
+        {
+            return Err(CoreError::SpaceMembershipSnapshotInvalid);
+        }
+        let context = space_membership_context(
+            &snapshot.space_id,
+            &snapshot.group_reference,
+            snapshot.parent_epoch,
+            &snapshot.control_event_id,
+            &snapshot.transition_event_id,
+        );
+        let evidence = lattice_mls::unprotect_local_record(&context, &snapshot.encrypted_state)?;
+        let replay = decode_space_membership_replay_data(&evidence)?;
+        if replay.parent_epoch != snapshot.parent_epoch
+            || replay.policy_revision != snapshot.policy_revision
+        {
+            return Err(CoreError::SpaceMembershipSnapshotInvalid);
+        }
+        for policy_event in replay.policy_events {
+            let event = VerifiedSignatureOnlyEvent::decode_verify(&policy_event.event_bytes)?;
+            if event.kind() != EventKind::Membership
+                || event.space_id() != &snapshot.space_id
+                || event.mls_group_reference() != &snapshot.group_reference
+            {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            }
+            let bound = MlsBoundEvent {
+                event,
+                plaintext: policy_event.plaintext,
+            };
+            if !matches!(
+                reducer.apply(&bound, None),
+                space::ApplyResult::Applied { .. }
+            ) {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            }
+        }
+        reducer
+            .observe_persisted_control_event(
+                &control_event,
+                replay.action,
+                replay.target,
+                replay.key_package_hash,
+            )
+            .map_err(CoreError::SpaceControlRejected)?;
+        let policy_revision_before_transition = reducer
+            .policy()
+            .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?
+            .revision;
+        if policy_revision_before_transition >= snapshot.policy_revision {
+            return Err(CoreError::SpaceMembershipSnapshotInvalid);
+        }
+        let bound = MlsBoundEvent {
+            event: transition_event,
+            plaintext: replay.plaintext,
+        };
+        if !matches!(
+            reducer.apply(&bound, None),
+            space::ApplyResult::Applied { .. }
+        ) || reducer
+            .policy()
+            .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?
+            .revision
+            != snapshot.policy_revision
+        {
+            return Err(CoreError::SpaceMembershipSnapshotInvalid);
+        }
+    }
+    Ok(())
+}
+
+fn validate_restored_membership_state(
+    group: &GroupState,
+    reducer: &space::SpaceReducer,
+    expected_transition_count: u64,
+) -> Result<(), CoreError> {
+    let active_members = reducer
+        .policy()
+        .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?
+        .members
+        .iter()
+        .filter(|member| member.status == space::MemberStatus::Active)
+        .count();
+    if group.epoch() != expected_transition_count || group.member_count() != active_members {
+        return Err(CoreError::SpaceMembershipSnapshotInvalid);
+    }
+    Ok(())
 }
 
 fn local_text_message_context(
@@ -920,10 +1200,11 @@ impl Client {
 
     /// Restores a locally created Space policy projection after process restart.
     ///
-    /// The event, MLS group, and AEAD-protected initial policy payload are
+    /// The Genesis event, MLS group, and AEAD-protected initial policy payload are
     /// independently checked against the requested Space and MLS generation.
-    /// This restores local Genesis only; it does not recover later policy
-    /// mutations, incoming groups, or in-memory MLS conflict evidence.
+    /// Accepted local membership transitions are replayed from their exact
+    /// signed events and AEAD-protected local proof records. Incoming Welcome
+    /// joins and in-memory MLS conflict evidence remain unsupported.
     ///
     /// # Errors
     ///
@@ -955,6 +1236,31 @@ impl Client {
                 space::RejectReason::InvalidGenesisContext,
             ));
         }
+        let transition_snapshots = self
+            .store
+            .list_space_membership_transition_snapshots(space_id, group_reference)?;
+        let mut transition_events = Vec::with_capacity(transition_snapshots.len());
+        for transition_snapshot in transition_snapshots {
+            if transition_snapshot.space_id != *space_id
+                || transition_snapshot.group_reference != *group_reference
+            {
+                return Err(CoreError::SpaceMembershipSnapshotInvalid);
+            }
+            let control_event = self
+                .store
+                .load_event(&transition_snapshot.control_event_id)?
+                .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?;
+            let transition_event = self
+                .store
+                .load_event(&transition_snapshot.transition_event_id)?
+                .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?;
+            transition_events.push((
+                transition_snapshot,
+                control_event.canonical_bytes,
+                transition_event.canonical_bytes,
+            ));
+        }
+        let expected_transition_count = transition_events.len() as u64;
         let space_id = snapshot.space_id;
         let expected_group_reference = snapshot.group_reference;
         let event_id = snapshot.event_id;
@@ -970,12 +1276,9 @@ impl Client {
                         space::RejectReason::CreatorMismatch,
                     ));
                 }
-                let group = lattice_mls::api::GroupState::load(provider, &group_id_for_load)?;
+                let group = GroupState::load(provider, &group_id_for_load)?;
                 let group_reference = group.group_reference();
-                if group_reference != expected_group_reference
-                    || group.epoch() != 0
-                    || group.member_count() != 1
-                {
+                if group_reference != expected_group_reference {
                     return Err(CoreError::SpaceGenesisRejected(
                         space::RejectReason::WrongGeneration,
                     ));
@@ -994,6 +1297,10 @@ impl Client {
                         ));
                     }
                 }
+                replay_space_membership_transitions(&mut reducer, transition_events)?;
+                validate_restored_membership_state(&group, &reducer, expected_transition_count)?;
+                // Restored history is accepted only when every stored proof has
+                // a corresponding committed MLS epoch.
                 Ok((group_reference, reducer))
             })?;
         Ok(CreatedSpace {
@@ -1042,10 +1349,11 @@ impl Client {
     /// `transition_event` must carry MLS application data authenticated in the
     /// Commit's parent epoch and must pass the reducer's invite/transition
     /// policy. The Commit remains staged until that transition is accepted. The
-    /// MLS group writes and both verified event records share one `SQLite`
-    /// transaction. The returned reducer is a candidate; callers install it
-    /// only after this method commits. Reducer replay after process restart is
-    /// not implemented.
+    /// MLS group writes, both verified event records, and AEAD-protected
+    /// reducer replay evidence share one `SQLite` transaction. The returned
+    /// reducer is a candidate; callers install it only after this method
+    /// commits. Restore replays locally accepted transitions; Welcome-based
+    /// joins and process-local MLS conflict evidence remain unsupported.
     ///
     /// # Errors
     ///
@@ -1066,7 +1374,20 @@ impl Client {
             ));
         };
         let expected_group_reference = policy.group_reference;
+        let expected_space_id = policy.space_id;
         let group_id = group_id.to_vec();
+        let existing_snapshots = self.store.list_space_membership_transition_snapshots(
+            &expected_space_id,
+            &expected_group_reference,
+        )?;
+        let replay_base_revision = existing_snapshots
+            .last()
+            .map_or(0, |snapshot| snapshot.policy_revision);
+        let policy_events = reducer
+            .policy_replay_events_after(replay_base_revision)
+            .map_err(|reason| {
+                CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
+            })?;
         let mut staged_reducer = reducer.clone();
         self.with_mls_transaction(move |_identity, provider, transaction| {
             let mut group = GroupState::load(provider, &group_id)?;
@@ -1085,6 +1406,10 @@ impl Client {
             let proof = group
                 .take_staged_membership_change()
                 .ok_or(CoreError::MlsEventBindingFailed)?;
+            let parent_epoch = proof.parent_epoch();
+            let action = proof.action();
+            let target = *proof.target();
+            let key_package_hash = proof.key_package_hash().copied();
             staged_reducer
                 .observe_validated_control_event(&control_event, proof)
                 .map_err(CoreError::SpaceControlRejected)?;
@@ -1099,8 +1424,45 @@ impl Client {
             if !matches!(result, space::ApplyResult::Applied { .. }) {
                 return Err(CoreError::SpaceMembershipNotApplied(result));
             }
+            let control_event_id = *control_event.event_id().as_bytes();
+            let transition_event_id = *bound.event().event_id().as_bytes();
+            let replay_data = encode_space_membership_replay_data(
+                parent_epoch,
+                staged_reducer
+                    .policy()
+                    .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?
+                    .revision,
+                action,
+                target,
+                key_package_hash,
+                bound.plaintext(),
+                policy_events,
+            )?;
+            let context = space_membership_context(
+                &expected_space_id,
+                &expected_group_reference,
+                parent_epoch,
+                &control_event_id,
+                &transition_event_id,
+            );
+            let encrypted_state = lattice_mls::protect_local_record(&context, &replay_data)?;
             store_received_event(transaction, &control_event)?;
             store_received_event(transaction, bound.event())?;
+            Store::save_space_membership_transition_snapshot_in_transaction(
+                transaction,
+                &SpaceMembershipTransitionSnapshot {
+                    space_id: expected_space_id,
+                    group_reference: expected_group_reference,
+                    parent_epoch,
+                    policy_revision: staged_reducer
+                        .policy()
+                        .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?
+                        .revision,
+                    control_event_id,
+                    transition_event_id,
+                    encrypted_state,
+                },
+            )?;
             group.accept_incoming_commit(provider, commit_wire)?;
             Ok(staged_reducer)
         })
@@ -2248,6 +2610,7 @@ mod tests {
         let space_id = *created.space_id();
         let group_reference = *created.group_reference();
         let mut reducer = created.reducer().clone();
+        let genesis_reducer = reducer.clone();
         let genesis_id = *created.genesis_event().event_id().as_bytes();
 
         let bob_key_package = bob
@@ -2479,6 +2842,49 @@ mod tests {
                 .load_event(&control_event_id)
                 .expect("query committed control event")
                 .is_some()
+        );
+
+        let snapshot = bob
+            .store
+            .list_space_membership_transition_snapshots(&space_id, &group_reference)
+            .expect("load persisted transition evidence")
+            .into_iter()
+            .next()
+            .expect("one accepted transition");
+        let control_record = bob
+            .store
+            .load_event(&snapshot.control_event_id)
+            .expect("load persisted control event")
+            .expect("control event exists");
+        let transition_record = bob
+            .store
+            .load_event(&snapshot.transition_event_id)
+            .expect("load persisted transition event")
+            .expect("transition event exists");
+        let replayed = bob
+            .with_mls_transaction(|_, _, _| {
+                let mut reducer = genesis_reducer;
+                super::replay_space_membership_transitions(
+                    &mut reducer,
+                    vec![(
+                        snapshot,
+                        control_record.canonical_bytes,
+                        transition_record.canonical_bytes,
+                    )],
+                )?;
+                Ok::<_, CoreError>(reducer)
+            })
+            .expect("replay authenticated policy history after storage round trip");
+        let replayed_policy = replayed.policy().expect("replayed active policy");
+        assert_eq!(replayed_policy.revision, policy.revision);
+        assert_eq!(replayed_policy.invites[0].uses, policy.invites[0].uses);
+        assert_eq!(
+            replayed_policy
+                .members
+                .iter()
+                .find(|member| member.fingerprint == charlie_identity.fingerprint())
+                .map(|member| member.status),
+            Some(super::space::MemberStatus::Active)
         );
     }
 

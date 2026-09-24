@@ -15,8 +15,8 @@
 //! [`SpaceReducer`] remains a candidate generation; callers keep generations
 //! separate by MLS group reference. Recovery authorization uses the prior
 //! reducer's retained common policy and binds one exact MLS-authenticated
-//! recovery Genesis. Durable reducer restore and Welcome-based join remain
-//! incomplete.
+//! recovery Genesis. Accepted membership transitions replay their protected
+//! policy history; Welcome-based join remains incomplete.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -313,6 +313,50 @@ impl SpaceReducer {
     pub fn policy(&self) -> Option<&SpacePolicy> {
         self.policy.as_ref()
     }
+
+    /// Returns the exact accepted policy events after a previously checkpointed
+    /// revision. Replay is refused when this reducer has unresolved or conflicted
+    /// state, or when retained history no longer begins at Genesis.
+    pub(crate) fn policy_replay_events_after(
+        &self,
+        base_revision: u64,
+    ) -> Result<Vec<SpacePolicyReplayEvent>, RejectReason> {
+        let policy = self.policy.as_ref().ok_or(RejectReason::MissingPolicy)?;
+        if self.conflicted
+            || !self.pending.is_empty()
+            || !self.conflict_evidence.is_empty()
+            || !self.quarantined_event_ids.is_empty()
+            || self
+                .history_base
+                .as_ref()
+                .is_none_or(|base| base.revision != 0)
+            || base_revision > policy.revision
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        let mut expected_revision = base_revision;
+        let mut events = Vec::new();
+        for event in self
+            .history
+            .iter()
+            .filter(|event| event.base_revision >= base_revision)
+        {
+            if event.base_revision != expected_revision {
+                return Err(RejectReason::InvalidTransition);
+            }
+            events.push(SpacePolicyReplayEvent {
+                event_bytes: event.signed_event.to_vec(),
+                plaintext: event.plaintext.to_vec(),
+            });
+            expected_revision = expected_revision
+                .checked_add(1)
+                .ok_or(RejectReason::RevisionOverflow)?;
+        }
+        if expected_revision != policy.revision {
+            return Err(RejectReason::InvalidTransition);
+        }
+        Ok(events)
+    }
     /// Materializes the authorized message actions retained by this reducer.
     ///
     /// This in-memory projection preserves every edit/tombstone, applies
@@ -418,6 +462,38 @@ impl SpaceReducer {
             key_package_hash: binding.key_package_hash().copied(),
         };
         self.register_event(event, Some(relation), true)
+    }
+
+    /// Reconstructs a previously validated relation from AEAD-protected local
+    /// evidence. Callers must authenticate the evidence with the device-local
+    /// storage key before invoking this method.
+    pub(crate) fn observe_persisted_control_event(
+        &mut self,
+        event: &VerifiedSignatureOnlyEvent,
+        action: lattice_mls::api::MlsMembershipAction,
+        target: Fingerprint,
+        key_package_hash: Option<[u8; 32]>,
+    ) -> Result<(), RejectReason> {
+        if event.kind() != EventKind::MlsControl
+            || event.channel_id().is_some()
+            || (action == lattice_mls::api::MlsMembershipAction::Add) != key_package_hash.is_some()
+        {
+            return Err(RejectReason::InvalidControlRelation);
+        }
+        self.register_event(
+            event,
+            Some(ValidatedMlsControlRelation {
+                space_id: *event.space_id(),
+                group_reference: *event.mls_group_reference(),
+                control_event_id: *event.event_id().as_bytes(),
+                author: *event.author_fingerprint(),
+                parent_epoch: event.mls_epoch(),
+                mls_action: action,
+                target,
+                key_package_hash,
+            }),
+            true,
+        )
     }
 
     /// Authorizes one recovery Genesis using the prior generation's retained
@@ -533,6 +609,7 @@ impl SpaceReducer {
             metadata: EventMetadata::from_verified(verified_event),
             operation,
             recovery: recovery.cloned(),
+            plaintext: Arc::from(event.plaintext().to_vec()),
         };
         match self.apply_ready(&pending) {
             ApplyResult::Pending => {
@@ -1057,6 +1134,7 @@ impl SpaceReducer {
                     epoch: pending.metadata.epoch,
                     operation,
                     signed_event: pending.metadata.signed_event.clone(),
+                    plaintext: pending.plaintext.clone(),
                 });
                 ApplyResult::Applied { revision }
             }
@@ -1301,6 +1379,7 @@ struct PendingPolicy {
     metadata: EventMetadata,
     operation: Operation,
     recovery: Option<RecoveryAuthorization>,
+    plaintext: Arc<[u8]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1313,6 +1392,15 @@ struct AcceptedPolicyEvent {
     epoch: u64,
     operation: Operation,
     signed_event: Arc<[u8]>,
+    plaintext: Arc<[u8]>,
+}
+
+/// Exact signed policy event bytes and the locally authenticated MLS plaintext
+/// needed to replay an accepted policy projection after restart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SpacePolicyReplayEvent {
+    pub(crate) event_bytes: Vec<u8>,
+    pub(crate) plaintext: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

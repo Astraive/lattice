@@ -35,15 +35,18 @@ pub const MAX_LOCAL_SPACE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum locally retained messages returned by one query.
 pub const MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE: usize = 100;
 
+/// Maximum locally retained accepted MLS membership transitions per generation.
+pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub const CURRENT_SCHEMA_VERSION: i64 = 8;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
 const MAX_SPACE_GENESIS_GROUP_ID_BYTES: usize = 256;
 const MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
 const MAX_CACHED_SPACE_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
 /// Encrypted local message content and signed-event routing metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CachedSpaceMessage {
@@ -104,6 +107,18 @@ pub struct SpaceGenesisSnapshot {
     pub event_id: [u8; 32],
     pub encrypted_state: Vec<u8>,
 }
+
+/// AEAD-protected evidence needed to replay one accepted local MLS membership transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceMembershipTransitionSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub parent_epoch: u64,
+    pub policy_revision: u64,
+    pub control_event_id: [u8; ID_BYTES],
+    pub transition_event_id: [u8; ID_BYTES],
+    pub encrypted_state: Vec<u8>,
+}
 /// Exclusive keyset cursor for bounded local Space Genesis enumeration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SpaceGenesisCursor {
@@ -149,6 +164,8 @@ pub enum StoreError {
     InvalidProtectedIdentity,
     InvalidProtectedMlsKey,
     InvalidSpaceGenesisSnapshot,
+    InvalidSpaceMembershipTransitionSnapshot,
+    SpaceMembershipTransitionLimit,
     CachedSpaceMessageLimit,
     CachedSpaceMessageByteLimit,
     CachedSpaceMessagePageLimit,
@@ -206,6 +223,12 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidSpaceGenesisSnapshot => {
                 formatter.write_str("space Genesis snapshot has an invalid length")
+            }
+            Self::InvalidSpaceMembershipTransitionSnapshot => {
+                formatter.write_str("space membership transition snapshot is invalid")
+            }
+            Self::SpaceMembershipTransitionLimit => {
+                formatter.write_str("space membership transition limit exceeded")
             }
             Self::CachedSpaceMessageLimit => {
                 formatter.write_str("cached Space message count limit exceeded")
@@ -428,6 +451,36 @@ impl Store {
                         author_id, author_seq, event_id
                     );
                 PRAGMA user_version = 7;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 8 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_membership_transition_snapshots (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    parent_epoch INTEGER NOT NULL CHECK(parent_epoch >= 0),
+                    control_event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(control_event_id) = 'blob'
+                            AND length(control_event_id) = 32),
+                    transition_event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(transition_event_id) = 'blob'
+                            AND length(transition_event_id) = 32),
+                    policy_revision INTEGER NOT NULL CHECK(policy_revision >= 0),
+                    encrypted_state BLOB NOT NULL
+                        CHECK(typeof(encrypted_state) = 'blob'
+                            AND length(encrypted_state) BETWEEN 1 AND 1048576),
+                    PRIMARY KEY(space_id, group_reference, parent_epoch),
+                    CHECK(control_event_id <> transition_event_id)
+                );
+                PRAGMA user_version = 8;",
             )?;
             transaction.commit()?;
         }
@@ -765,6 +818,53 @@ impl Store {
         )?;
         Ok(())
     }
+    /// Persists one AEAD-protected accepted membership transition atomically
+    /// with the signed control and policy events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid bounds, a missing event row, the per-space
+    /// transition limit, a duplicate epoch, or a `SQLite` failure.
+    pub fn save_space_membership_transition_snapshot_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceMembershipTransitionSnapshot,
+    ) -> Result<()> {
+        if snapshot.control_event_id == snapshot.transition_event_id
+            || snapshot.encrypted_state.is_empty()
+            || snapshot.encrypted_state.len() > MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES
+        {
+            return Err(StoreError::InvalidSpaceMembershipTransitionSnapshot);
+        }
+        let parent_epoch = i64::try_from(snapshot.parent_epoch)
+            .map_err(|_| StoreError::InvalidSpaceMembershipTransitionSnapshot)?;
+        let policy_revision = i64::try_from(snapshot.policy_revision)
+            .map_err(|_| StoreError::InvalidSpaceMembershipTransitionSnapshot)?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM space_membership_transition_snapshots
+             WHERE space_id = ?1 AND group_reference = ?2",
+            params![&snapshot.space_id[..], &snapshot.group_reference[..]],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_SPACE_MEMBERSHIP_TRANSITIONS {
+            return Err(StoreError::SpaceMembershipTransitionLimit);
+        }
+        transaction.execute(
+            "INSERT INTO space_membership_transition_snapshots(
+                space_id, group_reference, parent_epoch, control_event_id,
+                transition_event_id, policy_revision, encrypted_state
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                parent_epoch,
+                &snapshot.control_event_id[..],
+                &snapshot.transition_event_id[..],
+                policy_revision,
+                &snapshot.encrypted_state,
+            ],
+        )?;
+        Ok(())
+    }
     /// Saves one locally encrypted text message in its authored-event transaction.
     ///
     /// # Errors
@@ -1030,6 +1130,102 @@ impl Store {
             event_id,
             encrypted_state,
         }))
+    }
+
+    /// Loads the bounded ordered membership transition evidence for one local
+    /// Space generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database query fails, stored row limits are
+    /// exceeded, or any field is malformed.
+    pub fn list_space_membership_transition_snapshots(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Vec<SpaceMembershipTransitionSnapshot>> {
+        let mut statement = self.connection.prepare(
+            "SELECT space_id, group_reference, parent_epoch, control_event_id,
+                    transition_event_id, policy_revision, encrypted_state
+             FROM space_membership_transition_snapshots
+             WHERE space_id = ?1 AND group_reference = ?2
+             ORDER BY parent_epoch
+             LIMIT ?3",
+        )?;
+        let limit = i64::try_from(MAX_SPACE_MEMBERSHIP_TRANSITIONS + 1)
+            .map_err(|_| StoreError::CorruptData("invalid membership transition limit"))?;
+        let rows =
+            statement.query_map(params![&space_id[..], &group_reference[..], limit], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                ))
+            })?;
+        let stored = rows.collect::<Result<Vec<_>, _>>()?;
+        if stored.len() > MAX_SPACE_MEMBERSHIP_TRANSITIONS {
+            return Err(StoreError::CorruptData(
+                "too many membership transition snapshots",
+            ));
+        }
+        stored
+            .into_iter()
+            .map(
+                |(
+                    stored_space_id,
+                    stored_group_reference,
+                    parent_epoch,
+                    control_event_id,
+                    transition_event_id,
+                    policy_revision,
+                    encrypted_state,
+                )| {
+                    if parent_epoch < 0
+                        || policy_revision < 0
+                        || encrypted_state.is_empty()
+                        || encrypted_state.len() > MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES
+                    {
+                        return Err(StoreError::CorruptData(
+                            "invalid membership transition snapshot",
+                        ));
+                    }
+                    let space_id = stored_space_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership transition Space ID")
+                    })?;
+                    let group_reference = stored_group_reference.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership transition group reference")
+                    })?;
+                    let control_event_id = control_event_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership control event ID")
+                    })?;
+                    let transition_event_id = transition_event_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership policy event ID")
+                    })?;
+                    if control_event_id == transition_event_id {
+                        return Err(StoreError::CorruptData(
+                            "membership transition references one event twice",
+                        ));
+                    }
+                    Ok(SpaceMembershipTransitionSnapshot {
+                        space_id,
+                        group_reference,
+                        parent_epoch: u64::try_from(parent_epoch).map_err(|_| {
+                            StoreError::CorruptData("invalid membership parent epoch")
+                        })?,
+                        policy_revision: u64::try_from(policy_revision).map_err(|_| {
+                            StoreError::CorruptData("invalid membership policy revision")
+                        })?,
+                        control_event_id,
+                        transition_event_id,
+                        encrypted_state,
+                    })
+                },
+            )
+            .collect()
     }
 
     /// Loads one event, including its ordered parent references.
@@ -1685,8 +1881,8 @@ mod tests {
 
     use super::{
         CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
-        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, Store, StoreError,
-        TrustedIdentityRecord,
+        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, SpaceMembershipTransitionSnapshot,
+        Store, StoreError, TrustedIdentityRecord,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1856,7 +2052,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE cached_space_messages;
+                    "DROP TABLE space_membership_transition_snapshots;
+                     DROP TABLE cached_space_messages;
                      DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
                      DROP TABLE space_genesis_snapshots;
@@ -1913,7 +2110,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE cached_space_messages;
+                    "DROP TABLE space_membership_transition_snapshots;
+                     DROP TABLE cached_space_messages;
                      DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 4;",
@@ -1926,7 +2124,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         assert_eq!(
             store
                 .load_event(&event)
@@ -1957,7 +2155,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE cached_space_messages;
+                    "DROP TABLE space_membership_transition_snapshots;
+                     DROP TABLE cached_space_messages;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 5;",
                 )
@@ -1968,7 +2167,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2086,6 +2285,55 @@ mod tests {
                 .load_space_genesis_snapshot(&snapshot.space_id, &snapshot.group_reference)
                 .expect("load saved snapshot"),
             Some(snapshot)
+        );
+    }
+
+    #[test]
+    fn membership_transition_snapshot_round_trips_with_both_event_rows() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let snapshot = SpaceMembershipTransitionSnapshot {
+            space_id: [0x11; 16],
+            group_reference: [0x22; 32],
+            parent_epoch: 3,
+            policy_revision: 5,
+            control_event_id: id(96),
+            transition_event_id: id(97),
+            encrypted_state: vec![0xD3, 0x5A, 0x00, 0xC7],
+        };
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(98),
+                    snapshot.control_event_id,
+                    1,
+                    &[0xA1],
+                    &[],
+                )?;
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(98),
+                    snapshot.transition_event_id,
+                    2,
+                    &[0xA2],
+                    &[],
+                )?;
+                Store::save_space_membership_transition_snapshot_in_transaction(
+                    transaction,
+                    &snapshot,
+                )
+            })
+            .expect("commit event rows and transition evidence together");
+
+        assert_eq!(
+            store
+                .list_space_membership_transition_snapshots(
+                    &snapshot.space_id,
+                    &snapshot.group_reference,
+                )
+                .expect("read membership transition evidence"),
+            vec![snapshot]
         );
     }
 
