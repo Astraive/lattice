@@ -15,6 +15,8 @@
 | `relay_state`, `routes`, `peers` | User relay settings, cursor and path hints | Local hints, not global presence |
 | Secure storage | Private signing/DH/MLS material and local wrapping secret | Platform-protected installation state |
 
+The current SQLite v3 implementation adds a single `protected_identity` slot for OS-wrapped ciphertext, bounded to 4096 bytes. Plain signing/DH private material and wrapping keys are not stored in that table. MLS production state, application projections, and filesystem-backed attachment chunks remain unimplemented; the test-only OpenMLS SQLite harness is not part of the application store.
+
 ## Constraints and transitions
 
 `event_id` is the primary dedupe key. `(author_id, author_seq)` is unique for a valid author stream; the same pair with a different event hash is a fork/error, not an overwrite. `space_id` is random and independent of name. Parent references and MLS epoch are explicit dependencies. Wall time is for display/audit hints; deterministic render order uses logical time and stable ties, not authorization.

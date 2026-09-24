@@ -6,5 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+
+[dependencies]
+lattice-identity = { path = "../lattice-identity" }
+lattice-storage = { path = "../lattice-storage" }
+thiserror = "2"
 [lints]
 workspace = true
