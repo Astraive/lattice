@@ -695,12 +695,13 @@ mod tests {
         let mut peer = ScopeSummary::new(scope());
         let mut sparse_author = AuthorSummary::new(author(8), 0);
         for index in 0..=MAX_REQUEST_RANGES {
-            let sequence = (index as u64 + 1) * 2;
+            let index = u64::try_from(index).expect("fixture index fits in u64");
+            let sequence = (index + 1) * 2;
+            let mut event_id = [0_u8; 32];
+            event_id[..8].copy_from_slice(&index.to_le_bytes());
             sparse_author.known_events.push(KnownEvent {
                 sequence,
-                event_id: EventId::new(
-                    [u8::try_from(index).expect("fixture index fits in u8"); 32],
-                ),
+                event_id: EventId::new(event_id),
             });
         }
         peer.authors.push(sparse_author);
