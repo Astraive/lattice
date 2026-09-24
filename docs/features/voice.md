@@ -19,7 +19,6 @@ The runtime flow and state/scalability sections below describe the target behavi
 
 ## Target join-to-leave runtime
 
-
 1. Check current Space membership, `VOICE_JOIN`, optional `VOICE_SPEAK`, local microphone permission and room incarnation.
 2. Publish authenticated `VOICE_JOIN` over a current Lattice data path; presence is short-lived and never backfilled as durable room history.
 3. Peers exchange versioned offer/answer and trickled ICE candidates bound to the room incarnation and session identity. Stale candidates/offers cannot join a new incarnation.
