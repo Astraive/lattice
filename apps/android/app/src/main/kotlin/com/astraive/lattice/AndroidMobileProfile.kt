@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.File
 import uniffi.lattice_uniffi.MobileClient
 import uniffi.lattice_uniffi.MobileIdentityInfo
+import uniffi.lattice_uniffi.MobilePinnedIdentity
 import uniffi.lattice_uniffi.MobileSpaceCursor
 import uniffi.lattice_uniffi.MobileSpacePage
 import uniffi.lattice_uniffi.PlatformKeyProtector
@@ -34,6 +35,12 @@ internal class AndroidMobileProfile private constructor(
     @Suppress("unused") private val keyProtector: AndroidPlatformKeyProtector,
 ) : AutoCloseable {
     fun identityInfo(): MobileIdentityInfo = client.identityInfo()
+
+    fun pinIdentity(publicBundle: ByteArray, expectedFingerprint: ByteArray): MobilePinnedIdentity =
+        client.pinIdentity(publicBundle, expectedFingerprint)
+
+    fun pinnedIdentity(fingerprint: ByteArray): MobilePinnedIdentity? =
+        client.pinnedIdentity(fingerprint)
 
     fun localSpaces(after: MobileSpaceCursor? = null): MobileSpacePage =
         client.listLocalSpaces(after)

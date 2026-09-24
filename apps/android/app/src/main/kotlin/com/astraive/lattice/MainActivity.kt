@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -43,6 +44,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.lattice_uniffi.MobileException
 import uniffi.lattice_uniffi.MobileSpaceCursor
+import com.astraive.lattice.identity.IdentityPinCard
+import com.astraive.lattice.identity.IdentityPinUiState
+import com.astraive.lattice.identity.decodeIdentityHex
 
 internal enum class BluetoothReadiness {
     PERMISSION_REQUIRED,
@@ -62,6 +66,8 @@ internal data class NearbyScreenState(
     val showPermissionRationale: Boolean = false,
     val profileStatus: String = "Preparing protected device profile.",
     val identityFingerprint: String? = null,
+    val identityBundleHex: String? = null,
+    val identityPin: IdentityPinUiState = IdentityPinUiState(),
     val localSpaceIds: List<String> = emptyList(),
     val localSpacesStatus: String = "Local Space snapshots are loading.",
     val nextSpaceCursor: MobileSpaceCursor? = null,
@@ -164,6 +170,9 @@ class MainActivity : ComponentActivity() {
                     onDismissRationale = { screenState = screenState.copy(showPermissionRationale = false) },
                     onContinuePermission = ::continuePermissionFlow,
                     onLoadMoreSpaces = ::loadMoreLocalSpaces,
+                    onPeerBundleHexChanged = ::onPeerBundleHexChanged,
+                    onPeerFingerprintHexChanged = ::onPeerFingerprintHexChanged,
+                    onPinPeerIdentity = ::pinPeerIdentity,
                 )
             }
         }
@@ -194,8 +203,9 @@ class MainActivity : ComponentActivity() {
                 }
                 mobileProfile = profile
                 screenState = screenState.copy(
-                    profileStatus = "Protected device identity is ready.",
+                    profileStatus = "Protected local identity is available on this device.",
                     identityFingerprint = identity.fingerprint.toLowerHex(),
+                    identityBundleHex = identity.publicBundle.toLowerHex(),
                     localSpaceIds = firstSpacePage.spaces.map { it.spaceId.toLowerHex() },
                     localSpacesStatus = localSpacesStatus(firstSpacePage.spaces.size, firstSpacePage.nextCursor != null),
                     nextSpaceCursor = firstSpacePage.nextCursor,
@@ -206,6 +216,10 @@ class MainActivity : ComponentActivity() {
                 if (!isFinishing && !isDestroyed) {
                     screenState = screenState.copy(
                         profileStatus = when (error) {
+                            is MobileException.InvalidIdentityBundle -> "The local identity bundle is invalid."
+                            is MobileException.InvalidFingerprint -> "The local identity fingerprint is invalid."
+                            is MobileException.FingerprintMismatch -> "The local identity fingerprint does not match its bundle."
+                            is MobileException.PinnedIdentityConflict -> "The local profile conflicts with an existing identity pin."
                             is MobileException.InvalidProfileId -> "The local profile identifier is invalid."
                             is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
                             is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
@@ -248,6 +262,107 @@ class MainActivity : ComponentActivity() {
                     screenState = screenState.copy(
                         localSpacesStatus = "The next local Space page could not be restored.",
                         loadingSpacePage = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun onPeerBundleHexChanged(value: String) {
+        val pin = screenState.identityPin
+        screenState = if (value.length <= 130) {
+            screenState.copy(identityPin = pin.copy(peerBundleHexInput = value))
+        } else {
+            screenState.copy(
+                identityPin = pin.copy(
+                    identityPinStatus = "The public bundle must be exactly 130 hexadecimal characters.",
+                ),
+            )
+        }
+    }
+
+    private fun onPeerFingerprintHexChanged(value: String) {
+        val pin = screenState.identityPin
+        screenState = if (value.length <= 64) {
+            screenState.copy(identityPin = pin.copy(peerFingerprintHexInput = value))
+        } else {
+            screenState.copy(
+                identityPin = pin.copy(
+                    identityPinStatus = "The fingerprint must be exactly 64 hexadecimal characters.",
+                ),
+            )
+        }
+    }
+
+    private fun pinPeerIdentity() {
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                identityPin = screenState.identityPin.copy(
+                    identityPinStatus = "The protected profile is not ready.",
+                ),
+            )
+            return
+        }
+        val pin = screenState.identityPin
+        val bundle = decodeIdentityHex(pin.peerBundleHexInput, 65)
+        val fingerprint = decodeIdentityHex(pin.peerFingerprintHexInput, 32)
+        if (bundle == null || fingerprint == null) {
+            screenState = screenState.copy(
+                identityPin = pin.copy(
+                    identityPinStatus = "Enter a 65-byte public bundle and its full 32-byte fingerprint as hexadecimal.",
+                ),
+            )
+            return
+        }
+
+        screenState = screenState.copy(
+            identityPin = pin.copy(
+                pinningIdentity = true,
+                identityPinStatus = "Checking the full fingerprint and saving the local pin…",
+            ),
+        )
+        lifecycleScope.launch {
+            try {
+                val pinned = withContext(Dispatchers.IO) {
+                    profile.pinIdentity(bundle, fingerprint)
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            pinningIdentity = false,
+                            pinnedPeerFingerprint = pinned.fingerprint.toLowerHex(),
+                            identityPinStatus = "Exact bundle/fingerprint match stored locally. This does not authenticate a session or grant Space membership.",
+                        ),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            pinningIdentity = false,
+                            identityPinStatus = when (error) {
+                                is MobileException.InvalidIdentityBundle -> "The public bundle is malformed or has an unusable X25519 key."
+                                is MobileException.InvalidFingerprint -> "The full fingerprint must be exactly 32 bytes."
+                                is MobileException.FingerprintMismatch -> "Fingerprint mismatch. No pin was saved."
+                                is MobileException.PinnedIdentityConflict -> "This fingerprint is already pinned to different bundle bytes. The existing pin was not changed."
+                                is MobileException.InvalidProfileId -> "The local profile identifier is invalid."
+                                is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
+                                is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
+                                is MobileException.ProfileUnavailable -> "The protected local profile is unavailable."
+                                is MobileException.InvalidSpaceCursor -> "The local Space cursor is invalid."
+                            },
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            pinningIdentity = false,
+                            identityPinStatus = "The local identity pin could not be stored.",
+                        ),
                     )
                 }
             }
@@ -501,6 +616,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
 @Composable
 private fun NearbyReadinessScreen(
     state: NearbyScreenState,
@@ -509,6 +625,9 @@ private fun NearbyReadinessScreen(
     onDismissRationale: () -> Unit,
     onContinuePermission: () -> Unit,
     onLoadMoreSpaces: (MobileSpaceCursor) -> Unit,
+    onPeerBundleHexChanged: (String) -> Unit,
+    onPeerFingerprintHexChanged: (String) -> Unit,
+    onPinPeerIdentity: () -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -534,13 +653,29 @@ private fun NearbyReadinessScreen(
                     Text("Device identity", style = MaterialTheme.typography.titleMedium)
                     Text(state.profileStatus, style = MaterialTheme.typography.bodyMedium)
                     state.identityFingerprint?.let { fingerprint ->
-                        Text(
-                            "Fingerprint: $fingerprint",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        SelectionContainer {
+                            Text(
+                                "Fingerprint: $fingerprint",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    state.identityBundleHex?.let { publicBundle ->
+                        Text("Public bundle (share with a peer)", style = MaterialTheme.typography.bodySmall)
+                        SelectionContainer {
+                            Text(publicBundle, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
+            Spacer(Modifier.height(20.dp))
+            IdentityPinCard(
+                state = state.identityPin,
+                profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                onPeerBundleHexChanged = onPeerBundleHexChanged,
+                onPeerFingerprintHexChanged = onPeerFingerprintHexChanged,
+                onPinPeerIdentity = onPinPeerIdentity,
+            )
             Spacer(Modifier.height(20.dp))
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -602,7 +737,7 @@ private fun NearbyReadinessScreen(
             }
             Spacer(Modifier.height(20.dp))
             Text(
-                "A found service is an unverified sighting, not an authenticated Lattice peer. No device is connected and no data is exchanged. Pairing, GATT, and messaging are not implemented.",
+                "Nearby service sightings remain unverified and are not linked to manually pinned identities. No device is connected; GATT exchange and messaging are not implemented.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

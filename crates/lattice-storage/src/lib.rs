@@ -7,6 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+mod trusted_identities;
+pub use trusted_identities::TrustedIdentityRecord;
 
 /// Largest canonical event byte string accepted by the local store.
 pub const MAX_CANONICAL_EVENT_BYTES: usize = 1024 * 1024;
@@ -28,7 +30,7 @@ pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
 pub const MAX_SPACE_GENESIS_PAGE_SIZE: usize = 32;
 
 const ID_BYTES: usize = 32;
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
 const MAX_SPACE_GENESIS_GROUP_ID_BYTES: usize = 256;
@@ -125,6 +127,7 @@ pub enum StoreError {
     InvalidProtectedIdentity,
     InvalidProtectedMlsKey,
     InvalidSpaceGenesisSnapshot,
+    TrustedIdentityConflict,
     CorruptData(&'static str),
 }
 
@@ -178,6 +181,9 @@ impl std::fmt::Display for StoreError {
             Self::InvalidSpaceGenesisSnapshot => {
                 formatter.write_str("space Genesis snapshot has an invalid length")
             }
+            Self::TrustedIdentityConflict => formatter.write_str(
+                "trusted identity fingerprint is already associated with different bundle bytes",
+            ),
             Self::CorruptData(message) => write!(formatter, "corrupt storage data: {message}"),
         }
     }
@@ -338,6 +344,20 @@ impl Store {
                     PRIMARY KEY(space_id, group_reference)
                 );
                 PRAGMA user_version = 5;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 6 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE trusted_identities (
+                    fingerprint BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(fingerprint) = 'blob' AND length(fingerprint) = 32),
+                    public_bundle BLOB NOT NULL
+                        CHECK(typeof(public_bundle) = 'blob' AND length(public_bundle) = 65)
+                );
+                PRAGMA user_version = 6;",
             )?;
             transaction.commit()?;
         }
@@ -1402,6 +1422,7 @@ mod tests {
     use super::{
         CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
         MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, Store, StoreError,
+        TrustedIdentityRecord,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1539,6 +1560,7 @@ mod tests {
                     "DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
                      DROP TABLE space_genesis_snapshots;
+                     DROP TABLE trusted_identities;
                      DROP INDEX outbox_queued_schedule;
                      DROP TABLE outbox;
                      PRAGMA user_version = 1;",
@@ -1592,6 +1614,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE space_genesis_snapshots;
+                     DROP TABLE trusted_identities;
                      PRAGMA user_version = 4;",
                 )
                 .expect("restore v4 schema fixture");
@@ -1602,7 +1625,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert_eq!(
             store
                 .load_event(&event)
@@ -1616,6 +1639,115 @@ mod tests {
                 .load_space_genesis_snapshot(&[0x11; 16], &[0x22; 32])
                 .expect("query new snapshot table"),
             None
+        );
+    }
+    #[test]
+    fn v5_schema_upgrade_adds_trusted_identity_storage_and_preserves_events() {
+        let database = TempDatabase::new();
+        let event = id(98);
+        {
+            let mut store = Store::open(database.path()).expect("create latest schema");
+            store
+                .commit_authored(id(97), event, 1, &[0xA9], &[])
+                .expect("save event before downgrade simulation");
+        }
+        {
+            let connection =
+                rusqlite::Connection::open(database.path()).expect("open schema for fixture");
+            connection
+                .execute_batch(
+                    "DROP TABLE trusted_identities;
+                     PRAGMA user_version = 5;",
+                )
+                .expect("restore v5 schema fixture");
+        }
+        let store = Store::open(database.path()).expect("upgrade v5 database");
+        let version: i64 = store
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read upgraded schema version");
+        assert_eq!(version, 6);
+        assert_eq!(
+            store
+                .load_event(&event)
+                .expect("load migrated event")
+                .expect("event survives migration")
+                .canonical_bytes,
+            [0xA9]
+        );
+        assert_eq!(
+            store
+                .load_trusted_identity(&[0x31; 32])
+                .expect("query migrated table"),
+            None
+        );
+    }
+
+    #[test]
+    fn trusted_identity_persists_exact_bytes_idempotently_and_rejects_conflicts() {
+        let database = TempDatabase::new();
+        let record = TrustedIdentityRecord {
+            fingerprint: [0x31; 32],
+            public_bundle: [0xA7; 65],
+        };
+        {
+            let mut store = Store::open(database.path()).expect("open database");
+            assert_eq!(
+                store
+                    .load_trusted_identity(&record.fingerprint)
+                    .expect("empty pin"),
+                None
+            );
+            store.save_trusted_identity(record).expect("save first pin");
+            store
+                .save_trusted_identity(record)
+                .expect("repeat exact pin");
+            assert!(matches!(
+                store.save_trusted_identity(TrustedIdentityRecord {
+                    fingerprint: record.fingerprint,
+                    public_bundle: [0xB8; 65],
+                }),
+                Err(StoreError::TrustedIdentityConflict)
+            ));
+            assert_eq!(
+                store
+                    .load_trusted_identity(&record.fingerprint)
+                    .expect("load pin"),
+                Some(record)
+            );
+        }
+        let store = Store::open(database.path()).expect("reopen database");
+        assert_eq!(
+            store
+                .load_trusted_identity(&record.fingerprint)
+                .expect("pin survives reopen"),
+            Some(record)
+        );
+    }
+
+    #[test]
+    fn trusted_identity_schema_rejects_malformed_widths() {
+        let database = TempDatabase::new();
+        let store = Store::open(database.path()).expect("open database");
+        assert!(
+            store
+                .connection
+                .execute(
+                    "INSERT INTO trusted_identities(fingerprint, public_bundle)
+                     VALUES (?1, ?2)",
+                    rusqlite::params![vec![0x31_u8; 31], vec![0xA7_u8; 65]],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "INSERT INTO trusted_identities(fingerprint, public_bundle)
+                     VALUES (?1, ?2)",
+                    rusqlite::params![vec![0x31_u8; 32], vec![0xA7_u8; 64]],
+                )
+                .is_err()
         );
     }
 

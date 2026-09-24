@@ -754,17 +754,21 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
-// N.B. the name of the extension is very misleading, since it is
-// rather `InterfaceTooLargeException`, caused by too many methods
+// N.B. the name of the extension is very misleading, since it is 
+// rather `InterfaceTooLargeException`, caused by too many methods 
 // in the interface for large crates.
 //
 // By splitting the otherwise huge interface into two parts
-// * UniffiLib
+// * UniffiLib 
 // * IntegrityCheckingUniffiLib (this)
 // we allow for ~2x as many methods in the UniffiLib interface.
-//
-// The `ffi_uniffi_contract_version` method and all checksum methods are put
+// 
+// The `ffi_uniffi_contract_version` method and all checksum methods are put 
 // into `IntegrityCheckingUniffiLib` and these methods are called only once,
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
@@ -774,6 +778,10 @@ internal interface IntegrityCheckingUniffiLib : Library {
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
 ): Short
@@ -793,8 +801,8 @@ internal interface UniffiLib : Library {
         internal val INSTANCE: UniffiLib by lazy {
             val componentName = "lattice_uniffi"
             // For large crates we prevent `MethodTooLargeException` (see #2340)
-            // N.B. the name of the extension is very misleading, since it is
-            // rather `InterfaceTooLargeException`, caused by too many methods
+            // N.B. the name of the extension is very misleading, since it is 
+            // rather `InterfaceTooLargeException`, caused by too many methods 
             // in the interface for large crates.
             //
             // By splitting the otherwise huge interface into two parts
@@ -802,7 +810,7 @@ internal interface UniffiLib : Library {
             // * IntegrityCheckingUniffiLib
             // And all checksum methods are put into `IntegrityCheckingUniffiLib`
             // we allow for ~2x as many methods in the UniffiLib interface.
-            //
+            // 
             // Thus we first load the library with `loadIndirect` as `IntegrityCheckingUniffiLib`
             // so that we can (optionally!) call `uniffiCheckApiChecksums`...
             loadIndirect<IntegrityCheckingUniffiLib>(componentName)
@@ -817,13 +825,13 @@ internal interface UniffiLib : Library {
             // to trigger this issue, the performance impact is negligible, running on
             // a macOS M1 machine the `loadIndirect` call takes ~50ms.
             val lib = loadIndirect<UniffiLib>(componentName)
-            // No need to check the contract version and checksums, since
+            // No need to check the contract version and checksums, since 
             // we already did that with `IntegrityCheckingUniffiLib` above.
             uniffiCallbackInterfacePlatformKeyProtector.register(lib)
             // Loading of library with integrity check done.
             lib
         }
-
+        
         // The Cleaner for the whole library
         internal val CLEANER: UniffiCleaner by lazy {
             UniffiCleaner.create()
@@ -831,35 +839,39 @@ internal interface UniffiLib : Library {
     }
 
     // FFI functions
-    fun uniffi_lattice_uniffi_fn_clone_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+    fun uniffi_lattice_uniffi_fn_clone_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_lattice_uniffi_fn_free_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_free_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointer,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointer,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
-fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Pointer,`publicBundle`: RustBuffer.ByValue,`expectedFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_init_callback_vtable_platformkeyprotector(`vtable`: UniffiVTableCallbackInterfacePlatformKeyProtector,
 ): Unit
-fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_lattice_uniffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_lattice_uniffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_lattice_uniffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun ffi_lattice_uniffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_lattice_uniffi_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -867,7 +879,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u8(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u8(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun ffi_lattice_uniffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -875,7 +887,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i8(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i8(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun ffi_lattice_uniffi_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -883,7 +895,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u16(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u16(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Short
 fun ffi_lattice_uniffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -891,7 +903,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i16(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i16(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Short
 fun ffi_lattice_uniffi_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -899,7 +911,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u32(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u32(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
 fun ffi_lattice_uniffi_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -907,7 +919,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i32(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i32(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
 fun ffi_lattice_uniffi_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -915,7 +927,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u64(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u64(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun ffi_lattice_uniffi_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -923,7 +935,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i64(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i64(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun ffi_lattice_uniffi_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -931,7 +943,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_f32(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_f32(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Float
 fun ffi_lattice_uniffi_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -939,7 +951,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_f64(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_f64(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Double
 fun ffi_lattice_uniffi_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -947,7 +959,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_pointer(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_pointer(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun ffi_lattice_uniffi_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -955,7 +967,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_rust_buffer(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_rust_buffer(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_lattice_uniffi_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -963,7 +975,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_void(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_void(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 
 }
@@ -986,6 +998,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence() != 50784.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity() != 30926.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity() != 24120.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() != 64121.toShort()) {
@@ -1069,7 +1087,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/**
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
@@ -1373,7 +1391,7 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
  * Thread-safe handle to one durable local profile.
  */
 public interface MobileClientInterface {
-
+    
     /**
      * Returns the non-secret public identity information for native UI.
      *
@@ -1382,7 +1400,7 @@ public interface MobileClientInterface {
      * Returns `ProfileUnavailable` if the local profile lock is poisoned.
      */
     fun `identityInfo`(): MobileIdentityInfo
-
+    
     /**
      * Restores one bounded page of local Genesis snapshots.
      *
@@ -1395,7 +1413,7 @@ public interface MobileClientInterface {
      * `ProfileUnavailable` when a snapshot or profile cannot be restored.
      */
     fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage
-
+    
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -1404,7 +1422,36 @@ public interface MobileClientInterface {
      * Returns `ProfileUnavailable` if the profile lock or sequence lookup fails.
      */
     fun `nextAuthorSequence`(): kotlin.ULong
-
+    
+    /**
+     * Stores one exact identity bundle after checking its caller-supplied full
+     * fingerprint.
+     *
+     * The caller must obtain `expected_fingerprint` through out-of-band human
+     * verification or a session-bound comparison. This method validates and
+     * persists the exact match; it does not attest that comparison, authenticate
+     * a Noise session, validate an MLS credential, or grant membership.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for a non-32-byte digest,
+     * `InvalidIdentityBundle` for malformed bytes,
+     * `FingerprintMismatch` for a valid but nonmatching bundle, or
+     * `PinnedIdentityConflict` if that fingerprint already maps to other bytes.
+     */
+    fun `pinIdentity`(`publicBundle`: kotlin.ByteArray, `expectedFingerprint`: kotlin.ByteArray): MobilePinnedIdentity
+    
+    /**
+     * Loads and revalidates one pinned peer by its full fingerprint.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for a non-32-byte digest,
+     * `InvalidIdentityBundle` or `FingerprintMismatch` for corrupt stored data,
+     * and `ProfileUnavailable` if the profile cannot be read.
+     */
+    fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity?
+    
     companion object
 }
 
@@ -1493,7 +1540,7 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
         }
     }
 
-
+    
     /**
      * Returns the non-secret public identity information for native UI.
      *
@@ -1511,9 +1558,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Restores one bounded page of local Genesis snapshots.
      *
@@ -1535,9 +1582,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -1555,13 +1602,64 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
+    
+    /**
+     * Stores one exact identity bundle after checking its caller-supplied full
+     * fingerprint.
+     *
+     * The caller must obtain `expected_fingerprint` through out-of-band human
+     * verification or a session-bound comparison. This method validates and
+     * persists the exact match; it does not attest that comparison, authenticate
+     * a Noise session, validate an MLS credential, or grant membership.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for a non-32-byte digest,
+     * `InvalidIdentityBundle` for malformed bytes,
+     * `FingerprintMismatch` for a valid but nonmatching bundle, or
+     * `PinnedIdentityConflict` if that fingerprint already maps to other bytes.
+     */
+    @Throws(MobileException::class)override fun `pinIdentity`(`publicBundle`: kotlin.ByteArray, `expectedFingerprint`: kotlin.ByteArray): MobilePinnedIdentity {
+            return FfiConverterTypeMobilePinnedIdentity.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(
+        it, FfiConverterByteArray.lower(`publicBundle`),FfiConverterByteArray.lower(`expectedFingerprint`),_status)
+}
+    }
+    )
+    }
+    
 
+    
+    /**
+     * Loads and revalidates one pinned peer by its full fingerprint.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for a non-32-byte digest,
+     * `InvalidIdentityBundle` or `FingerprintMismatch` for corrupt stored data,
+     * and `ProfileUnavailable` if the profile cannot be read.
+     */
+    @Throws(MobileException::class)override fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity? {
+            return FfiConverterOptionalTypeMobilePinnedIdentity.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(
+        it, FfiConverterByteArray.lower(`fingerprint`),_status)
+}
+    }
+    )
+    }
+    
 
+    
 
-
+    
     companion object {
-
+        
     /**
      * Opens a durable profile using a caller-provided OS keystore bridge.
      *
@@ -1582,11 +1680,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 }
     )
     }
+    
 
-
-
+        
     }
-
+    
 }
 
 /**
@@ -1717,7 +1815,7 @@ public object FfiConverterTypeMobileClient: FfiConverter<MobileClient, Pointer> 
 
 
 public interface PlatformKeyProtector {
-
+    
     /**
      * Wraps private material for the exact profile identifier.
      *
@@ -1726,7 +1824,7 @@ public interface PlatformKeyProtector {
      * Returns `ProtectorError` when the native keystore refuses protection.
      */
     fun `wrap`(`profileId`: kotlin.String, `clearMaterial`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     /**
      * Unwraps ciphertext only for the exact profile identifier.
      *
@@ -1736,7 +1834,7 @@ public interface PlatformKeyProtector {
      * authenticate the ciphertext.
      */
     fun `unwrap`(`profileId`: kotlin.String, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     companion object
 }
 
@@ -1822,7 +1920,7 @@ open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProte
         }
     }
 
-
+    
     /**
      * Wraps private material for the exact profile identifier.
      *
@@ -1840,9 +1938,9 @@ open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProte
     }
     )
     }
+    
 
-
-
+    
     /**
      * Unwraps ciphertext only for the exact profile identifier.
      *
@@ -1861,14 +1959,14 @@ open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProte
     }
     )
     }
+    
 
+    
 
-
-
-
-
+    
+    
     companion object
-
+    
 }
 
 
@@ -1968,13 +2066,13 @@ data class MobileIdentityInfo (
     /**
      * Versioned public identity bundle.
      */
-    var `publicBundle`: kotlin.ByteArray,
+    var `publicBundle`: kotlin.ByteArray, 
     /**
      * Domain-separated fingerprint of the exact public bundle.
      */
     var `fingerprint`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -2003,19 +2101,63 @@ public object FfiConverterTypeMobileIdentityInfo: FfiConverterRustBuffer<MobileI
 
 
 /**
+ * A durable local match between a public bundle and its full fingerprint.
+ *
+ * This record does not attest human comparison, authenticate a session, or
+ * authorize MLS membership.
+ */
+data class MobilePinnedIdentity (
+    /**
+     * Exact versioned public identity bundle.
+     */
+    var `publicBundle`: kotlin.ByteArray, 
+    /**
+     * Full fingerprint of the exact bundle bytes.
+     */
+    var `fingerprint`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobilePinnedIdentity: FfiConverterRustBuffer<MobilePinnedIdentity> {
+    override fun read(buf: ByteBuffer): MobilePinnedIdentity {
+        return MobilePinnedIdentity(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobilePinnedIdentity) = (
+            FfiConverterByteArray.allocationSize(value.`publicBundle`) +
+            FfiConverterByteArray.allocationSize(value.`fingerprint`)
+    )
+
+    override fun write(value: MobilePinnedIdentity, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`publicBundle`, buf)
+            FfiConverterByteArray.write(value.`fingerprint`, buf)
+    }
+}
+
+
+
+/**
  * Stable cursor for paginating locally recoverable Space generations.
  */
 data class MobileSpaceCursor (
     /**
      * Space identifier bytes.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray, 
     /**
      * MLS group reference bytes.
      */
     var `groupReference`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -2050,13 +2192,13 @@ data class MobileSpacePage (
     /**
      * Restored generations in this page.
      */
-    var `spaces`: List<MobileSpaceSummary>,
+    var `spaces`: List<MobileSpaceSummary>, 
     /**
      * Exclusive cursor to request the next page.
      */
     var `nextCursor`: MobileSpaceCursor?
 ) {
-
+    
     companion object
 }
 
@@ -2091,13 +2233,13 @@ data class MobileSpaceSummary (
     /**
      * Space identifier bytes.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray, 
     /**
      * MLS group reference bytes.
      */
     var `groupReference`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -2131,7 +2273,7 @@ public object FfiConverterTypeMobileSpaceSummary: FfiConverterRustBuffer<MobileS
  * Stable mobile-safe failures that do not disclose key material or SQL details.
  */
 sealed class MobileException: kotlin.Exception() {
-
+    
     /**
      * Profile identifiers must be 1–128 printable ASCII characters.
      */
@@ -2140,7 +2282,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local profile could not be opened with its OS-protected keys.
      */
@@ -2149,7 +2291,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The native key protector failed or denied access.
      */
@@ -2158,7 +2300,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The profile lock was poisoned by a prior Rust panic.
      */
@@ -2167,7 +2309,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The caller supplied a Space cursor with an invalid identifier length.
      */
@@ -2176,13 +2318,49 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
+    /**
+     * The public identity bundle is malformed or uses unsupported keys.
+     */
+    class InvalidIdentityBundle(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The caller supplied a fingerprint with a length other than 32 bytes.
+     */
+    class InvalidFingerprint(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The supplied full fingerprint does not match the exact bundle.
+     */
+    class FingerprintMismatch(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * A previously stored fingerprint is mapped to different bundle bytes.
+     */
+    class PinnedIdentityConflict(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileException> {
         override fun lift(error_buf: RustBuffer.ByValue): MobileException = FfiConverterTypeMobileError.lift(error_buf)
     }
 
-
+    
 }
 
 /**
@@ -2190,7 +2368,7 @@ sealed class MobileException: kotlin.Exception() {
  */
 public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileException> {
     override fun read(buf: ByteBuffer): MobileException {
-
+        
 
         return when(buf.getInt()) {
             1 -> MobileException.InvalidProfileId()
@@ -2198,6 +2376,10 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             3 -> MobileException.KeyProtectionFailed()
             4 -> MobileException.ProfileUnavailable()
             5 -> MobileException.InvalidSpaceCursor()
+            6 -> MobileException.InvalidIdentityBundle()
+            7 -> MobileException.InvalidFingerprint()
+            8 -> MobileException.FingerprintMismatch()
+            9 -> MobileException.PinnedIdentityConflict()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -2221,6 +2403,22 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.InvalidSpaceCursor -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidIdentityBundle -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidFingerprint -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.FingerprintMismatch -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.PinnedIdentityConflict -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -2249,6 +2447,22 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(5)
                 Unit
             }
+            is MobileException.InvalidIdentityBundle -> {
+                buf.putInt(6)
+                Unit
+            }
+            is MobileException.InvalidFingerprint -> {
+                buf.putInt(7)
+                Unit
+            }
+            is MobileException.FingerprintMismatch -> {
+                buf.putInt(8)
+                Unit
+            }
+            is MobileException.PinnedIdentityConflict -> {
+                buf.putInt(9)
+                Unit
+            }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
@@ -2263,7 +2477,7 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
  * profile-bound platform key and must fail closed when that key is unavailable.
  */
 sealed class ProtectorException: kotlin.Exception() {
-
+    
     /**
      * The native keystore denied access or could not protect the bytes.
      */
@@ -2272,13 +2486,13 @@ sealed class ProtectorException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ProtectorException> {
         override fun lift(error_buf: RustBuffer.ByValue): ProtectorException = FfiConverterTypeProtectorError.lift(error_buf)
     }
 
-
+    
 }
 
 /**
@@ -2286,7 +2500,7 @@ sealed class ProtectorException: kotlin.Exception() {
  */
 public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorException> {
     override fun read(buf: ByteBuffer): ProtectorException {
-
+        
 
         return when(buf.getInt()) {
             1 -> ProtectorException.Failure()
@@ -2312,6 +2526,38 @@ public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorE
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobilePinnedIdentity: FfiConverterRustBuffer<MobilePinnedIdentity?> {
+    override fun read(buf: ByteBuffer): MobilePinnedIdentity? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobilePinnedIdentity.read(buf)
+    }
+
+    override fun allocationSize(value: MobilePinnedIdentity?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobilePinnedIdentity.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobilePinnedIdentity?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobilePinnedIdentity.write(value, buf)
+        }
+    }
 }
 
 
@@ -2373,3 +2619,4 @@ public object FfiConverterSequenceTypeMobileSpaceSummary: FfiConverterRustBuffer
         }
     }
 }
+

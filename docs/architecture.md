@@ -324,7 +324,7 @@ sequenceDiagram
     B->>B: Validate, persist, project
 ```
 
-An invite rendezvous hint does not authenticate a Space. Accepting a join requires verified genesis, KeyPackage/credential handling, MLS add, and application policy. A local message is `queued` until an eligible path takes it; after next-hop/relay acceptance it is `forwarded`; destination receipt means `delivered-to-peer`; an optional authenticated read receipt means `read-local`.
+An invite rendezvous hint does not authenticate a Space. Accepting a join requires verified genesis, KeyPackage/credential handling, MLS add, and application policy. A local message is `queued` until an eligible path takes it; after next-hop/relay acceptance it is `forwarded`; destination device receipt means `delivered-to-device`; an optional authenticated read receipt means `read-local`.
 
 ### Cross a partition and change paths
 

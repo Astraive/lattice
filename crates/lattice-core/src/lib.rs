@@ -25,6 +25,7 @@ use lattice_storage::{
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+mod identity_pin;
 pub mod space;
 /// Stable name of this local orchestration facade.
 pub const CRATE_NAME: &str = "lattice-core";
@@ -231,6 +232,9 @@ pub enum CoreError {
     /// Creating or reopening the protected device identity failed.
     #[error(transparent)]
     Identity(#[from] IdentityError),
+    /// A fingerprint is already pinned to different public bundle bytes.
+    #[error("identity fingerprint is already pinned to different bundle bytes")]
+    PinnedIdentityConflict,
     /// A protected MLS storage key did not contain exactly 32 bytes.
     #[error("protected MLS storage key is invalid")]
     MlsStorageKeyInvalid,
@@ -754,7 +758,10 @@ mod tests {
 
     use super::{Client, CoreError, bind_mls_application};
     use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
-    use lattice_identity::{DeviceIdentity, PrivateKeyProtectionError, PrivateKeyProtector};
+    use lattice_identity::{
+        DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
+        PrivateKeyProtectionError, PrivateKeyProtector,
+    };
     use lattice_mls::api::{DeviceCredentialInput, GroupState, IncomingResult};
     use openmls::credentials::Credential;
     use openmls::prelude::CredentialType;
@@ -829,6 +836,93 @@ mod tests {
             },
         )
         .expect("event signature created")
+    }
+
+    #[test]
+    fn peer_pin_requires_full_fingerprint_and_survives_restart() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let peer = DeviceIdentity::generate().expect("peer identity");
+        let bundle = peer.public_bundle();
+        let fingerprint = bundle.fingerprint();
+        {
+            let mut client =
+                Client::open_or_create(&database.0, &protector).expect("initialize client");
+            let pinned = client
+                .pin_identity(&bundle.to_bytes(), fingerprint)
+                .expect("pin exact bundle");
+            assert_eq!(pinned.bundle(), bundle);
+            assert_eq!(
+                client.pinned_identity(&fingerprint).expect("load pin"),
+                Some(pinned)
+            );
+
+            let mut wrong_fingerprint = fingerprint;
+            wrong_fingerprint[0] ^= 1;
+            assert!(matches!(
+                client.pin_identity(&bundle.to_bytes(), wrong_fingerprint),
+                Err(CoreError::Identity(IdentityError::FingerprintMismatch))
+            ));
+
+            let mut changed_bundle_bytes = bundle.to_bytes();
+            changed_bundle_bytes[33] ^= 1;
+            let changed_x25519 = IdentityPublicBundle::from_bytes(&changed_bundle_bytes)
+                .expect("changed public bundle");
+            assert!(matches!(
+                client.pin_identity(&changed_x25519.to_bytes(), fingerprint),
+                Err(CoreError::Identity(IdentityError::FingerprintMismatch))
+            ));
+            assert_eq!(
+                client
+                    .pinned_identity(&fingerprint)
+                    .expect("original pin remains"),
+                Some(pinned)
+            );
+        }
+        let client = Client::open_existing(&database.0, &protector).expect("reopen client");
+        assert_eq!(
+            client
+                .pinned_identity(&fingerprint)
+                .expect("pin survives restart"),
+            Some(
+                PinnedIdentity::from_verified_fingerprint(bundle, fingerprint)
+                    .expect("matching fingerprint")
+            )
+        );
+    }
+
+    #[test]
+    fn modified_pinned_bundle_is_rejected_on_lookup() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let peer = DeviceIdentity::generate().expect("peer identity");
+        let bundle = peer.public_bundle();
+        let fingerprint = bundle.fingerprint();
+        {
+            let mut client =
+                Client::open_or_create(&database.0, &protector).expect("initialize client");
+            client
+                .pin_identity(&bundle.to_bytes(), fingerprint)
+                .expect("pin exact bundle");
+        }
+
+        let mut changed_bundle = bundle.to_bytes();
+        changed_bundle[33] ^= 1;
+        let connection =
+            rusqlite::Connection::open(&database.0).expect("open pin database directly");
+        connection
+            .execute(
+                "UPDATE trusted_identities SET public_bundle = ?1 WHERE fingerprint = ?2",
+                rusqlite::params![&changed_bundle[..], &fingerprint[..]],
+            )
+            .expect("alter stored bundle");
+        drop(connection);
+
+        let client = Client::open_existing(&database.0, &protector).expect("reopen client");
+        assert!(matches!(
+            client.pinned_identity(&fingerprint),
+            Err(CoreError::Identity(IdentityError::FingerprintMismatch))
+        ));
     }
 
     #[test]

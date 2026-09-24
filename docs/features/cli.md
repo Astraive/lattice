@@ -13,6 +13,7 @@ The production CLI is native Rust. It uses the same core and local identity form
 | CLI-007 | `lattice node run` shall opt into bounded persistent peer/courier behavior. | Stop/restart, disk quota, untrusted packet and privilege tests. | M7 |
 | CLI-008 | `lattice doctor` shall inspect DB, keys, versions, permissions and transport without exposing secrets. | Corrupt DB, revoked permission and incompatible wire version are distinguished. | M7 |
 | CLI-009 | `lattice space list` shall verify and enumerate local Genesis snapshots in bounded pages. | All snapshots are returned across exclusive keyset cursors; corrupt event or snapshot integrity fails closed and JSON/human output never claims membership. | M7 |
+| CLI-010 | `lattice identity pin` shall persist an exact public bundle only when its full fingerprint matches. | Wrong fingerprints and conflicting bundle bytes fail without replacing the existing pin; lookup after reopen returns the exact stored bundle. | M7 |
 
 CLI output should support human and machine-readable modes with stable error classes. It may facilitate test harnesses, but its existence does not imply a globally reachable node or centralized administration.
 
@@ -22,6 +23,8 @@ CLI output should support human and machine-readable modes with stable error cla
 
 All commands operate on an explicitly selected local profile/data directory, preventing accidental overlap between two identities. Read-only commands (`identity show`, `space list`, `sync status`, `doctor`) must not mutate network membership. `space list` verifies local Genesis records only and does not establish current membership. Mutating commands show the event ID and accurate local/destination state; `--json` returns versioned field names and stable error code, while human output may be reformatted. Secret export or reset, if implemented, requires a separate explicit confirmation and protected destination; a normal diagnostic never prints secret bytes.
 JSON output uses `schema_version: 1`. `identity` returns lowercase hexadecimal `fingerprint` and `public_bundle` fields plus `private_key_exposed: false`; `status` returns the identity state and explicit unavailable capability booleans; `about` separates `available` from `unavailable` capability names. `space_list` returns at most 32 `{space_id, group_reference}` rows and a nullable `next_cursor`.
+
+`identity pin` requires an initialized profile. It accepts a 65-byte public bundle and its expected 32-byte fingerprint as hexadecimal, recomputes the fingerprint, then stores the exact bundle bytes. Repeating an identical pin is idempotent. A different bundle for an existing fingerprint is rejected without overwrite. `identity pinned` looks up a record by its full fingerprint. A stored pin does not prove that a person compared fingerprints out of band, authenticate a session, validate an MLS credential, or grant Space membership.
 
 | Command | Success signal | Common failure |
 | --- | --- | --- |

@@ -1,10 +1,12 @@
 //! UniFFI-owned mobile boundary for the local Rust profile.
 
-use std::sync::{Arc, Mutex, MutexGuard};
-
-use lattice_core::{Client, CoreError, DeviceIdentityInfo as CoreIdentityInfo, SpaceGenesisCursor};
-use lattice_identity::{IdentityError, PrivateKeyProtectionError, PrivateKeyProtector};
+use lattice_core::{DeviceIdentityInfo as CoreIdentityInfo, SpaceGenesisCursor};
 use thiserror::Error;
+
+mod identity;
+mod mobile_client;
+pub use identity::MobilePinnedIdentity;
+pub use mobile_client::MobileClient;
 
 uniffi::setup_scaffolding!();
 
@@ -126,137 +128,18 @@ pub enum MobileError {
     /// The caller supplied a Space cursor with an invalid identifier length.
     #[error("invalid Space page cursor")]
     InvalidSpaceCursor,
-}
-
-struct ProfileProtector {
-    profile_id: String,
-    platform: Arc<dyn PlatformKeyProtector>,
-}
-
-impl PrivateKeyProtector for ProfileProtector {
-    fn wrap(&self, clear_material: &[u8]) -> Result<Vec<u8>, PrivateKeyProtectionError> {
-        self.platform
-            .wrap(self.profile_id.clone(), clear_material.to_vec())
-            .map_err(|_| PrivateKeyProtectionError)
-    }
-
-    fn unwrap(&self, ciphertext: &[u8]) -> Result<Vec<u8>, PrivateKeyProtectionError> {
-        self.platform
-            .unwrap(self.profile_id.clone(), ciphertext.to_vec())
-            .map_err(|_| PrivateKeyProtectionError)
-    }
-}
-
-/// Thread-safe handle to one durable local profile.
-#[derive(uniffi::Object)]
-pub struct MobileClient {
-    client: Mutex<Client>,
-}
-
-#[uniffi::export]
-impl MobileClient {
-    /// Opens a durable profile using a caller-provided OS keystore bridge.
-    ///
-    /// This API has no software-key fallback. The profile identifier is passed
-    /// to the native protector for key binding and must remain stable.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidProfileId` for a malformed identifier,
-    /// `KeyProtectionFailed` when the OS keystore refuses access, or
-    /// `ProfileOpenFailed` for storage or profile initialization failures.
-    #[uniffi::constructor]
-    pub fn open_or_create(
-        database_path: String,
-        profile_id: String,
-        protector: Arc<dyn PlatformKeyProtector>,
-    ) -> Result<Arc<Self>, MobileError> {
-        if profile_id.is_empty()
-            || profile_id.len() > 128
-            || !profile_id.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
-        {
-            return Err(MobileError::InvalidProfileId);
-        }
-
-        let platform = ProfileProtector {
-            profile_id,
-            platform: protector,
-        };
-        let client = Client::open_or_create(database_path, &platform)
-            .map_err(|error| map_open_error(&error))?;
-        Ok(Arc::new(Self {
-            client: Mutex::new(client),
-        }))
-    }
-
-    /// Returns the non-secret public identity information for native UI.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProfileUnavailable` if the local profile lock is poisoned.
-    pub fn identity_info(&self) -> Result<MobileIdentityInfo, MobileError> {
-        let client = self.lock_client()?;
-        Ok(client.identity_info().into())
-    }
-
-    /// Returns the next durable author sequence for this identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProfileUnavailable` if the profile lock or sequence lookup fails.
-    pub fn next_author_sequence(&self) -> Result<u64, MobileError> {
-        self.lock_client()?
-            .next_author_sequence()
-            .map_err(|_| MobileError::ProfileUnavailable)
-    }
-
-    /// Restores one bounded page of local Genesis snapshots.
-    ///
-    /// This lists locally created candidate generations only. It does not
-    /// establish current membership or restore later policy events.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidSpaceCursor` for malformed cursor byte lengths or
-    /// `ProfileUnavailable` when a snapshot or profile cannot be restored.
-    pub fn list_local_spaces(
-        &self,
-        after: Option<MobileSpaceCursor>,
-    ) -> Result<MobileSpacePage, MobileError> {
-        let after = after.map(SpaceGenesisCursor::try_from).transpose()?;
-        let mut client = self.lock_client()?;
-        let page = client
-            .restore_space_page(after)
-            .map_err(|_| MobileError::ProfileUnavailable)?;
-        let spaces = page
-            .spaces()
-            .iter()
-            .map(|space| MobileSpaceSummary {
-                space_id: space.space_id().to_vec(),
-                group_reference: space.group_reference().to_vec(),
-            })
-            .collect();
-        Ok(MobileSpacePage {
-            spaces,
-            next_cursor: page.next_cursor().map(Into::into),
-        })
-    }
-}
-
-impl MobileClient {
-    fn lock_client(&self) -> Result<MutexGuard<'_, Client>, MobileError> {
-        self.client
-            .lock()
-            .map_err(|_| MobileError::ProfileUnavailable)
-    }
-}
-
-fn map_open_error(error: &CoreError) -> MobileError {
-    if matches!(error, CoreError::Identity(IdentityError::Protection(_))) {
-        MobileError::KeyProtectionFailed
-    } else {
-        MobileError::ProfileOpenFailed
-    }
+    /// The public identity bundle is malformed or uses unsupported keys.
+    #[error("invalid identity bundle")]
+    InvalidIdentityBundle,
+    /// The caller supplied a fingerprint with a length other than 32 bytes.
+    #[error("invalid identity fingerprint length")]
+    InvalidFingerprint,
+    /// The supplied full fingerprint does not match the exact bundle.
+    #[error("identity fingerprint does not match the bundle")]
+    FingerprintMismatch,
+    /// A previously stored fingerprint is mapped to different bundle bytes.
+    #[error("identity fingerprint is already pinned to another bundle")]
+    PinnedIdentityConflict,
 }
 
 #[cfg(test)]
@@ -366,6 +249,66 @@ mod tests {
         assert_eq!(
             reopened.identity_info().expect("restored identity"),
             identity
+        );
+    }
+
+    #[test]
+    fn stores_only_exactly_fingerprinted_identity_pins() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let database_path = directory
+            .path()
+            .join("profile.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        let client = MobileClient::open_or_create(
+            database_path,
+            "android-pin-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+        let identity = client.identity_info().expect("local identity");
+
+        assert!(matches!(
+            client.pin_identity(identity.public_bundle.clone(), vec![0; 31]),
+            Err(MobileError::InvalidFingerprint)
+        ));
+        let mut wrong_fingerprint = identity.fingerprint.clone();
+        wrong_fingerprint[0] ^= 1;
+        assert!(matches!(
+            client.pin_identity(identity.public_bundle.clone(), wrong_fingerprint),
+            Err(MobileError::FingerprintMismatch)
+        ));
+        assert!(matches!(
+            client.pin_identity(vec![0; 64], identity.fingerprint.clone()),
+            Err(MobileError::InvalidIdentityBundle)
+        ));
+        let mut non_contributory_bundle = identity.public_bundle.clone();
+        non_contributory_bundle[33..].fill(0);
+        assert!(matches!(
+            client.pin_identity(non_contributory_bundle, identity.fingerprint.clone()),
+            Err(MobileError::InvalidIdentityBundle)
+        ));
+        assert_eq!(
+            client
+                .pinned_identity(identity.fingerprint.clone())
+                .expect("query absent pin"),
+            None
+        );
+        assert!(matches!(
+            client.pinned_identity(vec![0; 31]),
+            Err(MobileError::InvalidFingerprint)
+        ));
+
+        let pinned = client
+            .pin_identity(identity.public_bundle.clone(), identity.fingerprint.clone())
+            .expect("pin exact identity bundle");
+        assert_eq!(pinned.public_bundle, identity.public_bundle);
+        assert_eq!(pinned.fingerprint, identity.fingerprint);
+        assert_eq!(
+            client
+                .pinned_identity(identity.fingerprint.clone())
+                .expect("load exact pin"),
+            Some(pinned)
         );
     }
 

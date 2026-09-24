@@ -13,9 +13,10 @@
 | `courier_queue` | Opaque third-party ciphertext, expiry/copy budget | Best-effort opt-in cache |
 | `files`, `chunks` | Manifests, path/bitmap, integrity state | Content-addressed transfers |
 | `relay_state`, `routes`, `peers` | User relay settings, cursor and path hints | Local hints, not global presence |
+| `trusted_identities` | Exact 32-byte fingerprint to 65-byte identity-bundle pins | Local pin mapping only; not MLS membership or proof of human verification |
 | Secure storage | Private signing/DH/MLS material and local wrapping secret | Platform-protected installation state |
 
-The current SQLite v5 store adds OS-protected identity and MLS-key ciphertext, plus an AEAD-protected local Genesis snapshot keyed by Space and MLS generation and linked to the exact event row. The initial policy payload is encrypted with the protected MLS storage key and authenticated to its Space, group reference, and root event ID. Protected OpenMLS group records commit in the same transaction as Genesis and the snapshot. Later policy projections, MLS conflict recovery metadata, incoming membership persistence, and filesystem-backed attachment chunks remain unimplemented; the test-only OpenMLS SQLite harness is not part of the application store.
+The current SQLite v6 store adds OS-protected identity and MLS-key ciphertext, an AEAD-protected local Genesis snapshot keyed by Space and MLS generation and linked to the exact event row, and fixed-width trusted-identity pin records. Core validates the complete bundle fingerprint before saving and rechecks it when loading; the storage layer itself only preserves exact bytes and prevents silent pin replacement. A stored pin does not attest that QR/SAS comparison occurred or authorize MLS membership. The initial policy payload is encrypted with the protected MLS storage key and authenticated to its Space, group reference, and root event ID. Protected OpenMLS group records commit in the same transaction as Genesis and the snapshot. Later policy projections, MLS conflict recovery metadata, incoming membership persistence, and filesystem-backed attachment chunks remain unimplemented; the test-only OpenMLS SQLite harness is not part of the application store.
 
 ## Constraints and transitions
 

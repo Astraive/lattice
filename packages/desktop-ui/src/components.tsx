@@ -1,9 +1,10 @@
-export type DeliveryState = "queued" | "forwarded" | "delivered" | "error";
+export type DeliveryState = "queued" | "forwarded" | "delivered-to-device" | "read-local" | "error";
 
 const deliveryStateLabels: Record<DeliveryState, string> = {
   queued: "Queued",
   forwarded: "Forwarded",
-  delivered: "Delivered",
+  "delivered-to-device": "Delivered to device",
+  "read-local": "Read on this device",
   error: "Error",
 };
 

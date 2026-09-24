@@ -7,7 +7,8 @@ describe("DeliveryStatus", () => {
   test.each([
     ["queued", "Queued"],
     ["forwarded", "Forwarded"],
-    ["delivered", "Delivered"],
+    ["delivered-to-device", "Delivered to device"],
+    ["read-local", "Read on this device"],
     ["error", "Error"],
   ] as const)("announces the %s state in text", (state, label) => {
     const markup = renderToStaticMarkup(createElement(DeliveryStatus, { state }));

@@ -2,6 +2,9 @@
 //!
 //! Keychain/Keystore persistence and secure wrapping require a real OS provider
 //! before production onboarding; the candidate public bundle is not frozen.
+mod pinned_identity;
+
+pub use pinned_identity::PinnedIdentity;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -85,6 +88,9 @@ pub enum IdentityError {
     /// X25519 peer input is low-order and would produce an all-zero shared secret.
     #[error("X25519 peer key is non-contributory")]
     NonContributoryDhKey,
+    /// The supplied full fingerprint does not match the exact public bundle.
+    #[error("public identity bundle fingerprint mismatch")]
+    FingerprintMismatch,
     /// The signature does not verify for the provided key and message.
     #[error("Ed25519 signature verification failed")]
     VerificationFailed,
@@ -112,8 +118,8 @@ impl IdentityPublicBundle {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid length, unsupported version, or invalid
-    /// Ed25519 public key.
+    /// Returns an error for an invalid length, unsupported version, invalid
+    /// Ed25519 key, or non-contributory X25519 key.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
         let encoded: &[u8; PUBLIC_BUNDLE_LEN] =
             bytes.try_into().map_err(|_| IdentityError::InvalidLength {
@@ -130,6 +136,14 @@ impl IdentityPublicBundle {
             .map_err(|_| IdentityError::InvalidPublicKey)?;
         let mut x25519_public_key = [0_u8; 32];
         x25519_public_key.copy_from_slice(&encoded[33..65]);
+        let probe_secret = StaticSecret::from([0xA5; 32]);
+        let peer_public_key = X25519PublicKey::from(x25519_public_key);
+        if !probe_secret
+            .diffie_hellman(&peer_public_key)
+            .was_contributory()
+        {
+            return Err(IdentityError::NonContributoryDhKey);
+        }
         Ok(Self {
             ed25519_public_key,
             x25519_public_key,
@@ -385,8 +399,8 @@ fn fingerprint_for_bundle(bundle_bytes: &[u8; PUBLIC_BUNDLE_LEN]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceIdentity, IdentityError, IdentityPublicBundle, PrivateKeyProtectionError,
-        PrivateKeyProtector, verify,
+        DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
+        PrivateKeyProtectionError, PrivateKeyProtector, verify,
     };
     use ed25519_dalek::SigningKey;
     /// Test-only passthrough; it deliberately provides no confidentiality.
@@ -442,6 +456,62 @@ mod tests {
     }
 
     #[test]
+    fn pinned_identity_requires_exact_full_bundle_fingerprint() {
+        let identity = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let bundle = identity.public_bundle();
+        let fingerprint = bundle.fingerprint();
+        let pinned = PinnedIdentity::from_verified_fingerprint(bundle, fingerprint)
+            .expect("matching fingerprint");
+        assert_eq!(pinned.bundle(), bundle);
+        assert_eq!(pinned.fingerprint(), fingerprint);
+
+        let mut wrong_fingerprint = fingerprint;
+        wrong_fingerprint[0] ^= 1;
+        assert_eq!(
+            PinnedIdentity::from_verified_fingerprint(bundle, wrong_fingerprint),
+            Err(IdentityError::FingerprintMismatch)
+        );
+
+        let mut changed_bundle_bytes = bundle.to_bytes();
+        changed_bundle_bytes[33] ^= 1;
+        let changed_x25519 = IdentityPublicBundle::from_bytes(&changed_bundle_bytes)
+            .expect("changed X25519 bytes remain a valid public bundle");
+        assert_eq!(
+            changed_bundle_bytes[1..33],
+            bundle.to_bytes()[1..33],
+            "Ed25519 key is unchanged"
+        );
+        assert_eq!(
+            PinnedIdentity::from_verified_fingerprint(changed_x25519, fingerprint),
+            Err(IdentityError::FingerprintMismatch)
+        );
+    }
+
+    #[test]
+    fn identity_bundle_rejects_non_contributory_x25519_key() {
+        let identity = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let mut bytes = identity.public_bundle().to_bytes();
+        bytes[33..].fill(0);
+
+        assert_eq!(
+            IdentityPublicBundle::from_bytes(&bytes),
+            Err(IdentityError::NonContributoryDhKey)
+        );
+    }
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        assert_eq!(value.len() % 2, 0, "hex value has complete byte pairs");
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("hex input is ASCII"), 16)
+                    .expect("valid hexadecimal byte")
+            })
+            .collect()
+    }
+
+    #[test]
     fn fingerprint_binds_versioned_bundle_with_stable_vector() {
         let ed25519_public_key = SigningKey::from_bytes(&[
             0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
@@ -460,15 +530,26 @@ mod tests {
         bytes[1..33].copy_from_slice(&ed25519_public_key);
         bytes[33..].copy_from_slice(&x25519_public_key);
         let bundle = IdentityPublicBundle::from_bytes(&bytes).expect("valid public bundle");
-        assert_eq!(bundle.to_bytes(), bytes);
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../protocol/vectors/identity-bundle.json"
+        ))
+        .expect("parse published identity vector");
         assert_eq!(
-            bundle.fingerprint(),
-            [
-                0x5f, 0x7e, 0x15, 0xd6, 0xa4, 0x62, 0xc1, 0x89, 0x97, 0x35, 0x8f, 0x89, 0x34, 0xac,
-                0x2d, 0x0c, 0x53, 0x55, 0x6b, 0xce, 0x94, 0xed, 0x7d, 0x03, 0x1b, 0x7c, 0x98, 0x13,
-                0xda, 0x55, 0xc0, 0x2a,
-            ]
+            bundle.to_bytes().as_slice(),
+            decode_hex(
+                vector["bundle_hex"]
+                    .as_str()
+                    .expect("vector includes encoded bundle")
+            )
         );
+        let expected_fingerprint: [u8; 32] = decode_hex(
+            vector["fingerprint_hex"]
+                .as_str()
+                .expect("vector includes fingerprint"),
+        )
+        .try_into()
+        .expect("fingerprint is 32 bytes");
+        assert_eq!(bundle.fingerprint(), expected_fingerprint);
 
         let other_ed = SigningKey::from_bytes(&[0x42; 32])
             .verifying_key()

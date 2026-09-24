@@ -904,7 +904,7 @@ The UI distinguishes:
 
 - **forwarded**: at least one next hop or relay accepted an envelope;
 
-- **delivered-to-peer**: destination device acknowledged event receipt;
+- **delivered-to-device**: destination device acknowledged event receipt;
 
 - **read-local**: destination client optionally emitted a read receipt according to user privacy settings.
 
