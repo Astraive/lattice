@@ -74,11 +74,15 @@ pub enum VoiceState {
     Requested,
     /// Join permission was supplied and the local state joined the room.
     Joined,
-    /// An offer string was accepted by the bounded signaling state machine.
+    /// A local offer string was accepted by the bounded signaling state machine.
     OfferSent,
-    /// An answer string was accepted by the bounded signaling state machine.
+    /// A remote offer string was accepted by the bounded signaling state machine.
+    OfferReceived,
+    /// A remote answer string was accepted by the bounded signaling state machine.
     AnswerReceived,
-    /// At least one candidate string was accepted after the answer.
+    /// A local answer string was accepted by the bounded signaling state machine.
+    AnswerSent,
+    /// At least one candidate string was accepted after an answer.
     CandidateExchanged,
     /// Signaling was reported complete by the caller. This is not media-connected.
     SignalingConnected,
@@ -86,6 +90,31 @@ pub enum VoiceState {
     Left,
     /// The injected monotonic time reached the session deadline.
     TimedOut,
+    /// The caller reported a terminal failure; this does not assert media behavior.
+    Failed(VoiceFailure),
+}
+
+/// A caller-reported reason for ending a voice-session attempt.
+///
+/// These values preserve the reason supplied by a policy or platform/media
+/// adapter. They are not proof that a network path or media engine behaved in
+/// any particular way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoiceFailure {
+    /// Current Space policy no longer permits joining the room.
+    PermissionRevoked(VoicePermission),
+    /// No eligible direct or locally allowed relay path was reported.
+    NoUsablePath,
+    /// The ICE implementation reported that candidate checks failed.
+    IceFailed,
+    /// Direct ICE failed and policy did not permit a configured TURN route.
+    TurnRequired,
+    /// The platform reported that microphone capture is unavailable.
+    MicrophoneUnavailable,
+    /// The remote participant left the session.
+    PeerLeft,
+    /// The platform interrupted the call because of application lifecycle state.
+    BackgroundInterrupted,
 }
 
 /// Media capability represented by this crate.
@@ -320,6 +349,53 @@ impl VoiceSession {
         self.commit_control(VoiceState::OfferSent)
     }
 
+    /// Accepts a bounded remote offer string as signaling input.
+    ///
+    /// This is the answerer's counterpart to [`send_offer`]. The SDP is checked
+    /// only for size and safe line structure; it is not parsed or authenticated.
+    /// Accepting it does not establish a connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, current
+    /// state, or bounded SDP is invalid.
+    pub fn receive_offer(
+        &mut self,
+        incarnation: SessionIncarnation,
+        sequence: u64,
+        now: Duration,
+        permissions: VoicePermissions,
+        sdp: &str,
+    ) -> Result<(), VoiceError> {
+        self.check_control(incarnation, sequence, now, permissions, true)?;
+        self.require_state(VoiceState::Joined)?;
+        validate_sdp(sdp)?;
+        self.commit_control(VoiceState::OfferReceived)
+    }
+
+    /// Accepts a bounded local answer string after [`receive_offer`].
+    ///
+    /// This records signaling input only; it does not create or configure a
+    /// WebRTC peer connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, current
+    /// state, or bounded SDP is invalid.
+    pub fn send_answer(
+        &mut self,
+        incarnation: SessionIncarnation,
+        sequence: u64,
+        now: Duration,
+        permissions: VoicePermissions,
+        sdp: &str,
+    ) -> Result<(), VoiceError> {
+        self.check_control(incarnation, sequence, now, permissions, true)?;
+        self.require_state(VoiceState::OfferReceived)?;
+        validate_sdp(sdp)?;
+        self.commit_control(VoiceState::AnswerSent)
+    }
+
     /// Accepts a bounded answer string as signaling input.
     ///
     /// # Errors
@@ -360,7 +436,7 @@ impl VoiceSession {
         self.check_control(incarnation, sequence, now, permissions, true)?;
         if !matches!(
             self.state,
-            VoiceState::AnswerReceived | VoiceState::CandidateExchanged
+            VoiceState::AnswerReceived | VoiceState::AnswerSent | VoiceState::CandidateExchanged
         ) {
             return Err(VoiceError::InvalidTransition(self.state));
         }
@@ -390,11 +466,32 @@ impl VoiceSession {
         self.check_control(incarnation, sequence, now, permissions, true)?;
         if !matches!(
             self.state,
-            VoiceState::AnswerReceived | VoiceState::CandidateExchanged
+            VoiceState::AnswerReceived | VoiceState::AnswerSent | VoiceState::CandidateExchanged
         ) {
             return Err(VoiceError::InvalidTransition(self.state));
         }
         self.commit_control(VoiceState::SignalingConnected)
+    }
+
+    /// Records a caller-reported terminal failure without implying media success.
+    ///
+    /// Failure reports and cleanup remain allowed after permission revocation.
+    /// `reason` is supplied by the caller; this crate does not probe routes,
+    /// permissions, microphone availability, or media state itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, sequence, or timestamp is invalid.
+    pub fn fail(
+        &mut self,
+        incarnation: SessionIncarnation,
+        sequence: u64,
+        now: Duration,
+        permissions: VoicePermissions,
+        reason: VoiceFailure,
+    ) -> Result<(), VoiceError> {
+        self.check_control(incarnation, sequence, now, permissions, false)?;
+        self.commit_control(VoiceState::Failed(reason))
     }
 
     /// Checks join and speak policy before a caller requests speaking capability.
@@ -452,7 +549,11 @@ impl VoiceSession {
             return Err(VoiceError::ClockRegressed);
         }
         self.last_observed_time = now;
-        if !matches!(self.state, VoiceState::Left | VoiceState::TimedOut) && now >= self.deadline {
+        if !matches!(
+            self.state,
+            VoiceState::Left | VoiceState::TimedOut | VoiceState::Failed(_)
+        ) && now >= self.deadline
+        {
             self.state = VoiceState::TimedOut;
         }
         Ok(self.state)
@@ -497,14 +598,18 @@ impl VoiceSession {
             return Err(VoiceError::ClockRegressed);
         }
         self.last_observed_time = now;
-        if !matches!(self.state, VoiceState::Left | VoiceState::TimedOut) && now >= self.deadline {
+        if !matches!(
+            self.state,
+            VoiceState::Left | VoiceState::TimedOut | VoiceState::Failed(_)
+        ) && now >= self.deadline
+        {
             self.state = VoiceState::TimedOut;
             return Err(VoiceError::SessionExpired);
         }
         if self.state == VoiceState::TimedOut {
             return Err(VoiceError::SessionExpired);
         }
-        if self.state == VoiceState::Left {
+        if matches!(self.state, VoiceState::Left | VoiceState::Failed(_)) {
             return Err(VoiceError::SessionEnded);
         }
         if incarnation != self.incarnation {
@@ -790,6 +895,102 @@ mod tests {
             .unwrap();
         assert_eq!(session.state(), VoiceState::SignalingConnected);
         assert_eq!(session.media_status(), MediaStatus::NotImplemented);
+    }
+
+    #[test]
+    fn answerer_accepts_offer_and_answers_before_exchanging_candidates() {
+        let mut session = session();
+        let incarnation = session.incarnation();
+        let mut stale_bytes = *incarnation.as_bytes();
+        stale_bytes[0] ^= 1;
+        let stale_incarnation = SessionIncarnation::from_bytes(stale_bytes);
+        let offer = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n";
+        let answer = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\n";
+        session
+            .join(incarnation, 1, Duration::from_secs(1), ALLOW_ALL)
+            .unwrap();
+        assert_eq!(
+            session.receive_offer(
+                stale_incarnation,
+                2,
+                Duration::from_secs(2),
+                ALLOW_ALL,
+                offer,
+            ),
+            Err(VoiceError::StaleIncarnation)
+        );
+        assert_eq!(session.next_sequence(), 2);
+        assert_eq!(session.state(), VoiceState::Joined);
+        assert_eq!(
+            session.add_candidate(
+                incarnation,
+                2,
+                Duration::from_secs(2),
+                ALLOW_ALL,
+                "candidate:1 1 UDP 1 192.0.2.1 10000 typ host",
+            ),
+            Err(VoiceError::InvalidTransition(VoiceState::Joined))
+        );
+        session
+            .receive_offer(incarnation, 2, Duration::from_secs(2), ALLOW_ALL, offer)
+            .unwrap();
+        assert_eq!(session.state(), VoiceState::OfferReceived);
+        assert_eq!(
+            session.send_answer(
+                stale_incarnation,
+                3,
+                Duration::from_secs(3),
+                ALLOW_ALL,
+                answer,
+            ),
+            Err(VoiceError::StaleIncarnation)
+        );
+        assert_eq!(session.next_sequence(), 3);
+        session
+            .send_answer(incarnation, 3, Duration::from_secs(3), ALLOW_ALL, answer)
+            .unwrap();
+        session
+            .add_candidate(
+                incarnation,
+                4,
+                Duration::from_secs(4),
+                ALLOW_ALL,
+                "candidate:1 1 UDP 1 192.0.2.1 10000 typ host",
+            )
+            .unwrap();
+        session
+            .mark_signaling_connected(incarnation, 5, Duration::from_secs(5), ALLOW_ALL)
+            .unwrap();
+        assert_eq!(session.state(), VoiceState::SignalingConnected);
+        assert_eq!(session.media_status(), MediaStatus::NotImplemented);
+    }
+
+    #[test]
+    fn caller_reported_failure_is_terminal_and_retains_its_reason() {
+        let mut session = session();
+        let incarnation = session.incarnation();
+        session
+            .join(incarnation, 1, Duration::from_secs(1), ALLOW_ALL)
+            .unwrap();
+        let failure = VoiceFailure::PermissionRevoked(VoicePermission::Join);
+        session
+            .fail(
+                incarnation,
+                2,
+                Duration::from_secs(2),
+                VoicePermissions::default(),
+                failure,
+            )
+            .unwrap();
+        assert_eq!(session.state(), VoiceState::Failed(failure));
+        assert_eq!(
+            session.authorize_speaking(incarnation, Duration::from_secs(3), ALLOW_ALL),
+            Err(VoiceError::SessionEnded)
+        );
+        assert_eq!(
+            session.advance_time(Duration::from_secs(30)),
+            Ok(VoiceState::Failed(failure))
+        );
     }
 
     #[test]
