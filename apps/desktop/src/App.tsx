@@ -18,8 +18,8 @@ const stack = [
   },
   {
     label: "Spaces and messaging",
-    state: "Local Space creation",
-    detail: "Creates/restores local Genesis snapshots and can queue text to the local outbox only",
+    state: "Local Space messaging",
+    detail: "Queues locally authorized text and edits to the durable outbox; no network delivery",
   },
   {
     label: "Desktop discovery",
@@ -96,8 +96,8 @@ function App() {
           <h1 id="page-title">Your communities should not depend on a central account.</h1>
           <p className="lede">
             The desktop client protects the device identity, creates local Space Genesis snapshots
-            from a system-trusted device credential, and inspects recovered local snapshots.
-            Authenticated joining, messaging, and network delivery remain unavailable.
+            from a system-trusted device credential, and inspects recovered local snapshots. Remote
+            membership and network delivery remain unavailable; outgoing text and edits stay local.
           </p>
           <div className="principles">
             <span>Offline correctness</span>

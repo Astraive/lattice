@@ -18,6 +18,7 @@ pub fn run() {
             spaces::list_local_spaces,
             spaces::create_local_space,
             spaces::queue_local_text_message,
+            spaces::queue_local_text_message_edit,
             spaces::list_local_text_messages,
             identity::pin_peer_identity,
             identity::get_pinned_identity

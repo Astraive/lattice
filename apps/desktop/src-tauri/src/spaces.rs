@@ -186,6 +186,60 @@ pub(crate) fn queue_local_text_message(
 // Tauri decodes command arguments into owned strings.
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
+pub(crate) fn queue_local_text_message_edit(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+    channel_id_hex: String,
+    target_message_id_hex: String,
+    content: String,
+) -> Result<QueuedLocalMessage, String> {
+    if content.len() > lattice_core::space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err("edit exceeds the local payload limit".to_owned());
+    }
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
+    let target = encoding::parse_fixed_hex::<32>(&target_message_id_hex, "message ID")?;
+    let credential_vector = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let queued = client
+        .queue_text_message_edit_from_x509_credential(
+            &space_id,
+            &group_reference,
+            credential_vector,
+            channel_id,
+            target,
+            &content,
+        )
+        .map_err(|error| match error {
+            CoreError::SpaceCredentialInvalid => {
+                "the X.509 credential is invalid or not trusted".to_owned()
+            }
+            CoreError::SpaceMessageRejected(_) => {
+                "local Space policy rejected this edit".to_owned()
+            }
+            CoreError::SpaceGenesisRejected(_) | CoreError::SpaceGenesisSnapshotNotFound => {
+                "local Space generation is unavailable or has changed".to_owned()
+            }
+            _ => "edit could not be committed to the local outbox".to_owned(),
+        })?;
+    Ok(QueuedLocalMessage {
+        state: "queued",
+        event_id: encoding::hex(queued.event_id()),
+    })
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
 pub(crate) fn list_local_text_messages(
     space_id_hex: String,
     group_reference_hex: String,

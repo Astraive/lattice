@@ -48,6 +48,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
   const [content, setContent] = useState("");
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<string | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
   const [history, setHistory] = useState<LocalTextMessage[]>([]);
   const [historyChannelId, setHistoryChannelId] = useState<string | null>(null);
@@ -84,15 +85,27 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
     setFeedback(null);
     setEventId(null);
     try {
-      const queued = await invoke<QueuedLocalMessage>("queue_local_text_message", {
+      const args: Record<string, string> = {
         spaceIdHex: space.spaceId,
         groupReferenceHex: space.groupReference,
         credentialVectorHex,
         channelIdHex: channelId,
         content,
-      });
+      };
+      if (editTarget) args.targetMessageIdHex = editTarget;
+      const queued = await invoke<QueuedLocalMessage>(
+        editTarget ? "queue_local_text_message_edit" : "queue_local_text_message",
+        args,
+      );
       setEventId(queued.eventId);
-      setFeedback("Committed locally. Network forwarding and recipient delivery are unknown.");
+      setFeedback(
+        editTarget
+          ? "Edit committed locally. Network forwarding and recipient delivery are unknown."
+          : "Committed locally. Network forwarding and recipient delivery are unknown.",
+      );
+      setEditTarget(null);
+      setContent("");
+      await loadHistory();
     } catch (cause) {
       setFeedback(
         `Message was not queued: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -102,10 +115,21 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
     }
   }
 
+  function beginEdit(message: LocalTextMessage) {
+    setEditTarget(message.eventId);
+    setContent(message.content);
+    setFeedback(`Editing message ${message.eventId}. The original event remains immutable.`);
+    setEventId(null);
+  }
+
   return (
     <form className="local-message-composer" onSubmit={(event) => void queueMessage(event)}>
-      <h4>Queue a text message</h4>
-      <p>Local encrypted commit only. No network send or delivery claim.</p>
+      <h4>{editTarget ? "Edit a text message" : "Queue a text message"}</h4>
+      <p>
+        {editTarget
+          ? "The edit is a new encrypted event; the original event remains unchanged."
+          : "Local encrypted commit only. No network send or delivery claim."}
+      </p>
       {channels.length === 0 ? (
         <p>This Space has no active text or announcement channels.</p>
       ) : (
@@ -132,7 +156,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
             />
           </label>
           <label>
-            Message
+            {editTarget ? "Replacement text" : "Message"}
             <textarea
               maxLength={MAX_MESSAGE_BYTES}
               rows={3}
@@ -144,8 +168,21 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
             type="submit"
             disabled={busy || !channelId || !credentialIsValid || !contentIsValid}
           >
-            {busy ? "Committing…" : "Queue locally"}
+            {busy ? "Committing…" : editTarget ? "Queue edit" : "Queue locally"}
           </button>
+          {editTarget && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setEditTarget(null);
+                setContent("");
+                setFeedback(null);
+              }}
+            >
+              Cancel edit
+            </button>
+          )}
           <section className="local-message-history" aria-label="Recent local message history">
             <div>
               <h4>Recent outgoing messages</h4>
@@ -169,6 +206,9 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                     <small>
                       {message.outboxState ?? "retained locally"} · event {message.eventId}
                     </small>
+                    <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
+                      Edit locally
+                    </button>
                   </li>
                 ))}
               </ol>
