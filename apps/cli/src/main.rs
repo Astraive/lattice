@@ -4,7 +4,7 @@ mod space;
 use identity::{IdentityCommand, print_pinned_identity};
 use space::{SpaceCommand, print_space_page};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -112,19 +112,37 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let protector = OsKeyringProtector::new(PROFILE_ID)?;
 
     match cli.command {
-        Command::About => return Ok(()),
-        Command::Identity {
-            command: IdentityCommand::Init,
-        } => {
-            let client = Client::open_or_create(&database_path, &protector)?;
+        Command::About => Ok(()),
+        Command::Identity { command } => execute_identity(
+            &command,
+            &database_path,
+            &protector,
+            json,
+            pin_input,
+            lookup_fingerprint,
+        ),
+        Command::Space { command } => execute_space(command, &database_path, &protector, json),
+        Command::Status => execute_status(&database_path, &protector, json),
+    }
+}
+
+fn execute_identity(
+    command: &IdentityCommand,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+    pin_input: Option<([u8; 65], [u8; 32])>,
+    lookup_fingerprint: Option<[u8; 32]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        IdentityCommand::Init => {
+            let client = Client::open_or_create(database_path, protector)?;
             if !json {
                 println!("Device identity is ready.");
             }
             print_identity(client.identity_info(), json);
         }
-        Command::Identity {
-            command: IdentityCommand::Show,
-        } => match Client::open_existing(&database_path, &protector) {
+        IdentityCommand::Show => match Client::open_existing(database_path, protector) {
             Ok(client) => print_identity(client.identity_info(), json),
             Err(CoreError::MissingIdentity) => {
                 return Err(
@@ -133,11 +151,9 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => return Err(Box::new(error)),
         },
-        Command::Identity {
-            command: IdentityCommand::Pin { .. },
-        } => {
+        IdentityCommand::Pin { .. } => {
             let (bundle, fingerprint) = pin_input.expect("pin input was parsed before storage");
-            let mut client = match Client::open_existing(&database_path, &protector) {
+            let mut client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
                     return Err(
@@ -153,11 +169,9 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "identity_pin",
             );
         }
-        Command::Identity {
-            command: IdentityCommand::Pinned { .. },
-        } => {
+        IdentityCommand::Pinned { .. } => {
             let fingerprint = lookup_fingerprint.expect("lookup fingerprint was parsed");
-            let client = match Client::open_existing(&database_path, &protector) {
+            let client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
                     return Err(
@@ -173,15 +187,24 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "identity_pinned",
             );
         }
-        Command::Space {
-            command: SpaceCommand::List { after },
-        } => {
+    }
+    Ok(())
+}
+
+fn execute_space(
+    command: SpaceCommand,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        SpaceCommand::List { after } => {
             let after = after
                 .as_deref()
                 .map(parse_space_cursor)
                 .transpose()
                 .map_err(|error| format!("invalid --after cursor: {error}"))?;
-            let mut client = match Client::open_existing(&database_path, &protector) {
+            let mut client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
                     return Err(
@@ -193,47 +216,55 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
             let page = client.restore_space_page(after)?;
             print_space_page(&page, json);
         }
-        Command::Status => match Client::open_existing(&database_path, &protector) {
-            Ok(client) => {
-                let sequence = client.next_author_sequence()?;
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "schema_version": 1,
-                            "command": "status",
-                            "identity": "initialized",
-                            "next_local_event_sequence": sequence,
-                            "authenticated_spaces": false,
-                            "message_authoring": false,
-                            "network_delivery": false,
-                        })
-                    );
-                } else {
-                    println!("Device identity: initialized");
-                    println!("Next local event sequence: {sequence}");
-                }
+    }
+    Ok(())
+}
+
+fn execute_status(
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match Client::open_existing(database_path, protector) {
+        Ok(client) => {
+            let sequence = client.next_author_sequence()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "command": "status",
+                        "identity": "initialized",
+                        "next_local_event_sequence": sequence,
+                        "authenticated_spaces": false,
+                        "message_authoring": false,
+                        "network_delivery": false,
+                    })
+                );
+            } else {
+                println!("Device identity: initialized");
+                println!("Next local event sequence: {sequence}");
             }
-            Err(CoreError::MissingIdentity) => {
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "schema_version": 1,
-                            "command": "status",
-                            "identity": "not_initialized",
-                            "authenticated_spaces": false,
-                            "message_authoring": false,
-                            "network_delivery": false,
-                        })
-                    );
-                } else {
-                    println!("Device identity: not initialized");
-                    println!("Authenticated Spaces and messages: unavailable");
-                }
+        }
+        Err(CoreError::MissingIdentity) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "command": "status",
+                        "identity": "not_initialized",
+                        "authenticated_spaces": false,
+                        "message_authoring": false,
+                        "network_delivery": false,
+                    })
+                );
+            } else {
+                println!("Device identity: not initialized");
+                println!("Authenticated Spaces and messages: unavailable");
             }
-            Err(error) => return Err(Box::new(error)),
-        },
+        }
+        Err(error) => return Err(Box::new(error)),
     }
     Ok(())
 }
