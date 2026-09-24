@@ -36,6 +36,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import uniffi.lattice_uniffi.MobileException
 
 internal enum class BluetoothReadiness {
     PERMISSION_REQUIRED,
@@ -53,11 +59,14 @@ internal data class NearbyScreenState(
     val sightings: Int = 0,
     val message: String = "Bluetooth permission has not been requested. Nearby discovery has not started.",
     val showPermissionRationale: Boolean = false,
+    val profileStatus: String = "Preparing protected device profile.",
+    val identityFingerprint: String? = null,
 )
 
 class MainActivity : ComponentActivity() {
     private val preferences by lazy { getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE) }
     private var screenState by mutableStateOf(NearbyScreenState())
+    private var mobileProfile: AndroidMobileProfile? = null
     private lateinit var nearbyScanner: NearbyServiceScanner
     private var receiverRegistered = false
     private var permissionHistoryBeforePrompt = false
@@ -152,6 +161,62 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        initializeMobileProfile()
+    }
+
+    private fun initializeMobileProfile() {
+        lifecycleScope.launch {
+            try {
+                val profile = withContext(Dispatchers.IO) {
+                    AndroidMobileProfile.open(applicationContext)
+                }
+                if (isFinishing || isDestroyed) {
+                    profile.close()
+                    return@launch
+                }
+                val identity = try {
+                    profile.identityInfo()
+                } catch (error: Exception) {
+                    profile.close()
+                    throw error
+                }
+                mobileProfile = profile
+                screenState = screenState.copy(
+                    profileStatus = "Protected device identity is ready.",
+                    identityFingerprint = identity.fingerprint.toLowerHex(),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        profileStatus = when (error) {
+                            is MobileException.InvalidProfileId -> "The local profile identifier is invalid."
+                            is MobileException.KeyProtectionFailed -> "Android Keystore access failed; no software-key fallback was used."
+                            is MobileException.ProfileOpenFailed -> "The protected local profile could not be opened."
+                            is MobileException.ProfileUnavailable -> "The protected local profile is unavailable."
+                        },
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        profileStatus = "The protected local profile could not be opened.",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun ByteArray.toLowerHex(): String {
+        val digits = "0123456789abcdef"
+        return buildString(size * 2) {
+            for (byte in this@toLowerHex) {
+                val value = byte.toInt() and 0xff
+                append(digits[value ushr 4])
+                append(digits[value and 0x0f])
+            }
+        }
     }
 
     override fun onStart() {
@@ -183,6 +248,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (::nearbyScanner.isInitialized) nearbyScanner.stop()
+        mobileProfile?.close()
+        mobileProfile = null
         super.onDestroy()
     }
 
@@ -402,6 +469,27 @@ private fun NearbyReadinessScreen(
             Spacer(Modifier.height(8.dp))
             Text("Nearby", style = MaterialTheme.typography.headlineLarge)
             Spacer(Modifier.height(20.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 2.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Device identity", style = MaterialTheme.typography.titleMedium)
+                    Text(state.profileStatus, style = MaterialTheme.typography.bodyMedium)
+                    state.identityFingerprint?.let { fingerprint ->
+                        Text(
+                            "Fingerprint: $fingerprint",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,

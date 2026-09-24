@@ -1,6 +1,6 @@
 # Lattice documentation
 
-**Project:** Lattice, local-first community communication. **Status:** proposed; no implementation or security audit is implied. **Updated:** 22 September 2026.
+**Project:** Lattice, local-first community communication. **Status:** draft with bounded component implementations; no interoperability release or security audit is implied. **Updated:** 22 September 2026.
 
 ## Start here
 
@@ -40,23 +40,25 @@ communication product or an interoperability release. Current components cover
 canonical encoding and event signatures, device identity protection and local
 storage, OpenMLS state operations, signature-to-MLS ciphertext binding, bounded
 routing/courier accounting, attachment verification, voice signaling, and
-platform adapter contracts. The core exposes candidate offline Space Genesis
-creation: one `SQLite` transaction commits the local MLS generation, exact
-signed event, and AEAD-protected initial policy snapshot. `restore_space`
-rebuilds that initial projection after restart but does not replay later policy
-events. The caller-supplied opaque X.509 credential is not trust-validated.
-The relay crate validates candidate NIP-01/NIP-40 tags, expiry, envelope
-encoding, and inner-event signatures, but does not connect to a relay.
+platform adapter contracts, including bounded TCP stream framing. The core
+exposes candidate offline Space Genesis creation: one `SQLite` transaction
+commits the local MLS generation, exact signed event, and AEAD-protected
+initial policy snapshot. `restore_space` rebuilds that initial projection after
+restart but does not replay later policy events. The caller-supplied opaque
+X.509 credential is not trust-validated. The relay crate validates candidate
+NIP-01/NIP-40 tags, expiry, envelope encoding, and inner-event signatures. Its
+bounded `RelayClient` fetches NIP-11 and exchanges NIP-01 events over secure
+HTTP/WebSocket, but does not establish independent-relay interoperability.
 
 Later policy replay, conflict-state recovery, and message projection remain
 incomplete. CLI and desktop currently expose protected device identity
-workflows; Android currently exposes permission-aware generic BLE discovery
-and fragment framing.
+workflows; Android now exposes the same protected local identity snapshot
+alongside permission-aware generic BLE discovery and fragment framing.
 
 Space join, membership validation and commit coupling, message-state projection,
 voice authorization, durable MLS conflict recovery, native BLE GATT exchange,
-LAN/Wi-Fi adapters, relay networking/interoperability, and end-to-end message
-workflows remain incomplete.
+authenticated LAN discovery, relay interoperability and core/app wiring, and
+end-to-end message workflows remain incomplete.
 The OpenMLS API still relies on the caller to verify external credentials and
 persist protected group state and recovery metadata. ADR-001 and ADR-002 record
 the conflict and channel-read decisions; their full operational workflows and

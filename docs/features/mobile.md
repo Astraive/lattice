@@ -15,6 +15,12 @@ Android uses Kotlin/Compose and iOS uses Swift/SwiftUI. Shared Rust logic arrive
 | MOB-009 | Native clients shall surface Space, channel, transfer, voice, identity and network diagnostics consistently. | Navigation/accessibility matrix and equivalent event state on both clients. | M8 |
 | MOB-010 | UI subscriptions and FFI operations shall be coarse, asynchronous and lifecycle-safe. | Background/recreation stress test shows no per-packet UI flood or leaked observer. | M8 |
 
+## Current Rust mobile boundary
+
+`lattice-uniffi` opens durable local profiles through a caller-supplied OS keystore callback and exposes the public identity snapshot. Generated Kotlin bindings connect Android's `AndroidKeyStore` protector and identity panel; Gradle builds the Rust library for Android ABIs with `cargo ndk`. The Android native build and device behavior are not verified here. The facade does not expose messaging, Space creation, or subscriptions. Credential trust and safe MLS group creation remain unresolved, so MOB-001 is incomplete.
+
+Android native builds require the Android SDK/NDK, `cargo-ndk`, and the Rust `aarch64-linux-android` and `x86_64-linux-android` targets; the app Gradle `preBuild` task invokes `cargo ndk` for both ABIs. This workstation lacks those prerequisites, so Android compilation and device behavior remain unverified.
+
 Primary screens: welcome/identity, profile/permissions, Space list, channel/thread, DM, voice, transfer center, members/roles, invite verification, relay/network state, local retention, diagnostics. Theme tokens can be shared; native semantics and accessibility remain platform-specific. [Android permission guidance](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions) and [Apple background guidance](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html) must be rechecked at release time.
 
 ## Native responsibilities by platform
