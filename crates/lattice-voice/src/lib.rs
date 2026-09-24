@@ -510,7 +510,13 @@ impl VoiceSession {
         now: Duration,
         permission: VoicePermission,
     ) -> Result<(), VoiceError> {
-        self.check_control(incarnation, sequence, now, VoicePermissions::default(), false)?;
+        self.check_control(
+            incarnation,
+            sequence,
+            now,
+            VoicePermissions::default(),
+            false,
+        )?;
         self.commit_control(VoiceState::Failed(VoiceFailure::PermissionRevoked(
             permission,
         )))
