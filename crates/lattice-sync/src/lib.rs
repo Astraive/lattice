@@ -186,9 +186,15 @@ pub enum SyncStatus {
 }
 
 /// Deterministic, bounded requests derived from two summaries of the same scope.
+///
+/// When `dependency_requests` is non-empty, `request_ranges` is empty. Resolve
+/// those exact dependencies and compare refreshed summaries before requesting
+/// sequence ranges, so dependent ciphertext is not scheduled ahead of its known
+/// prerequisites.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SyncPlan {
-    /// Ranges to request from the peer, in author and sequence order.
+    /// Ranges to request from the peer, in author and sequence order. This is
+    /// populated only after no known dependencies are missing.
     pub request_ranges: Vec<SyncRequestRange>,
     /// Event IDs of dependencies this replica is missing.
     pub dependency_requests: Vec<EventId>,
@@ -279,6 +285,7 @@ pub fn plan_sync(local: &ScopeSummary, peer: &ScopeSummary) -> Result<SyncPlan, 
         }
     }
 
+    let dependency_requests = local.missing_dependencies;
     let mut request_ranges = Vec::new();
     let mut unresolved_history = Vec::new();
     for author in authors {
@@ -287,11 +294,13 @@ pub fn plan_sync(local: &ScopeSummary, peer: &ScopeSummary) -> Result<SyncPlan, 
         let local_available = available_ranges(local_author);
         let peer_available = available_ranges(peer_author);
 
-        let missing = subtract_ranges(&peer_available, &local_available);
-        for range in missing {
-            request_ranges.push(SyncRequestRange { author, range });
-            if request_ranges.len() > MAX_REQUEST_RANGES {
-                return Err(limit_error(PlanLimit::RequestRanges, MAX_REQUEST_RANGES));
+        if dependency_requests.is_empty() {
+            let missing = subtract_ranges(&peer_available, &local_available);
+            for range in missing {
+                request_ranges.push(SyncRequestRange { author, range });
+                if request_ranges.len() > MAX_REQUEST_RANGES {
+                    return Err(limit_error(PlanLimit::RequestRanges, MAX_REQUEST_RANGES));
+                }
             }
         }
 
@@ -307,7 +316,6 @@ pub fn plan_sync(local: &ScopeSummary, peer: &ScopeSummary) -> Result<SyncPlan, 
 
     unresolved_history
         .sort_unstable_by_key(|gap| (gap.author, gap.range.start, gap.range.end, gap.reason));
-    let dependency_requests = local.missing_dependencies;
     let status = match (
         request_ranges.is_empty() && dependency_requests.is_empty(),
         unresolved_history.is_empty(),
@@ -833,12 +841,41 @@ mod tests {
     #[test]
     fn requests_missing_dependencies_in_stable_deduplicated_order() {
         let mut local = ScopeSummary::new(scope());
+
         local.missing_dependencies = vec![event(8), event(2), event(8)];
         let peer = ScopeSummary::new(scope());
 
         let plan = plan_sync(&local, &peer).expect("summaries are within bounds");
         assert_eq!(plan.dependency_requests, vec![event(2), event(8)]);
         assert_eq!(plan.status, SyncStatus::RequestsPending);
+    }
+
+    #[test]
+    fn dependency_requests_gate_sequence_ranges_until_summary_refresh() {
+        let mut local = ScopeSummary::new(scope());
+        local.missing_dependencies.push(event(9));
+        local
+            .authors
+            .push(AuthorSummary::new(author(3), 1));
+        let mut peer = ScopeSummary::new(scope());
+        peer.authors.push(AuthorSummary::new(author(3), 3));
+
+        let dependency_plan =
+            plan_sync(&local, &peer).expect("summaries are within bounds");
+        assert_eq!(dependency_plan.dependency_requests, vec![event(9)]);
+        assert!(dependency_plan.request_ranges.is_empty());
+        assert_eq!(dependency_plan.status, SyncStatus::RequestsPending);
+
+        local.missing_dependencies.clear();
+        let range_plan = plan_sync(&local, &peer).expect("summaries are within bounds");
+        assert!(range_plan.dependency_requests.is_empty());
+        assert_eq!(
+            range_plan.request_ranges,
+            vec![SyncRequestRange {
+                author: author(3),
+                range: range(2, 3),
+            }]
+        );
     }
 
     #[test]

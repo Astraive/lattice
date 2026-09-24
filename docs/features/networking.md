@@ -45,7 +45,7 @@ Sender outbox persists locally and retries on contact discovery with exponential
 ## Synchronization details
 
 Authenticated peers establish common authorized scope without listing all memberships, exchange per-author contiguous sequence and sparse gaps, request missing dependencies, and transfer bounded canonical event batches. Validate before commit; then exchange updated summaries. Probabilistic recent-item filters are hints and may false-positive, so exact range reconciliation repairs a missing item. If a retained snapshot replaces ancient events, the proof/validation policy in ADR-004 is required. Never mark a replica fully up-to-date merely because a peer lacks older retained events.
-`lattice-sync::plan_sync` performs bounded per-scope range reconciliation and rejects conflicting known event IDs at a shared author sequence. It returns missing dependencies separately from sequence ranges but does not schedule dependencies ahead of dependent ciphertext; NET-012 remains an integration requirement.
+`lattice-sync::plan_sync` performs bounded per-scope range reconciliation and rejects conflicting known event IDs at a shared author sequence. When its local summary names missing dependencies, it emits those exact event-ID requests first and withholds all sequence ranges; callers must fetch/resolve them, refresh the summary, then plan ranges. This conservative staging prevents range ciphertext from being scheduled ahead of known prerequisites, but does not identify MLS dependency types, validate commits, or integrate with an application scheduler. NET-012's end-to-end MLS transition remains unimplemented.
 
 ## Remote bridge and privacy
 
