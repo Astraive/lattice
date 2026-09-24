@@ -579,6 +579,28 @@ impl Store {
             None => Ok(1),
         }
     }
+    /// Returns the next sequence for a local author using an existing transaction.
+    ///
+    /// Locally authored sequences start at one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or the next sequence is exhausted.
+    pub fn next_author_sequence_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        author_id: &[u8; ID_BYTES],
+    ) -> Result<u64> {
+        let last_seq: Option<i64> = transaction.query_row(
+            "SELECT MAX(author_seq) FROM events WHERE author_id = ?1",
+            params![&author_id[..]],
+            |row| row.get(0),
+        )?;
+        match last_seq {
+            Some(last) => u64::try_from(last.checked_add(1).ok_or(StoreError::SequenceExhausted)?)
+                .map_err(|_| StoreError::SequenceExhausted),
+            None => Ok(1),
+        }
+    }
     /// Loads the single OS-protected local identity ciphertext, if one is saved.
     ///
     /// `SQLite` receives opaque ciphertext only; plaintext key bytes never cross
@@ -1450,6 +1472,34 @@ mod tests {
                 .expect("load conflicting ID")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn transaction_scoped_sequence_reader_observes_uncommitted_event() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let author = id(49);
+        store
+            .with_connection_mut(|connection| {
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                assert_eq!(
+                    Store::next_author_sequence_in_transaction(&transaction, &author)?,
+                    1
+                );
+                transaction.execute(
+                    "INSERT INTO events(event_id, author_id, author_seq, canonical_bytes)
+                     VALUES (?1, ?2, 1, ?3)",
+                    rusqlite::params![&id(48)[..], &author[..], &[0xA1_u8][..]],
+                )?;
+                assert_eq!(
+                    Store::next_author_sequence_in_transaction(&transaction, &author)?,
+                    2
+                );
+                transaction.rollback()?;
+                Ok::<_, StoreError>(())
+            })
+            .expect("read sequence in transaction");
     }
 
     #[test]
