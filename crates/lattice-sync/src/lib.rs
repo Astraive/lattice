@@ -854,14 +854,11 @@ mod tests {
     fn dependency_requests_gate_sequence_ranges_until_summary_refresh() {
         let mut local = ScopeSummary::new(scope());
         local.missing_dependencies.push(event(9));
-        local
-            .authors
-            .push(AuthorSummary::new(author(3), 1));
+        local.authors.push(AuthorSummary::new(author(3), 1));
         let mut peer = ScopeSummary::new(scope());
         peer.authors.push(AuthorSummary::new(author(3), 3));
 
-        let dependency_plan =
-            plan_sync(&local, &peer).expect("summaries are within bounds");
+        let dependency_plan = plan_sync(&local, &peer).expect("summaries are within bounds");
         assert_eq!(dependency_plan.dependency_requests, vec![event(9)]);
         assert!(dependency_plan.request_ranges.is_empty());
         assert_eq!(dependency_plan.status, SyncStatus::RequestsPending);
