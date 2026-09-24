@@ -27,6 +27,7 @@ The same event can cross direct or optional indirect routes. Paths supply bytes 
 BLE advertises an app service and rotating token, then exchanges capability/version and an authenticated session before sensitive scope discovery. It fragments an encrypted envelope into bounded connection-local frames with aggregate/per-peer reassembly limits, timeout, sender pacing and protection against duplicate connection storms. It is a low-volume baseline, not a promise of bandwidth or continuous background scanning. A supported faster path is negotiated only after peer authentication; failure returns to a viable smaller path without changing event identity.
 
 `lattice-transport::TcpPeerAdapter` provides bounded 4-byte big-endian framing over a connected TCP stream; `connect` opens an outbound stream and `TcpPeerListener` binds a caller-selected endpoint and accepts inbound streams with the same envelope cap. The adapter checks lengths before allocation, treats cancellation during an incomplete send as a fault, and reports only local OS queue acceptance. Neither API authenticates peers, discovers LAN devices, nor provides retry/delivery semantics. These remain transport primitives, not evidence that NET-006 capability negotiation or an authenticated LAN path is complete.
+lattice-router supplies a deterministic bounded planner; it keeps Presence off persistent Courier/InternetRelay routes and Voice on one direct realtime-IP route. It is not yet connected to authenticated path lifecycle, outbox scheduling, or transport receipts.
 
 ## Routing classes and queues
 
@@ -44,6 +45,7 @@ Sender outbox persists locally and retries on contact discovery with exponential
 ## Synchronization details
 
 Authenticated peers establish common authorized scope without listing all memberships, exchange per-author contiguous sequence and sparse gaps, request missing dependencies, and transfer bounded canonical event batches. Validate before commit; then exchange updated summaries. Probabilistic recent-item filters are hints and may false-positive, so exact range reconciliation repairs a missing item. If a retained snapshot replaces ancient events, the proof/validation policy in ADR-004 is required. Never mark a replica fully up-to-date merely because a peer lacks older retained events.
+`lattice-sync::plan_sync` performs bounded per-scope range reconciliation and rejects conflicting known event IDs at a shared author sequence. It returns missing dependencies separately from sequence ranges but does not schedule dependencies ahead of dependent ciphertext; NET-012 remains an integration requirement.
 
 ## Remote bridge and privacy
 
