@@ -314,6 +314,12 @@ impl SpaceReducer {
         self.policy.as_ref()
     }
 
+    pub(crate) fn has_projected_message(&self, event_id: &EventReference) -> bool {
+        self.graph
+            .get(event_id)
+            .is_some_and(|node| node.kind == EventKind::Message && node.application_authorized)
+    }
+
     /// Returns the exact accepted policy events after a previously checkpointed
     /// revision. Replay is refused when this reducer has unresolved or conflicted
     /// state, or when retained history no longer begins at Genesis.

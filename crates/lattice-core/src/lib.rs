@@ -1054,9 +1054,8 @@ impl Client {
     /// Queues an authorized text edit of an immutable message event.
     ///
     /// The edit is a separately signed and encrypted event referencing the
-    /// original message. It is included in the in-memory reducer projection
-    /// and durable outbox; full message-history replay after restart remains
-    /// unsupported.
+    /// original message. For a reopened local Space, its authenticated encrypted
+    /// cache projection is restored before edit authorization.
     ///
     /// # Errors
     ///
@@ -1071,6 +1070,7 @@ impl Client {
         target: [u8; 32],
         content: &str,
     ) -> Result<QueuedMessage, CoreError> {
+        self.restore_cached_local_message_projection(created, channel_id, target)?;
         let policy = created
             .reducer
             .policy()
@@ -1231,6 +1231,77 @@ impl Client {
             }
             Ok(history)
         })
+    }
+
+    fn restore_cached_local_message_projection(
+        &mut self,
+        created: &mut CreatedSpace,
+        channel_id: space::EntityId,
+        target: [u8; 32],
+    ) -> Result<(), CoreError> {
+        if created.reducer.has_projected_message(&target) {
+            return Ok(());
+        }
+        let cached = self
+            .store
+            .list_cached_space_messages(
+                &created.space_id,
+                &created.group_reference,
+                &channel_id,
+                MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
+            )?
+            .into_iter()
+            .find(|message| message.event_id == target)
+            .ok_or(CoreError::SpaceParentEventMissing)?;
+        let record = self
+            .store
+            .load_event(&target)?
+            .ok_or(CoreError::LocalSpaceMessageCacheInvalid)?;
+        let expected_author = self.identity.fingerprint();
+        let expected_space_id = created.space_id;
+        let expected_group_reference = created.group_reference;
+        let (event, cached_plaintext) =
+            self.with_mls_transaction(move |_identity, _provider, _transaction| {
+                let event = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+                if event.event_id().as_bytes() != &target
+                    || event.space_id() != &expected_space_id
+                    || event.mls_group_reference() != &expected_group_reference
+                    || event.channel_id() != Some(&channel_id)
+                    || event.kind() != EventKind::Message
+                    || event.author_fingerprint() != &expected_author
+                    || cached.author_id != expected_author
+                    || cached.space_id != expected_space_id
+                    || cached.group_reference != expected_group_reference
+                    || cached.channel_id != channel_id
+                    || event.author_sequence() != cached.author_seq
+                    || event.lamport() != cached.lamport
+                    || event.mls_epoch() != 0
+                {
+                    return Err(CoreError::LocalSpaceMessageCacheInvalid);
+                }
+                let context = local_text_message_context(
+                    &cached.space_id,
+                    &cached.group_reference,
+                    &cached.channel_id,
+                    &cached.event_id,
+                );
+                let plaintext =
+                    lattice_mls::unprotect_local_record(&context, &cached.encrypted_content)?;
+                Ok((event, plaintext))
+            })?;
+        let content = decode_text_message(&cached_plaintext)?;
+        let message_plaintext = encode_text_message(&content)?;
+        let bound = MlsBoundEvent {
+            event,
+            plaintext: message_plaintext,
+        };
+        let mut staged_reducer = created.reducer.clone();
+        let authorization = staged_reducer.authorize_application_event(&bound);
+        if !matches!(authorization, space::EventAuthorization::Authorized { .. }) {
+            return Err(CoreError::SpaceMessageRejected(authorization));
+        }
+        created.reducer = staged_reducer;
+        Ok(())
     }
 
     /// Restores a locally created Space policy projection after process restart.
@@ -2199,7 +2270,7 @@ mod tests {
     }
 
     #[test]
-    fn local_text_edit_is_authorized_persisted_and_projected_in_memory() {
+    fn local_text_edit_is_authorized_and_survives_profile_restart() {
         let database = TestDatabase::new();
         let protector = TestProtector;
         let mut client =
@@ -2276,6 +2347,32 @@ mod tests {
         assert_eq!(cached_history.len(), 1);
         assert_eq!(cached_history[0].event_id, *original.event_id());
         assert_eq!(cached_history[0].content, "edited");
+        let credential = test_credential(&reopened.identity);
+        let mut restored = reopened
+            .restore_space(&space_id, &group_reference)
+            .expect("restore local Space policy");
+        let second_edit = reopened
+            .queue_text_message_edit(
+                &mut restored,
+                &credential,
+                channel_id,
+                *original.event_id(),
+                "edited after restart",
+            )
+            .expect("authorize edit against the authenticated local history cache");
+        assert_ne!(second_edit.event_id(), original.event_id());
+        assert_ne!(second_edit.event_id(), edit.event_id());
+        let history = reopened
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("read updated history after restart edit");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].event_id, *original.event_id());
+        assert_eq!(history[0].content, "edited after restart");
+        let outbox = reopened
+            .store
+            .list_outbox_page(None, 10)
+            .expect("read outbox after restart edit");
+        assert_eq!(outbox.len(), 3);
     }
     #[test]
     fn tampered_local_message_history_fails_authentication() {
