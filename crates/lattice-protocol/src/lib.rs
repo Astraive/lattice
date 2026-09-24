@@ -91,6 +91,11 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Encode a value using shortest-form, definite-length candidate CBOR.
+///
+/// # Errors
+///
+/// Returns [`Error`] for invalid map ordering, unsupported value forms,
+/// collection or nesting limits, or an encoded value above the profile limit.
 pub fn encode_canonical(value: &Value) -> Result<Vec<u8>, Error> {
     let mut output = Vec::new();
     encode_value(value, 0, &mut output)?;
@@ -98,6 +103,11 @@ pub fn encode_canonical(value: &Value) -> Result<Vec<u8>, Error> {
 }
 
 /// Decode exactly one canonical value, rejecting trailing bytes and over-limit input.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the input is oversized, malformed, non-canonical,
+/// truncated, or contains trailing bytes.
 pub fn decode_canonical(input: &[u8]) -> Result<Value, Error> {
     if input.len() > MAX_EVENT_BYTES {
         return Err(Error::EventTooLarge);
@@ -118,7 +128,8 @@ fn encode_value(value: &Value, depth: usize, output: &mut Vec<u8>) -> Result<(),
             if *number >= 0 {
                 return Err(Error::InvalidNegativeInteger);
             }
-            let argument = (-1_i128 - i128::from(*number)) as u64;
+            let argument = u64::try_from(-1_i128 - i128::from(*number))
+                .map_err(|_| Error::LengthOutOfRange)?;
             write_head(output, 1, argument)
         }
         Value::Bytes(bytes) => {
@@ -202,25 +213,26 @@ fn append(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
 
 fn write_head(output: &mut Vec<u8>, major: u8, argument: u64) -> Result<(), Error> {
     let prefix = major << 5;
+    let bytes = argument.to_be_bytes();
     let mut encoded = [0_u8; 9];
     let length = if argument < 24 {
-        encoded[0] = prefix | argument as u8;
+        encoded[0] = prefix | bytes[7];
         1
     } else if argument <= u8::MAX.into() {
-        encoded[0] = prefix | 24;
-        encoded[1] = argument as u8;
+        encoded[0] = prefix | 0x18;
+        encoded[1] = bytes[7];
         2
     } else if argument <= u16::MAX.into() {
-        encoded[0] = prefix | 25;
-        encoded[1..3].copy_from_slice(&(argument as u16).to_be_bytes());
+        encoded[0] = prefix | 0x19;
+        encoded[1..3].copy_from_slice(&bytes[6..8]);
         3
     } else if argument <= u32::MAX.into() {
-        encoded[0] = prefix | 26;
-        encoded[1..5].copy_from_slice(&(argument as u32).to_be_bytes());
+        encoded[0] = prefix | 0x1a;
+        encoded[1..5].copy_from_slice(&bytes[4..8]);
         5
     } else {
-        encoded[0] = prefix | 27;
-        encoded[1..9].copy_from_slice(&argument.to_be_bytes());
+        encoded[0] = prefix | 0x1b;
+        encoded[1..9].copy_from_slice(&bytes);
         9
     };
     append(output, &encoded[..length])
@@ -244,10 +256,9 @@ impl<'a> Decoder<'a> {
         match head.major {
             0 => Ok(Value::Unsigned(head.argument)),
             1 => {
-                if head.argument > i64::MAX as u64 {
-                    return Err(Error::NegativeIntegerOutOfRange);
-                }
-                Ok(Value::Signed(-1 - head.argument as i64))
+                let argument =
+                    i64::try_from(head.argument).map_err(|_| Error::NegativeIntegerOutOfRange)?;
+                Ok(Value::Signed(-1 - argument))
             }
             2 => {
                 let bytes = self.read_string_bytes(head.argument)?;
@@ -260,7 +271,7 @@ impl<'a> Decoder<'a> {
             }
             4 => {
                 check_container_depth(depth)?;
-                let length = self.checked_collection_length(head.argument)?;
+                let length = Self::checked_collection_length(head.argument)?;
                 if length > self.remaining() {
                     return Err(Error::Truncated);
                 }
@@ -272,7 +283,7 @@ impl<'a> Decoder<'a> {
             }
             5 => {
                 check_container_depth(depth)?;
-                let length = self.checked_collection_length(head.argument)?;
+                let length = Self::checked_collection_length(head.argument)?;
                 if length > self.remaining() / 2 {
                     return Err(Error::Truncated);
                 }
@@ -297,7 +308,6 @@ impl<'a> Decoder<'a> {
                 }
                 Ok(Value::Map(entries))
             }
-            6 => Err(Error::UnsupportedType),
             7 => match (head.additional, head.argument) {
                 (20, 20) => Ok(Value::Bool(false)),
                 (21, 21) => Ok(Value::Bool(true)),
@@ -361,7 +371,7 @@ impl<'a> Decoder<'a> {
         self.take(length)
     }
 
-    fn checked_collection_length(&self, length: u64) -> Result<usize, Error> {
+    fn checked_collection_length(length: u64) -> Result<usize, Error> {
         if length > MAX_COLLECTION_ITEMS as u64 {
             return Err(Error::CollectionTooLarge);
         }
@@ -404,23 +414,33 @@ pub struct EventId([u8; 32]);
 
 impl EventId {
     /// Validate and hash a canonical event preimage without rewriting its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if the preimage is not a bounded, canonical value.
     pub fn from_preimage(preimage: &[u8]) -> Result<Self, Error> {
         decode_canonical(preimage)?;
         Ok(Self::hash_preimage(preimage))
     }
 
     /// Encode a supported value and hash those exact encoded bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if the value cannot be encoded within the profile.
     pub fn from_value(value: &Value) -> Result<Self, Error> {
         let preimage = encode_canonical(value)?;
         Ok(Self::hash_preimage(&preimage))
     }
 
     /// Construct an ID from its 32-byte representation.
+    #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
     /// Return the 32-byte representation.
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
