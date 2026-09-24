@@ -14,6 +14,7 @@ Voice rooms are ephemeral sessions in a Space. Authenticated Lattice events carr
 | VOC-008 | Small-room topology shall publish a measured safe participant limit. | CPU/network/audio tests on defined mobile matrix determine limit; no unlimited-room claim. | M8 |
 
 Direct WebRTC peer connections can grow costly with group size; a volunteer SFU is deferred and requires its own trust and deployment ADR. [ICE RFC 8445](https://www.rfc-editor.org/rfc/rfc8445), [TURN RFC 8656](https://www.rfc-editor.org/rfc/rfc8656), and [Opus RFC 6716](https://www.rfc-editor.org/rfc/rfc6716) are the baseline references.
+Current implementation is limited to `lattice-voice`'s bounded, caller-clocked signaling state machine. It validates sequence, incarnation, permission inputs, expiry and SDP/candidate size but does not authenticate peers, process signaling over Lattice, parse ICE/SDP, establish WebRTC, handle media/audio, or expose an implemented media path. `SignalingConnected` is not call-connected evidence; all VOC end-to-end and physical-device gates remain open.
 
 ## Join-to-leave runtime
 
