@@ -18,6 +18,7 @@ The production CLI is native Rust. It uses the same core and local identity form
 CLI output should support human and machine-readable modes with stable error classes. It may facilitate test harnesses, but its existence does not imply a globally reachable node or centralized administration.
 
 `space list` restores at most 32 local Genesis records per call and returns the next exclusive cursor as 96 hexadecimal characters (16-byte Space ID followed by 32-byte MLS group reference). Use `lattice space list --after <cursor>` to continue. Each result is a verified local snapshot, not a claim of current membership.
+The current CLI implements `about`, `status`, `identity init|show|pin|pinned`, and read-only `space list`. It has no `space create|join`, message authoring, sync scheduler, peer scan, relay settings, node mode, or doctor commands; those acceptance rows remain open.
 
 ## Command behavior and output
 
