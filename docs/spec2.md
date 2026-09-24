@@ -532,15 +532,15 @@ A channel may override a subset of Space defaults.
 
 Every privileged mutation carries the author’s identity, causal parent(s), required permission, and signature/MLS authentication. A node validates authorization against the policy projection immediately before the event’s causal context. Invalid events remain optionally quarantined for diagnostics but never enter the valid projection.
 
-Concurrent administrative actions can conflict. Lattice resolves ordinary metadata with deterministic last-writer rules over logical clocks, but membership/security conflicts use stricter semantics:
+Membership and security-sensitive actions use an authenticated causal policy and the current MLS epoch; they never use last-writer-wins to select a branch:
 
-- an owner revocation dominates later actions from the revoked administrator once the revocation is causally known;
+- a commit based on a missing parent remains pending; an invalid commit is rejected;
 
-- two concurrent valid admin actions are both accepted if they do not contradict; and
+- a valid commit based on a non-current branch is retained as conflict evidence but not applied; competing valid successors mark the Space conflicted, with no selection by timestamp, hash, arrival, or role; and
 
-- contradictory actions that cannot be safely merged surface as a policy conflict requiring an owner-authorized resolution event.
+- conflict blocks membership and authorization-sensitive mutation until an explicitly invited new MLS generation is established by a currently verified administrator. Recovery does not merge conflicting state, reissue old Welcome messages, or claim to restore omitted history.
 
-No client may silently choose a lower-security branch merely because its wall clock is newer.
+Ordinary non-security metadata may use deterministic logical ordering. The accepted [ADR-001](decisions/ADR-001-membership-commit-conflicts.md) profile intentionally sacrifices availability during membership conflicts rather than guessing a winner.
 
 ## Bans
 
