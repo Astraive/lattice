@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use lattice_core::{Client, CoreError, DeviceIdentityInfo as CoreIdentityInfo, SpaceGenesisCursor};
+use lattice_core::{Client, CoreError, SpaceGenesisCursor};
 use lattice_identity::{IdentityError, PrivateKeyProtectionError, PrivateKeyProtector};
 
 use super::{
     MobileError, MobileIdentityInfo, MobilePinnedIdentity, MobileSpaceCursor, MobileSpacePage,
-    MobileSpaceSummary, PlatformKeyProtector, ProtectorError,
+    MobileSpaceSummary, PlatformKeyProtector,
 };
 
 struct ProfileProtector {
@@ -93,20 +93,21 @@ impl MobileClient {
     /// `InvalidIdentityBundle` for malformed bytes,
     /// `FingerprintMismatch` for a valid but nonmatching bundle, or
     /// `PinnedIdentityConflict` if that fingerprint already maps to other bytes.
+    // UniFFI exports byte buffers as owned Vec values at the Rust boundary.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn pin_identity(
         &self,
         public_bundle: Vec<u8>,
         expected_fingerprint: Vec<u8>,
     ) -> Result<MobilePinnedIdentity, MobileError> {
         let expected_fingerprint: [u8; 32] = expected_fingerprint
-            .as_slice()
             .try_into()
             .map_err(|_| MobileError::InvalidFingerprint)?;
         let mut client = self.lock_client()?;
         client
             .pin_identity(&public_bundle, expected_fingerprint)
             .map(Into::into)
-            .map_err(map_pin_error)
+            .map_err(|error| map_pin_error(&error))
     }
 
     /// Loads and revalidates one pinned peer by its full fingerprint.
@@ -121,13 +122,12 @@ impl MobileClient {
         fingerprint: Vec<u8>,
     ) -> Result<Option<MobilePinnedIdentity>, MobileError> {
         let fingerprint: [u8; 32] = fingerprint
-            .as_slice()
             .try_into()
             .map_err(|_| MobileError::InvalidFingerprint)?;
         self.lock_client()?
             .pinned_identity(&fingerprint)
             .map(|pinned| pinned.map(Into::into))
-            .map_err(map_pin_error)
+            .map_err(|error| map_pin_error(&error))
     }
 
     /// Returns the next durable author sequence for this identity.
@@ -190,7 +190,7 @@ fn map_open_error(error: &CoreError) -> MobileError {
     }
 }
 
-fn map_pin_error(error: CoreError) -> MobileError {
+fn map_pin_error(error: &CoreError) -> MobileError {
     match error {
         CoreError::Identity(IdentityError::FingerprintMismatch) => MobileError::FingerprintMismatch,
         CoreError::Identity(IdentityError::Protection(_)) => MobileError::KeyProtectionFailed,
