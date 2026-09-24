@@ -1,10 +1,13 @@
 [package]
 name = "lattice-transport"
-description = "Lattice transport lifecycle and framing ports"
+description = "Bounded platform transport orchestration"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
+
+[dependencies]
+lattice-platform = { path = "../lattice-platform" }
 
 [lints]
 workspace = true

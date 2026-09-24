@@ -2995,6 +2995,9 @@ version = "0.1.0"
 [[package]]
 name = "lattice-transport"
 version = "0.1.0"
+dependencies = [
+ "lattice-platform",
+]
 
 [[package]]
 name = "lattice-uniffi"

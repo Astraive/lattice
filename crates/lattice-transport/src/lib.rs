@@ -1,274 +1,144 @@
-//! Bounded platform transport ports for opaque envelopes.
+//! Bounded transport orchestration over the shared platform adapter port.
 //!
-//! This crate defines a shared adapter contract only. It does not implement
-//! BLE, LAN, Wi-Fi Aware, sockets, or relay networking, and a successful send
-//! means local adapter acceptance rather than remote delivery.
+//! This crate does not implement BLE, LAN, Wi-Fi Aware, sockets, or relay
+//! networking. A successful send means exact-hop adapter acceptance only.
+
+use lattice_platform::{TransportAdapter, TransportError};
 
 /// Package's published crate name.
 pub const CRATE_NAME: &str = "lattice-transport";
-/// Absolute envelope ceiling shared by all adapters.
-pub const MAX_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Current platform path state; only `Connected` can exchange envelopes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PathState {
-    /// No path is available due to permission, hardware, or OS state.
-    Unavailable,
-    /// The path can be established but is not connected yet.
-    Available,
-    /// The adapter has an authenticated or otherwise usable active link.
-    Connected,
-}
-
-/// Runtime capabilities reported by one concrete platform path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PathCapabilities {
-    /// Maximum complete opaque envelope accepted by this path.
-    pub max_envelope_bytes: usize,
-    /// Whether the path can be considered for bulk application payloads.
-    pub supports_bulk: bool,
-}
-
-/// Adapter's report after polling one complete envelope into caller storage.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReceiveResult {
-    /// No complete envelope is currently available.
-    Empty,
-    /// One complete envelope was copied into the supplied buffer.
-    Received(usize),
-    /// The adapter observed an envelope larger than its bounded receive buffer.
-    Oversized,
-}
-
-/// A complete opaque envelope was handed to a local adapter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SendOutcome {
-    /// Local adapter accepted the envelope; this is not a delivery receipt.
-    AcceptedByAdapter,
-}
-
-/// Failures detected at the shared bounded transport boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TransportError<E> {
-    /// Adapter reported zero or an over-limit capability.
-    InvalidCapabilities,
-    /// Path is not connected; caller may retain or retry the envelope.
-    NotConnected(PathState),
-    /// Envelope exceeds the smaller of the path and crate limits.
-    EnvelopeTooLarge { supplied: usize, maximum: usize },
-    /// Adapter claimed a receive length outside the supplied bounded buffer.
-    InvalidReceiveLength { reported: usize, capacity: usize },
-    /// Adapter-specific failure.
-    Adapter(E),
-}
-
-/// Platform-owned link implementation for already-enveloped opaque bytes.
+/// Submits an opaque envelope only when the platform adapter is running and
+/// the object fits the adapter's advertised limit.
 ///
-/// Implementations own connection setup, OS permissions, peer authentication,
-/// link framing, pacing, and teardown. They must write only within `buffer`;
-/// application validation and delivery accounting remain above this port.
-pub trait TransportAdapter {
-    /// Adapter-specific I/O error.
-    type Error;
-
-    /// Returns the path's current lifecycle state.
-    fn state(&self) -> PathState;
-
-    /// Returns runtime capabilities discovered from the OS and peer.
-    fn capabilities(&self) -> PathCapabilities;
-
-    /// Gives one complete opaque envelope to the connected local adapter.
-    ///
-    /// # Errors
-    ///
-    /// Returns the adapter-specific error when local submission fails.
-    fn send_envelope(&mut self, envelope: &[u8]) -> Result<(), Self::Error>;
-
-    /// Polls for one complete envelope, writing no more than `buffer.len()`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the adapter-specific error when polling fails.
-    fn receive_envelope(&mut self, buffer: &mut [u8]) -> Result<ReceiveResult, Self::Error>;
-}
-
-/// Submits one bounded opaque envelope after validating path state and limits.
+/// The adapter remains responsible for native framing, permissions, and I/O.
+/// This function never retries or allocates; ownership of the envelope passes
+/// directly to the platform port after the bounds check.
 ///
 /// # Errors
 ///
-/// Returns an error if capabilities are invalid, the path is not connected,
-/// the object exceeds the advertised bound, or the adapter rejects the send.
-pub fn send_bounded<A: TransportAdapter>(
-    adapter: &mut A,
-    envelope: &[u8],
-) -> Result<SendOutcome, TransportError<A::Error>> {
-    let capabilities = checked_capabilities(adapter.capabilities())?;
-    if adapter.state() != PathState::Connected {
-        return Err(TransportError::NotConnected(adapter.state()));
+/// Returns `NotRunning` or `EnvelopeTooLarge` before adapter I/O, or the exact
+/// error returned by the platform adapter.
+pub async fn send_bounded<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    envelope: lattice_platform::EnvelopeBytes,
+) -> Result<lattice_platform::TransportReceipt, TransportError> {
+    let maximum = adapter.capabilities().max_envelope_bytes();
+    if adapter.lifecycle() != lattice_platform::TransportLifecycle::Running {
+        return Err(TransportError::NotRunning);
     }
-    let maximum = capabilities.max_envelope_bytes.min(MAX_ENVELOPE_BYTES);
-    if envelope.len() > maximum {
-        return Err(TransportError::EnvelopeTooLarge {
-            supplied: envelope.len(),
-            maximum,
-        });
+    if envelope.as_bytes().len() > maximum {
+        return Err(TransportError::EnvelopeTooLarge);
     }
-    adapter
-        .send_envelope(envelope)
-        .map_err(TransportError::Adapter)?;
-    Ok(SendOutcome::AcceptedByAdapter)
-}
-
-/// Receives at most one complete envelope into caller-owned bounded storage.
-///
-/// The returned slice borrows `buffer`; no allocation or unbounded copy occurs.
-///
-/// # Errors
-///
-/// Returns an error if capabilities are invalid, the path is not connected,
-/// the adapter claims an impossible length, or the adapter reports an I/O error.
-pub fn receive_bounded<'a, A: TransportAdapter>(
-    adapter: &mut A,
-    buffer: &'a mut [u8],
-) -> Result<Option<&'a [u8]>, TransportError<A::Error>> {
-    let capabilities = checked_capabilities(adapter.capabilities())?;
-    if adapter.state() != PathState::Connected {
-        return Err(TransportError::NotConnected(adapter.state()));
-    }
-    let maximum = capabilities.max_envelope_bytes.min(MAX_ENVELOPE_BYTES);
-    let capacity = buffer.len().min(maximum);
-    let result = adapter
-        .receive_envelope(&mut buffer[..capacity])
-        .map_err(TransportError::Adapter)?;
-    match result {
-        ReceiveResult::Empty | ReceiveResult::Oversized => Ok(None),
-        ReceiveResult::Received(reported) if reported <= capacity => Ok(Some(&buffer[..reported])),
-        ReceiveResult::Received(reported) => {
-            Err(TransportError::InvalidReceiveLength { reported, capacity })
-        }
-    }
-}
-
-fn checked_capabilities<E>(
-    capabilities: PathCapabilities,
-) -> Result<PathCapabilities, TransportError<E>> {
-    if capabilities.max_envelope_bytes == 0 || capabilities.max_envelope_bytes > MAX_ENVELOPE_BYTES
-    {
-        return Err(TransportError::InvalidCapabilities);
-    }
-    Ok(capabilities)
+    adapter.send(envelope).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MAX_ENVELOPE_BYTES, PathCapabilities, PathState, ReceiveResult, SendOutcome,
-        TransportAdapter, TransportError, receive_bounded, send_bounded,
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    use lattice_platform::{
+        AdapterName, EnvelopeBytes, PortFuture, TransportAdapter, TransportCapabilities,
+        TransportError, TransportLifecycle, TransportReceipt,
     };
 
-    use std::convert::Infallible;
+    use super::send_bounded;
 
     struct MockAdapter {
-        state: PathState,
-        capabilities: PathCapabilities,
-        sent: Vec<Vec<u8>>,
-        incoming: Option<Vec<u8>>,
-        send_calls: usize,
+        capabilities: TransportCapabilities,
+        lifecycle: TransportLifecycle,
+        sends: AtomicUsize,
+    }
+
+    impl MockAdapter {
+        fn new(lifecycle: TransportLifecycle, maximum: usize) -> Self {
+            Self {
+                capabilities: TransportCapabilities::new(
+                    AdapterName::try_from("mock-test".to_owned()).expect("valid adapter name"),
+                    maximum,
+                )
+                .expect("valid capability bound"),
+                lifecycle,
+                sends: AtomicUsize::new(0),
+            }
+        }
     }
 
     impl TransportAdapter for MockAdapter {
-        type Error = Infallible;
-
-        fn state(&self) -> PathState {
-            self.state
+        fn capabilities(&self) -> TransportCapabilities {
+            self.capabilities.clone()
         }
 
-        fn capabilities(&self) -> PathCapabilities {
-            self.capabilities
+        fn lifecycle(&self) -> TransportLifecycle {
+            self.lifecycle
         }
 
-        fn send_envelope(&mut self, envelope: &[u8]) -> Result<(), Self::Error> {
-            self.send_calls += 1;
-            self.sent.push(envelope.to_vec());
-            Ok(())
+        fn start(&self) -> PortFuture<'_, Result<(), TransportError>> {
+            Box::pin(async { Ok(()) })
         }
 
-        fn receive_envelope(&mut self, buffer: &mut [u8]) -> Result<ReceiveResult, Self::Error> {
-            let Some(incoming) = self.incoming.take() else {
-                return Ok(ReceiveResult::Empty);
-            };
-            if incoming.len() > buffer.len() {
-                return Ok(ReceiveResult::Oversized);
-            }
-            buffer[..incoming.len()].copy_from_slice(&incoming);
-            Ok(ReceiveResult::Received(incoming.len()))
+        fn stop(&self) -> PortFuture<'_, Result<(), TransportError>> {
+            Box::pin(async { Ok(()) })
         }
-    }
 
-    fn connected_adapter(max_envelope_bytes: usize) -> MockAdapter {
-        MockAdapter {
-            state: PathState::Connected,
-            capabilities: PathCapabilities {
-                max_envelope_bytes,
-                supports_bulk: false,
-            },
-            sent: Vec::new(),
-            incoming: None,
-            send_calls: 0,
-        }
-    }
-
-    #[test]
-    fn rejects_disconnected_and_oversized_sends_before_adapter_io() {
-        let mut adapter = connected_adapter(4);
-        assert_eq!(
-            send_bounded(&mut adapter, b"12345"),
-            Err(TransportError::EnvelopeTooLarge {
-                supplied: 5,
-                maximum: 4,
+        fn send(
+            &self,
+            envelope: EnvelopeBytes,
+        ) -> PortFuture<'_, Result<TransportReceipt, TransportError>> {
+            Box::pin(async move {
+                drop(envelope);
+                self.sends.fetch_add(1, Ordering::Relaxed);
+                Ok(TransportReceipt::AcceptedByNextHop)
             })
-        );
-        assert_eq!(adapter.send_calls, 0);
+        }
+    }
 
-        adapter.state = PathState::Available;
-        assert_eq!(
-            send_bounded(&mut adapter, b"1"),
-            Err(TransportError::NotConnected(PathState::Available))
-        );
-        assert_eq!(adapter.send_calls, 0);
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn run_ready<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("test adapter future must be immediately ready"),
+        }
+    }
+
+    fn envelope(bytes: &[u8]) -> EnvelopeBytes {
+        EnvelopeBytes::try_from(bytes.to_vec()).expect("bounded test envelope")
     }
 
     #[test]
-    fn accepted_send_is_local_only_and_receive_is_bounded_by_path_capability() {
-        let mut adapter = connected_adapter(4);
+    fn checks_lifecycle_and_adapter_limit_before_native_io() {
+        let stopped = MockAdapter::new(TransportLifecycle::Stopped, 4);
         assert_eq!(
-            send_bounded(&mut adapter, b"data"),
-            Ok(SendOutcome::AcceptedByAdapter)
+            run_ready(send_bounded(&stopped, envelope(b"x"))),
+            Err(TransportError::NotRunning)
         );
-        assert_eq!(adapter.sent, [b"data".to_vec()]);
+        assert_eq!(stopped.sends.load(Ordering::Relaxed), 0);
 
-        adapter.incoming = Some(b"toolong".to_vec());
-        let mut storage = [0; 8];
-        assert_eq!(receive_bounded(&mut adapter, &mut storage), Ok(None));
-
-        adapter.incoming = Some(b"ok".to_vec());
+        let running = MockAdapter::new(TransportLifecycle::Running, 4);
         assert_eq!(
-            receive_bounded(&mut adapter, &mut storage),
-            Ok(Some(&b"ok"[..]))
+            run_ready(send_bounded(&running, envelope(b"12345"))),
+            Err(TransportError::EnvelopeTooLarge)
         );
+        assert_eq!(running.sends.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn invalid_or_excessive_adapter_capabilities_fail_closed() {
-        let mut adapter = connected_adapter(0);
+    fn passing_send_returns_only_the_adapter_hop_receipt() {
+        let adapter = MockAdapter::new(TransportLifecycle::Running, 4);
         assert_eq!(
-            send_bounded(&mut adapter, b"x"),
-            Err(TransportError::InvalidCapabilities)
+            run_ready(send_bounded(&adapter, envelope(b"data"))),
+            Ok(TransportReceipt::AcceptedByNextHop)
         );
-        adapter.capabilities.max_envelope_bytes = MAX_ENVELOPE_BYTES + 1;
-        assert_eq!(
-            receive_bounded(&mut adapter, &mut [0; 4]),
-            Err(TransportError::InvalidCapabilities)
-        );
+        assert_eq!(adapter.sends.load(Ordering::Relaxed), 1);
     }
 }
