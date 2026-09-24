@@ -324,7 +324,11 @@ pub fn plan_forward(
         return Ok(RoutingOutcome::NoViablePath);
     }
 
-    let fanout = usize::from(policy.max_fanout.min(envelope.copies_remaining));
+    let fanout = if class == TrafficClass::Voice {
+        1
+    } else {
+        usize::from(policy.max_fanout.min(envelope.copies_remaining))
+    };
     let paths: Vec<PathId> = viable
         .into_iter()
         .take(fanout)
@@ -400,6 +404,11 @@ fn is_viable(
     {
         return false;
     }
+    if class == TrafficClass::Presence
+        && matches!(candidate.kind, PathKind::Courier | PathKind::InternetRelay)
+    {
+        return false;
+    }
     if candidate.metered && !policy.allow_metered {
         return false;
     }
@@ -418,7 +427,9 @@ fn is_viable(
         return false;
     }
     if class == TrafficClass::Voice
-        && (!candidate.kind.is_ip() || !candidate.capabilities.realtime_media)
+        && (!candidate.kind.is_ip()
+            || matches!(candidate.kind, PathKind::Courier | PathKind::InternetRelay)
+            || !candidate.capabilities.realtime_media)
     {
         return false;
     }
@@ -653,6 +664,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn presence_cannot_use_persistent_relay_paths() {
+        for kind in [PathKind::Courier, PathKind::InternetRelay] {
+            let relay = path(
+                1,
+                kind,
+                if kind == PathKind::InternetRelay {
+                    NetworkScope::Internet
+                } else {
+                    NetworkScope::Local
+                },
+                TrafficClass::Presence,
+                8_192,
+                Some(10),
+            );
+            let policy = RoutingPolicy {
+                allow_internet_routes: true,
+                ..RoutingPolicy::default()
+            };
+            assert_eq!(
+                plan_forward(
+                    TrafficClass::Presence,
+                    &envelope(100),
+                    900,
+                    &[relay],
+                    &policy,
+                )
+                .unwrap(),
+                RoutingOutcome::NoViablePath
+            );
+        }
+    }
+
+    #[test]
+    fn voice_selects_one_direct_ip_route_and_excludes_courier_relays() {
+        let lan = path(
+            1,
+            PathKind::Lan,
+            NetworkScope::Local,
+            TrafficClass::Voice,
+            8_192,
+            Some(20),
+        );
+        let wifi = path(
+            2,
+            PathKind::WifiAware,
+            NetworkScope::Local,
+            TrafficClass::Voice,
+            8_192,
+            Some(30),
+        );
+        let relay = path(
+            3,
+            PathKind::InternetRelay,
+            NetworkScope::Internet,
+            TrafficClass::Voice,
+            8_192,
+            Some(1),
+        );
+        let courier = path(
+            4,
+            PathKind::Courier,
+            NetworkScope::Local,
+            TrafficClass::Voice,
+            8_192,
+            Some(2),
+        );
+        let policy = RoutingPolicy {
+            allow_internet_routes: true,
+            max_fanout: 4,
+            ..RoutingPolicy::default()
+        };
+        let outcome = plan_forward(
+            TrafficClass::Voice,
+            &envelope(100),
+            900,
+            &[lan, wifi, relay, courier],
+            &policy,
+        )
+        .unwrap();
+
+        match outcome {
+            RoutingOutcome::Forward(plan) => {
+                assert_eq!(plan.paths, vec![PathId(1)]);
+                assert_eq!(plan.counters.copies_remaining, 3);
+                assert_eq!(plan.counters.hops_used, 1);
+                assert_eq!(plan.counters.expires_at_unix_seconds, 1_000);
+            }
+            other => panic!("expected a forwarding plan, got {other:?}"),
+        }
+    }
     #[test]
     fn voice_uses_viable_ip_path_and_never_ble() {
         let ble = path(
