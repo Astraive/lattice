@@ -30,9 +30,17 @@ pub struct PrivateKeyProtectionError;
 /// This trait does not itself provide an OS keystore implementation.
 pub trait PrivateKeyProtector {
     /// Protects raw identity material and returns only its opaque ciphertext.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the platform protection operation fails.
     fn wrap(&self, private_material: &[u8]) -> Result<Vec<u8>, PrivateKeyProtectionError>;
 
     /// Unwraps ciphertext for immediate validation and key reconstruction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ciphertext cannot be unwrapped.
     fn unwrap(&self, ciphertext: &[u8]) -> Result<Vec<u8>, PrivateKeyProtectionError>;
 }
 
@@ -101,6 +109,11 @@ pub struct IdentityPublicBundle {
 
 impl IdentityPublicBundle {
     /// Parses the exact version-1 public identity encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid length, unsupported version, or invalid
+    /// Ed25519 public key.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
         let encoded: &[u8; PUBLIC_BUNDLE_LEN] =
             bytes.try_into().map_err(|_| IdentityError::InvalidLength {
@@ -162,6 +175,10 @@ pub struct DeviceIdentity {
 
 impl DeviceIdentity {
     /// Creates signing and X25519 keys from the operating-system CSPRNG.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating-system random source fails.
     pub fn generate() -> Result<Self, IdentityError> {
         let mut signing_seed = Zeroizing::new([0_u8; 32]);
         getrandom::fill(&mut *signing_seed)?;
@@ -179,6 +196,11 @@ impl DeviceIdentity {
     /// The ciphertext is suitable for persistence only when `protector` is a
     /// reviewed OS-backed implementation. No production keystore provider is
     /// included here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if key generation, protection, or the output-size
+    /// bound fails.
     pub fn generate_protected<P: PrivateKeyProtector>(
         protector: &P,
     ) -> Result<(Self, Vec<u8>), IdentityError> {
@@ -199,6 +221,11 @@ impl DeviceIdentity {
     ///
     /// The ciphertext length is bounded before calling the protector. The
     /// unwrapped version, length, and public-key consistency are then validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if ciphertext is oversized, protection fails, or the
+    /// unwrapped material is invalid.
     pub fn load_protected<P: PrivateKeyProtector>(
         protector: &P,
         ciphertext: &[u8],
@@ -291,6 +318,10 @@ impl DeviceIdentity {
     /// The peer key must be authenticated by an application protocol. A KDF
     /// bound to the authenticated transcript is required before using this
     /// secret as key material. This API does not expose it through FFI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed or non-contributory peer key.
     pub fn derive_shared_secret(
         &self,
         peer_public_key: &[u8],
@@ -316,6 +347,11 @@ impl DeviceIdentity {
 ///
 /// A valid signature demonstrates key possession; it does not establish
 /// authorization or a trusted real-world identity.
+///
+/// # Errors
+///
+/// Returns an error for invalid public-key or signature lengths, an invalid
+/// public key, or a signature that does not verify.
 pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), IdentityError> {
     let public_key: &[u8; 32] =
         public_key
