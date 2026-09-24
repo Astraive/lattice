@@ -750,7 +750,7 @@ impl Client {
             ))?;
         let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
         let plaintext = encode_text_message(content)?;
-        let message = LocalTextMessage {
+        let message = LocalTextEvent {
             group_id: created.group_id.clone(),
             credential,
             reducer: &created.reducer,
@@ -760,6 +760,56 @@ impl Client {
             parents,
             lamport,
             plaintext,
+            event_kind: EventKind::Message,
+        };
+        let (receipt, staged_reducer) =
+            self.with_mls_transaction(|identity, provider, transaction| {
+                queue_text_message_in_transaction(identity, provider, transaction, message)
+            })?;
+        created.reducer = staged_reducer;
+        Ok(receipt)
+    }
+    /// Queues an authorized text edit of an immutable message event.
+    ///
+    /// The edit is a separately signed and encrypted event referencing the
+    /// original message. It is included in the in-memory reducer projection
+    /// and durable outbox; full message-history replay after restart remains
+    /// unsupported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the original message is not an authorized ancestor,
+    /// the local MLS generation has advanced beyond the supported Genesis
+    /// state, the payload is invalid, or storage/MLS encryption fails.
+    pub fn queue_text_message_edit(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        channel_id: space::EntityId,
+        target: [u8; 32],
+        content: &str,
+    ) -> Result<QueuedMessage, CoreError> {
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (mut parents, lamport) = resolve_edit_parents(&self.store, policy, channel_id, target)?;
+        parents.sort_unstable_by_key(|parent| *parent.as_bytes());
+        parents.dedup_by_key(|parent| *parent.as_bytes());
+        let plaintext = encode_text_edit(target, content)?;
+        let message = LocalTextEvent {
+            group_id: created.group_id.clone(),
+            credential,
+            reducer: &created.reducer,
+            space_id: created.space_id,
+            group_reference: created.group_reference,
+            channel_id,
+            parents,
+            lamport,
+            plaintext,
+            event_kind: EventKind::Edit,
         };
         let (receipt, staged_reducer) =
             self.with_mls_transaction(|identity, provider, transaction| {
@@ -1092,7 +1142,7 @@ impl Client {
     }
 }
 
-struct LocalTextMessage<'a> {
+struct LocalTextEvent<'a> {
     group_id: Vec<u8>,
     credential: &'a DeviceCredentialInput,
     reducer: &'a space::SpaceReducer,
@@ -1102,6 +1152,7 @@ struct LocalTextMessage<'a> {
     parents: Vec<lattice_protocol::EventId>,
     lamport: u64,
     plaintext: Vec<u8>,
+    event_kind: EventKind,
 }
 
 fn resolve_policy_parents(
@@ -1135,6 +1186,33 @@ fn resolve_policy_parents(
         lamport,
     ))
 }
+fn resolve_edit_parents(
+    store: &Store,
+    policy: &space::SpacePolicy,
+    channel_id: space::EntityId,
+    target: [u8; 32],
+) -> Result<(Vec<lattice_protocol::EventId>, u64), CoreError> {
+    let (mut parents, base_lamport) = resolve_policy_parents(store, policy)?;
+    let record = store
+        .load_event(&target)?
+        .ok_or(CoreError::SpaceParentEventMissing)?;
+    let event = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+    if event.event_id().as_bytes() != &target
+        || event.space_id() != &policy.space_id
+        || event.mls_group_reference() != &policy.group_reference
+        || event.channel_id() != Some(&channel_id)
+        || event.kind() != EventKind::Message
+    {
+        return Err(CoreError::SpaceParentEventMissing);
+    }
+    parents.push(lattice_protocol::EventId::from_bytes(target));
+    let lamport = base_lamport
+        .saturating_sub(1)
+        .max(event.lamport())
+        .checked_add(1)
+        .ok_or(CoreError::SpaceLamportExhausted)?;
+    Ok((parents, lamport))
+}
 
 fn encode_text_message(content: &str) -> Result<Vec<u8>, CoreError> {
     if content.len() > space::MAX_SPACE_PAYLOAD_BYTES {
@@ -1156,12 +1234,30 @@ fn encode_text_message(content: &str) -> Result<Vec<u8>, CoreError> {
     }
     Ok(plaintext)
 }
+fn encode_text_edit(target: [u8; 32], content: &str) -> Result<Vec<u8>, CoreError> {
+    if content.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    let plaintext = encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Bytes(target.to_vec())),
+        (2, Value::Text(content.to_owned())),
+    ]))?;
+    if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    Ok(plaintext)
+}
 
 fn queue_text_message_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
     transaction: &Transaction<'_>,
-    message: LocalTextMessage<'_>,
+    message: LocalTextEvent<'_>,
 ) -> Result<(QueuedMessage, space::SpaceReducer), CoreError> {
     let mut group = GroupState::load(provider, &message.group_id)?;
     if group.group_reference() != message.group_reference
@@ -1185,7 +1281,7 @@ fn queue_text_message_in_transaction(
             lamport: message.lamport,
             wall_time_hint: 0,
             parents: message.parents,
-            kind: EventKind::Message,
+            kind: message.event_kind,
             protected_body: protected.as_bytes().to_vec(),
             mls_group_reference: message.group_reference,
             mls_epoch: group.epoch(),
@@ -1219,28 +1315,30 @@ fn queue_text_message_in_transaction(
     {
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
-    let event_id = *event.event_id().as_bytes();
-    let context = local_text_message_context(
-        &message.space_id,
-        &message.group_reference,
-        &message.channel_id,
-        &event_id,
-    );
-    let encrypted_content = lattice_mls::protect_local_record(&context, bound.plaintext())?;
-    Store::save_cached_space_message_in_transaction(
-        transaction,
-        &CachedSpaceMessage {
-            event_id,
-            space_id: message.space_id,
-            group_reference: message.group_reference,
-            channel_id: message.channel_id,
-            author_id: *event.author_fingerprint(),
-            author_seq: sequence,
-            lamport: event.lamport(),
-            encrypted_content,
-            outbox_state: None,
-        },
-    )?;
+    if message.event_kind == EventKind::Message {
+        let event_id = *event.event_id().as_bytes();
+        let context = local_text_message_context(
+            &message.space_id,
+            &message.group_reference,
+            &message.channel_id,
+            &event_id,
+        );
+        let encrypted_content = lattice_mls::protect_local_record(&context, bound.plaintext())?;
+        Store::save_cached_space_message_in_transaction(
+            transaction,
+            &CachedSpaceMessage {
+                event_id,
+                space_id: message.space_id,
+                group_reference: message.group_reference,
+                channel_id: message.channel_id,
+                author_id: *event.author_fingerprint(),
+                author_seq: sequence,
+                lamport: event.lamport(),
+                encrypted_content,
+                outbox_state: None,
+            },
+        )?;
+    }
     Ok((
         QueuedMessage {
             event_id: *event.event_id().as_bytes(),
@@ -1652,6 +1750,71 @@ mod tests {
         assert_eq!(history[0].event_id, event_id);
     }
 
+    #[test]
+    fn local_text_edit_is_authorized_persisted_and_projected_in_memory() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+        let original = client
+            .queue_text_message(&mut created, &credential, channel_id, "original")
+            .expect("queue original message");
+        let edit = client
+            .queue_text_message_edit(
+                &mut created,
+                &credential,
+                channel_id,
+                *original.event_id(),
+                "edited",
+            )
+            .expect("queue authorized edit");
+
+        assert_ne!(original.event_id(), edit.event_id());
+        let history = created.reducer().message_history(&channel_id);
+        let projected = &history.messages()[0];
+        assert_eq!(projected.event_id, *original.event_id());
+        assert_eq!(projected.versions().len(), 2);
+        assert_eq!(projected.current_version().content.as_ref(), "edited");
+
+        let stored = client
+            .store
+            .load_event(edit.event_id())
+            .expect("read committed edit")
+            .expect("edit event persisted");
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)
+            .expect("verify signed edit");
+        assert_eq!(event.kind(), EventKind::Edit);
+        assert!(
+            event
+                .parents()
+                .iter()
+                .any(|parent| parent.as_bytes() == original.event_id())
+        );
+        let outbox = client
+            .store
+            .list_outbox_page(None, 10)
+            .expect("read local outbox");
+        assert_eq!(outbox.len(), 2);
+        assert!(
+            outbox
+                .iter()
+                .any(|entry| entry.event_id == *edit.event_id())
+        );
+    }
     #[test]
     fn tampered_local_message_history_fails_authentication() {
         let database = TestDatabase::new();
