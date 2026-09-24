@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// A small deterministic pseudorandom stream for repeatable test scenarios.
 ///
-/// This uses SplitMix64 and is **not cryptographically secure**. It is only
+/// This uses `SplitMix64` and is **not cryptographically secure**. It is only
 /// suitable for tests and simulations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeterministicRng {
@@ -17,6 +17,7 @@ pub struct DeterministicRng {
 
 impl DeterministicRng {
     /// Creates a stream from an explicit seed.
+    #[must_use]
     pub const fn new(seed: u64) -> Self {
         Self { state: seed }
     }
@@ -47,6 +48,7 @@ pub struct ClockOverflow;
 
 impl FakeClock {
     /// Starts monotonic time at zero with the supplied wall-clock timestamp.
+    #[must_use]
     pub const fn new(wall_time_millis: i64) -> Self {
         Self {
             monotonic_nanos: 0,
@@ -55,6 +57,7 @@ impl FakeClock {
     }
 
     /// Starts both clocks at the supplied values.
+    #[must_use]
     pub const fn at(monotonic_nanos: u64, wall_time_millis: i64) -> Self {
         Self {
             monotonic_nanos,
@@ -62,15 +65,21 @@ impl FakeClock {
         }
     }
 
+    #[must_use]
     pub const fn monotonic_nanos(&self) -> u64 {
         self.monotonic_nanos
     }
 
+    #[must_use]
     pub const fn wall_time_millis(&self) -> i64 {
         self.wall_time_millis
     }
 
     /// Advances both clocks atomically, leaving them unchanged on overflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClockOverflow`] if either clock would overflow.
     pub fn advance(&mut self, duration: Duration) -> Result<(), ClockOverflow> {
         let monotonic_delta = u64::try_from(duration.as_nanos()).map_err(|_| ClockOverflow)?;
         let wall_delta = i64::try_from(duration.as_millis()).map_err(|_| ClockOverflow)?;
@@ -160,6 +169,13 @@ pub struct DirectedLink<T> {
 
 impl<T: Clone> DirectedLink<T> {
     /// Creates a directed link with explicit deterministic seed and behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinkConfigError::InvalidCapacity`] if capacity is zero or
+    /// exceeds [`MAX_LINK_CAPACITY`], or
+    /// [`LinkConfigError::ProbabilityOutOfRange`] if either probability exceeds
+    /// 1000 per mille.
     pub fn new(seed: u64, config: LinkConfig) -> Result<Self, LinkConfigError> {
         if config.capacity == 0 || config.capacity > MAX_LINK_CAPACITY {
             return Err(LinkConfigError::InvalidCapacity);
@@ -175,12 +191,20 @@ impl<T: Clone> DirectedLink<T> {
         })
     }
 
+    #[must_use]
     pub fn queued(&self) -> usize {
         self.queue.len()
     }
 
     /// Attempts to enqueue a frame at `now`. A full queue rejects the send
     /// without changing the queue. A dropped frame is reported and not queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinkError::QueueFull`] if the queue is full,
+    /// [`LinkError::SequenceOverflow`] if assigning copy sequence numbers
+    /// would overflow, or [`LinkError::DeliveryTimeOverflow`] if a copy's
+    /// delivery time would overflow.
     pub fn send(&mut self, now: u64, frame: T) -> Result<SendOutcome, LinkError> {
         if self.queue.len() >= self.config.capacity {
             return Err(LinkError::QueueFull);

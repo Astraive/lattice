@@ -58,6 +58,11 @@ impl SequenceRange {
     /// Creates a non-empty inclusive sequence range.
     ///
     /// Event sequences are one-based; zero is not a valid sequence number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RangeError::ZeroStart`] when `start` is zero, or
+    /// [`RangeError::EndBeforeStart`] when `end` is less than `start`.
     pub fn new(start: u64, end: u64) -> Result<Self, RangeError> {
         if start == 0 {
             return Err(RangeError::ZeroStart);
@@ -230,6 +235,13 @@ struct NormalizedSummary {
 /// Summaries are sorted and deduplicated during comparison. Conflicting event
 /// IDs assigned to one author sequence are rejected. A retained-history gap is
 /// reported rather than silently treating the replicas as up to date.
+///
+/// # Errors
+///
+/// Returns an error if the summaries refer to different scopes, contain
+/// conflicting event IDs for an author sequence, contain an event with sequence
+/// zero, or exceed a configured author, event, gap, request, or dependency
+/// limit.
 pub fn plan_sync(local: &ScopeSummary, peer: &ScopeSummary) -> Result<SyncPlan, PlanError> {
     if local.scope != peer.scope {
         return Err(PlanError::ScopeMismatch);
@@ -503,13 +515,13 @@ fn subtract_ranges(source: &[SequenceRange], cuts: &[SequenceRange]) -> Vec<Sequ
             cut_index += 1;
         }
 
-        if let Some(start) = next_sequence {
-            if start <= source_range.end {
-                output.push(SequenceRange {
-                    start,
-                    end: source_range.end,
-                });
-            }
+        if let Some(start) = next_sequence
+            && start <= source_range.end
+        {
+            output.push(SequenceRange {
+                start,
+                end: source_range.end,
+            });
         }
     }
 
@@ -686,7 +698,9 @@ mod tests {
             let sequence = (index as u64 + 1) * 2;
             sparse_author.known_events.push(KnownEvent {
                 sequence,
-                event_id: EventId::new([index as u8; 32]),
+                event_id: EventId::new(
+                    [u8::try_from(index).expect("fixture index fits in u8"); 32],
+                ),
             });
         }
         peer.authors.push(sparse_author);

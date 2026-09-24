@@ -211,6 +211,11 @@ impl VoiceSession {
     ///
     /// `now` is an injected monotonic timestamp, such as elapsed time from a
     /// process-local clock origin. No clock is read by this crate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` for an invalid room ID or lifetime, time overflow,
+    /// or unavailable randomness.
     pub fn new(room_id: &str, now: Duration, lifetime: Duration) -> Result<Self, VoiceError> {
         if room_id.is_empty()
             || room_id.len() > MAX_ROOM_ID_BYTES
@@ -275,6 +280,11 @@ impl VoiceSession {
     }
 
     /// Joins the session after checking the current caller-provided join policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, or state
+    /// transition is invalid.
     pub fn join(
         &mut self,
         incarnation: SessionIncarnation,
@@ -291,6 +301,11 @@ impl VoiceSession {
     ///
     /// SDP is only checked for size and safe line structure. It is neither parsed
     /// nor interpreted as markup, and accepting it does not establish a connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, current
+    /// state, or bounded SDP is invalid.
     pub fn send_offer(
         &mut self,
         incarnation: SessionIncarnation,
@@ -306,6 +321,11 @@ impl VoiceSession {
     }
 
     /// Accepts a bounded answer string as signaling input.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, current
+    /// state, or bounded SDP is invalid.
     pub fn receive_answer(
         &mut self,
         incarnation: SessionIncarnation,
@@ -324,6 +344,11 @@ impl VoiceSession {
     ///
     /// Candidate text is kept opaque: the state machine does not parse, resolve,
     /// or connect to addresses contained in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, state,
+    /// candidate count, or candidate string is invalid.
     pub fn add_candidate(
         &mut self,
         incarnation: SessionIncarnation,
@@ -350,6 +375,11 @@ impl VoiceSession {
     }
 
     /// Records completion of signaling, not establishment of media connectivity.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, permission, sequence, or state
+    /// transition is invalid.
     pub fn mark_signaling_connected(
         &mut self,
         incarnation: SessionIncarnation,
@@ -371,6 +401,11 @@ impl VoiceSession {
     ///
     /// This is a policy check only. It does not capture audio, change media state,
     /// or grant a persistent permission lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session has expired, its incarnation is
+    /// wrong, or current join/speak permission is absent.
     pub fn authorize_speaking(
         &mut self,
         incarnation: SessionIncarnation,
@@ -391,6 +426,10 @@ impl VoiceSession {
     }
 
     /// Leaves an active session. Cleanup remains allowed after permission revocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VoiceError` if the session, sequence, or timestamp is invalid.
     pub fn leave(
         &mut self,
         incarnation: SessionIncarnation,
@@ -403,6 +442,11 @@ impl VoiceSession {
     }
 
     /// Advances injected monotonic time and transitions to timeout at the deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClockRegressed` when `now` is earlier than the last observed
+    /// monotonic timestamp.
     pub fn advance_time(&mut self, now: Duration) -> Result<VoiceState, VoiceError> {
         if now < self.last_observed_time {
             return Err(VoiceError::ClockRegressed);

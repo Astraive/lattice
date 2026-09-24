@@ -67,6 +67,7 @@ pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
 impl SecretBytes {
     /// Returns the key material as a shared view.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -96,11 +97,13 @@ pub struct ProtectedKeyCiphertext(Vec<u8>);
 
 impl ProtectedKeyCiphertext {
     /// Returns a shared view of the protected ciphertext.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
     /// Transfers the ciphertext bytes to the caller for persistence.
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
     }
@@ -167,12 +170,13 @@ const WRAPPING_KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const PROTECTED_OVERHEAD_BYTES: usize = 1 + NONCE_BYTES + TAG_BYTES;
+const HEX: &[u8; 16] = b"0123456789abcdef";
 const KEY_FORMAT_VERSION: u8 = 1;
-#[cfg(all(any(
+#[cfg(any(
     target_os = "windows",
     target_os = "macos",
     all(unix, not(any(target_os = "android", target_os = "ios")))
-)))]
+))]
 const KEYRING_SERVICE: &str = "lattice.identity.wrapping-key.v1";
 const AAD_DOMAIN: &[u8] = b"lattice.private-key-wrap\0";
 
@@ -251,9 +255,26 @@ impl OsKeyringProtector {
     ///
     /// On Android and unsupported targets construction succeeds for a valid
     /// profile, while protection operations return `UnsupportedPlatform`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OsKeyringProtectionError::InvalidProfileId`] for an invalid
+    /// profile identifier, or a storage error if the profile lock location
+    /// cannot be prepared.
     pub fn new(profile_id: &str) -> Result<Self, OsKeyringProtectionError> {
         validate_profile_id(profile_id)?;
-        let store = platform_credential_store();
+        #[cfg(any(
+            target_os = "windows",
+            target_os = "macos",
+            all(unix, not(any(target_os = "android", target_os = "ios")))
+        ))]
+        let store = Some(platform_credential_store());
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "macos",
+            all(unix, not(any(target_os = "android", target_os = "ios")))
+        )))]
+        let store = None;
         let lock_root = store.as_ref().map(|_| default_lock_root()).transpose()?;
         Ok(Self {
             profile_id: profile_id.to_owned(),
@@ -263,6 +284,12 @@ impl OsKeyringProtector {
     }
 
     /// Wraps private bytes and preserves the precise protection error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the platform is unsupported, the input is invalid
+    /// or oversized, the wrapping key cannot be accessed, randomness fails,
+    /// or encryption fails.
     pub fn wrap_detailed(
         &self,
         private_material: &[u8],
@@ -311,6 +338,12 @@ impl OsKeyringProtector {
     }
 
     /// Unwraps ciphertext into zeroizing memory with a precise protection error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the platform is unsupported, the ciphertext is
+    /// malformed or oversized, its version is unsupported, the wrapping key
+    /// cannot be accessed, or authentication/decryption fails.
     pub fn unwrap_detailed(
         &self,
         ciphertext: &[u8],
@@ -334,7 +367,7 @@ impl OsKeyringProtector {
             .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?;
         let plaintext = cipher
             .decrypt(
-                Nonce::from_slice(&ciphertext[1..1 + NONCE_BYTES]),
+                Nonce::from_slice(&ciphertext[1..=NONCE_BYTES]),
                 Payload {
                     msg: &ciphertext[1 + NONCE_BYTES..],
                     aad: &aad,
@@ -376,7 +409,6 @@ impl OsKeyringProtector {
             .ok_or(OsKeyringProtectionError::StoreUnavailable)?;
         std::fs::create_dir_all(lock_root)
             .map_err(|_| OsKeyringProtectionError::StoreUnavailable)?;
-        const HEX: &[u8; 16] = b"0123456789abcdef";
         let digest = Sha256::digest(self.profile_id.as_bytes());
         let mut file_name = String::with_capacity(4 + 64 + 5);
         file_name.push_str("key-");
@@ -509,58 +541,55 @@ fn map_store_error(error: CredentialStoreError) -> OsKeyringProtectionError {
     }
 }
 
-#[cfg(all(any(
+#[cfg(any(
     target_os = "windows",
     target_os = "macos",
     all(unix, not(any(target_os = "android", target_os = "ios")))
-)))]
-fn platform_credential_store() -> Option<Arc<dyn CredentialStore>> {
-    Some(Arc::new(KeyringCredentialStore))
+))]
+fn platform_credential_store() -> Arc<dyn CredentialStore> {
+    Arc::new(KeyringCredentialStore)
 }
 
-#[cfg(not(all(any(
+#[cfg(any(
     target_os = "windows",
     target_os = "macos",
     all(unix, not(any(target_os = "android", target_os = "ios")))
-))))]
-fn platform_credential_store() -> Option<Arc<dyn CredentialStore>> {
-    None
-}
-
-#[cfg(all(any(
-    target_os = "windows",
-    target_os = "macos",
-    all(unix, not(any(target_os = "android", target_os = "ios")))
-)))]
+))]
 struct KeyringCredentialStore;
 
-#[cfg(all(any(
+#[cfg(any(
     target_os = "windows",
     target_os = "macos",
     all(unix, not(any(target_os = "android", target_os = "ios")))
-)))]
+))]
 impl CredentialStore for KeyringCredentialStore {
     fn get_secret(&self, profile_id: &str) -> Result<Vec<u8>, CredentialStoreError> {
         use keyring::v1::Entry;
 
-        let entry = Entry::new(KEYRING_SERVICE, profile_id).map_err(map_keyring_error)?;
-        entry.get_secret().map_err(map_keyring_error)
+        let entry =
+            Entry::new(KEYRING_SERVICE, profile_id).map_err(|error| map_keyring_error(&error))?;
+        entry
+            .get_secret()
+            .map_err(|error| map_keyring_error(&error))
     }
 
     fn set_secret(&self, profile_id: &str, secret: &[u8]) -> Result<(), CredentialStoreError> {
         use keyring::v1::Entry;
 
-        let entry = Entry::new(KEYRING_SERVICE, profile_id).map_err(map_keyring_error)?;
-        entry.set_secret(secret).map_err(map_keyring_error)
+        let entry =
+            Entry::new(KEYRING_SERVICE, profile_id).map_err(|error| map_keyring_error(&error))?;
+        entry
+            .set_secret(secret)
+            .map_err(|error| map_keyring_error(&error))
     }
 }
 
-#[cfg(all(any(
+#[cfg(any(
     target_os = "windows",
     target_os = "macos",
     all(unix, not(any(target_os = "android", target_os = "ios")))
-)))]
-fn map_keyring_error(error: keyring::v1::Error) -> CredentialStoreError {
+))]
+fn map_keyring_error(error: &keyring::v1::Error) -> CredentialStoreError {
     use keyring::v1::Error as KeyringError;
 
     match error {
@@ -579,16 +608,19 @@ pub struct MonotonicMillis(u64);
 
 impl MonotonicMillis {
     /// Constructs a monotonic reading in milliseconds.
+    #[must_use]
     pub const fn from_millis(value: u64) -> Self {
         Self(value)
     }
 
     /// Returns the milliseconds since the adapter-defined runtime origin.
+    #[must_use]
     pub const fn as_millis(self) -> u64 {
         self.0
     }
 
     /// Computes elapsed milliseconds, returning `None` for a regressing sample.
+    #[must_use]
     pub const fn elapsed_since(self, earlier: Self) -> Option<u64> {
         self.0.checked_sub(earlier.0)
     }
@@ -600,11 +632,13 @@ pub struct WallTimeHint(i64);
 
 impl WallTimeHint {
     /// Constructs a wall-time hint in signed Unix milliseconds.
+    #[must_use]
     pub const fn from_unix_millis(value: i64) -> Self {
         Self(value)
     }
 
     /// Returns signed Unix milliseconds.
+    #[must_use]
     pub const fn as_unix_millis(self) -> i64 {
         self.0
     }
@@ -619,6 +653,7 @@ pub struct ClockReading {
 
 impl ClockReading {
     /// Creates a clock reading; wall time may be absent or inaccurate.
+    #[must_use]
     pub const fn new(monotonic: MonotonicMillis, wall_time_hint: Option<WallTimeHint>) -> Self {
         Self {
             monotonic,
@@ -627,11 +662,13 @@ impl ClockReading {
     }
 
     /// Returns the monotonic runtime reading.
+    #[must_use]
     pub const fn monotonic(self) -> MonotonicMillis {
         self.monotonic
     }
 
     /// Returns the optional wall-time display hint.
+    #[must_use]
     pub const fn wall_time_hint(self) -> Option<WallTimeHint> {
         self.wall_time_hint
     }
@@ -654,6 +691,7 @@ pub struct AdapterName(String);
 
 impl AdapterName {
     /// Returns the validated adapter name.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -696,11 +734,13 @@ pub struct EnvelopeBytes(Vec<u8>);
 
 impl EnvelopeBytes {
     /// Returns the opaque envelope as a shared byte view.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
     /// Transfers ownership of the opaque envelope bytes.
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
     }
@@ -730,6 +770,12 @@ pub struct TransportCapabilities {
 
 impl TransportCapabilities {
     /// Constructs a capability snapshot with a nonzero supported envelope cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CapabilityError::ZeroEnvelopeLimit`] for a zero limit or
+    /// [`CapabilityError::LimitExceedsPortMaximum`] when the limit exceeds
+    /// [`MAX_ENVELOPE_BYTES`].
     pub fn new(name: AdapterName, max_envelope_bytes: usize) -> Result<Self, CapabilityError> {
         if max_envelope_bytes == 0 {
             return Err(CapabilityError::ZeroEnvelopeLimit);
@@ -744,11 +790,13 @@ impl TransportCapabilities {
     }
 
     /// Returns the validated adapter name.
+    #[must_use]
     pub fn name(&self) -> &AdapterName {
         &self.name
     }
 
     /// Returns the largest envelope this adapter accepts.
+    #[must_use]
     pub const fn max_envelope_bytes(&self) -> usize {
         self.max_envelope_bytes
     }
@@ -843,11 +891,13 @@ pub struct EventId([u8; EVENT_ID_BYTES]);
 
 impl EventId {
     /// Constructs an event identifier from its fixed-width bytes.
+    #[must_use]
     pub const fn new(bytes: [u8; EVENT_ID_BYTES]) -> Self {
         Self(bytes)
     }
 
     /// Returns the identifier bytes.
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; EVENT_ID_BYTES] {
         &self.0
     }
@@ -858,11 +908,13 @@ pub struct EventBytes(Vec<u8>);
 
 impl EventBytes {
     /// Returns canonical event bytes as a shared view.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
     /// Transfers ownership of the canonical bytes.
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
     }
@@ -891,6 +943,7 @@ pub struct AuthoredEvent {
 
 impl AuthoredEvent {
     /// Creates an event record from an identifier and bounded canonical bytes.
+    #[must_use]
     pub fn new(id: EventId, canonical_bytes: EventBytes) -> Self {
         Self {
             id,
@@ -899,11 +952,13 @@ impl AuthoredEvent {
     }
 
     /// Returns the stable event identifier.
+    #[must_use]
     pub const fn id(&self) -> EventId {
         self.id
     }
 
     /// Returns canonical bytes without granting mutable access.
+    #[must_use]
     pub fn canonical_bytes(&self) -> &EventBytes {
         &self.canonical_bytes
     }
@@ -926,6 +981,12 @@ pub struct OutboxBatch {
 
 impl OutboxBatch {
     /// Validates entry-count and aggregate byte bounds before a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OutboxBatchError::TooManyEntries`] if the entry-count bound
+    /// is exceeded, or [`OutboxBatchError::TotalBytesExceeded`] if the
+    /// aggregate byte bound is exceeded.
     pub fn try_new(envelopes: Vec<EnvelopeBytes>) -> Result<Self, OutboxBatchError> {
         if envelopes.len() > MAX_OUTBOX_ITEMS {
             return Err(OutboxBatchError::TooManyEntries);
@@ -946,21 +1007,25 @@ impl OutboxBatch {
     }
 
     /// Returns the number of queued envelopes.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.envelopes.len()
     }
 
     /// Returns whether the batch has no envelopes.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.envelopes.is_empty()
     }
 
     /// Returns the combined opaque envelope byte count.
+    #[must_use]
     pub const fn total_bytes(&self) -> usize {
         self.total_bytes
     }
 
     /// Transfers the validated envelopes to a repository implementation.
+    #[must_use]
     pub fn into_envelopes(self) -> Vec<EnvelopeBytes> {
         self.envelopes
     }
@@ -1129,7 +1194,7 @@ mod os_keyring_protector_tests {
         );
         assert_eq!(
             protector
-                .unwrap_detailed(&vec![1; PROTECTED_OVERHEAD_BYTES - 1])
+                .unwrap_detailed(&[1; PROTECTED_OVERHEAD_BYTES - 1])
                 .unwrap_err(),
             OsKeyringProtectionError::InvalidFormat
         );

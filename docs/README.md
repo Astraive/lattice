@@ -1,6 +1,6 @@
 # Lattice documentation
 
-**Project:** Lattice, local-first community communication. **Status:** draft with bounded component implementations; no interoperability release or security audit is implied. **Updated:** 22 September 2026.
+**Project:** Lattice, local-first community communication. **Status:** draft with bounded component implementations; no interoperability release or security audit is implied. **Updated:** 24 September 2026.
 
 ## Start here
 

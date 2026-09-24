@@ -74,6 +74,8 @@ pub enum EnergyCost {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+// Each field independently advertises a supported routing capability.
+#[allow(clippy::struct_excessive_bools)]
 pub struct PathCapabilities {
     pub security_dependencies: bool,
     pub interactive_text: bool,
@@ -86,6 +88,7 @@ pub struct PathCapabilities {
 }
 
 impl PathCapabilities {
+    #[must_use]
     pub const fn supports(self, class: TrafficClass) -> bool {
         match class {
             TrafficClass::SecurityDependency => self.security_dependencies,
@@ -252,6 +255,10 @@ impl fmt::Display for RoutingError {
 impl Error for RoutingError {}
 
 /// Selects viable routes for one opaque envelope without performing transport work.
+///
+/// # Errors
+///
+/// Returns `RoutingError` for an invalid policy or candidate list.
 pub fn plan_forward(
     class: TrafficClass,
     envelope: &ForwardingEnvelope,
@@ -402,10 +409,10 @@ fn is_viable(
     {
         return false;
     }
-    if let Some(max_rtt_ms) = policy.max_rtt_ms {
-        if candidate.rtt_ms.is_none_or(|rtt| rtt > max_rtt_ms) {
-            return false;
-        }
+    if let Some(max_rtt_ms) = policy.max_rtt_ms
+        && candidate.rtt_ms.is_none_or(|rtt| rtt > max_rtt_ms)
+    {
+        return false;
     }
     if payload_bytes > candidate.mtu_bytes.min(candidate.max_payload_bytes) {
         return false;
@@ -535,6 +542,11 @@ pub struct EventDeduplicator {
 }
 
 impl EventDeduplicator {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ZeroDeduplicationCapacity` for zero or
+    /// `DeduplicationCapacityExceedsMaximum` above the configured maximum.
     pub fn new(capacity: usize) -> Result<Self, RoutingError> {
         if capacity == 0 {
             return Err(RoutingError::ZeroDeduplicationCapacity);

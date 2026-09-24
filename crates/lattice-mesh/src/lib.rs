@@ -17,10 +17,12 @@ pub const CRATE_NAME: &str = "lattice-mesh";
 pub struct EnvelopeId([u8; 16]);
 
 impl EnvelopeId {
+    #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
@@ -32,10 +34,12 @@ impl EnvelopeId {
 pub struct EventId([u8; 32]);
 
 impl EventId {
+    #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -46,10 +50,12 @@ impl EventId {
 pub struct PeerId([u8; 16]);
 
 impl PeerId {
+    #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
@@ -79,6 +85,7 @@ pub struct CourierMetadata {
 }
 
 impl CourierMetadata {
+    #[must_use]
     pub const fn new(
         envelope_id: EnvelopeId,
         event_id: EventId,
@@ -97,26 +104,32 @@ impl CourierMetadata {
         }
     }
 
+    #[must_use]
     pub const fn envelope_id(&self) -> EnvelopeId {
         self.envelope_id
     }
 
+    #[must_use]
     pub const fn event_id(&self) -> EventId {
         self.event_id
     }
 
+    #[must_use]
     pub const fn expires_at_ms(&self) -> u64 {
         self.expires_at_ms
     }
 
+    #[must_use]
     pub const fn hop_limit(&self) -> u16 {
         self.hop_limit
     }
 
+    #[must_use]
     pub const fn remaining_copy_budget(&self) -> u16 {
         self.remaining_copy_budget
     }
 
+    #[must_use]
     pub const fn traffic_class(&self) -> TrafficClass {
         self.traffic_class
     }
@@ -185,6 +198,7 @@ pub struct CourierLimits {
 }
 
 impl CourierLimits {
+    #[must_use]
     pub const fn new(
         max_object_bytes: usize,
         max_peer_bytes: usize,
@@ -200,6 +214,9 @@ impl CourierLimits {
             max_total_items,
         }
     }
+    /// # Errors
+    ///
+    /// Returns the first hard limit exceeded by the configured values.
     pub fn validate(self) -> Result<(), LimitError> {
         if self.max_object_bytes > HARD_MAX_OBJECT_BYTES {
             return Err(LimitError::ObjectBytesAboveHardLimit);
@@ -247,15 +264,18 @@ pub struct QueueReceipt {
 }
 
 impl QueueReceipt {
+    #[must_use]
     pub const fn peer_id(self) -> PeerId {
         self.peer_id
     }
 
+    #[must_use]
     pub const fn envelope_id(self) -> EnvelopeId {
         self.envelope_id
     }
 
     /// Monotonic insertion order used for deterministic FIFO eviction.
+    #[must_use]
     pub const fn sequence(self) -> u64 {
         self.sequence
     }
@@ -271,18 +291,22 @@ pub struct CachedEnvelope {
 }
 
 impl CachedEnvelope {
+    #[must_use]
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
+    #[must_use]
     pub const fn metadata(&self) -> &CourierMetadata {
         &self.metadata
     }
 
+    #[must_use]
     pub fn encrypted_opaque_bytes(&self) -> &[u8] {
         &self.encrypted_opaque_bytes
     }
 
+    #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
     }
@@ -311,6 +335,9 @@ pub struct CourierCache {
 }
 
 impl CourierCache {
+    /// # Errors
+    ///
+    /// Returns a limit error if `limits` exceeds a process-independent hard ceiling.
     pub fn new(limits: CourierLimits) -> Result<Self, LimitError> {
         limits.validate()?;
         Ok(Self {
@@ -324,26 +351,32 @@ impl CourierCache {
             next_sequence: 0,
         })
     }
+    #[must_use]
     pub const fn limits(&self) -> CourierLimits {
         self.limits
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.total_usage.items
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.total_usage.items == 0
     }
 
+    #[must_use]
     pub const fn total_usage(&self) -> Usage {
         self.total_usage
     }
 
+    #[must_use]
     pub fn peer_usage(&self, peer_id: PeerId) -> Usage {
         self.peer_usage.get(&peer_id).copied().unwrap_or_default()
     }
 
+    #[must_use]
     pub fn get(&self, envelope_id: EnvelopeId) -> Option<&CachedEnvelope> {
         let sequence = self.envelope_sequences.get(&envelope_id)?;
         self.entries.get(sequence)
@@ -354,6 +387,10 @@ impl CourierCache {
     /// returned metadata/bytes are owned by the caller; the caller must admit
     /// them to a destination cache or drop them. This is queue transfer only,
     /// not transport or destination delivery.
+    /// # Errors
+    ///
+    /// Returns a drop reason if the source is missing, its metadata is invalid,
+    /// or the cache accounting invariant is violated.
     pub fn take_for_relay(
         &mut self,
         envelope_id: EnvelopeId,
@@ -376,6 +413,9 @@ impl CourierCache {
 
     /// Remove entries whose absolute expiry is reached on the supplied time
     /// base. Removal follows insertion order and is deterministic.
+    /// # Errors
+    ///
+    /// Returns a drop reason if cache accounting invariants are violated.
     pub fn purge_expired(&mut self, now_ms: u64) -> Result<usize, DropReason> {
         let mut expired_sequences = Vec::new();
         for (sequence, entry) in &self.entries {
@@ -396,6 +436,10 @@ impl CourierCache {
 
     /// Admit encrypted opaque bytes for courier queueing. Success reports only
     /// queue acceptance, never destination delivery.
+    /// # Errors
+    ///
+    /// Returns a drop reason if the metadata, payload, quotas, duplicates, or
+    /// cache accounting state prevents admission.
     pub fn admit(
         &mut self,
         peer_id: PeerId,

@@ -60,6 +60,11 @@ impl Ed25519SigningKey {
 ///
 /// Public key and signature inputs with malformed lengths are rejected before
 /// conversion. This function does not confer authorization or identity trust.
+///
+/// # Errors
+///
+/// Returns `Ed25519Error` when either input length is invalid, the public key
+/// encoding is invalid, or signature verification fails.
 pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Ed25519Error> {
     let public_key: &[u8; 32] = public_key
         .try_into()
