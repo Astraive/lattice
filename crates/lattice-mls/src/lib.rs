@@ -1,24 +1,30 @@
 //! Lattice group membership and epoch state.
 //!
-//! The production [`api`] module performs real OpenMLS operations with a
+//! The production [`api`] module performs real `OpenMLS` operations with a
 //! caller-supplied provider and a signer backed by [`lattice_identity::DeviceIdentity`].
-//! MLS key possession is not Space identity or authorization. Callers supply
+//! `MLS` key possession is not Space identity or authorization. Callers supply
 //! their own opaque X.509 credential bytes and must verify/bind them through
-//! their identity and policy layer; OpenMLS does not validate X.509 credentials.
-//! OpenMLS secrets are stored only through the caller's provider, whose
+//! their identity and policy layer; `OpenMLS` does not validate X.509 credentials.
+//! `OpenMLS` secrets are stored only through the caller's provider, whose
 //! encryption and persistence guarantees remain the caller's responsibility.
 //! This crate does not integrate group transitions with the application event
 //! log or persist its in-memory conflict quarantine.
 
 pub mod api;
+pub(crate) mod storage;
+
+pub use storage::{
+    ProtectedCodecError, ProtectedSqliteProvider, migrate_protected_sqlite, with_mls_storage_key,
+};
 
 pub const CRATE_NAME: &str = "lattice-mls";
 
-/// Actual OpenMLS interop code, deliberately compiled only for this crate's
-/// unit tests. The BasicCredential values here are explicitly untrusted test
+/// Actual `OpenMLS` interop code, deliberately compiled only for this crate's
+/// unit tests. The `BasicCredential` values here are explicitly untrusted test
 /// identities; an MLS signature proves possession of its key, not Space
 /// identity or authorization.
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // Keep test-only Welcome interop alongside its group API.
 pub mod test_interop {
     use std::{error::Error, fmt, io, path::Path};
 
@@ -42,7 +48,7 @@ pub mod test_interop {
     /// Maximum TLS-encoded MLS message accepted by the harness.
     pub const MAX_MLS_WIRE_BYTES: usize = 1024 * 1024;
 
-    /// Maximum internal JSON record accepted by the SQLite storage codec.
+    /// Maximum internal JSON record accepted by the `SQLite` storage codec.
     ///
     /// These records are trusted provider-local persistence only when the
     /// caller protects the database externally. They are not MLS wire data.
@@ -52,6 +58,7 @@ pub mod test_interop {
 
     /// Security properties deliberately not supplied by this test harness.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[allow(clippy::struct_excessive_bools)] // These flags are the explicit machine-readable security contract.
     pub struct SecurityLimitations {
         pub test_only: bool,
         pub production_membership_enabled: bool,
@@ -72,6 +79,7 @@ pub mod test_interop {
     };
 
     /// Returns the test harness's explicit security limitations.
+    #[must_use]
     pub fn security_limitations() -> SecurityLimitations {
         SECURITY_LIMITATIONS
     }
@@ -81,9 +89,9 @@ pub mod test_interop {
 
     pub type SqliteStorage = SqliteStorageProvider<JsonCodec, Connection>;
 
-    /// Compose OpenMLS' RustCrypto implementation with its SQLite provider.
+    /// Compose `OpenMLS`' `RustCrypto` implementation with its `SQLite` provider.
     ///
-    /// The SQLite data is JSON-serialized OpenMLS provider state, not MLS wire
+    /// The `SQLite` data is JSON-serialized `OpenMLS` provider state, not MLS wire
     /// encoding. It is unencrypted, and this provider makes no transaction
     /// claim about application event storage.
     pub struct TestProvider {
@@ -92,10 +100,13 @@ pub mod test_interop {
     }
 
     impl TestProvider {
-        /// Opens the caller-selected SQLite file for interop tests.
+        /// Opens the caller-selected `SQLite` file for interop tests.
         ///
         /// This deliberately unprotected database MUST NOT be used for
         /// production or sensitive data.
+        /// # Errors
+        ///
+        /// Returns an error if the database cannot be opened or migrated.
         pub fn open_unprotected_sqlite_for_interop(path: impl AsRef<Path>) -> InteropResult<Self> {
             let connection = Connection::open(path)?;
             let mut storage = SqliteStorageProvider::<JsonCodec, Connection>::new(connection);
@@ -153,7 +164,7 @@ pub mod test_interop {
         }
     }
 
-    /// The SQLite provider's JSON codec is application-owned persistence
+    /// The `SQLite` provider's JSON codec is application-owned persistence
     /// serialization only. Both directions enforce the byte bound.
     #[derive(Default)]
     pub struct JsonCodec;
@@ -206,16 +217,20 @@ pub mod test_interop {
         }
     }
 
-    /// An explicitly untrusted BasicCredential and its test signing key.
+    /// An explicitly untrusted `BasicCredential` and its test signing key.
     pub struct UntrustedTestIdentity {
         identity: Vec<u8>,
         signer: SignatureKeyPair,
     }
 
     impl UntrustedTestIdentity {
-        /// Creates a throwaway BasicCredential for MLS interop tests.
+        /// Creates a throwaway `BasicCredential` for MLS interop tests.
         ///
         /// This does not verify, bind, or authorize the identity bytes.
+        /// # Errors
+        ///
+        /// Returns an error if the identity exceeds the test bound or signing-key
+        /// generation fails.
         pub fn untrusted_for_interop(identity: &[u8]) -> InteropResult<Self> {
             if identity.len() > MAX_TEST_IDENTITY_BYTES {
                 return Err(invalid_input("test identity exceeds the hard size limit"));
@@ -227,12 +242,14 @@ pub mod test_interop {
             })
         }
 
-        /// Returns the raw BasicCredential identity bytes.
+        /// Returns the raw `BasicCredential` identity bytes.
+        #[must_use]
         pub fn identity(&self) -> &[u8] {
             &self.identity
         }
 
         /// Returns this test identity's public signing key.
+        #[must_use]
         pub fn signing_public_key(&self) -> &[u8] {
             self.signer.public()
         }
@@ -245,12 +262,12 @@ pub mod test_interop {
         }
     }
 
-    /// Whether OpenMLS has validated a message's protocol authentication.
+    /// Whether `OpenMLS` has validated a message's protocol authentication.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum MlsEvidence {
         /// TLS-encoded provider bytes have not yet been validated by a peer.
         AwaitingPeerOpenMlsValidation,
-        /// OpenMLS accepted the protocol authentication and message semantics.
+        /// `OpenMLS` accepted the protocol authentication and message semantics.
         ValidatedByOpenMls,
     }
 
@@ -295,6 +312,7 @@ pub mod test_interop {
         }
 
         /// Returns the TLS-encoded MLS bytes.
+        #[must_use]
         pub fn as_bytes(&self) -> &[u8] {
             &self.bytes
         }
@@ -353,7 +371,7 @@ pub mod test_interop {
         parent_epoch: GroupEpoch,
     }
 
-    /// Test-only high-level OpenMLS group wrapper with sequential commit gates.
+    /// Test-only high-level `OpenMLS` group wrapper with sequential commit gates.
     pub struct InteropGroup {
         inner: MlsGroup,
         incoming_commit: Option<IncomingCommit>,
@@ -361,7 +379,10 @@ pub mod test_interop {
     }
 
     impl InteropGroup {
-        /// Creates a real OpenMLS group using the mandatory-to-implement suite.
+        /// Creates a real `OpenMLS` group using the mandatory-to-implement suite.
+        /// # Errors
+        ///
+        /// Returns an error if the provider rejects group creation.
         pub fn create(
             provider: &TestProvider,
             identity: &UntrustedTestIdentity,
@@ -384,7 +405,10 @@ pub mod test_interop {
             })
         }
 
-        /// Loads a previously persisted OpenMLS group from this provider.
+        /// Loads a previously persisted `OpenMLS` group from this provider.
+        /// # Errors
+        ///
+        /// Returns an error if the group cannot be loaded or is not present.
         pub fn load(provider: &TestProvider, group_id: &[u8]) -> InteropResult<Self> {
             let id = GroupId::from_slice(group_id);
             let inner = MlsGroup::load(provider.storage(), &id)?
@@ -398,16 +422,19 @@ pub mod test_interop {
         }
 
         /// Returns the protocol group ID bytes.
+        #[must_use]
         pub fn group_id(&self) -> Vec<u8> {
             self.inner.group_id().to_vec()
         }
 
         /// Returns the current MLS epoch as an integer.
+        #[must_use]
         pub fn epoch(&self) -> u64 {
             self.inner.epoch().as_u64()
         }
 
-        /// Returns the current OpenMLS group state relevant to commit ordering.
+        /// Returns the current `OpenMLS` group state relevant to commit ordering.
+        #[must_use]
         pub fn status(&self) -> GroupStatus {
             if self.conflicted {
                 GroupStatus::Conflicted
@@ -423,14 +450,18 @@ pub mod test_interop {
         }
 
         /// Returns the number of current MLS members.
+        #[must_use]
         pub fn member_count(&self) -> usize {
             self.inner.members().count()
         }
 
-        /// Publishes a signed MLS KeyPackage as a TLS-encoded MLS object.
+        /// Publishes a signed MLS `KeyPackage` as a TLS-encoded MLS object.
         ///
-        /// The KeyPackage signature is not proof that the BasicCredential
+        /// The `KeyPackage` signature is not proof that the `BasicCredential`
         /// identity belongs to a verified Space device.
+        /// # Errors
+        ///
+        /// Returns an error if key-package creation or encoding fails.
         pub fn publish_key_package(
             provider: &TestProvider,
             identity: &UntrustedTestIdentity,
@@ -442,16 +473,20 @@ pub mod test_interop {
                 identity.credential_with_key(),
             )?;
             let message = MlsMessageOut::from(bundle.into_key_package());
-            encode_message(message, MlsWireKind::KeyPackage)
+            encode_message(&message, MlsWireKind::KeyPackage)
         }
 
-        /// Prepares an add Commit and Welcome from an encoded KeyPackage.
+        /// Prepares an add Commit and Welcome from an encoded `KeyPackage`.
         ///
-        /// This stages the local OpenMLS Commit but does not merge it and does
+        /// This stages the local `OpenMLS` Commit but does not merge it and does
         /// not expose the Welcome. The caller must explicitly attest acceptance
         /// of these exact Commit bytes through
         /// [`mark_commit_accepted_and_merge`](Self::mark_commit_accepted_and_merge)
         /// before it can obtain the Welcome.
+        /// # Errors
+        ///
+        /// Returns an error if the package is invalid or the add transition cannot
+        /// be prepared.
         pub fn prepare_add(
             &mut self,
             provider: &TestProvider,
@@ -472,8 +507,8 @@ pub mod test_interop {
             Ok(PreparedAdd {
                 group_id: self.group_id(),
                 parent_epoch: self.inner.epoch(),
-                commit: encode_message(commit, MlsWireKind::Commit)?,
-                welcome: encode_message(welcome, MlsWireKind::Welcome)?,
+                commit: encode_message(&commit, MlsWireKind::Commit)?,
+                welcome: encode_message(&welcome, MlsWireKind::Welcome)?,
             })
         }
 
@@ -482,6 +517,10 @@ pub mod test_interop {
         ///
         /// This call records the caller's assertion; it cannot atomically
         /// coordinate with an application event log or provider transport.
+        /// # Errors
+        ///
+        /// Returns an error if acceptance does not identify the exact prepared
+        /// Commit or merging fails.
         pub fn mark_commit_accepted_and_merge(
             &mut self,
             provider: &TestProvider,
@@ -513,7 +552,11 @@ pub mod test_interop {
             Ok(prepared.welcome)
         }
 
-        /// Encrypts application content with the real OpenMLS group state.
+        /// Encrypts application content with the real `OpenMLS` group state.
+        /// # Errors
+        ///
+        /// Returns an error if the group is not operational or message creation
+        /// fails.
         pub fn encrypt_application(
             &mut self,
             provider: &TestProvider,
@@ -524,12 +567,15 @@ pub mod test_interop {
             let message = self
                 .inner
                 .create_message(provider, &signer.signer, plaintext)?;
-            encode_message(message, MlsWireKind::Application)
+            encode_message(&message, MlsWireKind::Application)
         }
 
         /// TLS-decodes, bounds, classifies, and processes an incoming MLS
         /// protocol message without implicitly merging Commit or proposal
         /// state.
+        /// # Errors
+        ///
+        /// Returns an error if decoding or processing fails.
         pub fn process_incoming(
             &mut self,
             provider: &TestProvider,
@@ -606,6 +652,10 @@ pub mod test_interop {
 
         /// Explicitly attests acceptance of an exact staged incoming Commit
         /// before merging it into this group.
+        /// # Errors
+        ///
+        /// Returns an error if no exact staged Commit is available or merging
+        /// fails.
         pub fn mark_incoming_commit_accepted_and_merge(
             &mut self,
             provider: &TestProvider,
@@ -666,11 +716,13 @@ pub mod test_interop {
 
     impl PreparedAdd {
         /// Returns the TLS-encoded Commit that the caller must accept first.
+        #[must_use]
         pub fn commit(&self) -> &InteropMessage {
             &self.commit
         }
 
         /// Returns the Commit's parent epoch.
+        #[must_use]
         pub fn parent_epoch(&self) -> u64 {
             self.parent_epoch.as_u64()
         }
@@ -686,7 +738,7 @@ pub mod test_interop {
         Ok(key_package.validate(provider.crypto(), ProtocolVersion::Mls10)?)
     }
 
-    fn encode_message(message: MlsMessageOut, kind: MlsWireKind) -> InteropResult<InteropMessage> {
+    fn encode_message(message: &MlsMessageOut, kind: MlsWireKind) -> InteropResult<InteropMessage> {
         let bytes = message.to_bytes()?;
         check_wire_size(&bytes)?;
         Ok(InteropMessage::outgoing(bytes, kind))
@@ -719,7 +771,7 @@ pub mod test_interop {
             },
             ProcessedMessageContent::OwnPendingCommit => IncomingResult::OwnPendingCommit,
             ProcessedMessageContent::OwnPrivateMessage => IncomingResult::OwnPrivateMessage,
-            _ => IncomingResult::UnsupportedMessage,
+            ProcessedMessageContent::StagedCommitMessage(_) => IncomingResult::UnsupportedMessage,
         }
     }
 
@@ -807,6 +859,7 @@ pub mod test_interop {
         }
 
         #[test]
+        #[allow(clippy::too_many_lines)] // Keep the end-to-end interop sequence auditable as one scenario.
         fn official_openmls_sequential_interop_and_sqlite_reload() -> InteropResult<()> {
             let alice_db = TestDatabase::new("alice");
             let bob_db = TestDatabase::new("bob");
@@ -890,7 +943,7 @@ pub mod test_interop {
             let (proposal, _) =
                 bob.inner
                     .propose_remove_member(&provider_bob, &bob_identity.signer, own_leaf)?;
-            let proposal_wire = encode_message(proposal, MlsWireKind::Proposal)?;
+            let proposal_wire = encode_message(&proposal, MlsWireKind::Proposal)?;
             assert!(matches!(
                 alice.process_incoming(&provider_alice, proposal_wire.as_bytes())?,
                 IncomingResult::Proposal {
@@ -1119,6 +1172,7 @@ pub mod test_interop {
             let oversized = vec![0; MAX_TEST_IDENTITY_BYTES + 1];
             assert!(UntrustedTestIdentity::untrusted_for_interop(&oversized).is_err());
         }
+        #[allow(clippy::too_many_lines)] // Keep the production API security-boundary scenario together.
         #[test]
         fn production_api_uses_device_signer_and_real_openmls_group_ops() -> InteropResult<()> {
             use crate::api::{
@@ -1247,7 +1301,7 @@ pub mod test_interop {
             );
             Ok(())
         }
-
+        #[allow(clippy::too_many_lines)] // Keep both competing-branch paths visible in one test.
         #[test]
         fn production_api_quarantines_competing_valid_successor_commits() -> InteropResult<()> {
             use crate::api::{GroupState, IncomingResult, MlsError};
@@ -1385,10 +1439,14 @@ pub mod test_interop {
 
     impl InteropGroup {
         /// Processes a Welcome only after checking its exact group ID and
-        /// BasicCredential signer identity, then installs the joined group.
+        /// `BasicCredential` signer identity, then installs the joined group.
         ///
         /// Exact byte comparison is not a Space identity proof: this harness
         /// accepts only an explicit test expectation supplied by its caller.
+        /// # Errors
+        ///
+        /// Returns an error if the Welcome is invalid, belongs to another group,
+        /// or has a different signer identity.
         pub fn from_welcome(
             provider: &TestProvider,
             expected_group_id: &[u8],

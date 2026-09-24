@@ -2796,7 +2796,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
 dependencies = [
  "cfg-if",
+ "ecdsa",
  "elliptic-curve",
+ "once_cell",
+ "sha2 0.10.9",
+ "signature 2.2.0",
 ]
 
 [[package]]
@@ -2866,13 +2870,18 @@ dependencies = [
 name = "lattice-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "lattice-events",
+ "lattice-files",
  "lattice-identity",
  "lattice-mls",
+ "lattice-protocol",
  "lattice-storage",
  "openmls",
  "openmls_rust_crypto",
+ "rusqlite",
  "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]
@@ -2932,6 +2941,8 @@ version = "0.1.0"
 name = "lattice-mls"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "getrandom 0.4.3",
  "lattice-identity",
  "openmls",
  "openmls_basic_credential",
@@ -2942,6 +2953,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]
@@ -2972,6 +2984,14 @@ dependencies = [
 [[package]]
 name = "lattice-relay"
 version = "0.1.0"
+dependencies = [
+ "k256",
+ "lattice-events",
+ "lattice-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "lattice-router"

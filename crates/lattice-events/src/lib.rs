@@ -343,6 +343,11 @@ impl VerifiedSignatureOnlyEvent {
     /// The caller must provide opaque protected ciphertext in `draft`; no
     /// encryption or authorization is performed. Parent IDs must already be
     /// unique and sorted by bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the draft fields are malformed or the canonical
+    /// preimage cannot be encoded.
     pub fn create(identity: &DeviceIdentity, draft: EventDraft) -> Result<Self, EventError> {
         let fields = EventFields::from_draft(draft)?;
         let identity_bundle = identity.public_bundle();
@@ -376,6 +381,11 @@ impl VerifiedSignatureOnlyEvent {
     ///
     /// This returns `SignatureOnly` status; it does not authorize, decrypt,
     /// validate the caller's MLS context, or accept the event under policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outer event, canonical preimage, identity bundle,
+    /// or signature is invalid.
     pub fn decode_verify(input: &[u8]) -> Result<Self, EventError> {
         let outer = decode_canonical(input)?;
         let outer = expect_map(&outer, &[0, 1, 2, 3], EventError::InvalidOuterShape)?;
@@ -413,9 +423,7 @@ impl VerifiedSignatureOnlyEvent {
             fields,
             author_fingerprint,
             identity_bundle,
-            signature: signature
-                .try_into()
-                .expect("fixed-width signature was validated above"),
+            signature,
             preimage_bytes: preimage_bytes.to_vec(),
             encoded_bytes: input.to_vec(),
         })

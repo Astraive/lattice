@@ -26,8 +26,9 @@ pub const MAX_OUTBOX_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
 
 const ID_BYTES: usize = 32;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
+const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
 
 /// A committed event and its parent references.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +101,7 @@ pub enum StoreError {
     InvalidOutboxSchedule,
     InvalidOutboxTransition,
     InvalidProtectedIdentity,
+    InvalidProtectedMlsKey,
     CorruptData(&'static str),
 }
 
@@ -147,6 +149,9 @@ impl std::fmt::Display for StoreError {
             Self::InvalidProtectedIdentity => {
                 formatter.write_str("protected identity ciphertext has an invalid length")
             }
+            Self::InvalidProtectedMlsKey => {
+                formatter.write_str("protected MLS storage key ciphertext has an invalid length")
+            }
             Self::CorruptData(message) => write!(formatter, "corrupt storage data: {message}"),
         }
     }
@@ -169,14 +174,20 @@ impl From<rusqlite::Error> for StoreError {
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 
-/// Durable SQLite event store.
+/// Durable `SQLite` event store.
 pub struct Store {
     connection: Connection,
 }
 
 impl Store {
-    /// Opens a database, enables SQLite durability and foreign-key settings, and
-    /// applies all pending schema migrations.
+    /// Opens a database, enables `SQLite` durability and foreign-key settings,
+    /// and applies all pending schema migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database cannot be opened or migrated, or if its
+    /// schema version is newer than this crate supports.
+    #[allow(clippy::too_many_lines)]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
@@ -267,15 +278,86 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 4 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE protected_mls_storage_key (
+                    singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+                    ciphertext BLOB NOT NULL
+                        CHECK(typeof(ciphertext) = 'blob'
+                            AND length(ciphertext) BETWEEN 1 AND 4096)
+                );
+                PRAGMA user_version = 4;",
+            )?;
+            transaction.commit()?;
+        }
 
         Ok(Self { connection })
     }
+    /// Gives a platform provider exclusive access to the `SQLite` connection.
+    ///
+    /// Intended for one-time provider schema migration before transactions begin.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error produced by `action` or by its storage operations.
+    pub fn with_connection_mut<T, E>(
+        &mut self,
+        action: impl FnOnce(&mut Connection) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<StoreError>,
+    {
+        action(&mut self.connection)
+    }
 
-    /// Atomically inserts a new authored event and reserves its author sequence.
+    /// Loads opaque OS-protected MLS storage key ciphertext.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or stored data is invalid.
+    pub fn load_protected_mls_storage_key(&self) -> Result<Option<Vec<u8>>> {
+        self.connection
+            .query_row(
+                "SELECT ciphertext FROM protected_mls_storage_key WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Persists OS-protected MLS storage key ciphertext once.
+    ///
+    /// Returns `false` when another initializer already stored the key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is outside the permitted bound or the
+    /// database write fails.
+    pub fn save_protected_mls_storage_key(&mut self, ciphertext: &[u8]) -> Result<bool> {
+        if ciphertext.is_empty() || ciphertext.len() > MAX_PROTECTED_MLS_KEY_BYTES {
+            return Err(StoreError::InvalidProtectedMlsKey);
+        }
+        let inserted = self.connection.execute(
+            "INSERT OR IGNORE INTO protected_mls_storage_key(singleton, ciphertext)
+             VALUES (1, ?1)",
+            params![ciphertext],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Atomically stores an authored event and reserves its author sequence.
     ///
     /// Locally authored sequences start at one and advance without gaps. Repeating
     /// an identical insert is idempotent. Reusing an occupied sequence with a
     /// different event ID is reported as equivocation without modifying storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event data, sequence conflicts, or database
+    /// failures.
     pub fn commit_authored(
         &mut self,
         author_id: [u8; ID_BYTES],
@@ -284,7 +366,35 @@ impl Store {
         canonical_bytes: &[u8],
         parents: &[[u8; ID_BYTES]],
     ) -> Result<CommitOutcome> {
-        self.commit_event(
+        self.with_transaction(|transaction| {
+            Self::commit_authored_in_transaction(
+                transaction,
+                author_id,
+                event_id,
+                seq,
+                canonical_bytes,
+                parents,
+            )
+        })
+    }
+
+    /// Atomically stores an authored event and reserves its sequence using an
+    /// existing transaction, allowing related state changes to commit together.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event data, sequence conflicts, or database
+    /// failures.
+    pub fn commit_authored_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        author_id: [u8; ID_BYTES],
+        event_id: [u8; ID_BYTES],
+        seq: u64,
+        canonical_bytes: &[u8],
+        parents: &[[u8; ID_BYTES]],
+    ) -> Result<CommitOutcome> {
+        commit_event_in_transaction(
+            transaction,
             author_id,
             event_id,
             seq,
@@ -297,8 +407,46 @@ impl Store {
 
     /// Commits an authored event and its opaque delivery envelope atomically.
     /// A new row begins queued and is not considered delivered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event data, outbox bounds, sequence conflicts,
+    /// or database failures.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_authored_with_outbox(
         &mut self,
+        author_id: [u8; ID_BYTES],
+        event_id: [u8; ID_BYTES],
+        seq: u64,
+        canonical_bytes: &[u8],
+        parents: &[[u8; ID_BYTES]],
+        envelope_bytes: &[u8],
+        next_attempt_ms: i64,
+    ) -> Result<CommitOutcome> {
+        self.with_transaction(|transaction| {
+            Self::commit_authored_with_outbox_in_transaction(
+                transaction,
+                author_id,
+                event_id,
+                seq,
+                canonical_bytes,
+                parents,
+                envelope_bytes,
+                next_attempt_ms,
+            )
+        })
+    }
+
+    /// Commits an authored event and its outbox envelope in an existing
+    /// transaction so it can be committed with related state changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event data, outbox bounds, sequence conflicts,
+    /// or database failures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_authored_with_outbox_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
         author_id: [u8; ID_BYTES],
         event_id: [u8; ID_BYTES],
         seq: u64,
@@ -311,7 +459,8 @@ impl Store {
         if next_attempt_ms < 0 {
             return Err(StoreError::InvalidOutboxSchedule);
         }
-        self.commit_event(
+        commit_event_in_transaction(
+            transaction,
             author_id,
             event_id,
             seq,
@@ -325,6 +474,11 @@ impl Store {
     /// Atomically stores an authenticated received event without requiring a
     /// contiguous local arrival order. Its author sequence must still be positive
     /// and unique; gaps can be reconciled by sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event data, sequence conflicts, or database
+    /// failures.
     pub fn commit_received(
         &mut self,
         author_id: [u8; ID_BYTES],
@@ -333,7 +487,34 @@ impl Store {
         canonical_bytes: &[u8],
         parents: &[[u8; ID_BYTES]],
     ) -> Result<CommitOutcome> {
-        self.commit_event(
+        self.with_transaction(|transaction| {
+            Self::commit_received_in_transaction(
+                transaction,
+                author_id,
+                event_id,
+                seq,
+                canonical_bytes,
+                parents,
+            )
+        })
+    }
+
+    /// Stores an authenticated received event in an existing transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event data, sequence conflicts, or database
+    /// failures.
+    pub fn commit_received_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        author_id: [u8; ID_BYTES],
+        event_id: [u8; ID_BYTES],
+        seq: u64,
+        canonical_bytes: &[u8],
+        parents: &[[u8; ID_BYTES]],
+    ) -> Result<CommitOutcome> {
+        commit_event_in_transaction(
+            transaction,
             author_id,
             event_id,
             seq,
@@ -344,145 +525,48 @@ impl Store {
         )
     }
 
-    fn commit_event(
+    /// Runs application and provider writes inside one `SQLite` transaction.
+    ///
+    /// Errors from `action` roll back all writes. The closure error type must
+    /// accept a storage error so begin and commit failures are reported there.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error produced by `action` or by transaction begin/commit.
+    pub fn with_transaction<T, E>(
         &mut self,
-        author_id: [u8; ID_BYTES],
-        event_id: [u8; ID_BYTES],
-        seq: u64,
-        canonical_bytes: &[u8],
-        parents: &[[u8; ID_BYTES]],
-        require_contiguous_sequence: bool,
-        outbox: Option<(&[u8], i64)>,
-    ) -> Result<CommitOutcome> {
-        validate_canonical_bytes(canonical_bytes)?;
-        validate_dependencies(parents)?;
-        let seq_i64 = i64::try_from(seq).map_err(|_| StoreError::InvalidSequence)?;
-        if seq_i64 <= 0 {
-            return Err(StoreError::InvalidSequence);
-        }
-
+        action: impl FnOnce(&rusqlite::Transaction<'_>) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<StoreError>,
+    {
         let transaction = self
             .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-        if let Some(existing) = load_event_with_connection(&transaction, &event_id)? {
-            if existing.author_id == author_id
-                && existing.author_seq == seq
-                && existing.canonical_bytes.as_slice() == canonical_bytes
-                && existing.parents.as_slice() == parents
-            {
-                if let Some((envelope_bytes, _)) = outbox {
-                    let existing_envelope: Option<Vec<u8>> = transaction
-                        .query_row(
-                            "SELECT envelope_bytes FROM outbox WHERE event_id = ?1",
-                            params![&event_id[..]],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-                    match existing_envelope {
-                        Some(existing) if existing.as_slice() == envelope_bytes => {}
-                        Some(_) => return Err(StoreError::OutboxConflict),
-                        None => return Err(StoreError::OutboxMissing),
-                    }
-                }
-                transaction.execute(
-                    "DELETE FROM pending_events WHERE event_id = ?1",
-                    params![&event_id[..]],
-                )?;
-                transaction.commit()?;
-                return Ok(CommitOutcome::AlreadyPresent);
-            }
-            return Err(StoreError::EventIdConflict);
-        }
-
-        let occupied: Option<Vec<u8>> = transaction
-            .query_row(
-                "SELECT event_id FROM events WHERE author_id = ?1 AND author_seq = ?2",
-                params![&author_id[..], seq_i64],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(existing_event_id) = occupied {
-            let existing_event_id = decode_id(existing_event_id)?;
-            transaction.commit()?;
-            return Ok(CommitOutcome::Equivocation { existing_event_id });
-        }
-
-        if require_contiguous_sequence {
-            let last_seq: Option<i64> = transaction.query_row(
-                "SELECT MAX(author_seq) FROM events WHERE author_id = ?1",
-                params![&author_id[..]],
-                |row| row.get(0),
-            )?;
-            let expected = match last_seq {
-                Some(last) => last.checked_add(1).ok_or(StoreError::SequenceExhausted)?,
-                None => 1,
-            };
-            if seq_i64 != expected {
-                return Err(StoreError::SequenceMismatch {
-                    expected: u64::try_from(expected).map_err(|_| StoreError::SequenceExhausted)?,
-                    actual: seq,
-                });
-            }
-        }
-
-        transaction.execute(
-            "INSERT INTO events(event_id, author_id, author_seq, canonical_bytes)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![&event_id[..], &author_id[..], seq_i64, canonical_bytes],
-        )?;
-        {
-            let mut statement = transaction.prepare(
-                "INSERT INTO event_parents(event_id, parent_id, ordinal)
-                 VALUES (?1, ?2, ?3)",
-            )?;
-            for (ordinal, parent_id) in parents.iter().enumerate() {
-                statement.execute(params![
-                    &event_id[..],
-                    &parent_id[..],
-                    i64::try_from(ordinal).expect("dependency limit fits in i64")
-                ])?;
-            }
-        }
-        transaction.execute(
-            "DELETE FROM pending_events WHERE event_id = ?1",
-            params![&event_id[..]],
-        )?;
-        if let Some((envelope_bytes, next_attempt_ms)) = outbox {
-            let count: i64 =
-                transaction.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?;
-            if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_OUTBOX_EVENTS {
-                return Err(StoreError::OutboxEventLimit);
-            }
-            let total_bytes: i64 = transaction.query_row(
-                "SELECT COALESCE(SUM(length(envelope_bytes)), 0) FROM outbox",
-                [],
-                |row| row.get(0),
-            )?;
-            if usize::try_from(total_bytes)
-                .unwrap_or(usize::MAX)
-                .saturating_add(envelope_bytes.len())
-                > MAX_OUTBOX_BYTES
-            {
-                return Err(StoreError::OutboxByteLimit);
-            }
-            transaction.execute(
-                "INSERT INTO outbox(
-                    event_id, envelope_bytes, next_attempt_ms, attempt_count, state
-                 ) VALUES (?1, ?2, ?3, 0, 'queued')",
-                params![&event_id[..], envelope_bytes, next_attempt_ms],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(CommitOutcome::Inserted)
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(StoreError::from)
+            .map_err(E::from)?;
+        let value = action(&transaction)?;
+        transaction
+            .commit()
+            .map_err(StoreError::from)
+            .map_err(E::from)?;
+        Ok(value)
     }
 
     /// Loads one event, including its ordered parent references.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or stored event data is invalid.
     pub fn load_event(&self, id: &[u8; ID_BYTES]) -> Result<Option<EventRecord>> {
         load_event_with_connection(&self.connection, id)
     }
 
     /// Returns the next sequence for a local author, starting at one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or the next sequence is exhausted.
     pub fn next_author_sequence(&self, author_id: &[u8; ID_BYTES]) -> Result<u64> {
         let last_seq: Option<i64> = self.connection.query_row(
             "SELECT MAX(author_seq) FROM events WHERE author_id = ?1",
@@ -497,8 +581,12 @@ impl Store {
     }
     /// Loads the single OS-protected local identity ciphertext, if one is saved.
     ///
-    /// SQLite receives opaque ciphertext only; plaintext key bytes never cross
+    /// `SQLite` receives opaque ciphertext only; plaintext key bytes never cross
     /// this storage API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails or stored data is invalid.
     pub fn load_protected_identity(&self) -> Result<Option<Vec<u8>>> {
         self.connection
             .query_row(
@@ -514,6 +602,11 @@ impl Store {
     ///
     /// Returns `true` only for the caller that created the slot. A concurrent or
     /// repeated initialization returns `false` and never replaces the first key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is outside the permitted bound or the
+    /// database write fails.
     pub fn save_protected_identity(&mut self, ciphertext: &[u8]) -> Result<bool> {
         if ciphertext.is_empty() || ciphertext.len() > MAX_PROTECTED_IDENTITY_BYTES {
             return Err(StoreError::InvalidProtectedIdentity);
@@ -528,6 +621,11 @@ impl Store {
     }
 
     /// Returns an event-ID-ordered outbox page, optionally after an exclusive ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid page size, malformed stored data, or
+    /// database failures.
     pub fn list_outbox_page(
         &self,
         after_event_id: Option<[u8; ID_BYTES]>,
@@ -570,6 +668,11 @@ impl Store {
     }
 
     /// Records local relay/courier forwarding only. This never marks delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid scheduling data, an invalid state transition,
+    /// or database failures.
     pub fn mark_forwarded(&mut self, event_id: [u8; ID_BYTES], next_attempt_ms: i64) -> Result<()> {
         if next_attempt_ms < 0 {
             return Err(StoreError::InvalidOutboxSchedule);
@@ -590,6 +693,11 @@ impl Store {
 
     /// Records a destination's receipt. Only a forwarded envelope can become
     /// delivered; duplicate receipts are idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receipt cannot be applied or the database query
+    /// fails.
     pub fn record_destination_receipt(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE outbox SET state = 'delivered'
@@ -604,6 +712,11 @@ impl Store {
     }
 
     /// Marks an undelivered envelope failed or expired. Repeating failure is safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transition is invalid or the database operation
+    /// fails.
     pub fn mark_failed(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE outbox SET state = 'failed'
@@ -633,6 +746,11 @@ impl Store {
     ///
     /// Both the event bytes and the total pending queue have explicit local bounds.
     /// Re-inserting the same ID with different bytes is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid dependencies or limits, conflicting event
+    /// bytes, or database failures.
     pub fn store_pending(
         &mut self,
         id: [u8; ID_BYTES],
@@ -719,6 +837,10 @@ impl Store {
     }
 
     /// Lists pending events in stable ID order with their current dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pending-event query fails or stored data is invalid.
     pub fn list_pending(&self) -> Result<Vec<PendingEvent>> {
         let mut statement = self
             .connection
@@ -741,6 +863,10 @@ impl Store {
     }
 
     /// Returns the number of events currently held in the pending queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the count query fails or the result is invalid.
     pub fn pending_count(&self) -> Result<usize> {
         let count: i64 =
             self.connection
@@ -752,6 +878,11 @@ impl Store {
     ///
     /// Returned events remain in the pending queue until the caller commits them
     /// and calls [`Store::resolve_pending`] with each event ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dependency update or query fails, or stored data is
+    /// invalid.
     pub fn resolve_dependency(
         &mut self,
         dependency_id: [u8; ID_BYTES],
@@ -800,6 +931,10 @@ impl Store {
     }
 
     /// Removes a pending event after it has been accepted or discarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database update fails.
     pub fn resolve_pending(&mut self, id: [u8; ID_BYTES]) -> Result<bool> {
         let transaction = self
             .connection
@@ -811,6 +946,133 @@ impl Store {
         transaction.commit()?;
         Ok(removed)
     }
+}
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn commit_event_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    author_id: [u8; ID_BYTES],
+    event_id: [u8; ID_BYTES],
+    seq: u64,
+    canonical_bytes: &[u8],
+    parents: &[[u8; ID_BYTES]],
+    require_contiguous_sequence: bool,
+    outbox: Option<(&[u8], i64)>,
+) -> Result<CommitOutcome> {
+    validate_canonical_bytes(canonical_bytes)?;
+    validate_dependencies(parents)?;
+    let seq_i64 = i64::try_from(seq).map_err(|_| StoreError::InvalidSequence)?;
+    if seq_i64 <= 0 {
+        return Err(StoreError::InvalidSequence);
+    }
+
+    if let Some(existing) = load_event_with_connection(transaction, &event_id)? {
+        if existing.author_id == author_id
+            && existing.author_seq == seq
+            && existing.canonical_bytes.as_slice() == canonical_bytes
+            && existing.parents.as_slice() == parents
+        {
+            if let Some((envelope_bytes, _)) = outbox {
+                let existing_envelope: Option<Vec<u8>> = transaction
+                    .query_row(
+                        "SELECT envelope_bytes FROM outbox WHERE event_id = ?1",
+                        params![&event_id[..]],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                match existing_envelope {
+                    Some(existing) if existing.as_slice() == envelope_bytes => {}
+                    Some(_) => return Err(StoreError::OutboxConflict),
+                    None => return Err(StoreError::OutboxMissing),
+                }
+            }
+            transaction.execute(
+                "DELETE FROM pending_events WHERE event_id = ?1",
+                params![&event_id[..]],
+            )?;
+            return Ok(CommitOutcome::AlreadyPresent);
+        }
+        return Err(StoreError::EventIdConflict);
+    }
+
+    let occupied: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT event_id FROM events WHERE author_id = ?1 AND author_seq = ?2",
+            params![&author_id[..], seq_i64],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(existing_event_id) = occupied {
+        return Ok(CommitOutcome::Equivocation {
+            existing_event_id: decode_id(existing_event_id)?,
+        });
+    }
+
+    if require_contiguous_sequence {
+        let last_seq: Option<i64> = transaction.query_row(
+            "SELECT MAX(author_seq) FROM events WHERE author_id = ?1",
+            params![&author_id[..]],
+            |row| row.get(0),
+        )?;
+        let expected = match last_seq {
+            Some(last) => last.checked_add(1).ok_or(StoreError::SequenceExhausted)?,
+            None => 1,
+        };
+        if seq_i64 != expected {
+            return Err(StoreError::SequenceMismatch {
+                expected: u64::try_from(expected).map_err(|_| StoreError::SequenceExhausted)?,
+                actual: seq,
+            });
+        }
+    }
+
+    transaction.execute(
+        "INSERT INTO events(event_id, author_id, author_seq, canonical_bytes)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![&event_id[..], &author_id[..], seq_i64, canonical_bytes],
+    )?;
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO event_parents(event_id, parent_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+        )?;
+        for (ordinal, parent_id) in parents.iter().enumerate() {
+            statement.execute(params![
+                &event_id[..],
+                &parent_id[..],
+                i64::try_from(ordinal).expect("dependency limit fits in i64")
+            ])?;
+        }
+    }
+    transaction.execute(
+        "DELETE FROM pending_events WHERE event_id = ?1",
+        params![&event_id[..]],
+    )?;
+    if let Some((envelope_bytes, next_attempt_ms)) = outbox {
+        let count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_OUTBOX_EVENTS {
+            return Err(StoreError::OutboxEventLimit);
+        }
+        let total_bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(envelope_bytes)), 0) FROM outbox",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(total_bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_add(envelope_bytes.len())
+            > MAX_OUTBOX_BYTES
+        {
+            return Err(StoreError::OutboxByteLimit);
+        }
+        transaction.execute(
+            "INSERT INTO outbox(
+                event_id, envelope_bytes, next_attempt_ms, attempt_count, state
+             ) VALUES (?1, ?2, ?3, 0, 'queued')",
+            params![&event_id[..], envelope_bytes, next_attempt_ms],
+        )?;
+    }
+    Ok(CommitOutcome::Inserted)
 }
 
 fn validate_canonical_bytes(bytes: &[u8]) -> Result<()> {
@@ -1058,6 +1320,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE protected_identity;
+                     DROP TABLE protected_mls_storage_key;
                      DROP INDEX outbox_queued_schedule;
                      DROP TABLE outbox;
                      PRAGMA user_version = 1;",
@@ -1082,6 +1345,17 @@ mod tests {
         assert_eq!(
             store.load_protected_identity().expect("load new identity"),
             Some(vec![0xCC, 0xDD])
+        );
+        assert!(
+            store
+                .save_protected_mls_storage_key(&[0xAA, 0xBB])
+                .expect("store protected MLS key after migration")
+        );
+        assert_eq!(
+            store
+                .load_protected_mls_storage_key()
+                .expect("load protected MLS key"),
+            Some(vec![0xAA, 0xBB])
         );
     }
     #[test]
@@ -1179,6 +1453,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn authored_event_and_outbox_transition_durably_without_false_delivery() {
         let database = TempDatabase::new();
         let author = id(50);
@@ -1422,6 +1697,77 @@ mod tests {
                 .expect("load event with too many parents")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn composed_event_writes_commit_or_roll_back_with_the_callers_transaction() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        store
+            .connection
+            .execute(
+                "CREATE TABLE transaction_marker (marker INTEGER PRIMARY KEY)",
+                [],
+            )
+            .expect("create transaction marker");
+
+        let author = id(40);
+        let rolled_back_event = id(41);
+        let aborted: super::Result<(), StoreError> = store.with_transaction(|transaction| {
+            transaction.execute("INSERT INTO transaction_marker VALUES (1)", [])?;
+            Store::commit_authored_in_transaction(
+                transaction,
+                author,
+                rolled_back_event,
+                1,
+                &[0x01],
+                &[],
+            )?;
+            Err(StoreError::InvalidSequence)
+        });
+        assert!(matches!(aborted, Err(StoreError::InvalidSequence)));
+        assert!(
+            store
+                .load_event(&rolled_back_event)
+                .expect("query rolled-back event")
+                .is_none()
+        );
+        let marker_count: i64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM transaction_marker", [], |row| {
+                row.get(0)
+            })
+            .expect("query rolled-back marker");
+        assert_eq!(marker_count, 0);
+
+        let committed_event = id(42);
+        store
+            .with_transaction(|transaction| {
+                transaction.execute("INSERT INTO transaction_marker VALUES (2)", [])?;
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    author,
+                    committed_event,
+                    1,
+                    &[0x02],
+                    &[],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .expect("commit related writes together");
+        assert!(
+            store
+                .load_event(&committed_event)
+                .expect("query committed event")
+                .is_some()
+        );
+        let marker_count: i64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM transaction_marker", [], |row| {
+                row.get(0)
+            })
+            .expect("query committed marker");
+        assert_eq!(marker_count, 1);
     }
 
     #[test]

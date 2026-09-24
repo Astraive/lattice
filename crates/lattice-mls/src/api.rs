@@ -1,29 +1,29 @@
-//! Production OpenMLS operations over a caller-owned provider.
+//! Production `OpenMLS` operations over a caller-owned provider.
 //!
-//! This API signs with [`DeviceIdentity`] and accepts only an OpenMLS X.509
+//! This API signs with [`DeviceIdentity`] and accepts only an `OpenMLS` X.509
 //! credential value paired with that device's Ed25519 key. The credential is
-//! opaque: OpenMLS 0.9 does not validate its X.509 chain, prove that it contains
+//! opaque: `OpenMLS` 0.9 does not validate its X.509 chain, prove that it contains
 //! the device key, or bind it to a Lattice identity. Callers must supply an
 //! appropriately verified credential and must separately evaluate Space
-//! identity and authorization. A successful MLS operation is not authorization.
+//! identity and authorization. A successful `MLS` operation is not authorization.
 //! The signing key comes from the identity crate's in-process `DeviceIdentity`;
 //! no OS-keystore implementation is provided here.
 //!
-//! Per-call bounds are 1 MiB for MLS wire objects, 512 KiB for application
+//! Per-call bounds are 1 MiB for `MLS` wire objects, 512 KiB for application
 //! plaintext, 16 KiB for `Credential::serialized_content()`, 256 bytes for a
 //! loaded group ID and 4096 members per managed group.
 //! Conflict evidence retains at most two bounded wire objects. These limits
 //! do not bound aggregate provider storage, provider record size, or storage
 //! growth; those are controlled by the caller's provider.
 //!
-//! The caller supplies an [`OpenMlsProvider`] for every operation. OpenMLS
+//! The caller supplies an [`OpenMlsProvider`] for every operation. `OpenMLS`
 //! persists secrets through that provider; this crate neither chooses a
 //! storage backend nor encrypts/authenticates provider data. The incoming
-//! staged-Commit/conflict boundary is process-local and is not included in
-//! OpenMLS storage. Callers must protect/persist their own authenticated
+//! staged-`Commit`/conflict boundary is process-local and is not included in
+//! `OpenMLS` storage. Callers must protect/persist their own authenticated
 //! conflict metadata and must not reload a group as operational after losing
-//! that metadata. Incoming Commits are refused without validation while a
-//! local Commit is pending, so that case is not classified as a conflict.
+//! that metadata. Incoming `Commits` are refused without validation while a
+//! local `Commit` is pending, so that case is not classified as a conflict.
 //! Distinct incoming successors are quarantined only in process memory. This
 //! API does not implement ADR-001 recovery or event-log atomicity.
 
@@ -48,7 +48,7 @@ use openmls_traits::{
 };
 use sha2::{Digest, Sha256};
 
-/// OpenMLS ciphersuite used by the current executable MLS candidate.
+/// `OpenMLS` ciphersuite used by the current executable MLS candidate.
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 /// Maximum TLS-encoded MLS object accepted or emitted by this boundary.
 pub const MAX_MLS_WIRE_BYTES: usize = 1024 * 1024;
@@ -64,7 +64,7 @@ pub const MAX_APPLICATION_BYTES: usize = 512 * 1024;
 /// Errors reported by the production MLS boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MlsError {
-    /// An input or OpenMLS output exceeded the documented bound.
+    /// An input or `OpenMLS` output exceeded the documented bound.
     InputTooLarge {
         /// Input category.
         kind: &'static str,
@@ -79,15 +79,15 @@ pub enum MlsError {
     MalformedMessage,
     /// The object is a valid MLS object but not one supported by this method.
     UnsupportedMessage,
-    /// BasicCredential is intentionally restricted to the test harness.
+    /// `BasicCredential` is intentionally restricted to the test harness.
     BasicCredentialForbidden,
-    /// This boundary accepts only opaque OpenMLS X.509 credentials.
+    /// This boundary accepts only opaque `OpenMLS` X.509 credentials.
     UnsupportedCredentialType,
     /// The supplied credential signature key does not match the local device signer.
     CredentialKeyMismatch,
     /// A group identifier does not identify the requested local group.
     WrongGroup,
-    /// No matching persisted OpenMLS group was found.
+    /// No matching persisted `OpenMLS` group was found.
     GroupNotFound,
     /// An MLS object depends on a future epoch not yet present locally.
     MissingDependency {
@@ -128,7 +128,7 @@ pub enum MlsError {
     GroupInactive,
     /// The requested operation would exceed the group-state bound.
     GroupStateLimit,
-    /// OpenMLS rejected an MLS operation or the caller's provider failed.
+    /// `OpenMLS` rejected an MLS operation or the caller's provider failed.
     OpenMlsFailure,
     /// The authenticated MLS member key could not be retrieved from the group.
     SenderKeyUnavailable,
@@ -214,7 +214,14 @@ pub struct DeviceCredentialInput {
 impl DeviceCredentialInput {
     /// Pairs opaque X.509 credential content with the public key of `identity`.
     ///
-    /// `credential` must be an X.509 credential supplied by the caller. OpenMLS
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InputTooLarge`] when the serialized credential exceeds
+    /// [`MAX_CREDENTIAL_BYTES`], [`MlsError::BasicCredentialForbidden`] for a
+    /// basic credential, or [`MlsError::UnsupportedCredentialType`] for another
+    /// credential type.
+    ///
+    /// `credential` must be an X.509 credential supplied by the caller. `OpenMLS`
     /// 0.9 treats it as opaque and does not authenticate its certificate chain;
     /// callers must verify that independently before relying on it.
     pub fn from_x509_credential(
@@ -243,6 +250,7 @@ impl DeviceCredentialInput {
     }
 
     /// Returns the opaque MLS credential value for external verification.
+    #[must_use]
     pub fn credential(&self) -> &Credential {
         &self.credential_with_key.credential
     }
@@ -270,7 +278,7 @@ impl Signer for DeviceSigner<'_> {
 /// Type of the serialized MLS object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MlsWireKind {
-    /// A signed MLS KeyPackage.
+    /// A signed MLS `KeyPackage`.
     KeyPackage,
     /// An MLS proposal.
     Proposal,
@@ -291,11 +299,13 @@ pub struct MlsMessage {
 
 impl MlsMessage {
     /// Returns the TLS-encoded MLS object.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
     /// Returns the type of the encoded MLS object.
+    #[must_use]
     pub const fn kind(&self) -> MlsWireKind {
         self.kind
     }
@@ -327,6 +337,7 @@ pub struct MlsApplication {
 
 impl MlsApplication {
     /// Returns the exact decrypted application plaintext.
+    #[must_use]
     pub fn plaintext(&self) -> &[u8] {
         &self.plaintext
     }
@@ -338,11 +349,13 @@ impl MlsApplication {
     }
 
     /// Returns the MLS member's Ed25519 key, if the message came from a group member.
+    #[must_use]
     pub const fn member_signature_key(&self) -> Option<&[u8; 32]> {
         self.member_signature_key.as_ref()
     }
 
     /// Returns the SHA-256 digest of the exact TLS-encoded ciphertext processed.
+    #[must_use]
     pub const fn ciphertext_sha256(&self) -> &[u8; 32] {
         &self.ciphertext_sha256
     }
@@ -402,7 +415,7 @@ pub enum GroupStatus {
     IncomingCommitStaged,
     /// Distinct valid Commits were observed from the same local parent epoch.
     Conflicted,
-    /// OpenMLS reports that the local member is no longer active.
+    /// `OpenMLS` reports that the local member is no longer active.
     Inactive,
 }
 
@@ -426,24 +439,27 @@ pub struct ConflictEvidence {
 
 impl ConflictEvidence {
     /// Returns the epoch from which both Commit branches were validated.
+    #[must_use]
     pub const fn parent_epoch(&self) -> u64 {
         self.parent_epoch
     }
 
     /// Returns the first locally observed branch's exact TLS bytes.
+    #[must_use]
     pub fn first_commit(&self) -> &[u8] {
         &self.first_commit
     }
 
     /// Returns the competing branch's exact TLS bytes.
+    #[must_use]
     pub fn second_commit(&self) -> &[u8] {
         &self.second_commit
     }
 }
 
-/// OpenMLS group state with explicit local commit and conflict gates.
+/// `OpenMLS` group state with explicit local commit and conflict gates.
 ///
-/// The OpenMLS secret state is stored through the provider passed to each
+/// The `OpenMLS` secret state is stored through the provider passed to each
 /// operation. `incoming_commit` and `conflict` are process-local only and must
 /// be protected/persisted separately by the caller before relying on them
 /// across restarts.
@@ -463,18 +479,26 @@ pub struct PreparedAdd {
 
 impl PreparedAdd {
     /// Returns the exact Commit that must be accepted before the Welcome is released.
+    #[must_use]
     pub fn commit(&self) -> &MlsMessage {
         &self.commit
     }
 
     /// Returns the parent epoch of this transition.
+    #[must_use]
     pub fn parent_epoch(&self) -> u64 {
         self.parent_epoch.as_u64()
     }
 }
 
 impl GroupState {
-    /// Creates an OpenMLS group with the current candidate ciphersuite.
+    /// Creates an `OpenMLS` group with the current candidate ciphersuite.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::CredentialKeyMismatch`] when the credential is not
+    /// paired with this identity's signing key, or [`MlsError::OpenMlsFailure`]
+    /// when `OpenMLS` or the provider rejects group creation.
     pub fn create<P: OpenMlsProvider>(
         provider: &P,
         identity: &DeviceIdentity,
@@ -500,12 +524,20 @@ impl GroupState {
         })
     }
 
-    /// Loads OpenMLS secret state from the caller's provider.
+    /// Loads `OpenMLS` secret state from the caller's provider.
     ///
-    /// This restores only OpenMLS state. It cannot recover the process-local
-    /// incoming-Commit or conflict quarantine; callers must authenticate and
+    /// This restores only `OpenMLS` state. It cannot recover the process-local
+    /// incoming-`Commit` or conflict quarantine; callers must authenticate and
     /// restore their own boundary metadata or must not resume the group as
     /// operational.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InputTooLarge`] for an oversized group ID,
+    /// [`MlsError::InvalidInput`] for an empty ID,
+    /// [`MlsError::OpenMlsFailure`] when the provider fails,
+    /// [`MlsError::GroupNotFound`] when no persisted group matches, or
+    /// [`MlsError::GroupStateLimit`] when the group exceeds the member bound.
     pub fn load<P: OpenMlsProvider>(provider: &P, group_id: &[u8]) -> MlsResult<Self> {
         check_group_id(group_id)?;
         let id = GroupId::from_slice(group_id);
@@ -522,7 +554,13 @@ impl GroupState {
         })
     }
 
-    /// Creates a TLS-encoded MLS KeyPackage for this device and credential.
+    /// Creates a TLS-encoded `MLS` `KeyPackage` for this device and credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::CredentialKeyMismatch`] when the credential is not
+    /// paired with this identity's signing key, or [`MlsError::OpenMlsFailure`]
+    /// when key-package creation or encoding fails.
     pub fn publish_key_package<P: OpenMlsProvider>(
         provider: &P,
         identity: &DeviceIdentity,
@@ -539,15 +577,25 @@ impl GroupState {
             )
             .map_err(|_| MlsError::OpenMlsFailure)?;
         encode_message(
-            MlsMessageOut::from(bundle.into_key_package()),
+            &MlsMessageOut::from(bundle.into_key_package()),
             MlsWireKind::KeyPackage,
         )
     }
 
-    /// Joins from a Welcome only when the expected credential and signer key match.
+    /// Joins from a `Welcome` only when the expected credential and signer key match.
     ///
     /// This exact expectation check does not validate the X.509 chain or establish
     /// Space authorization. Those remain caller responsibilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InputTooLarge`] or [`MlsError::InvalidInput`] for
+    /// invalid bounds, [`MlsError::UnsupportedMessage`] for a non-`Welcome`,
+    /// [`MlsError::WrongGroup`] for a different group,
+    /// [`MlsError::CredentialKeyMismatch`] for a different sender credential,
+    /// [`MlsError::GroupStateLimit`] for excessive membership, or
+    /// [`MlsError::OpenMlsFailure`] when `OpenMLS` rejects the message/provider.
+    #[allow(clippy::manual_let_else)] // Keep the explicit security-critical Welcome classification.
     pub fn from_welcome<P: OpenMlsProvider>(
         provider: &P,
         expected_group_id: &[u8],
@@ -557,7 +605,10 @@ impl GroupState {
         check_group_id(expected_group_id)?;
         check_wire_size(welcome_wire)?;
         let parsed = parse_message(welcome_wire)?;
-        let welcome = parsed.into_welcome().ok_or(MlsError::UnsupportedMessage)?;
+        let welcome = match parsed.extract() {
+            openmls::prelude::MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => return Err(MlsError::UnsupportedMessage),
+        };
         let join_config = MlsGroupJoinConfig::builder()
             .use_ratchet_tree_extension(true)
             .build();
@@ -593,6 +644,7 @@ impl GroupState {
     }
 
     /// Returns the MLS group identifier bytes.
+    #[must_use]
     pub fn group_id(&self) -> Vec<u8> {
         self.inner.group_id().to_vec()
     }
@@ -604,16 +656,19 @@ impl GroupState {
     }
 
     /// Returns the current MLS epoch.
+    #[must_use]
     pub fn epoch(&self) -> u64 {
         self.inner.epoch().as_u64()
     }
 
     /// Returns the current MLS member count.
+    #[must_use]
     pub fn member_count(&self) -> usize {
         self.inner.members().count()
     }
 
     /// Returns current state relevant to MLS transitions.
+    #[must_use]
     pub fn status(&self) -> GroupStatus {
         if self.conflict.is_some() {
             GroupStatus::Conflicted
@@ -629,11 +684,20 @@ impl GroupState {
     }
 
     /// Returns the locally retained conflict evidence, if competing branches were observed.
+    #[must_use]
     pub fn conflict_evidence(&self) -> Option<&ConflictEvidence> {
         self.conflict.as_ref()
     }
 
-    /// Prepares an add transition from one bounded, validated KeyPackage.
+    /// Prepares an add transition from one bounded, validated `KeyPackage`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::Conflicted`], [`MlsError::OwnCommitPending`],
+    /// [`MlsError::IncomingCommitPending`], [`MlsError::GroupInactive`],
+    /// [`MlsError::CredentialKeyMismatch`], [`MlsError::GroupStateLimit`], or
+    /// [`MlsError::OpenMlsFailure`] when the group, credential, package, or
+    /// provider cannot complete the add transition.
     pub fn prepare_add<P: OpenMlsProvider>(
         &mut self,
         provider: &P,
@@ -657,12 +721,19 @@ impl GroupState {
         Ok(PreparedAdd {
             group_id: self.group_id(),
             parent_epoch: self.inner.epoch(),
-            commit: encode_message(commit, MlsWireKind::Commit)?,
-            welcome: encode_message(welcome, MlsWireKind::Welcome)?,
+            commit: encode_message(&commit, MlsWireKind::Commit)?,
+            welcome: encode_message(&welcome, MlsWireKind::Welcome)?,
         })
     }
 
     /// Merges the exact prepared Commit and releases its Welcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::Conflicted`], [`MlsError::GroupInactive`],
+    /// [`MlsError::InputTooLarge`], [`MlsError::WrongGroup`],
+    /// [`MlsError::ParentEpochChanged`], [`MlsError::AcceptanceMismatch`],
+    /// [`MlsError::NoOwnCommitPending`], or [`MlsError::OpenMlsFailure`].
     ///
     /// This is the caller's explicit acceptance signal only; it does not perform
     /// Space authorization or coordinate atomically with an application log.
@@ -693,7 +764,13 @@ impl GroupState {
         Ok(prepared.welcome.clone())
     }
 
-    /// Encrypts a bounded application payload with the actual OpenMLS group state.
+    /// Encrypts a bounded application payload with the actual `OpenMLS` group state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::Conflicted`], pending/inactive-state errors,
+    /// [`MlsError::CredentialKeyMismatch`], [`MlsError::InputTooLarge`], or
+    /// [`MlsError::OpenMlsFailure`].
     pub fn encrypt_application<P: OpenMlsProvider>(
         &mut self,
         provider: &P,
@@ -708,13 +785,19 @@ impl GroupState {
             .inner
             .create_message(provider, &DeviceSigner(identity), plaintext)
             .map_err(|_| MlsError::OpenMlsFailure)?;
-        encode_message(message, MlsWireKind::Application)
+        encode_message(&message, MlsWireKind::Application)
     }
 
     /// Parses and authenticates one bounded incoming MLS protocol message.
     ///
     /// Commits are staged and never merged implicitly. A future-epoch message is
     /// returned as a typed missing-dependency error; this API has no pending queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the wire is malformed/unsupported, belongs to a
+    /// different or unavailable epoch/group, violates a group transition gate,
+    /// or is rejected by `OpenMLS` or the provider.
     pub fn process_incoming<P: OpenMlsProvider>(
         &mut self,
         provider: &P,
@@ -820,6 +903,13 @@ impl GroupState {
     }
 
     /// Merges the exact staged incoming Commit after explicit caller acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::Conflicted`], [`MlsError::GroupInactive`],
+    /// [`MlsError::InputTooLarge`], [`MlsError::NoStagedCommit`],
+    /// [`MlsError::ParentEpochChanged`], [`MlsError::AcceptanceMismatch`], or
+    /// [`MlsError::OpenMlsFailure`].
     pub fn accept_incoming_commit<P: OpenMlsProvider>(
         &mut self,
         provider: &P,
@@ -960,7 +1050,7 @@ fn decode_key_package<P: OpenMlsProvider>(provider: &P, wire: &[u8]) -> MlsResul
         .map_err(|_| MlsError::OpenMlsFailure)
 }
 
-fn encode_message(message: MlsMessageOut, kind: MlsWireKind) -> MlsResult<MlsMessage> {
+fn encode_message(message: &MlsMessageOut, kind: MlsWireKind) -> MlsResult<MlsMessage> {
     let bytes = message.to_bytes().map_err(|_| MlsError::OpenMlsFailure)?;
     check_wire_size(&bytes)?;
     Ok(MlsMessage { bytes, kind })
