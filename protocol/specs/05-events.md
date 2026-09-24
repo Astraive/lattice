@@ -52,6 +52,8 @@ Signature bytes are Ed25519 over `UTF8("lattice:event-signature:v1") || 0x00 || 
 
 The validator returns a signature-only typed object and MUST NOT name it accepted, authorized, decrypted, delivered, or verified as a Space member. Retain exact outer and preimage bytes. Re-encode for transport by using the stored exact byte representation; never re-sign/re-encode history implicitly.
 
+The deterministic signed-event vector (preimage, signature, outer bytes, and event ID) is `signed_event` in [`../vectors/canonical-cbor.json`](../vectors/canonical-cbor.json). Its test key is public test material only. A Rust conformance test verifies the exact retained bytes and signature.
+
 ## Sequence and equivocation
 
 `(author fingerprint, author sequence)` is unique on an accepted device stream. An identical event-ID replay is idempotent. The same stream sequence paired with a different event ID is an equivocation anomaly and must be rejected/quarantined with bounded evidence; it does not overwrite the first event. Remote sequence gaps can be stored immutably and repaired with anti-entropy; local authors reserve/increment sequence atomically with event/outbox persistence.
