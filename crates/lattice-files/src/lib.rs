@@ -30,6 +30,8 @@ pub enum AttachmentError {
     TooManyChunks,
     /// The filename hint exceeds its byte limit.
     FilenameTooLong,
+    /// The filename hint contains path components or unsafe display characters.
+    InvalidFilenameHint,
     /// The MIME type hint exceeds its byte limit.
     MimeTypeTooLong,
     /// The declared file size and ordered chunk digest count disagree.
@@ -71,6 +73,12 @@ impl fmt::Display for AttachmentError {
             Self::FileTooLarge => write!(formatter, "attachment exceeds the maximum file size"),
             Self::TooManyChunks => write!(formatter, "attachment exceeds the maximum chunk count"),
             Self::FilenameTooLong => write!(formatter, "filename hint exceeds the maximum length"),
+            Self::InvalidFilenameHint => {
+                write!(
+                    formatter,
+                    "filename hint contains unsafe display characters"
+                )
+            }
             Self::MimeTypeTooLong => write!(formatter, "MIME type hint exceeds the maximum length"),
             Self::ChunkCountMismatch { expected, actual } => {
                 write!(
@@ -244,6 +252,9 @@ impl AttachmentManifest {
         }
         if self.filename.len() > MAX_FILENAME_BYTES {
             return Err(AttachmentError::FilenameTooLong);
+        }
+        if sanitize_filename_for_display(&self.filename) != self.filename {
+            return Err(AttachmentError::InvalidFilenameHint);
         }
         if self
             .mime_type
@@ -789,6 +800,25 @@ mod tests {
         let safe = super::sanitize_filename_for_display(&long_unicode);
         assert!(safe.len() <= MAX_FILENAME_BYTES);
         assert!(std::str::from_utf8(safe.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn unsafe_incoming_filename_hint_is_rejected_before_receiver_acceptance() {
+        let mut manifest = AttachmentManifest::from_reader(
+            &mut Cursor::new(b"payload".to_vec()),
+            "safe.txt",
+            None,
+        )
+        .unwrap();
+        manifest.filename = "../outside.txt".to_owned();
+        assert!(matches!(
+            manifest.validate(),
+            Err(AttachmentError::InvalidFilenameHint)
+        ));
+        assert!(matches!(
+            AttachmentReceiver::new(manifest, 1024),
+            Err(AttachmentError::InvalidFilenameHint)
+        ));
     }
     #[test]
     fn rejected_chunk_does_not_advance_resume_state_and_digest_gates_completion() {

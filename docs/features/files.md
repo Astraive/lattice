@@ -13,6 +13,7 @@ Files are authenticated manifests plus bounded, independently verified chunks. T
 | FIL-007 | Storage and transfer queues shall enforce per-file/global limits and clean partial state. | Oversized manifest rejected; interrupted chunks expire under policy. | M4 |
 
 Whole-file SHA-256 and chunk hashes protect integrity. Encryption and membership use the same approved application profile as channel data, with key retention for resumed transfers. Uploading an attachment to a volunteer blob service is a separate, explicit transport profile, never a hidden mandatory dependency.
+Incoming manifests reject filename hints containing path components, reserved names, controls, or display characters that would require sanitization; consumers still sanitize the chosen export path separately.
 
 ## Manifest and transfer flow
 
