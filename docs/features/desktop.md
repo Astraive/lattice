@@ -16,6 +16,8 @@ The desktop prototype protects device identity, creates local one-member Genesis
 
 Tauri security boundary and local content rendering are reviewed separately from Rust protocol correctness. A persistent desktop helps availability but never becomes mandatory for a Space.
 
+The Windows host Tauri build (`bun run tauri build --no-bundle`) succeeds and the executable starts. `bun run tauri build` produced the configured MSI and NSIS installer bundles. End-to-end recovery submission against an initialized profile remains unverified.
+
 ## Process and security boundary
 
 The React WebView receives prepared view models, not raw keys, MLS states or unrestricted filesystem access. Tauri commands expose named actions with input validation and minimal capabilities. Rich message content is escaped/sanitized; remote HTML, executable attachment previews and arbitrary URLs cannot obtain local protocol privileges. The Rust side owns SQLite transaction, crypto and network adapter lifecycle. A second desktop window uses the same single core instance and does not race two authors with one local `author_seq`.
