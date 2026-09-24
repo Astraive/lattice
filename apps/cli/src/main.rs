@@ -1,16 +1,32 @@
+mod doctor;
 mod identity;
+mod relay;
 mod space;
+mod sync;
 
-use identity::{IdentityCommand, print_pinned_identity};
+use identity::{
+    IdentityCommand, certificate_request_pem, print_pinned_identity, write_certificate_request_pem,
+};
+use relay::RelayCommand;
 use space::{SpaceCommand, print_space_page};
+use sync::SyncCommand;
 
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::{
+    error::Error,
+    fmt,
+    io::Read,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use clap::{Parser, Subcommand};
 use directories::BaseDirs;
-use lattice_core::{Client, CoreError, DeviceIdentityInfo, SpaceGenesisCursor};
-use lattice_platform::OsKeyringProtector;
+use lattice_core::{
+    Client, CoreError, DeviceIdentityInfo, InitialChannel, SpaceGenesisCursor, space::ChannelType,
+};
+use lattice_mls::api::DeviceCredentialInput;
+use lattice_platform::{OsKeyringProtectionError, OsKeyringProtector};
+use openmls::credentials::{Credential, CredentialType};
 
 const PROFILE_ID: &str = "default";
 const DATABASE_NAME: &str = "lattice.sqlite";
@@ -41,17 +57,65 @@ enum Command {
         #[command(subcommand)]
         command: IdentityCommand,
     },
-    /// List locally recoverable Space generations.
+    /// List or create local Space Genesis generations.
     Space {
         #[command(subcommand)]
         command: SpaceCommand,
     },
     /// Report local identity and event-sequence readiness without creating keys.
     Status,
+    /// Inspect local profile, protected keys, storage schema, and unavailable transport/wire checks without applying migrations.
+    Doctor,
+    /// Manage this profile's relay URLs and probe relay NIP-11 metadata.
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
+    },
+    /// Inspect local synchronization queues without contacting peers.
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommand,
+    },
 }
 
+type PinInput = ([u8; 65], [u8; 32]);
+type SpaceMessageInput = ([u8; 16], [u8; 32], [u8; 16]);
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit_code = if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                0
+            } else {
+                2
+            };
+            let json = std::env::args().any(|argument| argument == "--json");
+            if json
+                && !matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                )
+            {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "error": {
+                            "code": "INVALID_ARGUMENTS",
+                            "message": error.to_string(),
+                        }
+                    })
+                );
+            } else {
+                let _ = error.print();
+            }
+            return ExitCode::from(exit_code);
+        }
+    };
     let json = cli.json;
     match execute(cli, json) {
         Ok(()) => ExitCode::SUCCESS,
@@ -62,7 +126,7 @@ fn main() -> ExitCode {
                     serde_json::json!({
                         "schema_version": 1,
                         "error": {
-                            "code": "COMMAND_FAILED",
+                            "code": error_code(error.as_ref()),
                             "message": error.to_string(),
                         }
                     })
@@ -75,55 +139,251 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Debug)]
+struct CliError {
+    code: &'static str,
+    message: String,
+}
+
+impl CliError {
+    fn invalid_input(message: impl Into<String>) -> Self {
+        Self {
+            code: "INVALID_INPUT",
+            message: message.into(),
+        }
+    }
+
+    fn missing_identity() -> Self {
+        Self {
+            code: "IDENTITY_NOT_INITIALIZED",
+            message: "No device identity is initialized; run `lattice identity init`.".to_owned(),
+        }
+    }
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for CliError {}
+
+fn error_code(error: &(dyn Error + 'static)) -> &'static str {
+    if let Some(error) = error.downcast_ref::<CliError>() {
+        return error.code;
+    }
+    if let Some(error) = error.downcast_ref::<CoreError>() {
+        return match error {
+            CoreError::MissingIdentity => "IDENTITY_NOT_INITIALIZED",
+            CoreError::PinnedIdentityConflict => "PIN_CONFLICT",
+            CoreError::Storage(_) => "STORAGE_ERROR",
+            CoreError::Identity(_) => "IDENTITY_ERROR",
+            CoreError::Mls(_) => "MLS_ERROR",
+            CoreError::SpaceGenesisRejected(_) => "SPACE_REJECTED",
+            CoreError::SpaceGenesisSnapshotNotFound => "SPACE_SNAPSHOT_NOT_FOUND",
+            _ => "CORE_ERROR",
+        };
+    }
+    if let Some(error) = error.downcast_ref::<relay::RelayConfigError>() {
+        return match error {
+            relay::RelayConfigError::InvalidUrl => "INVALID_INPUT",
+            relay::RelayConfigError::InvalidSettings => "LOCAL_CONFIG_INVALID",
+            relay::RelayConfigError::SettingsLimit => "LIMIT_EXCEEDED",
+            relay::RelayConfigError::HashCollision => "LOCAL_CONFIG_CONFLICT",
+        };
+    }
+    if error
+        .downcast_ref::<lattice_relay::network::RelayNetworkError>()
+        .is_some()
+    {
+        return "RELAY_NETWORK_ERROR";
+    }
+    if let Some(error) = error.downcast_ref::<OsKeyringProtectionError>() {
+        return match error {
+            OsKeyringProtectionError::Locked => "KEY_PROTECTION_LOCKED",
+            OsKeyringProtectionError::UnsupportedPlatform => "KEY_PROTECTION_UNAVAILABLE",
+            _ => "KEY_PROTECTION_ERROR",
+        };
+    }
+    if error
+        .downcast_ref::<lattice_storage::StoreError>()
+        .is_some()
+    {
+        return "STORAGE_ERROR";
+    }
+    if let Some(error) = error.downcast_ref::<std::io::Error>() {
+        return match error.kind() {
+            std::io::ErrorKind::AlreadyExists => "OUTPUT_EXISTS",
+            std::io::ErrorKind::PermissionDenied => "PERMISSION_DENIED",
+            _ => "IO_ERROR",
+        };
+    }
+    "COMMAND_FAILED"
+}
+
 fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(&cli.command, Command::About) {
         print_about(json);
         return Ok(());
     }
 
-    // Parse before creating directories or opening storage so malformed input
-    // cannot have filesystem side effects.
-    let pin_input = match &cli.command {
+    // Validate values before creating profile directories or opening storage.
+    let pin_input = parse_pin_input(&cli.command)?;
+    let lookup_fingerprint = parse_lookup_fingerprint(&cli.command)?;
+    validate_command_inputs(&cli.command)?;
+    let message_input = parse_space_message_input(&cli.command)?;
+    let space_credential = read_space_credential(&cli.command)?;
+    let data_dir = match cli.data_dir {
+        Some(path) => path,
+        None => default_data_directory()?,
+    };
+    let database_path = data_dir.join(DATABASE_NAME);
+    match cli.command {
+        Command::About => Ok(()),
+        Command::Doctor => {
+            doctor::execute_doctor(&database_path, json);
+            Ok(())
+        }
+        Command::Relay { command } => relay::execute(command, &data_dir, json),
+        Command::Identity { command } => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            execute_identity(
+                &command,
+                &database_path,
+                &protector,
+                json,
+                pin_input,
+                lookup_fingerprint,
+            )
+        }
+        Command::Space { command } => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            execute_space(
+                command,
+                &database_path,
+                &protector,
+                json,
+                space_credential,
+                message_input,
+            )
+        }
+        Command::Status => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            execute_status(&database_path, &protector, json)
+        }
+        Command::Sync { command } => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            sync::execute(&command, &database_path, &protector, json)
+        }
+    }
+}
+
+fn parse_pin_input(command: &Command) -> Result<Option<PinInput>, CliError> {
+    match command {
         Command::Identity {
             command:
                 IdentityCommand::Pin {
                     bundle_hex,
                     fingerprint_hex,
                 },
-        } => Some((
-            parse_fixed_hex::<65>(bundle_hex, "bundle")?,
-            parse_fixed_hex::<32>(fingerprint_hex, "fingerprint")?,
-        )),
-        _ => None,
-    };
-    let lookup_fingerprint = match &cli.command {
+        } => Ok(Some((
+            parse_fixed_hex::<65>(bundle_hex, "bundle").map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<32>(fingerprint_hex, "fingerprint")
+                .map_err(CliError::invalid_input)?,
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn parse_lookup_fingerprint(command: &Command) -> Result<Option<[u8; 32]>, CliError> {
+    match command {
         Command::Identity {
             command: IdentityCommand::Pinned { fingerprint_hex },
-        } => Some(parse_fixed_hex::<32>(fingerprint_hex, "fingerprint")?),
-        _ => None,
-    };
-
-    let data_dir = match cli.data_dir {
-        Some(path) => path,
-        None => default_data_directory()?,
-    };
-    std::fs::create_dir_all(&data_dir)?;
-    let database_path = data_dir.join(DATABASE_NAME);
-    let protector = OsKeyringProtector::new(PROFILE_ID)?;
-
-    match cli.command {
-        Command::About => Ok(()),
-        Command::Identity { command } => execute_identity(
-            &command,
-            &database_path,
-            &protector,
-            json,
-            pin_input,
-            lookup_fingerprint,
-        ),
-        Command::Space { command } => execute_space(command, &database_path, &protector, json),
-        Command::Status => execute_status(&database_path, &protector, json),
+        } => Ok(Some(
+            parse_fixed_hex::<32>(fingerprint_hex, "fingerprint")
+                .map_err(CliError::invalid_input)?,
+        )),
+        _ => Ok(None),
     }
+}
+
+fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
+    match command {
+        Command::Relay { command } => match command {
+            RelayCommand::Add { url }
+            | RelayCommand::Remove { url }
+            | RelayCommand::Test { url } => relay::validate_input_url(url)?,
+            RelayCommand::List => {}
+        },
+        Command::Space {
+            command: SpaceCommand::Create { channels, .. },
+        } => {
+            if channels.is_empty() || channels.len() > lattice_core::space::MAX_INITIAL_CHANNELS {
+                return Err(
+                    CliError::invalid_input("supply between 1 and 64 initial channels").into(),
+                );
+            }
+            if channels
+                .iter()
+                .any(|name| name.is_empty() || name.len() > 128 || name.contains('\0'))
+            {
+                return Err(CliError::invalid_input(
+                    "channel names must contain 1 to 128 UTF-8 bytes and no NUL",
+                )
+                .into());
+            }
+        }
+        Command::Space {
+            command: SpaceCommand::Message { text, .. },
+        } if text.len() > lattice_core::space::MAX_SPACE_PAYLOAD_BYTES => {
+            return Err(CliError::invalid_input(format!(
+                "text must contain at most {} UTF-8 bytes",
+                lattice_core::space::MAX_SPACE_PAYLOAD_BYTES
+            ))
+            .into());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn parse_space_message_input(command: &Command) -> Result<Option<SpaceMessageInput>, CliError> {
+    match command {
+        Command::Space {
+            command:
+                SpaceCommand::Message {
+                    space_id,
+                    group_reference,
+                    channel_id,
+                    ..
+                },
+        } => Ok(Some((
+            parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<32>(group_reference, "group reference")
+                .map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<16>(channel_id, "channel ID").map_err(CliError::invalid_input)?,
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    let Command::Space {
+        command: SpaceCommand::Create { credential, .. } | SpaceCommand::Message { credential, .. },
+    } = command
+    else {
+        return Ok(None);
+    };
+    Ok(Some(read_credential_vector(credential)?))
+}
+
+fn open_profile(data_dir: &Path) -> Result<(PathBuf, OsKeyringProtector), Box<dyn Error>> {
+    std::fs::create_dir_all(data_dir)?;
+    Ok((
+        data_dir.join(DATABASE_NAME),
+        OsKeyringProtector::new(PROFILE_ID)?,
+    ))
 }
 
 fn execute_identity(
@@ -131,7 +391,7 @@ fn execute_identity(
     database_path: &Path,
     protector: &OsKeyringProtector,
     json: bool,
-    pin_input: Option<([u8; 65], [u8; 32])>,
+    pin_input: Option<PinInput>,
     lookup_fingerprint: Option<[u8; 32]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
@@ -142,12 +402,47 @@ fn execute_identity(
             }
             print_identity(client.identity_info(), json);
         }
+        IdentityCommand::Csr { output } => {
+            let client = match Client::open_existing(database_path, protector) {
+                Ok(client) => client,
+                Err(CoreError::MissingIdentity) => {
+                    return Err(CliError::missing_identity().into());
+                }
+                Err(error) => return Err(Box::new(error)),
+            };
+            let csr_pem = certificate_request_pem(&client.certificate_signing_request()?);
+            if let Some(path) = output {
+                write_certificate_request_pem(path, &csr_pem)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "schema_version": 1,
+                            "command": "identity_csr",
+                            "written": true,
+                            "path": path.display().to_string(),
+                        })
+                    );
+                } else {
+                    println!("Certificate signing request written to {}.", path.display());
+                }
+            } else if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "command": "identity_csr",
+                        "certificate_signing_request_pem": csr_pem,
+                    })
+                );
+            } else {
+                print!("{csr_pem}");
+            }
+        }
         IdentityCommand::Show => match Client::open_existing(database_path, protector) {
             Ok(client) => print_identity(client.identity_info(), json),
             Err(CoreError::MissingIdentity) => {
-                return Err(
-                    "No device identity is initialized; run `lattice identity init`.".into(),
-                );
+                return Err(CliError::missing_identity().into());
             }
             Err(error) => return Err(Box::new(error)),
         },
@@ -156,9 +451,7 @@ fn execute_identity(
             let mut client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
-                    return Err(
-                        "No device identity is initialized; run `lattice identity init`.".into(),
-                    );
+                    return Err(CliError::missing_identity().into());
                 }
                 Err(error) => return Err(Box::new(error)),
             };
@@ -174,9 +467,7 @@ fn execute_identity(
             let client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
-                    return Err(
-                        "No device identity is initialized; run `lattice identity init`.".into(),
-                    );
+                    return Err(CliError::missing_identity().into());
                 }
                 Err(error) => return Err(Box::new(error)),
             };
@@ -196,26 +487,162 @@ fn execute_space(
     database_path: &Path,
     protector: &OsKeyringProtector,
     json: bool,
+    credential_bytes: Option<Vec<u8>>,
+    message_input: Option<SpaceMessageInput>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        SpaceCommand::Create { channels, .. } => {
+            let credential_bytes = credential_bytes
+                .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+            execute_space_create(credential_bytes, channels, database_path, protector, json)?;
+        }
         SpaceCommand::List { after } => {
             let after = after
                 .as_deref()
                 .map(parse_space_cursor)
                 .transpose()
-                .map_err(|error| format!("invalid --after cursor: {error}"))?;
+                .map_err(|error| {
+                    CliError::invalid_input(format!("invalid --after cursor: {error}"))
+                })?;
             let mut client = match Client::open_existing(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
-                    return Err(
-                        "No device identity is initialized; run `lattice identity init`.".into(),
-                    );
+                    return Err(CliError::missing_identity().into());
                 }
                 Err(error) => return Err(Box::new(error)),
             };
             let page = client.restore_space_page(after)?;
             print_space_page(&page, json);
         }
+        SpaceCommand::Message { text, .. } => {
+            let credential_bytes = credential_bytes
+                .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+            let (space_id, group_reference, channel_id) = message_input
+                .ok_or_else(|| CliError::invalid_input("message identifiers were not parsed"))?;
+            let mut client = match Client::open_existing(database_path, protector) {
+                Ok(client) => client,
+                Err(CoreError::MissingIdentity) => {
+                    return Err(CliError::missing_identity().into());
+                }
+                Err(error) => return Err(Box::new(error)),
+            };
+            let queued = client.queue_text_message_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_bytes,
+                channel_id,
+                &text,
+            )?;
+            let event_id = hex(queued.event_id());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "command": "space_message",
+                        "state": "queued",
+                        "event_id": event_id,
+                        "forwarded": false,
+                        "delivered": false,
+                        "network_contacted": false,
+                    })
+                );
+            } else {
+                println!("Queued locally: event {event_id}");
+                println!("Not forwarded or delivered; no network contact was made.");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_credential_vector(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(lattice_mls::api::MAX_CREDENTIAL_BYTES.min(4096));
+    Read::take(
+        &mut file,
+        (lattice_mls::api::MAX_CREDENTIAL_BYTES + 1) as u64,
+    )
+    .read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > lattice_mls::api::MAX_CREDENTIAL_BYTES {
+        return Err(CliError::invalid_input(format!(
+            "credential vector must contain 1 to {} bytes",
+            lattice_mls::api::MAX_CREDENTIAL_BYTES
+        ))
+        .into());
+    }
+    Ok(bytes)
+}
+
+fn execute_space_create(
+    credential_bytes: Vec<u8>,
+    channel_names: Vec<String>,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let credential = Credential::new(CredentialType::X509, credential_bytes);
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => {
+            return Err(CliError::missing_identity().into());
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let credential = client.with_mls_transaction(|identity, _, _| {
+        DeviceCredentialInput::from_x509_credential(identity, credential).map_err(CoreError::Mls)
+    })?;
+    let channels = channel_names
+        .into_iter()
+        .map(|name| InitialChannel {
+            channel_type: ChannelType::Text,
+            name,
+            default_allow: 0,
+            default_deny: 0,
+            role_overrides: Vec::new(),
+        })
+        .collect();
+    let space = client.create_space(&credential, channels)?;
+    let identity = client.identity_info();
+    let space_id = hex(space.space_id());
+    let group_reference = hex(space.group_reference());
+    let genesis_event_id = hex(space.genesis_event().event_id().as_bytes());
+    let fingerprint = hex(&identity.fingerprint);
+    let channels = space::channel_summaries(space.reducer());
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_create",
+                "state": "local_genesis_created",
+                "space_id": space_id,
+                "group_reference": group_reference,
+                "genesis_event_id": genesis_event_id,
+                "creator_fingerprint": fingerprint,
+                "channels": channels,
+                "local_snapshot_persisted": true,
+                "membership_claimed": false,
+                "remote_membership": "not_checked",
+                "network_contacted": false,
+            })
+        );
+    } else {
+        println!("Created a locally recoverable Space Genesis snapshot.");
+        println!("Space ID: {space_id}");
+        println!("MLS group reference: {group_reference}");
+        println!("Genesis event ID: {genesis_event_id}");
+        println!("Creator fingerprint: {fingerprint}");
+        for channel in channels {
+            println!(
+                "Channel {}: {} (type: {}, archived: {})",
+                channel["id"].as_str().unwrap_or_default(),
+                channel["name"].as_str().unwrap_or_default(),
+                channel["type"].as_str().unwrap_or_default(),
+                channel["archived"].as_bool().unwrap_or(false)
+            );
+        }
+        println!("This local Genesis does not establish current or remote membership.");
     }
     Ok(())
 }
@@ -237,13 +664,14 @@ fn execute_status(
                         "identity": "initialized",
                         "next_local_event_sequence": sequence,
                         "authenticated_spaces": false,
-                        "message_authoring": false,
+                        "message_authoring": true,
                         "network_delivery": false,
                     })
                 );
             } else {
                 println!("Device identity: initialized");
                 println!("Next local event sequence: {sequence}");
+                println!("Local message authoring: available to the outbox only");
             }
         }
         Err(CoreError::MissingIdentity) => {
@@ -261,7 +689,7 @@ fn execute_status(
                 );
             } else {
                 println!("Device identity: not initialized");
-                println!("Authenticated Spaces and messages: unavailable");
+                println!("Local message authoring: unavailable until identity initialization");
             }
         }
         Err(error) => return Err(Box::new(error)),
@@ -280,11 +708,15 @@ fn print_about(json: bool) {
                     "protected_device_identity",
                     "local_event_storage",
                     "local_space_genesis_listing",
-                    "candidate_wire_codecs"
+                    "local_space_genesis_creation",
+                    "local_sync_queue_inspection",
+                    "local_relay_settings",
+                    "relay_nip11_probe",
+                    "local_profile_diagnostics",
+                    "local_text_message_queue"
                 ],
                 "unavailable": [
                     "authenticated_spaces",
-                    "message_authoring",
                     "network_delivery",
                     "voice_media"
                 ],
@@ -293,11 +725,9 @@ fn print_about(json: bool) {
     } else {
         println!("Lattice local-first communication");
         println!(
-            "Available: protected device identity, local event storage, candidate wire codecs, and local Space Genesis listing."
+            "Available: protected identity, local event storage and Space Genesis, outbox-only text messages, local sync queues, relay settings/NIP-11 probing, profile diagnostics, and candidate wire codecs."
         );
-        println!(
-            "Unavailable: authenticated Spaces, message authoring, network delivery, and voice media."
-        );
+        println!("Unavailable: authenticated Space membership, network delivery, and voice media.");
     }
 }
 
@@ -373,11 +803,21 @@ fn print_identity(info: DeviceIdentityInfo, json: bool) {
                 "fingerprint": fingerprint,
                 "public_bundle": public_bundle,
                 "private_key_exposed": false,
+                "protected_key_access": "available",
+                "capabilities": {
+                    "authenticated_spaces": false,
+                    "message_authoring": true,
+                    "network_delivery": false,
+                },
             })
         );
     } else {
         println!("Fingerprint: {fingerprint}");
         println!("Public bundle: {public_bundle}");
+        println!("OS-protected private-key access: available; private key not exposed.");
+        println!(
+            "Local message authoring (outbox only): available; authenticated Spaces, forwarding, and delivery unavailable."
+        );
     }
 }
 
@@ -494,5 +934,50 @@ mod tests {
         );
         assert!(parse_space_cursor("01").is_err());
         assert!(parse_space_cursor(&format!("{}z", &encoded[..95])).is_err());
+    }
+    #[test]
+    fn identity_csr_command_accepts_output_path() {
+        let parsed = Cli::try_parse_from(["lattice", "identity", "csr", "--output", "device.csr"])
+            .expect("certificate request command parses");
+        assert!(matches!(
+            parsed.command,
+            Command::Identity {
+                command: IdentityCommand::Csr { output: Some(path) }
+            } if path == std::path::Path::new("device.csr")
+        ));
+    }
+
+    #[test]
+    fn certificate_request_output_uses_pem_framing_and_wrapping() {
+        let pem = super::certificate_request_pem(&[0; 48]);
+        assert_eq!(
+            pem,
+            format!(
+                "-----BEGIN CERTIFICATE REQUEST-----\n{}\n-----END CERTIFICATE REQUEST-----\n",
+                "A".repeat(64)
+            )
+        );
+    }
+
+    #[test]
+    fn csr_output_does_not_replace_existing_file() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "lattice-cli-csr-{}-{nonce}.pem",
+            std::process::id(),
+        ));
+        std::fs::write(&path, b"existing certificate request")
+            .expect("create existing output fixture");
+        let error =
+            super::identity::write_certificate_request_pem(&path, "replacement").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(&path).expect("read preserved output"),
+            b"existing certificate request"
+        );
+        std::fs::remove_file(path).expect("remove output fixture");
     }
 }

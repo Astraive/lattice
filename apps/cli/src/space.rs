@@ -1,15 +1,75 @@
+use std::path::PathBuf;
+
 use clap::Subcommand;
 
 use super::{hex, space_cursor_hex};
 
 #[derive(Debug, Subcommand)]
 pub(super) enum SpaceCommand {
+    /// Create a locally recoverable one-member MLS Genesis snapshot.
+    Create {
+        /// RFC 9420 TLS-encoded X.509 certificate vector for this device.
+        #[arg(long)]
+        credential: PathBuf,
+        /// Initial text channel name; specify one or more times.
+        #[arg(long = "channel", required = true)]
+        channels: Vec<String>,
+    },
     /// Show one bounded page; use --after with the returned cursor to continue.
     List {
         /// Exclusive cursor encoded as 96 hexadecimal characters.
         #[arg(long)]
         after: Option<String>,
     },
+    /// Queue a text message locally without contacting the network.
+    ///
+    /// The credential must be a bounded RFC 9420 X.509 credential vector.
+    /// Success means the event was queued locally only; it is not forwarded
+    /// or delivered.
+    Message {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+        /// Random 16-byte channel ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        channel_id: String,
+        /// Text body to queue.
+        #[arg(long)]
+        text: String,
+    },
+}
+
+pub(super) fn channel_summaries(
+    reducer: &lattice_core::space::SpaceReducer,
+) -> Vec<serde_json::Value> {
+    reducer
+        .policy()
+        .map(|policy| {
+            policy
+                .channels
+                .iter()
+                .map(|channel| {
+                    let channel_type = match channel.channel_type {
+                        lattice_core::space::ChannelType::Text => "text",
+                        lattice_core::space::ChannelType::Announcement => "announcement",
+                        lattice_core::space::ChannelType::Voice => "voice",
+                    };
+                    serde_json::json!({
+                        "id": hex(&channel.id),
+                        "name": channel.name,
+                        "type": channel_type,
+                        "archived": channel.archived,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn print_space_page(page: &lattice_core::RestoredSpacePage, json: bool) {
@@ -20,6 +80,7 @@ pub(super) fn print_space_page(page: &lattice_core::RestoredSpacePage, json: boo
             serde_json::json!({
                 "space_id": hex(space.space_id()),
                 "group_reference": hex(space.group_reference()),
+                "channels": channel_summaries(space.reducer()),
             })
         })
         .collect::<Vec<_>>();
@@ -43,6 +104,15 @@ pub(super) fn print_space_page(page: &lattice_core::RestoredSpacePage, json: boo
                 hex(space.space_id()),
                 hex(space.group_reference())
             );
+            for channel in channel_summaries(space.reducer()) {
+                println!(
+                    "  Channel {} ({}, type: {}, archived: {})",
+                    channel["id"].as_str().unwrap_or_default(),
+                    channel["name"].as_str().unwrap_or_default(),
+                    channel["type"].as_str().unwrap_or_default(),
+                    channel["archived"].as_bool().unwrap_or(false)
+                );
+            }
         }
         if let Some(cursor) = next_cursor {
             println!("Next page cursor: {cursor}");

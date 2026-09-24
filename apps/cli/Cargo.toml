@@ -15,7 +15,16 @@ clap = { version = "4.6.7", features = ["derive"] }
 lattice-core = { path = "../../crates/lattice-core" }
 lattice-platform = { path = "../../crates/lattice-platform" }
 directories = "=6.0.0"
+base64 = "=0.22.1"
 serde_json = "1"
+lattice-identity = { path = "../../crates/lattice-identity" }
+lattice-mls = { path = "../../crates/lattice-mls" }
+lattice-relay = { path = "../../crates/lattice-relay" }
+lattice-storage = { path = "../../crates/lattice-storage" }
+openmls = "=0.9.0"
+sha2 = "=0.10.9"
+tokio = { version = "=1.53.1", features = ["net", "rt", "time"] }
+url = "=2.5.8"
 
 [lints]
 workspace = true
