@@ -35,37 +35,51 @@ Devices store their own authenticated event log. BLE enables nearby text/control
 
 ## Current maturity
 
-Implemented code is still a set of bounded candidates, not an end-to-end
-communication product or an interoperability release. Current components cover
-canonical encoding and event signatures, device identity protection and local
-storage, OpenMLS state operations, signature-to-MLS ciphertext binding, bounded
-routing/courier accounting, attachment verification, voice signaling, and
-platform adapter contracts, including bounded TCP stream framing. The core
-exposes candidate offline Space Genesis creation: one `SQLite` transaction
-commits the local MLS generation, exact signed event, and AEAD-protected
-initial policy snapshot. `restore_space` and `restore_space_page` rebuild that
-initial projection after restart; the latter enumerates local snapshots in
-bounded 32-entry keyset pages. Neither restores later policy events. The
-caller-supplied opaque X.509 credential is not trust-validated. The relay crate
-validates candidate NIP-01/NIP-40 tags, expiry, envelope encoding, and
-inner-event signatures. Its bounded `RelayClient` fetches NIP-11 and exchanges
-NIP-01 events over secure HTTP/WebSocket, but does not establish
-independent-relay interoperability.
+Implemented code remains a set of bounded candidates, not an end-to-end
+communication product or an interoperability release. Components cover
+canonical event encoding/signatures, device identity protection and local
+storage, OpenMLS state operations, MLS-bound event identity/ciphertext checks,
+OS-rooted X.509 credential validation for incoming KeyPackages, staged Commits
+and Welcome members, bounded routing/courier accounting, attachment
+verification, voice signaling, and adapter contracts including bounded TCP
+framing. The core creates a local Space Genesis in one `SQLite` transaction
+with its MLS generation, exact signed event, and AEAD-protected initial policy
+snapshot. `restore_space` and `restore_space_page` restore that initial
+projection after restart in bounded 32-entry pages. They do not restore later
+policy events. The Space reducer has conflict checks, retained common-policy
+recovery authorization, exact MLS Commit-to-control-event binding for member
+transitions, and in-memory message/edit/tombstone/reaction/pin projections.
+Durable policy replay, transactional MLS merge after policy admission, and
+durable conflict recovery remain open.
+The relay crate validates candidate NIP-01/NIP-40 tags, expiry, envelope
+encoding, and inner-event signatures. Its bounded `RelayClient` fetches NIP-11
+and exchanges NIP-01 events over secure HTTP/WebSocket, but independent-relay
+interoperability is unverified.
 
-Later policy replay, conflict-state recovery, and message projection remain
-incomplete. The CLI and desktop expose protected device identity and bounded,
-read-only local Space Genesis listing; neither can create or join Spaces yet.
-Android exposes the protected local identity snapshot, bounded local Space
-Genesis listing, and permission-aware generic BLE discovery and fragment framing.
+The CLI exposes protected identity init/show, exact peer pins, CSR export,
+local Space Genesis create/list, queue-only sync status, local relay URL
+settings/NIP-11 tests, and a non-mutating storage doctor. Desktop can create
+local one-member Genesis snapshots from a system-trusted X.509 credential
+vector, browse local snapshots, pin peers, and export a CSR. Android exposes a
+protected identity snapshot, exact peer pins, CSR export, permission-aware BLE
+discovery/fragment framing, bounded local Space creation from an OS-trusted
+X.509 vector, and local Genesis listing. Space creation creates only a local
+one-member candidate; it does not establish remote membership or contact a
+network. CSR export does not issue certificates.
 
-Space join, membership validation and commit coupling, message-state projection,
-voice authorization, durable MLS conflict recovery, native BLE GATT exchange,
-authenticated LAN discovery, relay interoperability and core/app wiring, and
-end-to-end message workflows remain incomplete.
-
-The OpenMLS API still relies on the caller to verify external credentials and
-persist protected group state and recovery metadata. ADR-001 and ADR-002 record
-the conflict and channel-read decisions; their full operational workflows and
-acceptance evidence remain open. Treat all performance numbers in `spec.md` as
-design targets until measured on named devices and networks. No interoperability
-or secure-Space claim follows from component-level tests.
+Core now has an atomic membership-transition entry point that binds the exact
+MLS Commit to its signed parent-epoch control event and MemberTransition
+application event, applies the reducer policy, stores both events, and merges
+the Commit in one rollback-capable transaction. A focused integration test
+proves successful admission and rollback on an invalid control author. Client
+workflows do not yet integrate this API or restore the later policy reducer.
+Durable conflict recovery, durable messaging, voice authorization/media,
+native BLE GATT exchange, authenticated LAN discovery, independent-relay
+interoperability, and end-to-end app workflows remain incomplete. Certificate
+issuance and profile-wide credential installation are unavailable; the
+supplied X.509 vector is consumed only during local Space creation. Joined-group
+membership is unavailable. ADR-001 and ADR-002 record the conflict and
+channel-read decisions, but operational workflows and acceptance evidence remain
+open. Treat performance numbers in `spec.md` as design targets until measured on
+named devices and networks. No
+interoperability or secure-Space claim follows from component-level tests.

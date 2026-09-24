@@ -7,15 +7,15 @@
 | Prefix | Domain | Source file | Range |
 | --- | --- | --- | --- |
 | `LAT` | System-wide functional/nonfunctional constraints | This file | LAT-001–LAT-020 |
-| `IDN` | Identity and onboarding | [identity.md](features/identity.md) | IDN-001–IDN-008 |
+| `IDN` | Identity and onboarding | [identity.md](features/identity.md) | IDN-001–IDN-009 |
 | `SPC` | Spaces, roles, permissions | [spaces.md](features/spaces.md) | SPC-001–SPC-011 |
 | `MSG` | Text, DMs, history | [messaging.md](features/messaging.md) | MSG-001–MSG-012 |
 | `NET` | Discovery, routing, relays, sync | [networking.md](features/networking.md) | NET-001–NET-013 |
 | `FIL` | Attachments and transfer | [files.md](features/files.md) | FIL-001–FIL-007 |
 | `VOC` | Voice and media | [voice.md](features/voice.md) | VOC-001–VOC-008 |
-| `MOB` | Native Android/iOS behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-010 |
-| `DSK` | Desktop | [desktop.md](features/desktop.md) | DSK-001–DSK-006 |
-| `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-010 |
+| `MOB` | Native Android/iOS behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-011 |
+| `DSK` | Desktop | [desktop.md](features/desktop.md) | DSK-001–DSK-007 |
+| `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-011 |
 
 IDs are never renumbered. A row is one independently testable requirement; amend the row and history when semantics change. Status values: **proposed**, **blocked**, **implemented**, **verified**, **retired**. All rows begin proposed unless explicitly blocked. `M0`–`M2` prototype work does not make the wider v1 profile stable.
 
@@ -52,6 +52,7 @@ IDs are never renumbered. A row is one independently testable requirement; amend
 | Interoperable security core | LAT-003,007,009,015, IDN-004–008, SPC-004–011, MSG-004–009 | M3 |
 | Local files/fast paths | NET-006–008, FIL-001–007 | M4 |
 | Optional Internet | NET-009–013, DSK-001–006, CLI-001–009 | M5/M7 |
+| Identity enrollment | IDN-009, MOB-011, DSK-007, CLI-011 | M7 |
 | Voice | VOC-001–008 | M6 |
 | Stable v1 | All non-deferred items and every LAT security/release gate | M8 |
 
