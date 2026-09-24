@@ -15,7 +15,7 @@
 | `VOC` | Voice and media | [voice.md](features/voice.md) | VOC-001–VOC-008 |
 | `MOB` | Native Android/iOS behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-010 |
 | `DSK` | Desktop | [desktop.md](features/desktop.md) | DSK-001–DSK-006 |
-| `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-009 |
+| `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-010 |
 
 IDs are never renumbered. A row is one independently testable requirement; amend the row and history when semantics change. Status values: **proposed**, **blocked**, **implemented**, **verified**, **retired**. All rows begin proposed unless explicitly blocked. `M0`–`M2` prototype work does not make the wider v1 profile stable.
 
