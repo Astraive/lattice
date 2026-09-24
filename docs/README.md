@@ -35,4 +35,21 @@ Devices store their own authenticated event log. BLE enables nearby text/control
 
 ## Current maturity
 
-No feature is marked implemented. Two blocking decisions are MLS concurrent Commit resolution and whether private channels have cryptographic read isolation. Treat all performance numbers in `spec.md` as design targets until measured on named devices and networks. Publication work comes after a working, measured implementation.
+Implemented code is still a set of bounded candidates, not an end-to-end
+communication product or an interoperability release. Current components cover
+canonical encoding and event signatures, device identity protection and local
+storage, OpenMLS state operations, signature-to-MLS ciphertext binding, bounded
+routing/courier accounting, attachment verification, voice signaling, and
+platform adapter contracts. CLI and desktop currently expose protected device
+identity workflows; Android currently exposes permission-aware generic BLE
+discovery and fragment framing.
+
+Secure Space creation/join, the authorization and projection reducers, durable
+MLS conflict recovery, native BLE GATT exchange, LAN/Wi-Fi adapters, relay
+interoperability, and end-to-end message workflows remain incomplete. The
+OpenMLS API still relies on the caller to verify external credentials and
+persist protected group state and recovery metadata. ADR-001 and ADR-002 record
+the conflict and channel-read decisions; their full operational workflows and
+acceptance evidence remain open. Treat all performance numbers in `spec.md` as
+design targets until measured on named devices and networks. No interoperability
+or secure-Space claim follows from component-level tests.
