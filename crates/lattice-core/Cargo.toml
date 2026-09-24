@@ -7,9 +7,16 @@ rust-version.workspace = true
 version.workspace = true
 
 
+
 [dependencies]
+lattice-events = { path = "../lattice-events" }
 lattice-identity = { path = "../lattice-identity" }
+lattice-mls = { path = "../lattice-mls" }
 lattice-storage = { path = "../lattice-storage" }
 thiserror = "2"
+
+[dev-dependencies]
+openmls = { version = "=0.9.0", features = ["test-utils"] }
+openmls_rust_crypto = "=0.6.0"
 [lints]
 workspace = true

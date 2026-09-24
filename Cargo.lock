@@ -2866,8 +2866,12 @@ dependencies = [
 name = "lattice-core"
 version = "0.1.0"
 dependencies = [
+ "lattice-events",
  "lattice-identity",
+ "lattice-mls",
  "lattice-storage",
+ "openmls",
+ "openmls_rust_crypto",
  "thiserror 2.0.20",
 ]
 

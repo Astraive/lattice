@@ -1197,6 +1197,8 @@ pub mod test_interop {
                     assert_eq!(decrypted.plaintext(), b"production OpenMLS application");
                     assert_eq!(decrypted.member_signature_key(), Some(&alice_public_key));
                     assert_eq!(decrypted.ciphertext_sha256(), &ciphertext_sha256);
+                    assert_eq!(decrypted.epoch(), 1);
+                    assert!(decrypted.matches_ciphertext(application.as_bytes()));
                 }
                 other => panic!("expected MLS application data, got {other:?}"),
             }

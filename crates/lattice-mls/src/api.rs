@@ -313,11 +313,12 @@ pub enum SpaceAuthorization {
 /// This proves MLS membership-key possession only. The caller must match the
 /// key against the event author's verified identity and still apply Space
 /// authorization and policy.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MlsApplication {
     plaintext: Vec<u8>,
     member_signature_key: Option<[u8; 32]>,
     ciphertext_sha256: [u8; 32],
+    epoch: u64,
 }
 
 impl MlsApplication {
@@ -334,6 +335,22 @@ impl MlsApplication {
     /// Returns the SHA-256 digest of the exact TLS-encoded ciphertext processed.
     pub const fn ciphertext_sha256(&self) -> &[u8; 32] {
         &self.ciphertext_sha256
+    }
+
+    /// Returns the MLS epoch under which the ciphertext was accepted.
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Whether `ciphertext` is the exact bounded object that produced this plaintext.
+    #[must_use]
+    pub fn matches_ciphertext(&self, ciphertext: &[u8]) -> bool {
+        if ciphertext.len() > MAX_MLS_WIRE_BYTES {
+            return false;
+        }
+        let digest: [u8; 32] = Sha256::digest(ciphertext).into();
+        digest == self.ciphertext_sha256
     }
 }
 
@@ -760,11 +777,21 @@ impl GroupState {
                         })
                     }
                 }
-                other => classify_non_commit(other, member_signature_key, ciphertext_sha256),
+                other => classify_non_commit(
+                    other,
+                    member_signature_key,
+                    ciphertext_sha256,
+                    received_epoch.as_u64(),
+                ),
             };
         }
 
-        classify_non_commit(content, member_signature_key, ciphertext_sha256)
+        classify_non_commit(
+            content,
+            member_signature_key,
+            ciphertext_sha256,
+            received_epoch.as_u64(),
+        )
     }
 
     /// Merges the exact staged incoming Commit after explicit caller acceptance.
@@ -932,6 +959,7 @@ fn classify_non_commit(
     content: ProcessedMessageContent,
     member_signature_key: Option<[u8; 32]>,
     ciphertext_sha256: [u8; 32],
+    epoch: u64,
 ) -> MlsResult<IncomingResult> {
     match content {
         ProcessedMessageContent::ApplicationMessage(message) => {
@@ -941,6 +969,7 @@ fn classify_non_commit(
                 plaintext,
                 member_signature_key,
                 ciphertext_sha256,
+                epoch,
             }))
         }
         ProcessedMessageContent::ProposalMessage(_) => Ok(IncomingResult::Proposal {
