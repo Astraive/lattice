@@ -206,13 +206,7 @@ impl AttachmentManifest {
         loop {
             if file_size == MAX_FILE_SIZE {
                 let mut probe = [0_u8; 1];
-                let bytes_read = loop {
-                    match reader.read(&mut probe) {
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                        Ok(bytes_read) => break bytes_read,
-                        Err(error) => return Err(error.into()),
-                    }
-                };
+                let bytes_read = read_chunk(reader, &mut probe)?;
                 if bytes_read != 0 {
                     return Err(AttachmentError::FileTooLarge);
                 }
@@ -1085,8 +1079,7 @@ mod tests {
             interrupted: false,
         };
 
-        let manifest =
-            AttachmentManifest::from_reader(&mut reader, "retry.bin", None).unwrap();
+        let manifest = AttachmentManifest::from_reader(&mut reader, "retry.bin", None).unwrap();
 
         assert_eq!(manifest.file_size, content.len() as u64);
         assert_eq!(manifest.file_hash, super::sha256(content));
@@ -1308,8 +1301,9 @@ mod tests {
                 end_exclusive: 2
             }]
         );
+        let invalid_chunk = vec![0; CHUNK_SIZE];
         assert!(matches!(
-            resumed.submit_chunk(0, &[0; CHUNK_SIZE]),
+            resumed.submit_chunk(0, &invalid_chunk),
             Err(AttachmentError::ChunkHashMismatch)
         ));
         resumed.submit_chunk(1, &content[CHUNK_SIZE..]).unwrap();
