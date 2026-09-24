@@ -7,7 +7,7 @@ use lattice_platform::{EnvelopeBytes, TransportAdapter, TransportError, Transpor
 
 mod tcp_peer;
 
-pub use tcp_peer::TcpPeerAdapter;
+pub use tcp_peer::{TcpPeerAdapter, TcpPeerListener};
 
 /// Package's published crate name.
 pub const CRATE_NAME: &str = "lattice-transport";

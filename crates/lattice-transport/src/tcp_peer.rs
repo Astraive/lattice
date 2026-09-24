@@ -9,7 +9,7 @@ use lattice_platform::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::{Mutex, Notify};
 
 struct PendingWrite<'a> {
@@ -40,6 +40,71 @@ const STATE_STOPPED: u8 = 0;
 const STATE_RUNNING: u8 = 1;
 const STATE_STOPPING: u8 = 2;
 const STATE_FAULTED: u8 = 3;
+
+fn validate_envelope_limit(max_envelope_bytes: usize) -> Result<(), TransportError> {
+    if max_envelope_bytes == 0 || max_envelope_bytes > MAX_ENVELOPE_BYTES {
+        Err(TransportError::EnvelopeTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+/// Listener for caller-selected TCP endpoints, yielding bounded peer adapters.
+///
+/// It provides neither discovery nor authentication. Applications must
+/// authenticate accepted peers before passing sensitive envelopes.
+pub struct TcpPeerListener {
+    listener: TcpListener,
+    max_envelope_bytes: usize,
+}
+
+impl TcpPeerListener {
+    /// Binds one endpoint and applies an envelope-size cap to every accepted peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EnvelopeTooLarge` for a cap outside
+    /// `1..=MAX_ENVELOPE_BYTES`, or a mapped socket error if binding fails.
+    pub async fn bind<A: ToSocketAddrs>(
+        endpoint: A,
+        max_envelope_bytes: usize,
+    ) -> Result<Self, TransportError> {
+        validate_envelope_limit(max_envelope_bytes)?;
+        let listener = TcpListener::bind(endpoint)
+            .await
+            .map_err(|error| map_io_error(&error))?;
+        Ok(Self {
+            listener,
+            max_envelope_bytes,
+        })
+    }
+
+    /// Returns the actual bound endpoint, including an assigned ephemeral port.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mapped socket error if the local endpoint cannot be read.
+    pub fn local_addr(&self) -> Result<std::net::SocketAddr, TransportError> {
+        self.listener
+            .local_addr()
+            .map_err(|error| map_io_error(&error))
+    }
+
+    /// Accepts one TCP connection and wraps it with this listener's frame cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mapped socket error if accepting the connection fails.
+    pub async fn accept(&self) -> Result<(TcpPeerAdapter, std::net::SocketAddr), TransportError> {
+        let (stream, remote_addr) = self
+            .listener
+            .accept()
+            .await
+            .map_err(|error| map_io_error(&error))?;
+        let adapter = TcpPeerAdapter::from_stream(stream, self.max_envelope_bytes)?;
+        Ok((adapter, remote_addr))
+    }
+}
 
 /// One bounded, opaque-envelope adapter over a connected TCP peer.
 ///
@@ -102,9 +167,7 @@ impl TcpPeerAdapter {
         endpoint: A,
         max_envelope_bytes: usize,
     ) -> Result<Self, TransportError> {
-        if max_envelope_bytes == 0 || max_envelope_bytes > MAX_ENVELOPE_BYTES {
-            return Err(TransportError::EnvelopeTooLarge);
-        }
+        validate_envelope_limit(max_envelope_bytes)?;
         let stream = TcpStream::connect(endpoint)
             .await
             .map_err(|error| map_io_error(&error))?;
@@ -124,9 +187,7 @@ impl TcpPeerAdapter {
         stream: TcpStream,
         max_envelope_bytes: usize,
     ) -> Result<Self, TransportError> {
-        if max_envelope_bytes == 0 || max_envelope_bytes > MAX_ENVELOPE_BYTES {
-            return Err(TransportError::EnvelopeTooLarge);
-        }
+        validate_envelope_limit(max_envelope_bytes)?;
         let name = AdapterName::try_from("tcp-peer".to_owned())
             .map_err(|_| TransportError::OperationFailed)?;
         let capabilities = TransportCapabilities::new(name, max_envelope_bytes)
@@ -448,6 +509,48 @@ mod tests {
             adapter.receive().await,
             Err(TransportError::InvalidEnvelope)
         ));
+    }
+
+    #[tokio::test]
+    async fn listener_accepts_peers_with_the_configured_frame_bound() {
+        assert!(matches!(
+            TcpPeerListener::bind("127.0.0.1:0", 0).await,
+            Err(TransportError::EnvelopeTooLarge)
+        ));
+
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 16)
+            .await
+            .expect("bind peer listener");
+        let address = listener.local_addr().expect("listener address");
+        let (accepted, connected) = tokio::join!(listener.accept(), TcpStream::connect(address));
+        let (adapter, remote) = accepted.expect("accept connection");
+        let mut peer = connected.expect("connect to listener");
+        assert!(remote.ip().is_loopback());
+
+        peer.write_all(&3_u32.to_be_bytes())
+            .await
+            .expect("write frame header");
+        peer.write_all(b"hey").await.expect("write frame payload");
+        assert_eq!(
+            adapter
+                .receive()
+                .await
+                .expect("receive frame")
+                .unwrap()
+                .as_bytes(),
+            b"hey"
+        );
+
+        assert_eq!(
+            adapter.send(envelope(b"ok")).await,
+            Ok(TransportReceipt::QueuedToOs)
+        );
+        let mut frame = [0; 6];
+        peer.read_exact(&mut frame)
+            .await
+            .expect("read framed response");
+        assert_eq!(&frame[..4], &2_u32.to_be_bytes());
+        assert_eq!(&frame[4..], b"ok");
     }
 
     #[tokio::test]
