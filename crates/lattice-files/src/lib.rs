@@ -206,13 +206,23 @@ impl AttachmentManifest {
         loop {
             if file_size == MAX_FILE_SIZE {
                 let mut probe = [0_u8; 1];
-                if reader.read(&mut probe)? != 0 {
+                let bytes_read = loop {
+                    match reader.read(&mut probe) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Ok(bytes_read) => break bytes_read,
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                if bytes_read != 0 {
                     return Err(AttachmentError::FileTooLarge);
                 }
                 break;
             }
 
-            let bytes_read = read_chunk(reader, &mut buffer)?;
+            let remaining = MAX_FILE_SIZE - file_size;
+            let read_length = usize::try_from(remaining.min(CHUNK_SIZE as u64))
+                .map_err(|_| AttachmentError::ArithmeticOverflow)?;
+            let bytes_read = read_chunk(reader, &mut buffer[..read_length])?;
             if bytes_read == 0 {
                 break;
             }
@@ -1006,7 +1016,10 @@ fn expected_chunk_count(file_size: u64) -> Result<usize, AttachmentError> {
 fn read_chunk<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize, AttachmentError> {
     let mut filled = 0;
     while filled < buffer.len() {
-        let bytes_read = reader.read(&mut buffer[filled..])?;
+        let bytes_read = match reader.read(&mut buffer[filled..]) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
         if bytes_read == 0 {
             break;
         }
@@ -1023,7 +1036,22 @@ fn sha256(bytes: &[u8]) -> Sha256Hash {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
+
+    struct InterruptedOnce<R> {
+        inner: R,
+        interrupted: bool,
+    }
+
+    impl<R: Read> Read for InterruptedOnce<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.inner.read(buffer)
+        }
+    }
 
     use super::{
         AttachmentError, AttachmentManifest, AttachmentReceiver, CHUNK_SIZE, ChunkRange,
@@ -1047,6 +1075,21 @@ mod tests {
             ]
         );
         assert!(manifest.missing_chunk_ranges(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn source_stream_retries_interrupted_reads() {
+        let content = b"streaming survives interruption";
+        let mut reader = InterruptedOnce {
+            inner: Cursor::new(content),
+            interrupted: false,
+        };
+
+        let manifest =
+            AttachmentManifest::from_reader(&mut reader, "retry.bin", None).unwrap();
+
+        assert_eq!(manifest.file_size, content.len() as u64);
+        assert_eq!(manifest.file_hash, super::sha256(content));
     }
 
     #[test]
