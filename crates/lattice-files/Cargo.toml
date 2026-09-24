@@ -5,6 +5,8 @@ authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
+[dependencies]
+sha2 = "=0.10.9"
 
 [lints]
 workspace = true
