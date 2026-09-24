@@ -14,7 +14,7 @@ This digest is a stable opaque reference, not a credential, membership proof, se
 
 | Input group ID bytes | Group reference (hex) |
 | --- | --- |
-| UTF-8 `test-group` | `bfc58fc32f3a43d8f8b20ed9fa480ab8ec456d90877e486ccf3c0e0e0e344a02` |
+| UTF-8 `test-group` | `bfc58fc32f3a43d8f8b20ed9fa480ab8ec456d90877e486ccf3c0e0e0e344a02` in [`mls-group-reference.txt`](../vectors/mls-group-reference.txt) |
 
 ## Application binding requirements
 

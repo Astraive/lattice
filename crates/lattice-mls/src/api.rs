@@ -1019,17 +1019,36 @@ fn classify_non_commit(
 
 #[cfg(test)]
 mod group_reference_tests {
-    use super::derive_group_reference;
+    use super::{MLS_GROUP_REFERENCE_DOMAIN, derive_group_reference};
+
+    const VECTOR: &str = include_str!("../../../protocol/vectors/mls-group-reference.txt");
+
+    fn vector_field(name: &str) -> &str {
+        VECTOR
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(" = "))
+            .expect("published vector field exists")
+    }
+
+    fn decode_hex(input: &str) -> Vec<u8> {
+        input
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let pair = core::str::from_utf8(pair).expect("vector is ASCII");
+                u8::from_str_radix(pair, 16).expect("vector field is hexadecimal")
+            })
+            .collect()
+    }
 
     #[test]
-    fn candidate_group_reference_matches_published_vector() {
-        assert_eq!(
-            derive_group_reference(b"test-group"),
-            [
-                0xbf, 0xc5, 0x8f, 0xc3, 0x2f, 0x3a, 0x43, 0xd8, 0xf8, 0xb2, 0x0e, 0xd9, 0xfa, 0x48,
-                0x0a, 0xb8, 0xec, 0x45, 0x6d, 0x90, 0x87, 0x7e, 0x48, 0x6c, 0xcf, 0x3c, 0x0e, 0x0e,
-                0x0e, 0x34, 0x4a, 0x02,
-            ]
-        );
+    fn candidate_group_reference_matches_shared_vector() {
+        let domain = vector_field("domain").as_bytes();
+        assert_eq!(MLS_GROUP_REFERENCE_DOMAIN.strip_suffix(&[0]), Some(domain));
+        let group_id = decode_hex(vector_field("group_id_hex"));
+        let expected: [u8; 32] = decode_hex(vector_field("group_reference_hex"))
+            .try_into()
+            .expect("reference is exactly 32 bytes");
+        assert_eq!(derive_group_reference(&group_id), expected);
     }
 }

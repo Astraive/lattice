@@ -22,7 +22,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    sourceSets {
+        getByName("test").resources.directories.add("../../../protocol/vectors")
+    }
 }
+
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
