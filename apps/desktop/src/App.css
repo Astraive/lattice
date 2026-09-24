@@ -446,7 +446,8 @@ h2 {
 }
 
 .local-channel-list,
-.local-message-composer {
+.local-message-composer,
+.local-recovery-form {
   grid-column: 1 / -1;
 }
 
@@ -461,7 +462,8 @@ h2 {
   gap: 6px 12px;
 }
 
-.local-message-composer {
+.local-message-composer,
+.local-recovery-form {
   display: grid;
   gap: 12px;
   margin-top: 8px;

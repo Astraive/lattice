@@ -16,6 +16,7 @@ pub fn run() {
             identity::get_device_identity,
             identity::get_device_certificate_signing_request,
             spaces::list_local_spaces,
+            spaces::recover_local_space_generation,
             spaces::create_local_space,
             spaces::queue_local_text_message,
             spaces::queue_local_text_message_edit,

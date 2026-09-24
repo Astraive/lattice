@@ -19,6 +19,17 @@ type LocalSpacePage = {
   nextCursor: string | null;
 };
 
+type LocalSpaceRecoveryResult = {
+  state: "one_member_recovery_generation_created";
+  spaceId: string;
+  priorGroupReference: string;
+  groupReference: string;
+  genesisEventId: string;
+  channels: LocalChannelSummary[];
+  priorMembersRejoined: false;
+  networkContacted: false;
+};
+
 type QueuedLocalMessage = {
   state: "queued";
   eventId: string;
@@ -31,6 +42,12 @@ type LocalTextMessage = {
   content: string;
   outboxState: "queued" | "forwarded" | "delivered" | "failed" | null;
 };
+
+function localOutboxLabel(state: LocalTextMessage["outboxState"]): string {
+  if (state === "queued") return "queued locally · no network delivery";
+  if (state === null) return "retained locally · no outbox status";
+  return "local outbox marker recorded · transport and recipient delivery unavailable";
+}
 
 type LocalSpaceBrowserProps = {
   runtimeAvailable: boolean;
@@ -188,7 +205,8 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               <h4>Recent outgoing messages</h4>
               <p>
                 Newest 100 locally retained messages for this channel. Incoming messages are not
-                shown.
+                shown. Outbox markers describe local state only; this client has no network
+                forwarding or recipient-delivery engine.
               </p>
             </div>
             <button type="button" disabled={historyBusy} onClick={() => void loadHistory()}>
@@ -204,7 +222,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                   <li key={message.eventId}>
                     <p>{message.content}</p>
                     <small>
-                      {message.outboxState ?? "retained locally"} · event {message.eventId}
+                      {localOutboxLabel(message.outboxState)} · event {message.eventId}
                     </small>
                     <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
                       Edit locally
@@ -222,6 +240,68 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
           Event ID <code>{eventId}</code>
         </p>
       )}
+    </form>
+  );
+}
+
+function LocalSpaceRecovery({ space }: { space: LocalSpaceSummary }) {
+  const [credentialVectorHex, setCredentialVectorHex] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function recover(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const credential = credentialVectorHex.trim();
+    if (
+      credential.length === 0 ||
+      credential.length > MAX_CREDENTIAL_HEX_LENGTH ||
+      credential.length % 2 !== 0 ||
+      !/^[0-9a-f]+$/i.test(credential)
+    ) {
+      setError("Enter a bounded, even-length hexadecimal X.509 credential vector.");
+      setFeedback(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const result = await invoke<LocalSpaceRecoveryResult>("recover_local_space_generation", {
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        credentialVectorHex: credential,
+      });
+      setCredentialVectorHex("");
+      setFeedback(
+        `Created recovery group ${result.groupReference}. Existing members did not rejoin; no network was contacted.`,
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="local-recovery-form" onSubmit={(event) => void recover(event)}>
+      <label>
+        Recovery credential vector (hex)
+        <textarea
+          aria-label={`Recovery credential vector for Space ${space.spaceId}`}
+          autoComplete="off"
+          inputMode="text"
+          maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+          onChange={(event) => setCredentialVectorHex(event.currentTarget.value)}
+          spellCheck={false}
+          value={credentialVectorHex}
+        />
+      </label>
+      <button type="submit" disabled={busy}>
+        {busy ? "Recovering locally…" : "Create one-member recovery generation"}
+      </button>
+      {feedback && <p role="status">{feedback}</p>}
+      {error && <p role="alert">Recovery failed: {error}</p>}
     </form>
   );
 }
@@ -304,6 +384,7 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
                 ))}
               </div>
               {runtimeAvailable && <LocalMessageComposer space={space} />}
+              {runtimeAvailable && <LocalSpaceRecovery space={space} />}
             </li>
           ))}
         </ul>

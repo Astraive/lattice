@@ -46,6 +46,19 @@ pub(crate) struct LocalSpaceCreation {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct LocalSpaceRecovery {
+    state: &'static str,
+    space_id: String,
+    prior_group_reference: String,
+    group_reference: String,
+    genesis_event_id: String,
+    channels: Vec<LocalChannelSummary>,
+    prior_members_rejoined: bool,
+    network_contacted: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct QueuedLocalMessage {
     state: &'static str,
     event_id: String,
@@ -301,5 +314,43 @@ pub(crate) fn list_local_spaces(after: Option<String>) -> Result<LocalSpacePage,
     Ok(LocalSpacePage {
         spaces,
         next_cursor: page.next_cursor().map(encoding::space_cursor_hex),
+    })
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn recover_local_space_generation(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+) -> Result<LocalSpaceRecovery, String> {
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let prior_group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let credential = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let space = client
+        .recover_space_generation_from_x509_credential(
+            &space_id,
+            &prior_group_reference,
+            credential,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(LocalSpaceRecovery {
+        state: "one_member_recovery_generation_created",
+        space_id: encoding::hex(space.space_id()),
+        prior_group_reference: encoding::hex(&prior_group_reference),
+        group_reference: encoding::hex(space.group_reference()),
+        genesis_event_id: encoding::hex(space.genesis_event().event_id().as_bytes()),
+        channels: project_channels(&space)?,
+        prior_members_rejoined: false,
+        network_contacted: false,
     })
 }
