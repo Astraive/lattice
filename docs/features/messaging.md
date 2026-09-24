@@ -2,6 +2,8 @@
 
 Messages are immutable authenticated creation events. Edits, tombstones, reactions and receipts are separate events. UI ordering is stable but does not assert a global physical timeline.
 
+The current Rust reducer projects authorized messages, edit versions, tombstones, tagged reactions, and pin tags in memory. It does not persist/replay that view or provide offline search.
+
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
 | MSG-001 | An authorized user shall compose and commit text while disconnected. | Restart after local send retains event with queued status. | M1 |
@@ -9,7 +11,7 @@ Messages are immutable authenticated creation events. Edits, tombstones, reactio
 | MSG-003 | Sender shall see queued, forwarded, delivered-to-device and optional read-local states separately. | Relay/courier ACK cannot appear as recipient delivery; read opt-out works. | M1 |
 | MSG-004 | Direct messages shall use an end-to-end protected two-device/group context. | Non-member transport relay cannot decrypt; add/remove changes keys appropriately. | M3 |
 | MSG-005 | Replies shall reference immutable event IDs; threads shall retain parent Space/channel policy. | Parent arrives after reply, UI repairs thread without duplicate. | M3 |
-| MSG-006 | Author edit shall create a new event preserving previous versions under retention policy. | Conflict between two edits yields specified deterministic view and audit. | M3 |
+| MSG-006 | Author edit shall create a new event preserving previous versions under retention policy. | The deterministic in-memory view chooses the greatest `(Lamport, author fingerprint, author sequence, event ID)` version while retaining all accepted versions. | M3 |
 | MSG-007 | Author/moderator delete shall be an authenticated tombstone, not remote erasure. | Offline peer sees tombstone after sync; malicious retained copy remains possible. | M3 |
 | MSG-008 | Reactions and pins shall use element-tagged add/remove semantics. | Opposite orders of same valid events converge without oscillation. | M3 |
 | MSG-009 | Mentions shall resolve identity/role IDs rather than display-name text. | Rename/collision cannot redirect mention; local mute policy suppresses notification. | M3 |
@@ -29,11 +31,11 @@ Composer action first validates local role/channel state and draft size, creates
 
 | User action | Event rule | Remote/offline behavior |
 | --- | --- | --- |
-| Edit own text | Create authenticated replacement referencing original; preserve versions until retention removes them. | Multiple edits get deterministic resolution; a device without original keeps dependency pending. |
+| Edit own text | Create authenticated replacement referencing original; preserve versions until retention removes them. | The current view retains every accepted version and selects by `(Lamport, author fingerprint, author sequence, event ID)`; a device without the original keeps dependency pending. |
 | Delete own text | Create an authenticated tombstone for the author's own message. | Honoring clients hide the message after receiving it; cannot erase exports or malicious copies. |
 | Moderator removal | Create a distinct reason-bearing tombstone with `MESSAGE_MODERATE`. | Validate role at causal context; present the moderator action and reason separately from author deletion. |
 | React | Add uses its immutable event ID as a tag; remove references one ancestor tag from the same author, target and token. | Concurrent additions commute; duplicate delivery cannot toggle state. |
-| Pin | Permission-checked add/remove reference. | Missing target displays pending/removed reference safely. |
+| Pin | Add uses its immutable event ID; removal names one ancestor pin-add tag and requires `MESSAGE_PIN`. | Concurrent adds converge; duplicate delivery does not toggle state. |
 | Reply/thread | Immutable parent/root ID and inherited Space policy. | Child arriving before parent stays in a recoverable pending/placeholder view. |
 
 ## DMs, mentions and history

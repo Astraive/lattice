@@ -35,7 +35,8 @@ For each privileged event, load its declared causal dependencies and relevant ac
 | Invite/add member | `MEMBER_INVITE` | Validate invite/genesis/credential/KeyPackage and corresponding MLS Commit. |
 | Remove/ban member | `MEMBER_REMOVE`/`MEMBER_BAN` | MLS epoch transition and prospective-key exclusion. |
 | Publish message/attachment | `MESSAGE_SEND`/`MESSAGE_ATTACH` | Apply channel override, membership and retention bounds. |
-| Moderate/tombstone | `MESSAGE_MODERATE` | Preserve distinguishable moderator event and audit lineage. |
+| Author delete | `MESSAGE_SEND` | Tombstone the author's own message. |
+| Moderator removal | `MESSAGE_MODERATE` | Preserve a reason-bearing moderator event and audit lineage. |
 | Join/speak in voice | `VOICE_JOIN`/`VOICE_SPEAK` | Evaluate current room incarnation and membership state. |
 
 ## Channel types and privacy semantics

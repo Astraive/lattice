@@ -3,10 +3,10 @@
 //!
 //! This module is a policy projection and candidate authorization gate, not an
 //! MLS engine. Kind-6 policy messages enter through [`crate::MlsBoundEvent`];
-//! the kind-1–5 and kind-8 gate also uses event fields and exact MLS-produced
-//! plaintext from that type. Candidate message/edit/tombstone/reaction/pin/file
-//! authorization is implemented, but those operations have no message-state
-//! projection. Voice authorization fails closed as unsupported.
+//! kind-1–5 and kind-8 actions use event fields and exact MLS-produced plaintext.
+//! Authorized message, edit, tombstone, reaction, and pin actions have a
+//! deterministic in-memory projection. Durable projection storage and voice
+//! authorization are not implemented.
 //!
 //! The binding does not validate credential trust, MLS group-reference mapping,
 //! group membership deltas, or durable recovery. Accepted member transitions do
@@ -26,6 +26,7 @@ use lattice_files::AttachmentManifest;
 use lattice_protocol::{Value, decode_canonical};
 
 use crate::MlsBoundEvent;
+pub mod message_projection;
 
 pub const MAX_SPACE_PAYLOAD_BYTES: usize = 262_144;
 pub const MAX_CHANNELS: usize = 256;
@@ -40,6 +41,7 @@ pub const MAX_CONFLICT_WITNESSES: usize = 64;
 const MAX_GRAPH_EVENTS: usize = 16_384;
 const MAX_PENDING_EVENTS: usize = 256;
 const MAX_POLICY_HISTORY: usize = 64;
+const MAX_MESSAGE_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 const SPACE_PERMISSION_MASK: u64 = 0x0000_0000_0001_ffff;
 const VOICE_PERMISSION_MASK: u64 = 0x0000_0000_0000_7000;
 const CONTENT_CHANNEL_MASK: u64 = 0x0000_0000_0000_0fc0;
@@ -289,6 +291,7 @@ pub struct SpaceReducer {
     conflicted: bool,
     conflict_evidence: Vec<ConflictEvidence>,
     quarantined_event_ids: Vec<EventReference>,
+    message_history_bytes: usize,
 }
 
 impl SpaceReducer {
@@ -313,6 +316,14 @@ impl SpaceReducer {
     #[must_use]
     pub fn policy(&self) -> Option<&SpacePolicy> {
         self.policy.as_ref()
+    }
+    /// Materializes the authorized message actions retained by this reducer.
+    ///
+    /// This in-memory projection preserves every edit/tombstone, applies
+    /// reaction and pin removals by tag, and is not durable history.
+    #[must_use]
+    pub fn message_history(&self, channel_id: &EntityId) -> message_projection::MessageHistory {
+        message_projection::project_channel(&self.graph, channel_id)
     }
     /// Returns a candidate Space mask unless this generation is conflicted.
     /// A returned mask is not an authorization grant until integration gates
@@ -450,7 +461,7 @@ impl SpaceReducer {
         }
     }
 
-    /// Checks an authenticated application event without mutating policy state.
+    /// Authorizes an authenticated application event and latches its in-memory action.
     ///
     /// The event and its exact MLS plaintext are sourced from `MlsBoundEvent`.
     /// This candidate gate requires every current policy head in the event's
@@ -525,6 +536,19 @@ impl SpaceReducer {
         {
             return EventAuthorization::Rejected(RejectReason::Unauthorized);
         }
+        if let Err(reason) = self.retain_application_action(metadata.event_id, action) {
+            return EventAuthorization::Rejected(reason);
+        }
+        EventAuthorization::Authorized {
+            required_permissions,
+        }
+    }
+
+    fn retain_application_action(
+        &mut self,
+        event_id: EventReference,
+        action: ApplicationAction,
+    ) -> Result<(), RejectReason> {
         let reaction_tag = match &action {
             ApplicationAction::Reaction {
                 target,
@@ -539,21 +563,46 @@ impl SpaceReducer {
         };
         if reaction_tag.as_ref().is_some_and(|reaction_tag| {
             self.graph
-                .get(&metadata.event_id)
+                .get(&event_id)
                 .and_then(|node| node.reaction_tag.as_ref())
                 .is_some_and(|existing| existing != reaction_tag)
         }) {
-            return EventAuthorization::Rejected(RejectReason::GraphConflict);
+            return Err(RejectReason::GraphConflict);
         }
-        if let Some(node) = self.graph.get_mut(&metadata.event_id) {
-            node.application_authorized = true;
-            if reaction_tag.is_some() {
-                node.reaction_tag = reaction_tag;
-            }
+        let current_action = self
+            .graph
+            .get(&event_id)
+            .and_then(|node| node.application_action.as_ref());
+        let additional_history_bytes = if current_action.is_none() {
+            action.retained_bytes()
+        } else {
+            0
+        };
+        let next_history_bytes = self
+            .message_history_bytes
+            .checked_add(additional_history_bytes)
+            .ok_or(RejectReason::LimitExceeded)?;
+        if next_history_bytes > MAX_MESSAGE_HISTORY_BYTES {
+            return Err(RejectReason::LimitExceeded);
         }
-        EventAuthorization::Authorized {
-            required_permissions,
+        let node = self
+            .graph
+            .get_mut(&event_id)
+            .ok_or(RejectReason::GraphConflict)?;
+        if node
+            .application_action
+            .as_ref()
+            .is_some_and(|existing| existing != &action)
+        {
+            return Err(RejectReason::GraphConflict);
         }
+        node.application_authorized = true;
+        node.application_action = Some(action);
+        if reaction_tag.is_some() {
+            node.reaction_tag = reaction_tag;
+        }
+        self.message_history_bytes = next_history_bytes;
+        Ok(())
     }
 
     /// Re-attempts retained pending kind-6 operations after graph dependencies
@@ -621,11 +670,14 @@ impl SpaceReducer {
             author: *event.author_fingerprint(),
             kind: event.kind(),
             epoch: event.mls_epoch(),
+            lamport: event.lamport(),
+            author_sequence: event.author_sequence(),
             parents,
             channel_id: event.channel_id().copied(),
             control_relation: relation,
             mls_bound,
             application_authorized: false,
+            application_action: None,
             reaction_tag: None,
         };
         if let Some(previous) = self.graph.get(&id) {
@@ -634,6 +686,8 @@ impl SpaceReducer {
                 || previous.author != node.author
                 || previous.kind != node.kind
                 || previous.epoch != node.epoch
+                || previous.lamport != node.lamport
+                || previous.author_sequence != node.author_sequence
                 || previous.parents != node.parents
                 || previous.channel_id != node.channel_id
                 || previous.control_relation.is_some()
@@ -1138,11 +1192,14 @@ struct GraphNode {
     author: Fingerprint,
     kind: EventKind,
     epoch: u64,
+    lamport: u64,
+    author_sequence: u64,
     parents: Vec<EventReference>,
     channel_id: Option<EntityId>,
     control_relation: Option<ValidatedMlsControlRelation>,
     mls_bound: bool,
     application_authorized: bool,
+    application_action: Option<ApplicationAction>,
     reaction_tag: Option<ReactionTag>,
 }
 
@@ -1216,12 +1273,14 @@ enum Operation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ApplicationAction {
     Message {
+        content: Arc<str>,
         thread_root: Option<EventReference>,
         mention_everyone: bool,
         attachments: Vec<EventReference>,
     },
     Edit {
         target: EventReference,
+        content: Arc<str>,
     },
     Tombstone {
         target: EventReference,
@@ -1235,8 +1294,22 @@ enum ApplicationAction {
     },
     Pin {
         target: EventReference,
+        add: bool,
+        tag: Option<EventReference>,
     },
     FileManifest,
+}
+impl ApplicationAction {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Message { content, .. } | Self::Edit { content, .. } => content.len(),
+            Self::Tombstone {
+                moderation_reason, ..
+            } => moderation_reason.as_ref().map_or(0, String::len),
+            Self::Reaction { token, .. } => token.len(),
+            Self::Pin { .. } | Self::FileManifest => 0,
+        }
+    }
 }
 
 // Keep the exhaustive authorization transition table together for auditability.
@@ -1910,117 +1983,135 @@ fn parse_application_action(
 ) -> Result<ApplicationAction, RejectReason> {
     let payload = decode_canonical(plaintext).map_err(|_| RejectReason::InvalidCanonicalPayload)?;
     match kind {
-        EventKind::Message => {
-            let fields = exact_map(&payload, &[0, 1, 2, 3, 4])?;
-            if unsigned(fields[0])? != 1 {
-                return Err(RejectReason::InvalidSchema);
-            }
-            let Value::Text(content) = fields[1] else {
-                return Err(RejectReason::InvalidValue);
-            };
-            if content.len() > MAX_SPACE_PAYLOAD_BYTES {
-                return Err(RejectReason::PayloadTooLarge);
-            }
-            let thread_root = match fields[2] {
-                Value::Null => None,
-                value => Some(fixed_bytes(value)?),
-            };
-            let mention_everyone = boolean(fields[3])?;
-            let Value::Array(attachment_values) = fields[4] else {
-                return Err(RejectReason::InvalidValue);
-            };
-            if attachment_values.len() > MAX_PARENTS {
-                return Err(RejectReason::LimitExceeded);
-            }
-            let attachments = attachment_values
-                .iter()
-                .map(fixed_bytes::<32>)
-                .collect::<Result<Vec<EventReference>, _>>()?;
-            if attachments.windows(2).any(|pair| pair[0] >= pair[1]) {
-                return Err(RejectReason::InvalidValue);
-            }
-            Ok(ApplicationAction::Message {
-                thread_root,
-                mention_everyone,
-                attachments,
-            })
-        }
-        EventKind::Edit => {
-            let fields = exact_map(&payload, &[0, 1, 2])?;
-            if unsigned(fields[0])? != 1 {
-                return Err(RejectReason::InvalidSchema);
-            }
-            let Value::Text(content) = fields[2] else {
-                return Err(RejectReason::InvalidValue);
-            };
-            if content.len() > MAX_SPACE_PAYLOAD_BYTES {
-                return Err(RejectReason::PayloadTooLarge);
-            }
-            Ok(ApplicationAction::Edit {
-                target: fixed_bytes(fields[1])?,
-            })
-        }
-        EventKind::Tombstone => {
-            let fields = exact_map(&payload, &[0, 1, 2, 3])?;
-            if unsigned(fields[0])? != 1 {
-                return Err(RejectReason::InvalidSchema);
-            }
-            let moderation_reason = match (unsigned(fields[2])?, fields[3]) {
-                (0, Value::Null) => None,
-                (1, Value::Text(reason)) if !reason.trim().is_empty() && reason.len() <= 512 => {
-                    Some(reason.clone())
-                }
-                _ => return Err(RejectReason::InvalidValue),
-            };
-            Ok(ApplicationAction::Tombstone {
-                target: fixed_bytes(fields[1])?,
-                moderation_reason,
-            })
-        }
-        EventKind::Reaction => {
-            let fields = exact_map(&payload, &[0, 1, 2, 3, 4])?;
-            if unsigned(fields[0])? != 1 {
-                return Err(RejectReason::InvalidSchema);
-            }
-            let Value::Text(token) = fields[2] else {
-                return Err(RejectReason::InvalidValue);
-            };
-            if token.is_empty() || token.len() > 64 {
-                return Err(RejectReason::InvalidValue);
-            }
-            let add = match unsigned(fields[3])? {
-                0 => true,
-                1 => false,
-                _ => return Err(RejectReason::InvalidValue),
-            };
-            let tag = match (add, fields[4]) {
-                (true, Value::Null) => None,
-                (false, value) => Some(fixed_bytes(value)?),
-                _ => return Err(RejectReason::InvalidValue),
-            };
-            Ok(ApplicationAction::Reaction {
-                target: fixed_bytes(fields[1])?,
-                token: token.clone(),
-                add,
-                tag,
-            })
-        }
-        EventKind::Pin => {
-            let fields = exact_map(&payload, &[0, 1, 2])?;
-            if unsigned(fields[0])? != 1 {
-                return Err(RejectReason::InvalidSchema);
-            }
-            let _pinned = boolean(fields[2])?;
-            Ok(ApplicationAction::Pin {
-                target: fixed_bytes(fields[1])?,
-            })
-        }
+        EventKind::Message => parse_message_action(&payload),
+        EventKind::Edit => parse_edit_action(&payload),
+        EventKind::Tombstone => parse_tombstone_action(&payload),
+        EventKind::Reaction => parse_reaction_action(&payload),
+        EventKind::Pin => parse_pin_action(&payload),
         EventKind::FileManifest => parse_file_manifest_action(&payload),
         EventKind::VoiceSignal => Err(RejectReason::UnsupportedAction),
         EventKind::Membership | EventKind::MlsControl => Err(RejectReason::WrongEventKind),
     }
 }
 
+fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+    let fields = exact_map(payload, &[0, 1, 2, 3, 4])?;
+    if unsigned(fields[0])? != 1 {
+        return Err(RejectReason::InvalidSchema);
+    }
+    let Value::Text(content) = fields[1] else {
+        return Err(RejectReason::InvalidValue);
+    };
+    if content.len() > MAX_SPACE_PAYLOAD_BYTES {
+        return Err(RejectReason::PayloadTooLarge);
+    }
+    let thread_root = match fields[2] {
+        Value::Null => None,
+        value => Some(fixed_bytes(value)?),
+    };
+    let mention_everyone = boolean(fields[3])?;
+    let Value::Array(attachment_values) = fields[4] else {
+        return Err(RejectReason::InvalidValue);
+    };
+    if attachment_values.len() > MAX_PARENTS {
+        return Err(RejectReason::LimitExceeded);
+    }
+    let attachments = attachment_values
+        .iter()
+        .map(fixed_bytes::<32>)
+        .collect::<Result<Vec<EventReference>, _>>()?;
+    if attachments.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(RejectReason::InvalidValue);
+    }
+    Ok(ApplicationAction::Message {
+        content: Arc::from(content.as_str()),
+        thread_root,
+        mention_everyone,
+        attachments,
+    })
+}
+
+fn parse_edit_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+    let fields = exact_map(payload, &[0, 1, 2])?;
+    if unsigned(fields[0])? != 1 {
+        return Err(RejectReason::InvalidSchema);
+    }
+    let Value::Text(content) = fields[2] else {
+        return Err(RejectReason::InvalidValue);
+    };
+    if content.len() > MAX_SPACE_PAYLOAD_BYTES {
+        return Err(RejectReason::PayloadTooLarge);
+    }
+    Ok(ApplicationAction::Edit {
+        target: fixed_bytes(fields[1])?,
+        content: Arc::from(content.as_str()),
+    })
+}
+
+fn parse_tombstone_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+    let fields = exact_map(payload, &[0, 1, 2, 3])?;
+    if unsigned(fields[0])? != 1 {
+        return Err(RejectReason::InvalidSchema);
+    }
+    let moderation_reason = match (unsigned(fields[2])?, fields[3]) {
+        (0, Value::Null) => None,
+        (1, Value::Text(reason)) if !reason.trim().is_empty() && reason.len() <= 512 => {
+            Some(reason.clone())
+        }
+        _ => return Err(RejectReason::InvalidValue),
+    };
+    Ok(ApplicationAction::Tombstone {
+        target: fixed_bytes(fields[1])?,
+        moderation_reason,
+    })
+}
+
+fn parse_reaction_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+    let fields = exact_map(payload, &[0, 1, 2, 3, 4])?;
+    if unsigned(fields[0])? != 1 {
+        return Err(RejectReason::InvalidSchema);
+    }
+    let Value::Text(token) = fields[2] else {
+        return Err(RejectReason::InvalidValue);
+    };
+    if token.is_empty() || token.len() > 64 {
+        return Err(RejectReason::InvalidValue);
+    }
+    let add = match unsigned(fields[3])? {
+        0 => true,
+        1 => false,
+        _ => return Err(RejectReason::InvalidValue),
+    };
+    let tag = match (add, fields[4]) {
+        (true, Value::Null) => None,
+        (false, value) => Some(fixed_bytes(value)?),
+        _ => return Err(RejectReason::InvalidValue),
+    };
+    Ok(ApplicationAction::Reaction {
+        target: fixed_bytes(fields[1])?,
+        token: token.clone(),
+        add,
+        tag,
+    })
+}
+
+fn parse_pin_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+    let fields = exact_map(payload, &[0, 1, 2, 3])?;
+    if unsigned(fields[0])? != 1 {
+        return Err(RejectReason::InvalidSchema);
+    }
+    let add = boolean(fields[2])?;
+    let tag = match (add, fields[3]) {
+        (true, Value::Null) => None,
+        (false, value) => Some(fixed_bytes(value)?),
+        _ => return Err(RejectReason::InvalidValue),
+    };
+    Ok(ApplicationAction::Pin {
+        target: fixed_bytes(fields[1])?,
+        add,
+        tag,
+    })
+}
 fn parse_file_manifest_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
     let fields = exact_map(payload, &[0, 1, 2, 3, 4, 5])?;
     if unsigned(fields[0])? != 1 {
@@ -2074,119 +2165,221 @@ fn application_permissions(
     let mut required = match action {
         ApplicationAction::Message { .. } => MESSAGE_SEND,
         ApplicationAction::FileManifest => MESSAGE_SEND | MESSAGE_ATTACH,
-        ApplicationAction::Edit { target } => {
-            let target_node = application_target(
-                *target,
-                EventKind::Message,
-                metadata,
-                channel_id,
-                graph,
-                ancestors,
-            )?;
-            if target_node.author == metadata.author {
-                MESSAGE_SEND
-            } else {
-                MESSAGE_MODERATE
-            }
+        ApplicationAction::Edit { target, .. } => {
+            edit_permissions(*target, metadata, channel_id, graph, ancestors)?
         }
         ApplicationAction::Tombstone {
             target,
             moderation_reason,
-        } => {
-            let target_node = application_target(
-                *target,
-                EventKind::Message,
-                metadata,
-                channel_id,
-                graph,
-                ancestors,
-            )?;
-            if moderation_reason.is_some() {
-                MESSAGE_MODERATE
-            } else if target_node.author == metadata.author {
-                MESSAGE_SEND
-            } else {
-                return Err(RejectReason::Unauthorized);
-            }
+        } => tombstone_permissions(
+            *target,
+            moderation_reason.is_some(),
+            metadata,
+            channel_id,
+            graph,
+            ancestors,
+        )?,
+        ApplicationAction::Reaction { .. } => {
+            reaction_permissions(action, metadata, channel_id, graph, ancestors)?
         }
-        ApplicationAction::Reaction {
-            target,
-            token,
-            add,
-            tag,
-        } => {
-            let _ = application_target(
-                *target,
-                EventKind::Message,
-                metadata,
-                channel_id,
-                graph,
-                ancestors,
-            )?;
-            if !*add {
-                let tag_node = application_target(
-                    tag.ok_or(RejectReason::InvalidTarget)?,
-                    EventKind::Reaction,
-                    metadata,
-                    channel_id,
-                    graph,
-                    ancestors,
-                )?;
-                if tag_node.author != metadata.author
-                    || tag_node.reaction_tag.as_ref().is_none_or(|reaction| {
-                        reaction.target != *target || reaction.token != *token
-                    })
-                {
-                    return Err(RejectReason::InvalidTarget);
-                }
-            } else if tag.is_some() {
-                return Err(RejectReason::InvalidValue);
-            }
-            MESSAGE_SEND
-        }
-        ApplicationAction::Pin { target } => {
-            let _ = application_target(
-                *target,
-                EventKind::Message,
-                metadata,
-                channel_id,
-                graph,
-                ancestors,
-            )?;
-            MESSAGE_PIN
+        ApplicationAction::Pin { target, add, tag } => {
+            pin_permissions(*target, *add, *tag, metadata, channel_id, graph, ancestors)?
         }
     };
     if let ApplicationAction::Message {
         thread_root,
         mention_everyone,
         attachments,
+        ..
     } = action
     {
-        if let Some(thread_root) = thread_root {
-            let _ = application_target(
-                *thread_root,
-                EventKind::Message,
-                metadata,
-                channel_id,
-                graph,
-                ancestors,
-            )?;
-            required |= THREAD_CREATE;
+        required |= message_extra_permissions(
+            *thread_root,
+            *mention_everyone,
+            attachments,
+            metadata,
+            channel_id,
+            graph,
+            ancestors,
+        )?;
+    }
+    Ok(required)
+}
+
+fn edit_permissions(
+    target: EventReference,
+    metadata: &EventMetadata,
+    channel_id: EntityId,
+    graph: &BTreeMap<EventReference, GraphNode>,
+    ancestors: &std::collections::BTreeSet<EventReference>,
+) -> Result<u64, RejectReason> {
+    let target_node = application_target(
+        target,
+        EventKind::Message,
+        metadata,
+        channel_id,
+        graph,
+        ancestors,
+    )?;
+    Ok(if target_node.author == metadata.author {
+        MESSAGE_SEND
+    } else {
+        MESSAGE_MODERATE
+    })
+}
+
+fn tombstone_permissions(
+    target: EventReference,
+    has_moderation_reason: bool,
+    metadata: &EventMetadata,
+    channel_id: EntityId,
+    graph: &BTreeMap<EventReference, GraphNode>,
+    ancestors: &std::collections::BTreeSet<EventReference>,
+) -> Result<u64, RejectReason> {
+    let target_node = application_target(
+        target,
+        EventKind::Message,
+        metadata,
+        channel_id,
+        graph,
+        ancestors,
+    )?;
+    if has_moderation_reason {
+        Ok(MESSAGE_MODERATE)
+    } else if target_node.author == metadata.author {
+        Ok(MESSAGE_SEND)
+    } else {
+        Err(RejectReason::Unauthorized)
+    }
+}
+
+fn reaction_permissions(
+    action: &ApplicationAction,
+    metadata: &EventMetadata,
+    channel_id: EntityId,
+    graph: &BTreeMap<EventReference, GraphNode>,
+    ancestors: &std::collections::BTreeSet<EventReference>,
+) -> Result<u64, RejectReason> {
+    let ApplicationAction::Reaction {
+        target,
+        token,
+        add,
+        tag,
+    } = action
+    else {
+        return Err(RejectReason::WrongEventKind);
+    };
+    let _ = application_target(
+        *target,
+        EventKind::Message,
+        metadata,
+        channel_id,
+        graph,
+        ancestors,
+    )?;
+    if *add {
+        if tag.is_some() {
+            return Err(RejectReason::InvalidValue);
         }
-        if *mention_everyone {
-            required |= MENTION_EVERYONE;
+    } else {
+        let tag_node = application_target(
+            tag.ok_or(RejectReason::InvalidTarget)?,
+            EventKind::Reaction,
+            metadata,
+            channel_id,
+            graph,
+            ancestors,
+        )?;
+        if tag_node.author != metadata.author
+            || tag_node
+                .reaction_tag
+                .as_ref()
+                .is_none_or(|reaction| reaction.target != *target || reaction.token != *token)
+        {
+            return Err(RejectReason::InvalidTarget);
         }
-        for attachment in attachments {
-            let _ = application_target(
-                *attachment,
-                EventKind::FileManifest,
-                metadata,
-                channel_id,
-                graph,
-                ancestors,
-            )?;
-            required |= MESSAGE_ATTACH;
+    }
+    Ok(MESSAGE_SEND)
+}
+
+fn pin_permissions(
+    target: EventReference,
+    add: bool,
+    tag: Option<EventReference>,
+    metadata: &EventMetadata,
+    channel_id: EntityId,
+    graph: &BTreeMap<EventReference, GraphNode>,
+    ancestors: &std::collections::BTreeSet<EventReference>,
+) -> Result<u64, RejectReason> {
+    let _ = application_target(
+        target,
+        EventKind::Message,
+        metadata,
+        channel_id,
+        graph,
+        ancestors,
+    )?;
+    if add {
+        if tag.is_some() {
+            return Err(RejectReason::InvalidValue);
         }
+    } else {
+        let tag_node = application_target(
+            tag.ok_or(RejectReason::InvalidTarget)?,
+            EventKind::Pin,
+            metadata,
+            channel_id,
+            graph,
+            ancestors,
+        )?;
+        if !matches!(
+            tag_node.application_action.as_ref(),
+            Some(ApplicationAction::Pin {
+                target: tag_target,
+                add: true,
+                ..
+            }) if tag_target == &target
+        ) {
+            return Err(RejectReason::InvalidTarget);
+        }
+    }
+    Ok(MESSAGE_PIN)
+}
+
+fn message_extra_permissions(
+    thread_root: Option<EventReference>,
+    mention_everyone: bool,
+    attachments: &[EventReference],
+    metadata: &EventMetadata,
+    channel_id: EntityId,
+    graph: &BTreeMap<EventReference, GraphNode>,
+    ancestors: &std::collections::BTreeSet<EventReference>,
+) -> Result<u64, RejectReason> {
+    let mut required = 0;
+    if let Some(thread_root) = thread_root {
+        let _ = application_target(
+            thread_root,
+            EventKind::Message,
+            metadata,
+            channel_id,
+            graph,
+            ancestors,
+        )?;
+        required |= THREAD_CREATE;
+    }
+    if mention_everyone {
+        required |= MENTION_EVERYONE;
+    }
+    for attachment in attachments {
+        let _ = application_target(
+            *attachment,
+            EventKind::FileManifest,
+            metadata,
+            channel_id,
+            graph,
+            ancestors,
+        )?;
+        required |= MESSAGE_ATTACH;
     }
     Ok(required)
 }
@@ -2386,6 +2579,9 @@ mod tests {
     use lattice_events::{EventDraft, VerifiedSignatureOnlyEvent};
     use lattice_identity::DeviceIdentity;
     use lattice_protocol::{EventId, encode_canonical};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_APPLICATION_SEQUENCE: AtomicU64 = AtomicU64::new(2);
 
     // Owning fixture payloads keeps each test's encoded event construction self-contained.
     #[allow(clippy::needless_pass_by_value)]
@@ -2427,11 +2623,12 @@ mod tests {
         payload: &Value,
     ) -> MlsBoundEvent {
         let plaintext = encode_canonical(payload).unwrap();
+        let author_sequence = NEXT_APPLICATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let draft = EventDraft {
             space_id: space,
             channel_id: Some(channel),
-            author_sequence: 2,
-            lamport: 0,
+            author_sequence,
+            lamport: author_sequence.saturating_add(999),
             wall_time_hint: 0,
             parents: parents.into_iter().map(EventId::from_bytes).collect(),
             kind,
@@ -2787,6 +2984,9 @@ mod tests {
         assert_eq!(reducer.policy().unwrap().channels[0].name, "general");
         assert_eq!(reducer.conflict_evidence().len(), 2);
     }
+    // Keeps the cross-action causality and delivery-order convergence fixture
+    // together; splitting it would obscure the shared event graph.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn application_authorization_uses_policy_heads_action_bits_and_target_causality() {
         let owner_identity = DeviceIdentity::generate().unwrap();
@@ -2870,6 +3070,25 @@ mod tests {
         );
         assert_eq!(
             reducer.authorize_application_event(&edit),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        let later_edit = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Edit,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Text("latest".into())),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&later_edit),
             EventAuthorization::Authorized {
                 required_permissions: MESSAGE_SEND
             }
@@ -2958,6 +3177,68 @@ mod tests {
             }
         );
 
+        let pin = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Pin,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Bool(true)),
+                (3, Value::Null),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&pin),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_PIN
+            }
+        );
+        let pin_id = *pin.event().event_id().as_bytes();
+        let second_pin = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![message_id],
+            EventKind::Pin,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Bool(true)),
+                (3, Value::Null),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&second_pin),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_PIN
+            }
+        );
+        let second_pin_id = *second_pin.event().event_id().as_bytes();
+        let remove_pin = make_application_event(
+            &owner_identity,
+            space,
+            channel,
+            group,
+            vec![pin_id],
+            EventKind::Pin,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Bytes(message_id.to_vec())),
+                (2, Value::Bool(false)),
+                (3, Value::Bytes(pin_id.to_vec())),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&remove_pin),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_PIN
+            }
+        );
         let remove_wrong_tag = make_application_event(
             &owner_identity,
             space,
@@ -2977,6 +3258,155 @@ mod tests {
             reducer.authorize_application_event(&remove_wrong_tag),
             EventAuthorization::Rejected(RejectReason::InvalidTarget)
         );
+        let history = reducer.message_history(&channel);
+        assert_eq!(history.messages().len(), 2);
+        let projected_message = history
+            .messages()
+            .iter()
+            .find(|projected| projected.event_id == message_id)
+            .expect("authorized message is projected");
+        assert_eq!(projected_message.versions().len(), 3);
+        assert_eq!(
+            projected_message.current_version().content.as_ref(),
+            "latest"
+        );
+        assert!(projected_message.is_deleted());
+        assert_eq!(projected_message.tombstones.len(), 2);
+        assert!(projected_message.reactions.is_empty());
+        assert!(projected_message.is_pinned());
+        assert_eq!(projected_message.pin_tags, vec![second_pin_id]);
+        assert_eq!(
+            reducer.authorize_application_event(&reaction),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(reducer.message_history(&channel), history);
+
+        let mut reordered = SpaceReducer::new();
+        assert_eq!(
+            reordered.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&message),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&remove_reaction),
+            EventAuthorization::Pending
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&remove_pin),
+            EventAuthorization::Pending
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&threaded_message),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND | THREAD_CREATE | MENTION_EVERYONE
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&edit),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&later_edit),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&delete_own_message),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&reason_bearing_moderation),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_MODERATE
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&reaction),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&remove_reaction),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_SEND
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&pin),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_PIN
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&second_pin),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_PIN
+            }
+        );
+        assert_eq!(
+            reordered.authorize_application_event(&remove_pin),
+            EventAuthorization::Authorized {
+                required_permissions: MESSAGE_PIN
+            }
+        );
+        assert_eq!(reordered.message_history(&channel), history);
+    }
+    #[test]
+    fn message_projection_budget_rejects_without_latching_action() {
+        let identity = DeviceIdentity::generate().unwrap();
+        let author = identity.fingerprint();
+        let space = [40; 16];
+        let group = [41; 32];
+        let channel = [42; 16];
+        let genesis = make_bound_event(
+            &identity,
+            space,
+            group,
+            0,
+            Vec::new(),
+            genesis_payload(author, channel),
+        );
+        let root_id = *genesis.event().event_id().as_bytes();
+        let mut reducer = SpaceReducer::new();
+        assert_eq!(
+            reducer.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+        reducer.message_history_bytes = MAX_MESSAGE_HISTORY_BYTES - 1;
+
+        let oversized_history = make_application_event(
+            &identity,
+            space,
+            channel,
+            group,
+            vec![root_id],
+            EventKind::Message,
+            &policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Text("oversize".into())),
+                (2, Value::Null),
+                (3, Value::Bool(false)),
+                (4, Value::Array(Vec::new())),
+            ]),
+        );
+        assert_eq!(
+            reducer.authorize_application_event(&oversized_history),
+            EventAuthorization::Rejected(RejectReason::LimitExceeded)
+        );
+        assert!(reducer.message_history(&channel).messages().is_empty());
     }
     #[test]
     fn application_authorization_binds_file_references_to_valid_manifests() {
