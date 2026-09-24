@@ -11,7 +11,7 @@
 | M4 — Fast local/files | Capability probe, Wi-Fi Aware/LAN, routing, couriers, content hashes | M3 | Mixed-device direct file resumes across path change | NET-006–008, FIL-001–007 |
 | M5 — Optional relays | Versioned mailbox/Nostr adapter, subscriptions, relay privacy settings | M3; ADR-003 | Two remote peers sync through two independent relays; offline nearby still works | NET-009–011,013 |
 | M6 — Voice | Signaling, WebRTC/Opus, direct ICE, optional TURN, controls | M3; M4 for local upgrade | Small room direct and relay cases, clean no-route failure | VOC-001–007, LAT-017 |
-| M7 — Desktop/CLI/node | Tauri UI, CLI, optional persistent peer | M3; M5 for relay control | Interoperability across mobile, desktop, CLI; no special node authority | DSK-001–005, CLI-001–008 |
+| M7 — Desktop/CLI/node | Tauri UI, CLI, optional persistent peer | M3; M5 for relay control | Interoperability across mobile, desktop, CLI; no special node authority | DSK-001–005, CLI-001–009 |
 | M8 — Stable release | Fuzzing, interop vectors, migrations, privacy/battery/security review | All required earlier gates | Every v1 acceptance gate in TEST_PLAN passes; open blockers closed | LAT-006–020, VOC-008, DSK-006 |
 
 ## Critical path

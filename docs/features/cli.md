@@ -12,17 +12,21 @@ The production CLI is native Rust. It uses the same core and local identity form
 | CLI-006 | `lattice peer scan` shall show current path capabilities with privacy-safe default output. | No unrelated Space IDs or private keys in scan output. | M7 |
 | CLI-007 | `lattice node run` shall opt into bounded persistent peer/courier behavior. | Stop/restart, disk quota, untrusted packet and privilege tests. | M7 |
 | CLI-008 | `lattice doctor` shall inspect DB, keys, versions, permissions and transport without exposing secrets. | Corrupt DB, revoked permission and incompatible wire version are distinguished. | M7 |
+| CLI-009 | `lattice space list` shall verify and enumerate local Genesis snapshots in bounded pages. | All snapshots are returned across exclusive keyset cursors; corrupt event or snapshot integrity fails closed and JSON/human output never claims membership. | M7 |
 
 CLI output should support human and machine-readable modes with stable error classes. It may facilitate test harnesses, but its existence does not imply a globally reachable node or centralized administration.
 
+`space list` restores at most 32 local Genesis records per call and returns the next exclusive cursor as 96 hexadecimal characters (16-byte Space ID followed by 32-byte MLS group reference). Use `lattice space list --after <cursor>` to continue. Each result is a verified local snapshot, not a claim of current membership.
+
 ## Command behavior and output
 
-All commands operate on an explicitly selected local profile/data directory, preventing accidental overlap between two identities. Read-only commands (`identity show`, `sync status`, `doctor`) must not mutate network membership. Mutating commands show the event ID and accurate local/destination state; `--json` returns versioned field names and stable error code, while human output may be reformatted. Secret export or reset, if implemented, requires a separate explicit confirmation and protected destination; a normal diagnostic never prints secret bytes.
-JSON output uses `schema_version: 1`. `identity` returns lowercase hexadecimal `fingerprint` and `public_bundle` fields plus `private_key_exposed: false`; `status` returns the identity state and explicit unavailable capability booleans; `about` separates `available` from `unavailable` capability names. Errors are emitted as one JSON object on stderr with the stable `COMMAND_FAILED` code and a human-readable `message`.
+All commands operate on an explicitly selected local profile/data directory, preventing accidental overlap between two identities. Read-only commands (`identity show`, `space list`, `sync status`, `doctor`) must not mutate network membership. `space list` verifies local Genesis records only and does not establish current membership. Mutating commands show the event ID and accurate local/destination state; `--json` returns versioned field names and stable error code, while human output may be reformatted. Secret export or reset, if implemented, requires a separate explicit confirmation and protected destination; a normal diagnostic never prints secret bytes.
+JSON output uses `schema_version: 1`. `identity` returns lowercase hexadecimal `fingerprint` and `public_bundle` fields plus `private_key_exposed: false`; `status` returns the identity state and explicit unavailable capability booleans; `about` separates `available` from `unavailable` capability names. `space_list` returns at most 32 `{space_id, group_reference}` rows and a nullable `next_cursor`.
 
 | Command | Success signal | Common failure |
 | --- | --- | --- |
 | `identity show` | Full device fingerprint and storage tier | Locked/unavailable key store |
+| `space list` | Verified local Space IDs and an optional next-page cursor | Missing identity, corrupt Genesis event or failed snapshot authentication |
 | `peer scan` | Ephemeral path/capability observations | Permission denied or radio unavailable |
 | `space join` | Pending/active membership bound to genesis | Invite invalid, expired, policy denied, missing Welcome |
 | `send` | Durable event ID and queued/delivery status | Storage full, denied permission, invalid draft |

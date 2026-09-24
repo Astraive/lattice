@@ -25,7 +25,8 @@
 - [ ] Freeze relay kind, retrieval tags and outer identity profile in ADR-003 before public interop claims. (NET-010; M5)
 - [ ] Implement two-relay encrypted mailbox tests with drop/reorder and metadata capture. (NET-009–013; M5)
 - [ ] Implement WebRTC signaling, direct/TURN matrix and room-size gate. (VOC-001–008; M6)
-- [ ] Build Tauri and Rust CLI atop core, plus opt-in bounded node mode. (DSK-001–006, CLI-001–008; M7)
+- [ ] Build Tauri and Rust CLI atop core, plus opt-in bounded node mode. (DSK-001–006, CLI-001–009; M7)
+- [x] Add bounded read-only local Space Genesis pages to the CLI. (CLI-009)
 - [ ] Perform mobile power/background, parser fuzzing, migration, security and accessibility gates. (LAT-006,009–020; M8)
 
 ## P2 — tracked later or conditional

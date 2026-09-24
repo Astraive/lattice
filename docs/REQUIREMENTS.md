@@ -15,7 +15,7 @@
 | `VOC` | Voice and media | [voice.md](features/voice.md) | VOC-001–VOC-008 |
 | `MOB` | Native Android/iOS behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-010 |
 | `DSK` | Desktop | [desktop.md](features/desktop.md) | DSK-001–DSK-006 |
-| `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-008 |
+| `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-009 |
 
 IDs are never renumbered. A row is one independently testable requirement; amend the row and history when semantics change. Status values: **proposed**, **blocked**, **implemented**, **verified**, **retired**. All rows begin proposed unless explicitly blocked. `M0`–`M2` prototype work does not make the wider v1 profile stable.
 
@@ -51,7 +51,7 @@ IDs are never renumbered. A row is one independently testable requirement; amend
 | Prototype | LAT-001–004, IDN-001–003, SPC-001–003, MSG-001–003, NET-001–005, MOB-001–004 | M0–M2 |
 | Interoperable security core | LAT-003,007,009,015, IDN-004–008, SPC-004–011, MSG-004–009 | M3 |
 | Local files/fast paths | NET-006–008, FIL-001–007 | M4 |
-| Optional Internet | NET-009–013, DSK-001–006, CLI-001–008 | M5/M7 |
+| Optional Internet | NET-009–013, DSK-001–006, CLI-001–009 | M5/M7 |
 | Voice | VOC-001–008 | M6 |
 | Stable v1 | All non-deferred items and every LAT security/release gate | M8 |
 

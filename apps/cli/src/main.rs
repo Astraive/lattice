@@ -126,6 +126,11 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
         Command::Space {
             command: SpaceCommand::List { after },
         } => {
+            let after = after
+                .as_deref()
+                .map(parse_space_cursor)
+                .transpose()
+                .map_err(|error| format!("invalid --after cursor: {error}"))?;
             let mut client = match Client::open_existing(&database_path, &protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
@@ -135,11 +140,6 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(error) => return Err(Box::new(error)),
             };
-            let after = after
-                .as_deref()
-                .map(parse_space_cursor)
-                .transpose()
-                .map_err(|error| format!("invalid --after cursor: {error}"))?;
             let page = client.restore_space_page(after)?;
             print_space_page(&page, json);
         }
