@@ -768,6 +768,8 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -800,6 +802,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
 ): Short
@@ -880,6 +884,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Pointer,`pu
 fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
@@ -1042,6 +1048,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message() != 19845.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit() != 5149.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() != 64121.toShort()) {
@@ -1568,6 +1577,21 @@ public interface MobileClientInterface {
      */
     fun `queueLocalTextMessage`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
     
+    /**
+     * Queues a locally authorized immutable Edit event and updates the
+     * encrypted local message cache.
+     *
+     * This operation does not forward the edit or claim recipient delivery.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `InvalidMessageInput` for oversized text, `MessageRejected` when local
+     * policy denies the edit, or `MessageQueueFailed` for other failures.
+     */
+    fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
+    
     companion object
 }
 
@@ -1864,6 +1888,32 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(
         it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Queues a locally authorized immutable Edit event and updates the
+     * encrypted local message cache.
+     *
+     * This operation does not forward the edit or claim recipient delivery.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `InvalidMessageInput` for oversized text, `MessageRejected` when local
+     * policy denies the edit, or `MessageQueueFailed` for other failures.
+     */
+    @Throws(MobileException::class)override fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`targetMessageId`),FfiConverterString.lower(`content`),_status)
 }
     }
     )

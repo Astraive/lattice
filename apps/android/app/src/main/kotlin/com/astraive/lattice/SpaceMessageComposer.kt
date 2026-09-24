@@ -31,6 +31,7 @@ internal data class LocalMessageComposerState(
     val historyStatus: String? = null,
     val status: String = "Enter the trusted X.509 credential vector to queue a local message.",
     val eventIdHex: String? = null,
+    val editTargetMessageIdHex: String? = null,
 )
 
 @Composable
@@ -43,6 +44,9 @@ internal fun SpaceMessageComposer(
     onChannelSelected: (String) -> Unit,
     onQueue: () -> Unit,
     onLoadHistory: () -> Unit,
+    onEditMessage: (MobileLocalTextMessage) -> Unit,
+    onCancelEdit: () -> Unit,
+    profileIdentityHex: String,
 ) {
     val availableChannels = channels.filter {
         !it.archived && (it.channelType == MobileChannelType.TEXT || it.channelType == MobileChannelType.ANNOUNCEMENT)
@@ -56,10 +60,17 @@ internal fun SpaceMessageComposer(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Queue a local text message", style = MaterialTheme.typography.titleSmall)
             Text(
-                "The recent outgoing history is local-only and bounded. Incoming messages, later policy changes, and network delivery are not shown.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                if (state.editTargetMessageIdHex == null) "Queue a local text message"
+                else "Edit local text message",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                if (state.editTargetMessageIdHex == null) {
+                    "The recent outgoing history is local-only and bounded. Incoming messages, later policy changes, and network delivery are not shown."
+                } else {
+                    "Editing creates a new immutable encrypted event; the original event remains unchanged."
+                },
             )
             Text("Channels from local Genesis", style = MaterialTheme.typography.labelMedium)
             channels.forEach { channel ->
@@ -88,7 +99,7 @@ internal fun SpaceMessageComposer(
                             selected = state.selectedChannelIdHex == idHex ||
                                 (state.selectedChannelIdHex == null && channel == availableChannels.first()),
                             onClick = { onChannelSelected(idHex) },
-                            enabled = !state.submitting,
+                            enabled = !state.submitting && state.editTargetMessageIdHex == null,
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(channel.name, style = MaterialTheme.typography.bodyMedium)
@@ -114,8 +125,7 @@ internal fun SpaceMessageComposer(
                     value = state.content,
                     onValueChange = onContentChanged,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Message") },
-                    supportingText = { Text("UTF-8 message, at most 16 KiB") },
+                    label = { Text(if (state.editTargetMessageIdHex == null) "Message" else "Replacement text") },
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     enabled = !state.submitting,
                     minLines = 3,
@@ -125,7 +135,20 @@ internal fun SpaceMessageComposer(
                     enabled = profileReady && !state.submitting && availableChannels.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (state.submitting) "Queueing locally…" else "Queue locally")
+                    Text(
+                        if (state.submitting) "Committing locally…"
+                        else if (state.editTargetMessageIdHex == null) "Queue locally"
+                        else "Queue edit locally",
+                    )
+                }
+                if (state.editTargetMessageIdHex != null) {
+                    Button(
+                        onClick = onCancelEdit,
+                        enabled = !state.submitting,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Cancel edit")
+                    }
                 }
                 Button(
                     onClick = onLoadHistory,
@@ -154,6 +177,15 @@ internal fun SpaceMessageComposer(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                if (message.authorId.toLowerHex() == profileIdentityHex) {
+                                    Button(
+                                        onClick = { onEditMessage(message) },
+                                        enabled = !state.submitting,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text("Edit locally")
+                                    }
+                                }
                             }
                         }
                     }

@@ -50,6 +50,7 @@ import uniffi.lattice_uniffi.MobileSpaceCursor
 import uniffi.lattice_uniffi.MobileSpaceSummary
 import uniffi.lattice_uniffi.MobileChannelType
 import uniffi.lattice_uniffi.MobileInitialChannel
+import uniffi.lattice_uniffi.MobileLocalTextMessage
 import com.astraive.lattice.identity.IdentityPinCard
 import com.astraive.lattice.identity.IdentityPinUiState
 import com.astraive.lattice.identity.decodeIdentityHex
@@ -189,6 +190,8 @@ class MainActivity : ComponentActivity() {
                     onMessageChannelSelected = ::onMessageChannelSelected,
                     onQueueLocalMessage = ::queueLocalMessage,
                     onLoadMessageHistory = ::loadLocalMessageHistory,
+                    onEditLocalMessage = ::editLocalMessage,
+                    onCancelMessageEdit = ::cancelLocalMessageEdit,
                     onLoadMoreSpaces = ::loadMoreLocalSpaces,
                     onCredentialVectorHexChanged = ::onCredentialVectorHexChanged,
                     onSpaceChannelNameChanged = ::onSpaceChannelNameChanged,
@@ -351,6 +354,30 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
+
+    private fun editLocalMessage(spaceKey: String, message: MobileLocalTextMessage) {
+        val composer = screenState.messageComposers[spaceKey] ?: LocalMessageComposerState()
+        if (composer.submitting || message.authorId.toLowerHex() != screenState.identityFingerprint) return
+        updateMessageComposer(spaceKey) {
+            it.copy(
+                content = message.content,
+                editTargetMessageIdHex = message.eventId.toLowerHex(),
+                eventIdHex = null,
+                status = "Editing your local message. The original event remains immutable.",
+            )
+        }
+    }
+
+    private fun cancelLocalMessageEdit(spaceKey: String) {
+        updateMessageComposer(spaceKey) {
+            it.copy(
+                content = "",
+                editTargetMessageIdHex = null,
+                eventIdHex = null,
+                status = "Edit cancelled; original message remains unchanged.",
+            )
+        }
+    }
     private fun loadLocalMessageHistory(spaceKey: String) {
         val profile = mobileProfile ?: run {
             updateMessageComposer(spaceKey) {
@@ -479,20 +506,41 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val queued = withContext(Dispatchers.IO) {
-                    profile.queueLocalTextMessage(
-                        space.spaceId,
-                        space.groupReference,
-                        credentialVector,
-                        channel.id,
-                        composer.content,
-                    )
+                    val target = composer.editTargetMessageIdHex?.let { decodeIdentityHex(it, 32) }
+                    if (composer.editTargetMessageIdHex != null && target == null) {
+                        throw IllegalArgumentException("The selected message ID is malformed.")
+                    }
+                    if (target == null) {
+                        profile.queueLocalTextMessage(
+                            space.spaceId,
+                            space.groupReference,
+                            credentialVector,
+                            channel.id,
+                            composer.content,
+                        )
+                    } else {
+                        profile.queueLocalTextMessageEdit(
+                            space.spaceId,
+                            space.groupReference,
+                            credentialVector,
+                            channel.id,
+                            target,
+                            composer.content,
+                        )
+                    }
                 }
                 if (!isFinishing && !isDestroyed) {
                     updateMessageComposer(spaceKey) {
                         it.copy(
                             submitting = false,
+                            content = "",
+                            editTargetMessageIdHex = null,
                             eventIdHex = queued.eventId.toLowerHex(),
-                            status = "Queued locally in the durable outbox. Network forwarding and recipient delivery are unknown.",
+                            status = if (composer.editTargetMessageIdHex == null) {
+                                "Queued locally in the durable outbox. Network forwarding and recipient delivery are unknown."
+                            } else {
+                                "Edit committed locally as a new immutable event. Network forwarding and recipient delivery are unknown."
+                            },
                         )
                     }
                 }
@@ -513,6 +561,7 @@ class MainActivity : ComponentActivity() {
             } finally {
                 credentialVector.fill(0)
                 contentBytes.fill(0)
+                if (!isFinishing && !isDestroyed) loadLocalMessageHistory(spaceKey)
             }
         }
     }
@@ -1236,7 +1285,9 @@ private fun NearbyReadinessScreen(
     onMessageChannelSelected: (String, String) -> Unit,
     onQueueLocalMessage: (String) -> Unit,
     onLoadMessageHistory: (String) -> Unit,
-){
+    onEditLocalMessage: (String, MobileLocalTextMessage) -> Unit,
+    onCancelMessageEdit: (String) -> Unit,
+) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -1380,6 +1431,9 @@ private fun NearbyReadinessScreen(
                             onChannelSelected = { onMessageChannelSelected(spaceKey, it) },
                             onQueue = { onQueueLocalMessage(spaceKey) },
                             onLoadHistory = { onLoadMessageHistory(spaceKey) },
+                            onEditMessage = { message -> onEditLocalMessage(spaceKey, message) },
+                            onCancelEdit = { onCancelMessageEdit(spaceKey) },
+                            profileIdentityHex = state.identityFingerprint.orEmpty(),
                         )
                     }
                     state.nextSpaceCursor?.let { cursor ->

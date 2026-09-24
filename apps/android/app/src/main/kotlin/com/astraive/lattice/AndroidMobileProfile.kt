@@ -75,6 +75,22 @@ internal class AndroidMobileProfile private constructor(
         content,
     )
 
+
+    fun queueLocalTextMessageEdit(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        targetMessageId: ByteArray,
+        content: String,
+    ): MobileQueuedMessage = client.queueLocalTextMessageEdit(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        targetMessageId,
+        content,
+    )
     override fun close() {
         client.close()
     }
