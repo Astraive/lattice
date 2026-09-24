@@ -46,6 +46,7 @@ use openmls_traits::{
     signatures::{Signer, SignerError},
     types::SignatureScheme,
 };
+use sha2::{Digest, Sha256};
 
 /// OpenMLS ciphersuite used by the current executable MLS candidate.
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -129,6 +130,8 @@ pub enum MlsError {
     GroupStateLimit,
     /// OpenMLS rejected an MLS operation or the caller's provider failed.
     OpenMlsFailure,
+    /// The authenticated MLS member key could not be retrieved from the group.
+    SenderKeyUnavailable,
 }
 
 impl fmt::Display for MlsError {
@@ -183,6 +186,9 @@ impl fmt::Display for MlsError {
             Self::NoOwnCommitPending => f.write_str("there is no pending local MLS Commit"),
             Self::GroupInactive => f.write_str("MLS group is inactive"),
             Self::GroupStateLimit => f.write_str("MLS group state limit exceeded"),
+            Self::SenderKeyUnavailable => {
+                f.write_str("MLS sender key is unavailable in the current group")
+            }
             Self::OpenMlsFailure => {
                 f.write_str("OpenMLS or the caller provider rejected the operation")
             }
@@ -302,16 +308,40 @@ pub enum SpaceAuthorization {
     NotEvaluated,
 }
 
+/// Decrypted data bound to the exact input ciphertext and authenticated MLS member key.
+///
+/// This proves MLS membership-key possession only. The caller must match the
+/// key against the event author's verified identity and still apply Space
+/// authorization and policy.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MlsApplication {
+    plaintext: Vec<u8>,
+    member_signature_key: Option<[u8; 32]>,
+    ciphertext_sha256: [u8; 32],
+}
+
+impl MlsApplication {
+    /// Returns the exact decrypted application plaintext.
+    pub fn plaintext(&self) -> &[u8] {
+        &self.plaintext
+    }
+
+    /// Returns the MLS member's Ed25519 key, if the message came from a group member.
+    pub const fn member_signature_key(&self) -> Option<&[u8; 32]> {
+        self.member_signature_key.as_ref()
+    }
+
+    /// Returns the SHA-256 digest of the exact TLS-encoded ciphertext processed.
+    pub const fn ciphertext_sha256(&self) -> &[u8; 32] {
+        &self.ciphertext_sha256
+    }
+}
+
 /// A successful result from processing an incoming MLS object.
 #[derive(Debug, PartialEq, Eq)]
 pub enum IncomingResult {
-    /// Decrypted MLS application bytes, not yet accepted as an authorized event.
-    Application {
-        /// Decrypted application plaintext.
-        plaintext: Vec<u8>,
-        /// Space authorization has not been evaluated.
-        space_authorization: SpaceAuthorization,
-    },
+    /// Decrypted MLS application data with member-key and ciphertext binding.
+    Application(MlsApplication),
     /// A validated MLS proposal, not yet admitted by application policy.
     Proposal {
         /// Whether the proposal used the external sender path.
@@ -652,6 +682,7 @@ impl GroupState {
         wire: &[u8],
     ) -> MlsResult<IncomingResult> {
         check_wire_size(wire)?;
+        let ciphertext_sha256 = Sha256::digest(wire).into();
         let parsed = parse_message(wire)?;
         let protocol = parsed
             .try_into_protocol_message()
@@ -694,6 +725,7 @@ impl GroupState {
             .inner
             .process_message(provider, protocol)
             .map_err(|_| MlsError::OpenMlsFailure)?;
+        let member_signature_key = self.member_signature_key(processed.sender())?;
         let content = processed.into_content();
         if kind == MlsWireKind::Commit {
             return match content {
@@ -728,11 +760,11 @@ impl GroupState {
                         })
                     }
                 }
-                other => classify_non_commit(other),
+                other => classify_non_commit(other, member_signature_key, ciphertext_sha256),
             };
         }
 
-        classify_non_commit(content)
+        classify_non_commit(content, member_signature_key, ciphertext_sha256)
     }
 
     /// Merges the exact staged incoming Commit after explicit caller acceptance.
@@ -787,6 +819,27 @@ impl GroupState {
         } else {
             Ok(())
         }
+    }
+
+    fn member_signature_key(
+        &self,
+        sender: &openmls::prelude::Sender,
+    ) -> MlsResult<Option<[u8; 32]>> {
+        let index = match sender {
+            openmls::prelude::Sender::Member(index) => *index,
+            _ => return Ok(None),
+        };
+        let member = self
+            .inner
+            .members()
+            .find(|member| member.index == index)
+            .ok_or(MlsError::SenderKeyUnavailable)?;
+        let key = member
+            .signature_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| MlsError::SenderKeyUnavailable)?;
+        Ok(Some(key))
     }
 }
 
@@ -875,15 +928,20 @@ fn wire_kind(content_type: ContentType) -> MlsWireKind {
     }
 }
 
-fn classify_non_commit(content: ProcessedMessageContent) -> MlsResult<IncomingResult> {
+fn classify_non_commit(
+    content: ProcessedMessageContent,
+    member_signature_key: Option<[u8; 32]>,
+    ciphertext_sha256: [u8; 32],
+) -> MlsResult<IncomingResult> {
     match content {
         ProcessedMessageContent::ApplicationMessage(message) => {
             let plaintext = message.into_bytes();
             check_application_size(&plaintext)?;
-            Ok(IncomingResult::Application {
+            Ok(IncomingResult::Application(MlsApplication {
                 plaintext,
-                space_authorization: SpaceAuthorization::NotEvaluated,
-            })
+                member_signature_key,
+                ciphertext_sha256,
+            }))
         }
         ProcessedMessageContent::ProposalMessage(_) => Ok(IncomingResult::Proposal {
             external: false,

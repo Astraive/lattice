@@ -1123,11 +1123,11 @@ pub mod test_interop {
         fn production_api_uses_device_signer_and_real_openmls_group_ops() -> InteropResult<()> {
             use crate::api::{
                 DeviceCredentialInput, GroupState, IncomingResult as ProductionIncoming, MlsError,
-                SpaceAuthorization,
             };
             use lattice_identity::DeviceIdentity;
             use openmls::credentials::Credential;
             use openmls::prelude::tls_codec::{Serialize as TlsSerialize, VLBytes};
+            use sha2::Digest as _;
 
             let alice_db = TestDatabase::new("production-alice");
             let bob_db = TestDatabase::new("production-bob");
@@ -1189,13 +1189,17 @@ pub mod test_interop {
                 &alice_credential,
                 b"production OpenMLS application",
             )?;
-            assert!(matches!(
-                bob.process_incoming(&bob_provider, application.as_bytes())?,
-                ProductionIncoming::Application {
-                    plaintext,
-                    space_authorization: SpaceAuthorization::NotEvaluated,
-                } if plaintext == b"production OpenMLS application"
-            ));
+            let alice_public_key = alice_identity.public_key();
+            let ciphertext_sha256: [u8; 32] = sha2::Sha256::digest(application.as_bytes()).into();
+            let incoming = bob.process_incoming(&bob_provider, application.as_bytes())?;
+            match incoming {
+                ProductionIncoming::Application(decrypted) => {
+                    assert_eq!(decrypted.plaintext(), b"production OpenMLS application");
+                    assert_eq!(decrypted.member_signature_key(), Some(&alice_public_key));
+                    assert_eq!(decrypted.ciphertext_sha256(), &ciphertext_sha256);
+                }
+                other => panic!("expected MLS application data, got {other:?}"),
+            }
             let oversized_plaintext = vec![0; crate::api::MAX_APPLICATION_BYTES + 1];
             assert_eq!(
                 alice.encrypt_application(
