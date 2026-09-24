@@ -40,16 +40,22 @@ communication product or an interoperability release. Current components cover
 canonical encoding and event signatures, device identity protection and local
 storage, OpenMLS state operations, signature-to-MLS ciphertext binding, bounded
 routing/courier accounting, attachment verification, voice signaling, and
-platform adapter contracts. The core includes a candidate kind-6 policy reducer,
-kind-1–5 and kind-8 authorization, and transaction-staged persistence of an
-authorized event. Reducer-state restore and message projection are incomplete.
-CLI and desktop currently expose protected device identity workflows; Android
-currently exposes permission-aware generic BLE discovery and fragment framing.
+platform adapter contracts. The core also exposes candidate offline Space Genesis
+creation: one SQLite transaction commits the local MLS generation and exact
+signed Genesis event, then returns a process-local policy projection. The
+caller-supplied opaque X.509 credential is not trust-validated, and policy
+projection restore remains unimplemented. The relay crate validates candidate
+NIP-01/NIP-40 tags, expiry, envelope encoding, and inner-event signatures, but
+does not connect to a relay.
 
-Secure Space creation/join, MLS membership validation and commit coupling,
-application message-state projections, voice authorization, durable MLS conflict
-recovery, native BLE GATT exchange, LAN/Wi-Fi adapters, relay interoperability,
-and end-to-end message workflows remain incomplete.
+Reducer-state restore and message projection remain incomplete. CLI and desktop
+currently expose protected device identity workflows; Android currently exposes
+permission-aware generic BLE discovery and fragment framing.
+
+Space join, membership validation and commit coupling, message-state projection,
+voice authorization, durable MLS conflict recovery, native BLE GATT exchange,
+LAN/Wi-Fi adapters, relay networking/interoperability, and end-to-end message
+workflows remain incomplete.
 The OpenMLS API still relies on the caller to verify external credentials and
 persist protected group state and recovery metadata. ADR-001 and ADR-002 record
 the conflict and channel-read decisions; their full operational workflows and

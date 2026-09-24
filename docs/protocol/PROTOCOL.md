@@ -4,7 +4,7 @@
 
 ## Current executable candidate
 
-[`00-overview.md`](../../protocol/specs/00-overview.md), [`02-encoding.md`](../../protocol/specs/02-encoding.md), [`03-identity.md`](../../protocol/specs/03-identity.md), and [`canonical-cbor.json`](../../protocol/vectors/canonical-cbor.json) track the Rust subset implemented so far. Signed event framing, authorization, MLS, sessions, envelopes, relay, files-on-wire and voice signaling remain separate profile work; do not infer acceptance from the CBOR decoder.
+The Rust workspace now has bounded candidate implementations for canonical CBOR, signed event framing, event authorization, protected OpenMLS state operations, signature-to-ciphertext binding, delivery envelopes, and NIP-01/NIP-11 relay profile validation. These pieces do not establish interoperable or end-to-end behavior: membership credential trust, durable reducer recovery, native path adapters, and relay networking remain incomplete.
 
 ## Layer map
 
@@ -41,7 +41,7 @@ Per authorized scope, exchange `{author_id, contiguous_seq, gap_digest}`, recent
 
 ## Membership and conflict
 
-An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes peer delivery and simultaneous Commit strategies. [ADR-001](../decisions/ADR-001-membership-commit-conflicts.md) accepts fail-closed conflict handling and explicit new-group recovery; [ADR-002](../decisions/ADR-002-channel-read-semantics.md) makes channels policy-only. [`06-spaces.md`](../../protocol/specs/06-spaces.md) and [`07-permissions.md`](../../protocol/specs/07-permissions.md) specify candidate payload, causal and permission rules, but reducers, credential trust, durable conflict recovery and complete tests remain incomplete. Generic Lamport sorting is only for presentation; secure concurrent-admin operation is not enabled.
+An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes peer delivery and simultaneous Commit strategies. [ADR-001](../decisions/ADR-001-membership-commit-conflicts.md) accepts fail-closed conflict handling and explicit new-group recovery; [ADR-002](../decisions/ADR-002-channel-read-semantics.md) makes channels policy-only. [`06-spaces.md`](../../protocol/specs/06-spaces.md) and [`07-permissions.md`](../../protocol/specs/07-permissions.md) specify candidate payload, causal and permission rules, and a candidate reducer exists. Credential trust, group-reference/membership proof, durable conflict recovery, and complete membership tests remain incomplete. Generic Lamport sorting is only for presentation; secure concurrent-admin operation is not enabled.
 
 ## Relay and files
 

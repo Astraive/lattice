@@ -7,6 +7,7 @@
 
 pub mod nip01;
 pub mod nip11;
+pub mod profile;
 
 use core::fmt;
 
