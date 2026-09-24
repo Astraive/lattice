@@ -66,7 +66,7 @@ References: [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), [RFC 9750](https
 | `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; relay adapter and cross-platform interop remain unimplemented |
 | `16-versioning` | Required/optional feature bits, downgrade prevention and migration |
 
-Each document defines maxima for strings, arrays, event body, parent list, fragments, pending dependencies and queue bytes, and contains byte-exact positive/negative vectors. A field marked “future” in the integrated spec does not silently become required for v1. No implementer may derive a byte limit from a UI placeholder or radio MTU alone.
+Before a document freezes, it must define maxima for strings, arrays, event bodies, parent lists, fragments, pending dependencies, and queue bytes, and include byte-exact positive and negative vectors. Candidate bounds are not proof of implementation conformance. A field marked “future” in the integrated spec does not silently become required for v1. No implementer may derive a byte limit from a UI placeholder or radio MTU alone.
 
 ## Validation pipeline with failure classes
 
