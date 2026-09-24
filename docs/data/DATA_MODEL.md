@@ -15,7 +15,7 @@
 | `relay_state`, `routes`, `peers` | User relay settings, cursor and path hints | Local hints, not global presence |
 | Secure storage | Private signing/DH/MLS material and local wrapping secret | Platform-protected installation state |
 
-The current SQLite v3 implementation adds a single `protected_identity` slot for OS-wrapped ciphertext, bounded to 4096 bytes. Plain signing/DH private material and wrapping keys are not stored in that table. MLS production state, application projections, and filesystem-backed attachment chunks remain unimplemented; the test-only OpenMLS SQLite harness is not part of the application store.
+The current SQLite v5 store adds OS-protected identity and MLS-key ciphertext, plus an AEAD-protected local Genesis snapshot keyed by Space and MLS generation and linked to the exact event row. The initial policy payload is encrypted with the protected MLS storage key and authenticated to its Space, group reference, and root event ID. Protected OpenMLS group records commit in the same transaction as Genesis and the snapshot. Later policy projections, MLS conflict recovery metadata, incoming membership persistence, and filesystem-backed attachment chunks remain unimplemented; the test-only OpenMLS SQLite harness is not part of the application store.
 
 ## Constraints and transitions
 

@@ -14,7 +14,8 @@ pub mod api;
 pub(crate) mod storage;
 
 pub use storage::{
-    ProtectedCodecError, ProtectedSqliteProvider, migrate_protected_sqlite, with_mls_storage_key,
+    ProtectedCodecError, ProtectedSqliteProvider, migrate_protected_sqlite, protect_local_record,
+    unprotect_local_record, with_mls_storage_key,
 };
 
 pub const CRATE_NAME: &str = "lattice-mls";

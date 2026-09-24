@@ -40,17 +40,18 @@ communication product or an interoperability release. Current components cover
 canonical encoding and event signatures, device identity protection and local
 storage, OpenMLS state operations, signature-to-MLS ciphertext binding, bounded
 routing/courier accounting, attachment verification, voice signaling, and
-platform adapter contracts. The core also exposes candidate offline Space Genesis
-creation: one SQLite transaction commits the local MLS generation and exact
-signed Genesis event, then returns a process-local policy projection. The
-caller-supplied opaque X.509 credential is not trust-validated, and policy
-projection restore remains unimplemented. The relay crate validates candidate
-NIP-01/NIP-40 tags, expiry, envelope encoding, and inner-event signatures, but
-does not connect to a relay.
+platform adapter contracts. The core exposes candidate offline Space Genesis
+creation: one `SQLite` transaction commits the local MLS generation, exact
+signed event, and AEAD-protected initial policy snapshot. `restore_space`
+rebuilds that initial projection after restart but does not replay later policy
+events. The caller-supplied opaque X.509 credential is not trust-validated.
+The relay crate validates candidate NIP-01/NIP-40 tags, expiry, envelope
+encoding, and inner-event signatures, but does not connect to a relay.
 
-Reducer-state restore and message projection remain incomplete. CLI and desktop
-currently expose protected device identity workflows; Android currently exposes
-permission-aware generic BLE discovery and fragment framing.
+Later policy replay, conflict-state recovery, and message projection remain
+incomplete. CLI and desktop currently expose protected device identity
+workflows; Android currently exposes permission-aware generic BLE discovery
+and fragment framing.
 
 Space join, membership validation and commit coupling, message-state projection,
 voice authorization, durable MLS conflict recovery, native BLE GATT exchange,

@@ -3,8 +3,8 @@
 //! The facade owns a durable store and device identity. It binds verified
 //! events to MLS results and can atomically create local candidate Spaces or
 //! stage application authorization with exact event bytes in a caller-owned
-//! `SQLite` transaction. Membership trust, Space join, and durable policy-state
-//! restore remain incomplete.
+//! `SQLite` transaction. Membership trust, Space join, later policy replay, and
+//! durable MLS conflict recovery remain incomplete.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -18,7 +18,7 @@ use lattice_mls::{
     with_mls_storage_key,
 };
 use lattice_protocol::{Value, encode_canonical};
-use lattice_storage::{CommitOutcome, Store, StoreError};
+use lattice_storage::{CommitOutcome, SpaceGenesisSnapshot, Store, StoreError};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -87,19 +87,21 @@ impl CreatedSpace {
 
     /// Returns the in-memory candidate policy initialized from Genesis.
     ///
-    /// This reducer is not durably restored when the process restarts.
+    /// This process-local view can be restored from the encrypted local Genesis
+    /// snapshot; later policy mutations are not included.
     #[must_use]
     pub const fn reducer(&self) -> &space::SpaceReducer {
         &self.reducer
     }
 }
 
-/// Event payload proven to match an authenticated MLS member and ciphertext.
+/// Event payload bound to an MLS application or a locally authenticated Genesis.
 ///
-/// This proves that the verified event author key matches the MLS member key,
-/// that the event body is the exact ciphertext processed by MLS, and that the
-/// event epoch matches. It does not validate MLS group-reference mapping,
-/// credential trust, Space/channel authorization, or application policy.
+/// External applications enter through [`bind_mls_application`], which proves
+/// that `OpenMLS` processed the exact event ciphertext. Local Genesis creation
+/// and restore use the private `SQLite` transaction plus AEAD snapshot binding.
+/// Neither route validates MLS credential trust, group-reference mapping,
+/// Space/channel authorization, or application policy.
 #[must_use]
 #[derive(Debug)]
 pub struct MlsBoundEvent {
@@ -241,6 +243,9 @@ pub enum CoreError {
     /// A received author sequence is occupied by a different event ID.
     #[error("received author sequence conflicts with event {existing_event_id:02x?}")]
     ReceivedEventEquivocation { existing_event_id: [u8; 32] },
+    /// A locally created Space Genesis or encrypted projection snapshot is absent.
+    #[error("local Space Genesis snapshot was not found")]
+    SpaceGenesisSnapshotNotFound,
 }
 
 fn prepare_space_genesis(
@@ -299,6 +304,19 @@ fn prepare_space_genesis(
     Ok((space_id, plaintext))
 }
 
+fn space_genesis_context(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+    event_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut context = Vec::with_capacity(20 + 16 + 32 + 32);
+    context.extend_from_slice(b"lattice-space-genesis-v1\0");
+    context.extend_from_slice(space_id);
+    context.extend_from_slice(group_reference);
+    context.extend_from_slice(event_id);
+    context
+}
+
 fn create_space_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
@@ -336,6 +354,9 @@ fn create_space_in_transaction(
             mls_epoch: 0,
         },
     )?;
+    let event_id = *event.event_id().as_bytes();
+    let context = space_genesis_context(&space_id, &group_reference, &event_id);
+    let encrypted_state = lattice_mls::protect_local_record(&context, &plaintext)?;
 
     // This path owns both OpenMLS encryption and event creation, establishing
     // the exact plaintext/ciphertext relation without an external proof object.
@@ -373,6 +394,16 @@ fn create_space_in_transaction(
     {
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
+    Store::save_space_genesis_snapshot_in_transaction(
+        transaction,
+        &SpaceGenesisSnapshot {
+            space_id,
+            group_reference,
+            group_id: group_id.clone(),
+            event_id,
+            encrypted_state,
+        },
+    )?;
     Ok((event, reducer, group_id, group_reference))
 }
 
@@ -485,14 +516,14 @@ impl Client {
 
     /// Creates a one-member MLS generation and signed Genesis event atomically.
     ///
-    /// The group and exact signed event bytes commit in one `SQLite`
-    /// transaction. The returned policy reducer is process-local and is not
-    /// restored after restart.
+    /// The group, exact signed event bytes, and AEAD-protected initial policy
+    /// snapshot commit in one `SQLite` transaction. The returned reducer is a
+    /// process-local view; [`Client::restore_space`] rebuilds the Genesis state.
     ///
     /// # Errors
     ///
     /// Returns an error for randomness, channel policy validation, event
-    /// creation, `OpenMLS`, or storage failure. Failure rolls back both writes.
+    /// creation, `OpenMLS`, or storage failure. Failure rolls back all writes.
     pub fn create_space(
         &mut self,
         credential: &lattice_mls::api::DeviceCredentialInput,
@@ -516,6 +547,93 @@ impl Client {
             group_id,
             group_reference,
             genesis_event,
+            reducer,
+        })
+    }
+
+    /// Restores a locally created Space policy projection after process restart.
+    ///
+    /// The event, MLS group, and AEAD-protected initial policy payload are
+    /// independently checked against the requested Space and MLS generation.
+    /// This restores local Genesis only; it does not recover later policy
+    /// mutations, incoming groups, or in-memory MLS conflict evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot is missing, malformed, unauthenticated,
+    /// or inconsistent with the protected MLS group and signed Genesis event.
+    pub fn restore_space(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+    ) -> Result<CreatedSpace, CoreError> {
+        let snapshot = self
+            .store
+            .load_space_genesis_snapshot(space_id, group_reference)?
+            .ok_or(CoreError::SpaceGenesisSnapshotNotFound)?;
+        let event_record = self
+            .store
+            .load_event(&snapshot.event_id)?
+            .ok_or(CoreError::SpaceGenesisSnapshotNotFound)?;
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&event_record.canonical_bytes)?;
+        if event.event_id().as_bytes() != &snapshot.event_id
+            || event.space_id() != &snapshot.space_id
+            || event.mls_group_reference() != &snapshot.group_reference
+            || event.kind() != EventKind::Membership
+            || event.channel_id().is_some()
+            || !event.parents().is_empty()
+            || event.mls_epoch() != 0
+        {
+            return Err(CoreError::SpaceGenesisRejected(
+                space::RejectReason::InvalidGenesisContext,
+            ));
+        }
+        let space_id = snapshot.space_id;
+        let expected_group_reference = snapshot.group_reference;
+        let event_id = snapshot.event_id;
+        let group_id = snapshot.group_id;
+        let group_id_for_load = group_id.clone();
+        let encrypted_state = snapshot.encrypted_state;
+        let context = space_genesis_context(&space_id, &expected_group_reference, &event_id);
+        let restored_event = event.clone();
+        let (group_reference, reducer) =
+            self.with_mls_transaction(move |identity, provider, _transaction| {
+                if event.author_fingerprint() != &identity.fingerprint() {
+                    return Err(CoreError::SpaceGenesisRejected(
+                        space::RejectReason::CreatorMismatch,
+                    ));
+                }
+                let group = lattice_mls::api::GroupState::load(provider, &group_id_for_load)?;
+                let group_reference = group.group_reference();
+                if group_reference != expected_group_reference
+                    || group.epoch() != 0
+                    || group.member_count() != 1
+                {
+                    return Err(CoreError::SpaceGenesisRejected(
+                        space::RejectReason::WrongGeneration,
+                    ));
+                }
+                let plaintext = lattice_mls::unprotect_local_record(&context, &encrypted_state)?;
+                let bound = MlsBoundEvent { event, plaintext };
+                let mut reducer = space::SpaceReducer::new();
+                match reducer.apply(&bound, None) {
+                    space::ApplyResult::Applied { revision: 0 } => {}
+                    space::ApplyResult::Rejected(reason) => {
+                        return Err(CoreError::SpaceGenesisRejected(reason));
+                    }
+                    _ => {
+                        return Err(CoreError::SpaceGenesisRejected(
+                            space::RejectReason::InvalidGenesisContext,
+                        ));
+                    }
+                }
+                Ok((group_reference, reducer))
+            })?;
+        Ok(CreatedSpace {
+            space_id,
+            group_id,
+            group_reference,
+            genesis_event: restored_event,
             reducer,
         })
     }
@@ -869,6 +987,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // End-to-end creation, restore, and tamper regression.
     fn local_space_genesis_persists_event_and_mls_group_atomically() {
         let database = TestDatabase::new();
         let protector = TestProtector;
@@ -955,14 +1074,47 @@ mod tests {
 
         let mut reopened =
             Client::open_existing(&database.0, &protector).expect("reopen protected profile");
-        let (epoch, member_count): (u64, usize) = reopened
-            .with_mls_transaction(|_, provider, _| {
-                let group = GroupState::load(provider, created.group_id())?;
-                Ok::<_, CoreError>((group.epoch(), group.member_count()))
+        let restored = reopened
+            .restore_space(created.space_id(), created.group_reference())
+            .expect("restore durable local Space policy");
+        assert_eq!(restored.group_id(), created.group_id());
+        assert_eq!(
+            restored
+                .reducer()
+                .policy()
+                .expect("restored Genesis policy")
+                .channels[0]
+                .name,
+            "general"
+        );
+        assert_eq!(
+            restored
+                .reducer()
+                .policy()
+                .expect("restored Genesis policy")
+                .members[0]
+                .status,
+            super::space::MemberStatus::Active
+        );
+        let mut snapshot_store =
+            lattice_storage::Store::open(&database.0).expect("reopen snapshot store");
+        let encrypted_snapshot = snapshot_store
+            .with_connection_mut(|connection| {
+                connection
+                    .query_row(
+                        "SELECT encrypted_state FROM space_genesis_snapshots
+                         WHERE space_id = ?1 AND group_reference = ?2",
+                        rusqlite::params![&created.space_id()[..], &created.group_reference()[..]],
+                        |row| row.get::<_, Vec<u8>>(0),
+                    )
+                    .map_err(lattice_storage::StoreError::from)
             })
-            .expect("reload persisted MLS generation");
-        assert_eq!(epoch, 0);
-        assert_eq!(member_count, 1);
+            .expect("read encrypted snapshot");
+        assert!(
+            !encrypted_snapshot
+                .windows(b"general".len())
+                .any(|window| window == b"general")
+        );
         let store = lattice_storage::Store::open(&database.0).expect("reopen event store");
         let stored_event = store
             .load_event(&event_id)
@@ -971,6 +1123,31 @@ mod tests {
         assert_eq!(
             stored_event.canonical_bytes,
             created.genesis_event().encoded_bytes()
+        );
+        let updated = snapshot_store
+            .with_connection_mut(|connection| {
+                connection
+                    .execute(
+                        "UPDATE space_genesis_snapshots
+                         SET encrypted_state = zeroblob(length(encrypted_state))
+                         WHERE space_id = ?1 AND group_reference = ?2",
+                        rusqlite::params![&created.space_id()[..], &created.group_reference()[..]],
+                    )
+                    .map_err(lattice_storage::StoreError::from)
+            })
+            .expect("tamper with encrypted snapshot");
+        assert_eq!(updated, 1);
+        let Err(restore_error) =
+            reopened.restore_space(created.space_id(), created.group_reference())
+        else {
+            panic!("tampered snapshot must fail closed");
+        };
+        assert!(
+            matches!(
+                restore_error,
+                CoreError::MlsStorageCodec(super::ProtectedCodecError::UnsupportedVersion)
+            ),
+            "unexpected restore error: {restore_error:?}"
         );
     }
 

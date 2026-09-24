@@ -109,6 +109,110 @@ fn with_current_key<T>(
     action(&key)
 }
 
+const LOCAL_RECORD_AAD: &[u8] = b"lattice-mls-local-record-v1\0";
+const MAX_LOCAL_CONTEXT_BYTES: usize = 256;
+
+/// Encrypts one bounded application-owned local record under the active storage key.
+///
+/// `context` is authenticated but not encrypted; callers must include stable
+/// record identity and a domain separator. The key never leaves its scoped slot.
+///
+/// # Errors
+///
+/// Returns `MissingKey` without an active key scope, `MalformedRecord` for an
+/// empty/oversized context, `TooLarge` for oversized plaintext, or an encryption
+/// and randomness error.
+pub fn protect_local_record(
+    context: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, ProtectedCodecError> {
+    if context.is_empty() || context.len() > MAX_LOCAL_CONTEXT_BYTES {
+        return Err(ProtectedCodecError::MalformedRecord);
+    }
+    if plaintext.len() > MAX_PLAINTEXT_BYTES {
+        return Err(ProtectedCodecError::TooLarge);
+    }
+    let context_length =
+        u32::try_from(context.len()).map_err(|_| ProtectedCodecError::MalformedRecord)?;
+    with_current_key(|key| {
+        let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| ProtectedCodecError::Encryption)?;
+        let mut associated_data = Vec::with_capacity(LOCAL_RECORD_AAD.len() + 4 + context.len());
+        associated_data.extend_from_slice(LOCAL_RECORD_AAD);
+        associated_data.extend_from_slice(&context_length.to_be_bytes());
+        associated_data.extend_from_slice(context);
+        let mut nonce = [0_u8; NONCE_BYTES];
+        getrandom::fill(&mut nonce).map_err(|_| ProtectedCodecError::Randomness)?;
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &associated_data,
+                },
+            )
+            .map_err(|_| ProtectedCodecError::Encryption)?;
+        let mut record = Vec::with_capacity(HEADER_BYTES + ciphertext.len());
+        record.push(VERSION);
+        record.extend_from_slice(&nonce);
+        record.extend_from_slice(&ciphertext);
+        nonce.zeroize();
+        Ok(record)
+    })
+}
+
+/// Decrypts one bounded application-owned local record under the active key.
+///
+/// The caller must supply the same authenticated context used by
+/// [`protect_local_record`].
+///
+/// # Errors
+///
+/// Returns `MissingKey` without an active key scope, `MalformedRecord` for an
+/// invalid context or truncated record, `UnsupportedVersion` for another format,
+/// `TooLarge` for oversized input, or `Decryption` when authentication fails.
+pub fn unprotect_local_record(
+    context: &[u8],
+    record: &[u8],
+) -> Result<Vec<u8>, ProtectedCodecError> {
+    if context.is_empty() || context.len() > MAX_LOCAL_CONTEXT_BYTES {
+        return Err(ProtectedCodecError::MalformedRecord);
+    }
+    if record.len() > MAX_RECORD_BYTES {
+        return Err(ProtectedCodecError::TooLarge);
+    }
+    if record.len() < HEADER_BYTES + TAG_BYTES {
+        return Err(ProtectedCodecError::MalformedRecord);
+    }
+    if record[0] != VERSION {
+        return Err(ProtectedCodecError::UnsupportedVersion);
+    }
+    let context_length =
+        u32::try_from(context.len()).map_err(|_| ProtectedCodecError::MalformedRecord)?;
+    with_current_key(|key| {
+        let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| ProtectedCodecError::Decryption)?;
+        let mut associated_data = Vec::with_capacity(LOCAL_RECORD_AAD.len() + 4 + context.len());
+        associated_data.extend_from_slice(LOCAL_RECORD_AAD);
+        associated_data.extend_from_slice(&context_length.to_be_bytes());
+        associated_data.extend_from_slice(context);
+        let plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(&record[1..HEADER_BYTES]),
+                Payload {
+                    msg: &record[HEADER_BYTES..],
+                    aad: &associated_data,
+                },
+            )
+            .map_err(|_| ProtectedCodecError::Decryption)?;
+        if plaintext.len() > MAX_PLAINTEXT_BYTES {
+            let mut plaintext = Zeroizing::new(plaintext);
+            plaintext.zeroize();
+            return Err(ProtectedCodecError::TooLarge);
+        }
+        let plaintext = Zeroizing::new(plaintext);
+        Ok(plaintext.to_vec())
+    })
+}
+
 /// Production `OpenMLS` JSON codec. The type is not reachable outside this
 /// crate's storage module.
 #[derive(Default)]
@@ -297,6 +401,31 @@ mod tests {
             })
             .unwrap(),
             "protected record"
+        );
+    }
+
+    #[test]
+    fn local_record_encryption_binds_key_context_and_scope() {
+        let context = b"space-genesis/v1\\0record-id";
+        let record = with_mls_storage_key(&KEY_A, || {
+            protect_local_record(context, b"encrypted local snapshot")
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            with_mls_storage_key(&KEY_A, || unprotect_local_record(context, &record))
+                .unwrap()
+                .unwrap(),
+            b"encrypted local snapshot"
+        );
+        assert_eq!(
+            with_mls_storage_key(&KEY_A, || unprotect_local_record(b"wrong-context", &record))
+                .unwrap(),
+            Err(ProtectedCodecError::Decryption)
+        );
+        assert_eq!(
+            unprotect_local_record(context, &record),
+            Err(ProtectedCodecError::MissingKey)
         );
     }
 

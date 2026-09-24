@@ -26,9 +26,11 @@ pub const MAX_OUTBOX_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
 
 const ID_BYTES: usize = 32;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
+const MAX_SPACE_GENESIS_GROUP_ID_BYTES: usize = 256;
+const MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
 
 /// A committed event and its parent references.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +69,16 @@ pub struct OutboxEntry {
     pub state: OutboxState,
 }
 
+/// Encrypted reducer state associated with a space's Genesis event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceGenesisSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub group_id: Vec<u8>,
+    pub event_id: [u8; 32],
+    pub encrypted_state: Vec<u8>,
+}
+
 /// Result of attempting to commit an authored event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
@@ -102,6 +114,7 @@ pub enum StoreError {
     InvalidOutboxTransition,
     InvalidProtectedIdentity,
     InvalidProtectedMlsKey,
+    InvalidSpaceGenesisSnapshot,
     CorruptData(&'static str),
 }
 
@@ -151,6 +164,9 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidProtectedMlsKey => {
                 formatter.write_str("protected MLS storage key ciphertext has an invalid length")
+            }
+            Self::InvalidSpaceGenesisSnapshot => {
+                formatter.write_str("space Genesis snapshot has an invalid length")
             }
             Self::CorruptData(message) => write!(formatter, "corrupt storage data: {message}"),
         }
@@ -289,6 +305,29 @@ impl Store {
                             AND length(ciphertext) BETWEEN 1 AND 4096)
                 );
                 PRAGMA user_version = 4;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 5 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_genesis_snapshots (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob' AND length(group_reference) = 32),
+                    group_id BLOB NOT NULL
+                        CHECK(typeof(group_id) = 'blob' AND length(group_id) BETWEEN 1 AND 256),
+                    event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32),
+                    encrypted_state BLOB NOT NULL
+                        CHECK(typeof(encrypted_state) = 'blob'
+                            AND length(encrypted_state) BETWEEN 1 AND 1048576),
+                    PRIMARY KEY(space_id, group_reference)
+                );
+                PRAGMA user_version = 5;",
             )?;
             transaction.commit()?;
         }
@@ -551,6 +590,104 @@ impl Store {
             .map_err(StoreError::from)
             .map_err(E::from)?;
         Ok(value)
+    }
+
+    /// Saves an encrypted space Genesis snapshot inside its event's transaction.
+    ///
+    /// The referenced Genesis event must already exist in this transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the group ID or encrypted state is outside its
+    /// permitted bounds, the event row is missing, a key is already stored, or
+    /// the database write fails.
+    pub fn save_space_genesis_snapshot_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceGenesisSnapshot,
+    ) -> Result<()> {
+        if snapshot.group_id.is_empty()
+            || snapshot.group_id.len() > MAX_SPACE_GENESIS_GROUP_ID_BYTES
+            || snapshot.encrypted_state.is_empty()
+            || snapshot.encrypted_state.len() > MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES
+        {
+            return Err(StoreError::InvalidSpaceGenesisSnapshot);
+        }
+        transaction.execute(
+            "INSERT INTO space_genesis_snapshots(
+                space_id, group_reference, group_id, event_id, encrypted_state
+            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                &snapshot.group_id,
+                &snapshot.event_id[..],
+                &snapshot.encrypted_state
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Loads and validates a snapshot for one space and MLS group reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or the stored snapshot is
+    /// malformed.
+    pub fn load_space_genesis_snapshot(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Option<SpaceGenesisSnapshot>> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT space_id, group_reference, group_id, event_id, encrypted_state
+                 FROM space_genesis_snapshots
+                 WHERE space_id = ?1 AND group_reference = ?2",
+                params![&space_id[..], &group_reference[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((space_id, group_reference, group_id, event_id, encrypted_state)) = stored else {
+            return Ok(None);
+        };
+
+        let space_id = space_id
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid space Genesis snapshot space ID"))?;
+        let group_reference = group_reference.try_into().map_err(|_| {
+            StoreError::CorruptData("invalid space Genesis snapshot group reference")
+        })?;
+        let event_id = event_id
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid space Genesis snapshot event ID"))?;
+        if group_id.is_empty() || group_id.len() > MAX_SPACE_GENESIS_GROUP_ID_BYTES {
+            return Err(StoreError::CorruptData(
+                "invalid space Genesis snapshot group ID",
+            ));
+        }
+        if encrypted_state.is_empty()
+            || encrypted_state.len() > MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES
+        {
+            return Err(StoreError::CorruptData(
+                "invalid space Genesis snapshot encrypted state",
+            ));
+        }
+        Ok(Some(SpaceGenesisSnapshot {
+            space_id,
+            group_reference,
+            group_id,
+            event_id,
+            encrypted_state,
+        }))
     }
 
     /// Loads one event, including its ordered parent references.
@@ -1206,7 +1343,7 @@ mod tests {
 
     use super::{
         CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
-        MAX_PENDING_EVENTS, OutboxState, Store, StoreError,
+        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, Store, StoreError,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1343,6 +1480,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
+                     DROP TABLE space_genesis_snapshots;
                      DROP INDEX outbox_queued_schedule;
                      DROP TABLE outbox;
                      PRAGMA user_version = 1;",
@@ -1380,6 +1518,273 @@ mod tests {
             Some(vec![0xAA, 0xBB])
         );
     }
+    #[test]
+    fn v4_schema_upgrade_adds_genesis_snapshots_and_preserves_events() {
+        let database = TempDatabase::new();
+        let event = id(95);
+        {
+            let mut store = Store::open(database.path()).expect("create latest schema");
+            store
+                .commit_authored(id(94), event, 1, &[0xA7], &[])
+                .expect("save event before downgrade simulation");
+        }
+        {
+            let connection =
+                rusqlite::Connection::open(database.path()).expect("open schema for fixture");
+            connection
+                .execute_batch(
+                    "DROP TABLE space_genesis_snapshots;
+                     PRAGMA user_version = 4;",
+                )
+                .expect("restore v4 schema fixture");
+        }
+
+        let store = Store::open(database.path()).expect("upgrade v4 database");
+        let version: i64 = store
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read upgraded schema version");
+        assert_eq!(version, 5);
+        assert_eq!(
+            store
+                .load_event(&event)
+                .expect("load migrated event")
+                .expect("event survives migration")
+                .canonical_bytes,
+            [0xA7]
+        );
+        assert_eq!(
+            store
+                .load_space_genesis_snapshot(&[0x11; 16], &[0x22; 32])
+                .expect("query new snapshot table"),
+            None
+        );
+    }
+
+    #[test]
+    fn genesis_snapshot_is_visible_inside_its_event_transaction_and_loads_after_commit() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let event = id(96);
+        let snapshot = SpaceGenesisSnapshot {
+            space_id: [0x11; 16],
+            group_reference: [0x22; 32],
+            group_id: vec![0xA1, 0x80, 0x03],
+            event_id: event,
+            encrypted_state: vec![0xD3, 0x5A, 0x00, 0xC7],
+        };
+
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(transaction, id(97), event, 1, &[0xB1], &[])?;
+                Store::save_space_genesis_snapshot_in_transaction(transaction, &snapshot)?;
+                let stored_ciphertext: Vec<u8> = transaction.query_row(
+                    "SELECT encrypted_state FROM space_genesis_snapshots
+                     WHERE space_id = ?1 AND group_reference = ?2",
+                    rusqlite::params![&snapshot.space_id[..], &snapshot.group_reference[..]],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(stored_ciphertext, snapshot.encrypted_state);
+                Ok::<_, StoreError>(())
+            })
+            .expect("commit event and snapshot together");
+
+        assert_eq!(
+            store
+                .load_space_genesis_snapshot(&snapshot.space_id, &snapshot.group_reference)
+                .expect("load saved snapshot"),
+            Some(snapshot)
+        );
+    }
+
+    #[test]
+    fn genesis_snapshot_requires_event_and_rejects_duplicate_keys_and_events() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let event = id(98);
+        let other_event = id(99);
+        store
+            .commit_authored(id(100), event, 1, &[0xC1], &[])
+            .expect("commit first event");
+        store
+            .commit_authored(id(101), other_event, 1, &[0xC2], &[])
+            .expect("commit second event");
+        let snapshot = SpaceGenesisSnapshot {
+            space_id: [0x31; 16],
+            group_reference: [0x41; 32],
+            group_id: vec![0xA2],
+            event_id: event,
+            encrypted_state: vec![0xD4, 0xE5],
+        };
+
+        store
+            .with_transaction(|transaction| {
+                Store::save_space_genesis_snapshot_in_transaction(transaction, &snapshot)
+            })
+            .expect("save initial snapshot");
+
+        assert!(matches!(
+            store.with_transaction(|transaction| {
+                Store::save_space_genesis_snapshot_in_transaction(transaction, &snapshot)
+            }),
+            Err(StoreError::Sqlite(_))
+        ));
+        let same_event_different_key = SpaceGenesisSnapshot {
+            space_id: [0x32; 16],
+            group_reference: [0x42; 32],
+            ..snapshot.clone()
+        };
+        assert!(matches!(
+            store.with_transaction(|transaction| {
+                Store::save_space_genesis_snapshot_in_transaction(
+                    transaction,
+                    &same_event_different_key,
+                )
+            }),
+            Err(StoreError::Sqlite(_))
+        ));
+
+        let missing_event = SpaceGenesisSnapshot {
+            space_id: [0x33; 16],
+            group_reference: [0x43; 32],
+            event_id: id(102),
+            ..snapshot
+        };
+        assert!(matches!(
+            store.with_transaction(|transaction| {
+                Store::save_space_genesis_snapshot_in_transaction(transaction, &missing_event)
+            }),
+            Err(StoreError::Sqlite(_))
+        ));
+    }
+
+    #[test]
+    fn genesis_snapshot_bounds_are_enforced_by_api_and_schema() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let event = id(103);
+        store
+            .commit_authored(id(104), event, 1, &[0xC3], &[])
+            .expect("commit event");
+        let valid = SpaceGenesisSnapshot {
+            space_id: [0x51; 16],
+            group_reference: [0x61; 32],
+            group_id: vec![0xA3],
+            event_id: event,
+            encrypted_state: vec![0xD5],
+        };
+        for invalid in [
+            SpaceGenesisSnapshot {
+                group_id: Vec::new(),
+                ..valid.clone()
+            },
+            SpaceGenesisSnapshot {
+                group_id: vec![0xA4; 257],
+                ..valid.clone()
+            },
+            SpaceGenesisSnapshot {
+                encrypted_state: Vec::new(),
+                ..valid.clone()
+            },
+            SpaceGenesisSnapshot {
+                encrypted_state: vec![0xD6; 1_048_577],
+                ..valid.clone()
+            },
+        ] {
+            assert!(matches!(
+                store.with_transaction(|transaction| {
+                    Store::save_space_genesis_snapshot_in_transaction(transaction, &invalid)
+                }),
+                Err(StoreError::InvalidSpaceGenesisSnapshot)
+            ));
+        }
+
+        store
+            .with_transaction(|transaction| {
+                transaction
+                    .execute(
+                        "INSERT INTO space_genesis_snapshots(
+                        space_id, group_reference, group_id, event_id, encrypted_state
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            &[0x52_u8; 16][..],
+                            &[0x62_u8; 32][..],
+                            &[] as &[u8],
+                            &event[..],
+                            &[0xD7_u8][..]
+                        ],
+                    )
+                    .expect_err("SQL rejects empty group IDs");
+                transaction
+                    .execute(
+                        "INSERT INTO space_genesis_snapshots(
+                        space_id, group_reference, group_id, event_id, encrypted_state
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            &[0x52_u8; 16][..],
+                            &[0x62_u8; 32][..],
+                            &[0xA5_u8][..],
+                            &event[..],
+                            &[] as &[u8]
+                        ],
+                    )
+                    .expect_err("SQL rejects empty encrypted state");
+                Ok::<_, StoreError>(())
+            })
+            .expect("check SQL snapshot bounds");
+
+        let boundary = SpaceGenesisSnapshot {
+            space_id: [0x53; 16],
+            group_reference: [0x63; 32],
+            group_id: vec![0xA5; 256],
+            event_id: event,
+            encrypted_state: vec![0xD7; 1_048_576],
+        };
+        store
+            .with_transaction(|transaction| {
+                Store::save_space_genesis_snapshot_in_transaction(transaction, &boundary)
+            })
+            .expect("save maximum-sized snapshot");
+        assert_eq!(
+            store
+                .load_space_genesis_snapshot(&boundary.space_id, &boundary.group_reference)
+                .expect("load maximum-sized snapshot"),
+            Some(boundary)
+        );
+    }
+
+    #[test]
+    fn genesis_snapshot_rolls_back_with_enclosing_transaction_error() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let event = id(105);
+        let snapshot = SpaceGenesisSnapshot {
+            space_id: [0x71; 16],
+            group_reference: [0x81; 32],
+            group_id: vec![0xA6],
+            event_id: event,
+            encrypted_state: vec![0xD8, 0xE9],
+        };
+        let result: super::Result<(), StoreError> = store.with_transaction(|transaction| {
+            Store::commit_authored_in_transaction(transaction, id(106), event, 1, &[0xC4], &[])?;
+            Store::save_space_genesis_snapshot_in_transaction(transaction, &snapshot)?;
+            Err(StoreError::InvalidSequence)
+        });
+        assert!(matches!(result, Err(StoreError::InvalidSequence)));
+        assert!(
+            store
+                .load_event(&event)
+                .expect("query rolled-back event")
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .load_space_genesis_snapshot(&snapshot.space_id, &snapshot.group_reference)
+                .expect("query rolled-back snapshot"),
+            None
+        );
+    }
+
     #[test]
     fn occupied_author_sequence_reports_equivocation_without_replacement() {
         let database = TempDatabase::new();
