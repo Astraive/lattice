@@ -169,6 +169,7 @@ pub enum StoreError {
     CachedSpaceMessageLimit,
     CachedSpaceMessageByteLimit,
     CachedSpaceMessagePageLimit,
+    CachedSpaceMessageMissing,
     InvalidCachedSpaceMessage,
     TrustedIdentityConflict,
     CorruptData(&'static str),
@@ -241,6 +242,9 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidCachedSpaceMessage => {
                 formatter.write_str("cached Space message is invalid")
+            }
+            Self::CachedSpaceMessageMissing => {
+                formatter.write_str("cached Space message to update was not found")
             }
             Self::TrustedIdentityConflict => formatter.write_str(
                 "trusted identity fingerprint is already associated with different bundle bytes",
@@ -921,6 +925,71 @@ impl Store {
                 &message.encrypted_content
             ],
         )?;
+        Ok(())
+    }
+
+    /// Replaces one cached message projection while retaining its immutable
+    /// source event metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source row does not match this Space/channel,
+    /// the encrypted content exceeds cache bounds, or the update fails.
+    pub fn replace_cached_space_message_content_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        event_id: &[u8; ID_BYTES],
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+        encrypted_content: &[u8],
+    ) -> Result<()> {
+        if encrypted_content.is_empty() || encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+        {
+            return Err(StoreError::InvalidCachedSpaceMessage);
+        }
+        let old_bytes: Option<i64> = transaction
+            .query_row(
+                "SELECT length(encrypted_content) FROM cached_space_messages
+                 WHERE event_id = ?1 AND space_id = ?2
+                   AND group_reference = ?3 AND channel_id = ?4",
+                params![
+                    &event_id[..],
+                    &space_id[..],
+                    &group_reference[..],
+                    &channel_id[..],
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let old_bytes = old_bytes.ok_or(StoreError::CachedSpaceMessageMissing)?;
+        let total_bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(encrypted_content)), 0)
+             FROM cached_space_messages",
+            [],
+            |row| row.get(0),
+        )?;
+        let retained = usize::try_from(total_bytes.checked_sub(old_bytes).ok_or(
+            StoreError::CorruptData("cached Space message byte total is inconsistent"),
+        )?)
+        .map_err(|_| StoreError::CorruptData("cached Space message byte total is negative"))?;
+        if retained.saturating_add(encrypted_content.len()) > MAX_LOCAL_SPACE_MESSAGE_BYTES {
+            return Err(StoreError::CachedSpaceMessageByteLimit);
+        }
+        let changed = transaction.execute(
+            "UPDATE cached_space_messages SET encrypted_content = ?1
+             WHERE event_id = ?2 AND space_id = ?3
+               AND group_reference = ?4 AND channel_id = ?5",
+            params![
+                encrypted_content,
+                &event_id[..],
+                &space_id[..],
+                &group_reference[..],
+                &channel_id[..],
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::CachedSpaceMessageMissing);
+        }
         Ok(())
     }
 

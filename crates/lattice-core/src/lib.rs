@@ -1040,6 +1040,8 @@ impl Client {
             parents,
             lamport,
             plaintext,
+            cached_message_target: None,
+            cached_content: content,
             event_kind: EventKind::Message,
         };
         let (receipt, staged_reducer) =
@@ -1089,6 +1091,8 @@ impl Client {
             parents,
             lamport,
             plaintext,
+            cached_message_target: Some(target),
+            cached_content: content,
             event_kind: EventKind::Edit,
         };
         let (receipt, staged_reducer) =
@@ -1514,7 +1518,22 @@ struct LocalTextEvent<'a> {
     parents: Vec<lattice_protocol::EventId>,
     lamport: u64,
     plaintext: Vec<u8>,
+    cached_message_target: Option<[u8; 32]>,
+    cached_content: &'a str,
     event_kind: EventKind,
+}
+
+struct CachedTextProjection<'a> {
+    event_kind: EventKind,
+    target: Option<[u8; 32]>,
+    content: &'a str,
+    source_event_id: [u8; 32],
+    space_id: space::SpaceId,
+    group_reference: space::GroupReference,
+    channel_id: space::EntityId,
+    author_id: [u8; 32],
+    author_sequence: u64,
+    lamport: u64,
 }
 
 fn resolve_policy_parents(
@@ -1677,36 +1696,72 @@ fn queue_text_message_in_transaction(
     {
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
-    if message.event_kind == EventKind::Message {
-        let event_id = *event.event_id().as_bytes();
-        let context = local_text_message_context(
-            &message.space_id,
-            &message.group_reference,
-            &message.channel_id,
-            &event_id,
-        );
-        let encrypted_content = lattice_mls::protect_local_record(&context, bound.plaintext())?;
-        Store::save_cached_space_message_in_transaction(
-            transaction,
-            &CachedSpaceMessage {
-                event_id,
-                space_id: message.space_id,
-                group_reference: message.group_reference,
-                channel_id: message.channel_id,
-                author_id: *event.author_fingerprint(),
-                author_seq: sequence,
-                lamport: event.lamport(),
-                encrypted_content,
-                outbox_state: None,
-            },
-        )?;
-    }
+    persist_cached_text_projection(
+        transaction,
+        &CachedTextProjection {
+            event_kind: message.event_kind,
+            target: message.cached_message_target,
+            content: message.cached_content,
+            source_event_id: *event.event_id().as_bytes(),
+            space_id: message.space_id,
+            group_reference: message.group_reference,
+            channel_id: message.channel_id,
+            author_id: *event.author_fingerprint(),
+            author_sequence: sequence,
+            lamport: event.lamport(),
+        },
+    )?;
     Ok((
         QueuedMessage {
             event_id: *event.event_id().as_bytes(),
         },
         staged_reducer,
     ))
+}
+
+fn persist_cached_text_projection(
+    transaction: &Transaction<'_>,
+    projection: &CachedTextProjection<'_>,
+) -> Result<(), CoreError> {
+    let (event_id, is_update) = match (projection.event_kind, projection.target) {
+        (EventKind::Message, None) => (projection.source_event_id, false),
+        (EventKind::Edit, Some(target)) => (target, true),
+        _ => return Err(CoreError::LocalSpaceMessageCacheInvalid),
+    };
+    let plaintext = encode_text_message(projection.content)?;
+    let context = local_text_message_context(
+        &projection.space_id,
+        &projection.group_reference,
+        &projection.channel_id,
+        &event_id,
+    );
+    let encrypted_content = lattice_mls::protect_local_record(&context, &plaintext)?;
+    if is_update {
+        Store::replace_cached_space_message_content_in_transaction(
+            transaction,
+            &event_id,
+            &projection.space_id,
+            &projection.group_reference,
+            &projection.channel_id,
+            &encrypted_content,
+        )?;
+    } else {
+        Store::save_cached_space_message_in_transaction(
+            transaction,
+            &CachedSpaceMessage {
+                event_id,
+                space_id: projection.space_id,
+                group_reference: projection.group_reference,
+                channel_id: projection.channel_id,
+                author_id: projection.author_id,
+                author_seq: projection.author_sequence,
+                lamport: projection.lamport,
+                encrypted_content,
+                outbox_state: None,
+            },
+        )?;
+    }
+    Ok(())
 }
 fn load_or_create_mls_storage_key<P: PrivateKeyProtector>(
     store: &mut Store,
@@ -2131,6 +2186,8 @@ mod tests {
                 }],
             )
             .expect("create local Space");
+        let space_id = *created.space_id();
+        let group_reference = *created.group_reference();
         let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
         let original = client
             .queue_text_message(&mut created, &credential, channel_id, "original")
@@ -2176,6 +2233,18 @@ mod tests {
                 .iter()
                 .any(|entry| entry.event_id == *edit.event_id())
         );
+
+        drop(created);
+        drop(credential);
+        drop(client);
+        let mut reopened = Client::open_existing(&database.0, &protector)
+            .expect("reopen local profile after edit");
+        let cached_history = reopened
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("read cache after profile reopen");
+        assert_eq!(cached_history.len(), 1);
+        assert_eq!(cached_history[0].event_id, *original.event_id());
+        assert_eq!(cached_history[0].content, "edited");
     }
     #[test]
     fn tampered_local_message_history_fails_authentication() {
