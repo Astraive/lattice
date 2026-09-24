@@ -250,6 +250,27 @@ pub fn plan_sync(local: &ScopeSummary, peer: &ScopeSummary) -> Result<SyncPlan, 
     let local = normalize(local)?;
     let peer = normalize(peer)?;
 
+    // Both summaries may be internally consistent while disagreeing about the
+    // identity at a shared author sequence. Reject that fork before planning
+    // ranges, since requesting the disputed sequence cannot resolve it.
+    for (author, local_author) in &local.authors {
+        let Some(peer_author) = peer.authors.get(author) else {
+            continue;
+        };
+        for (sequence, local_event_id) in &local_author.known_events {
+            if peer_author
+                .known_events
+                .get(sequence)
+                .is_some_and(|peer_event_id| peer_event_id != local_event_id)
+            {
+                return Err(PlanError::ConflictingEventAtSequence {
+                    author: *author,
+                    sequence: *sequence,
+                });
+            }
+        }
+    }
+
     let mut authors = BTreeSet::new();
     for author in local.authors.keys().chain(peer.authors.keys()) {
         authors.insert(*author);
@@ -672,6 +693,54 @@ mod tests {
         assert_eq!(
             plan_sync(&duplicate_local, &duplicate_peer),
             plan_sync(&canonical_local, &canonical_peer)
+        );
+    }
+
+    #[test]
+    fn rejects_cross_summary_forks_and_preserves_single_summary_validation() {
+        let mut local = ScopeSummary::new(scope());
+        let mut local_author = AuthorSummary::new(author(7), 7);
+        local_author.known_events.push(KnownEvent {
+            sequence: 7,
+            event_id: event(1),
+        });
+        local.authors.push(local_author);
+
+        let mut peer = ScopeSummary::new(scope());
+        let mut peer_author = AuthorSummary::new(author(7), 7);
+        peer_author.known_events.push(KnownEvent {
+            sequence: 7,
+            event_id: event(2),
+        });
+        peer.authors.push(peer_author);
+
+        assert_eq!(
+            plan_sync(&local, &peer),
+            Err(PlanError::ConflictingEventAtSequence {
+                author: author(7),
+                sequence: 7,
+            })
+        );
+
+        let mut internally_conflicting = ScopeSummary::new(scope());
+        let mut duplicated_author = AuthorSummary::new(author(7), 0);
+        duplicated_author.known_events = vec![
+            KnownEvent {
+                sequence: 7,
+                event_id: event(1),
+            },
+            KnownEvent {
+                sequence: 7,
+                event_id: event(2),
+            },
+        ];
+        internally_conflicting.authors.push(duplicated_author);
+        assert_eq!(
+            plan_sync(&internally_conflicting, &peer),
+            Err(PlanError::ConflictingEventAtSequence {
+                author: author(7),
+                sequence: 7,
+            })
         );
     }
 
