@@ -1,6 +1,6 @@
 # Candidate 1: Space and membership payloads
 
-**Status:** executable candidate, not a frozen interoperability contract. `lattice-core` implements the kind-6 policy reducer and conflict checks, but its membership transition and recovery gates fail closed without typed MLS/trust proofs. This spec does not establish interoperability or verify every Space requirement. It defines candidate plaintext records for the existing signed event kinds in [`05-events.md`](05-events.md).
+**Status:** executable candidate, not a frozen interoperability contract. `lattice-core` implements kind-6 policy reduction, conflict checks, recovery authorization from the prior reducer's retained common policy, and member-transition matching against one exact MLS-bound control event. The policy transition and MLS group merge are not yet one durable transaction. This spec does not establish interoperability or verify every Space requirement.
 
 ## Event and encoding boundary
 
@@ -129,7 +129,7 @@ Exact map keys: `{0,1,2,3,4,5}`.
 | 5 | MLS control event ID, 32 bytes, required for every action. |
 
 The referenced invite, when required, MUST be an ancestor of this event, have the same target fingerprint, and remain unexpired and below its use limit at the current pre-transition policy revision. The referenced kind-7 event MUST also be an ancestor, have the same Space ID and author, and name the currently accepted MLS group reference and parent epoch in its outer fields. The kind-7 commit MUST be validated by the MLS implementation as the exact commit for the stated target and action. Its outer epoch and the kind-6 MemberTransition event's outer epoch are both the commit's parent epoch. Keep the commit staged: do not merge a membership-changing commit until its matching authorized MemberTransition is validated. Accept the policy transition and merge the exact staged commit as one durable state change; if either validation fails, apply neither. Missing parents or a missing linked event remain pending. The member-transition author must be authorized against the pre-transition policy state as specified in `07-permissions.md`.
-Each membership-changing kind-7 commit MUST add or remove exactly one target and MUST have exactly one matching MemberTransition; otherwise it remains staged and cannot be merged. For an admission, the MLS Add MUST use the KeyPackage whose exact encoded bytes hash to the referenced invite's key `4`.
+Each membership-changing kind-7 commit MUST add or remove exactly one target and MUST have exactly one matching MemberTransition; otherwise it remains staged and cannot be merged. For an admission, the MLS Add MUST use the KeyPackage whose exact TLS serialization (excluding the enclosing `MlsMessage` framing) hashes with SHA-256 to the referenced invite's key `4`.
 For action `0`, the matching MLS delta is one Add. For actions `1` and `2`, it is one Remove; action `2` additionally records the terminal application ban.
 
 An active member cannot be admitted twice. Removal and ban require an active target other than the author; the owner cannot be removed or banned. Removal makes the target removed, and an unbanned removed member may be admitted again through a new invite and valid commit. Ban is terminal in this generation. There is no unban operation.

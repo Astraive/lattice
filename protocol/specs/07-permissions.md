@@ -1,6 +1,6 @@
 # Candidate 1: Space permissions and reduction
 
-**Status:** executable candidate, not a frozen interoperability contract. `lattice-core` implements kind-6 policy reduction and candidate authorization for kinds 1–5 and 8; voice authorization fails closed as unsupported. MLS/trust integration, message-state projection, interoperability, and full requirement verification remain incomplete. Payload layouts and event kinds are in [`06-spaces.md`](06-spaces.md) and [`05-events.md`](05-events.md).
+**Status:** executable candidate, not a frozen interoperability contract. `lattice-core` implements kind-6 policy reduction, candidate authorization for kinds 1–5 and 8, in-memory message/edit/tombstone/tagged-reaction/pin projections, member-transition binding to validated MLS Commit evidence, and one atomic parent-epoch membership transition/Commit-merge/event-store path. Durable policy replay, Welcome-based join, voice authorization, interoperability, and full requirement verification remain incomplete. Payload layouts and event kinds are in [`06-spaces.md`](06-spaces.md) and [`05-events.md`](05-events.md).
 
 ## Permission registry version 1
 

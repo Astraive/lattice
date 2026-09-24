@@ -1,6 +1,6 @@
 # Candidate 1 — signed immutable event framing
 
-**Status:** candidate; outer framing and signature verification are implemented in `crates/lattice-events`. Event bodies remain opaque to that layer. The core has a fail-closed candidate authorization gate for kinds 1–5 and 8 using the plaintext maps in [`07-permissions.md`](07-permissions.md); it does not implement their message-state projections. Voice authorization remains unsupported.
+**Status:** candidate; outer framing and signature verification are implemented in `crates/lattice-events`. Event bodies remain opaque at that layer. `lattice-core` has fail-closed candidate authorization for kinds 1–5 and 8, plus in-memory projections for messages, edits, tombstones, reactions and pins. Durable replay and voice authorization remain incomplete.
 
 ## Candidate canonical preimage
 

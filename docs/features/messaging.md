@@ -2,7 +2,11 @@
 
 Messages are immutable authenticated creation events. Edits, tombstones, reactions and receipts are separate events. UI ordering is stable but does not assert a global physical timeline.
 
-The current Rust reducer projects authorized messages, edit versions, tombstones, tagged reactions, and pin tags in memory. It does not persist/replay that view or provide offline search.
+The Rust reducer projects authorized messages and updates in memory. Core also caches up to 4,096 outgoing text records, bounded to 16 MiB, encrypted with the protected MLS storage key and kept separate from the outbox. A history query returns the latest 100 records for one channel after restart. Desktop and Android provide a recent-history view; UniFFI exposes the same local query. The cache is not synced and does not include incoming events. Restart still restores only unchanged Genesis policy, not later policy changes or a full message projection.
+
+## Implemented local send boundary
+
+`Client::queue_text_message` accepts a restored local Space and credential; `queue_text_message_from_x509_credential` revalidates a bounded OS-trusted device certificate and restores only a valid, unchanged local Genesis generation. Both paths re-check channel policy, encrypt with MLS, and atomically commit the signed message, outbox envelope, encrypted local history record, author sequence, and sender state. A successful return means **queued locally**, not forwarded or delivered. A later MLS membership transition or changed generation fails closed instead of using stale Genesis policy. Incoming-message projection, policy replay, edits, tombstones, reactions, sync, and delivery receipts remain unsupported.
 
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
@@ -16,7 +20,7 @@ The current Rust reducer projects authorized messages, edit versions, tombstones
 | MSG-008 | Reactions and pins shall use element-tagged add/remove semantics. | Opposite orders of same valid events converge without oscillation. | M3 |
 | MSG-009 | Mentions shall resolve identity/role IDs rather than display-name text. | Rename/collision cannot redirect mention; local mute policy suppresses notification. | M3 |
 | MSG-010 | Presence and typing shall be expiring hints and never durable truth. | Disconnected peer expires and does not remain globally online. | M3 |
-| MSG-011 | Locally retained history shall be searchable offline within key/retention constraints. | Query old authorized messages with all network paths off. | M3 |
+| MSG-011 | Locally retained history shall be searchable offline within key/retention constraints. | Search old authorized messages with network paths off. | M3 |
 | MSG-012 | Sending rich text shall use constrained semantic content, never raw executable HTML. | Malicious markup renders as safe text; desktop/mobile results agree. | M3 |
 
 Messages reference attachments by authenticated manifest IDs. Local storage may retain less history under pressure, but loss of cryptographic dependencies or inability to decrypt must be shown explicitly. The outbox and local event log are different: dropping an expired envelope must not delete the authored message. See [DATA_MODEL.md](../data/DATA_MODEL.md).

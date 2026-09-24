@@ -1,23 +1,22 @@
-//! Candidate-only Space policy reduction for the executable contracts in
+//! Candidate Space policy reduction for the executable contracts in
 //! `protocol/specs/06-spaces.md` and `07-permissions.md`.
 //!
-//! This module is a policy projection and candidate authorization gate, not an
-//! MLS engine. Kind-6 policy messages enter through [`crate::MlsBoundEvent`];
+//! This module is a policy projection and authorization gate, not an MLS
+//! engine. Kind-6 policy messages enter through [`crate::MlsBoundEvent`];
 //! kind-1–5 and kind-8 actions use event fields and exact MLS-produced plaintext.
 //! Authorized message, edit, tombstone, reaction, and pin actions have a
 //! deterministic in-memory projection. Durable projection storage and voice
 //! authorization are not implemented.
 //!
-//! The binding does not validate credential trust, MLS group-reference mapping,
-//! group membership deltas, or durable recovery. Accepted member transitions do
-//! not merge an `OpenMLS` commit. Current core/MLS APIs expose no opaque
-//! recovery-trust or validated-control proof, so those operations fail closed.
-//! Each [`SpaceReducer`] is one candidate generation. Callers must keep
-//! generations separate by MLS group reference; they must not treat a
-//! candidate-only permission result as a complete authorization decision until
-//! credential trust, membership proof, durable reducer restore, and MLS control
-//! integration are complete. Authorized application bytes can be staged in one
-//! caller transaction with a reducer copy that is installed only after commit.
+//! MLS admission validates credential trust and group references before
+//! producing [`crate::MlsBoundEvent`]. The core transaction path stages the
+//! exact MLS Commit, validates its parent-epoch transition against policy, and
+//! atomically merges the Commit with both durable signed event records. Each
+//! [`SpaceReducer`] remains a candidate generation; callers keep generations
+//! separate by MLS group reference. Recovery authorization uses the prior
+//! reducer's retained common policy and binds one exact MLS-authenticated
+//! recovery Genesis. Durable reducer restore and Welcome-based join remain
+//! incomplete.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -234,12 +233,12 @@ pub enum RejectReason {
     UnsupportedAction,
 }
 
-/// Opaque input reserved for the future local recovery-gate integration.
+/// Opaque authorization derived from an active prior Space policy and one exact
+/// MLS-bound recovery Genesis event.
 ///
-/// Its fields and constructor are private: the current core/MLS APIs do not
-/// produce a proof that can safely create this value. Recovery genesis is
-/// therefore rejected until that typed integration exists. It does not claim
-/// credential-chain validation or recovery trust.
+/// Only [`SpaceReducer::authorize_recovery_genesis`] can construct this value.
+/// It proves the old generation's current invite permission and binds recovery
+/// to one event and one new group reference.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryAuthorization {
     prior_space_id: SpaceId,
@@ -248,6 +247,7 @@ pub struct RecoveryAuthorization {
     trusted_administrator: Fingerprint,
     recovery_id: EntityId,
     new_group_reference: GroupReference,
+    recovery_event_id: EventReference,
 }
 
 /// Member action recorded by an admitted kind-6 policy transition.
@@ -258,19 +258,15 @@ pub enum MemberAction {
     Ban,
 }
 
-/// Opaque input reserved for a future typed MLS commit-validation result.
-///
-/// Fields and constructor are private because the current MLS API does not
-/// expose the proof required to create one. Member transitions fail closed
-/// until this integration boundary exists.
+/// Internal relation tying one signed control event to an MLS proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ValidatedMlsControlRelation {
+struct ValidatedMlsControlRelation {
     space_id: SpaceId,
     group_reference: GroupReference,
     control_event_id: EventReference,
     author: Fingerprint,
     parent_epoch: u64,
-    action: MemberAction,
+    mls_action: lattice_mls::api::MlsMembershipAction,
     target: Fingerprint,
     key_package_hash: Option<[u8; 32]>,
 }
@@ -384,20 +380,109 @@ impl SpaceReducer {
         self.register_event(event, None, false)
     }
 
-    /// Records a kind-7 event with a typed MLS commit-validation result.
-    /// The current MLS API cannot produce this opaque value, so callers cannot
-    /// use this path until that proof-producing integration is added.
+    /// Records a signed kind-7 event only when a staged MLS proof matches it.
+    ///
+    /// The proof binds the exact TLS Commit bytes, group, parent epoch, author,
+    /// changed member, and (for an Add) exact `KeyPackage` hash. It is produced by
+    /// `GroupState::take_staged_membership_change`; passing it consumes the
+    /// one-shot proof, which exists only while that Commit is staged.
     ///
     /// # Errors
     ///
-    /// Returns an error when the event and opaque typed relation disagree, or
-    /// the generation graph reaches its bound.
+    /// Returns an error when the signed event does not exactly match the MLS
+    /// proof, or the generation graph reaches its bound.
     pub fn observe_validated_control_event(
         &mut self,
         event: &VerifiedSignatureOnlyEvent,
-        relation: ValidatedMlsControlRelation,
+        proof: lattice_mls::api::ValidatedMlsMembershipChange,
     ) -> Result<(), RejectReason> {
+        let binding = proof
+            .into_control_binding(
+                event.mls_group_reference(),
+                event.mls_epoch(),
+                event.author_fingerprint(),
+                event.protected_body(),
+            )
+            .ok_or(RejectReason::InvalidControlRelation)?;
+        if event.kind() != EventKind::MlsControl || event.channel_id().is_some() {
+            return Err(RejectReason::InvalidControlRelation);
+        }
+        let relation = ValidatedMlsControlRelation {
+            space_id: *event.space_id(),
+            group_reference: *event.mls_group_reference(),
+            control_event_id: *event.event_id().as_bytes(),
+            author: *event.author_fingerprint(),
+            parent_epoch: event.mls_epoch(),
+            mls_action: binding.action(),
+            target: *binding.target(),
+            key_package_hash: binding.key_package_hash().copied(),
+        };
         self.register_event(event, Some(relation), true)
+    }
+
+    /// Authorizes one recovery Genesis using the prior generation's retained
+    /// common policy and the event's MLS-authenticated creator.
+    ///
+    /// The supplied event must be a root Membership event at epoch zero in a
+    /// distinct group and must contain the exact recovery references. The
+    /// creator must currently hold both Space management and member-invite
+    /// permissions in this reducer. The returned proof is bound to this event;
+    /// it cannot authorize another root or group.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RejectReason::InvalidRecoveryAuthorization`] when the event is
+    /// not a valid recovery root for this generation or its author lacks the
+    /// required permission. Returns the relevant payload/schema error when the
+    /// recovery operation cannot be decoded.
+    pub fn authorize_recovery_genesis(
+        &self,
+        event: &MlsBoundEvent,
+    ) -> Result<RecoveryAuthorization, RejectReason> {
+        let policy = self
+            .policy
+            .as_ref()
+            .ok_or(RejectReason::InvalidRecoveryAuthorization)?;
+        let verified = event.event();
+        if verified.kind() != EventKind::Membership
+            || verified.channel_id().is_some()
+            || verified.space_id() != &policy.space_id
+            || verified.mls_group_reference() == &policy.group_reference
+            || verified.mls_epoch() != 0
+            || !verified.parents().is_empty()
+            || event.plaintext().len() > MAX_SPACE_PAYLOAD_BYTES
+        {
+            return Err(RejectReason::InvalidRecoveryAuthorization);
+        }
+        let payload = decode_canonical(event.plaintext())
+            .map_err(|_| RejectReason::InvalidCanonicalPayload)?;
+        let Operation::RecoveryGenesis {
+            creator,
+            prior_group,
+            prior_root,
+            recovery_id,
+            ..
+        } = parse_operation(&payload)?
+        else {
+            return Err(RejectReason::InvalidRecoveryAuthorization);
+        };
+        if creator != *verified.author_fingerprint()
+            || prior_group != policy.group_reference
+            || prior_root != policy.root_event_id
+        {
+            return Err(RejectReason::InvalidRecoveryAuthorization);
+        }
+        require_permission(policy, creator, SPACE_MANAGE | MEMBER_INVITE)
+            .map_err(|_| RejectReason::InvalidRecoveryAuthorization)?;
+        Ok(RecoveryAuthorization {
+            prior_space_id: policy.space_id,
+            prior_group_reference: policy.group_reference,
+            prior_root_event_id: policy.root_event_id,
+            trusted_administrator: creator,
+            recovery_id,
+            new_group_reference: *verified.mls_group_reference(),
+            recovery_event_id: *verified.event_id().as_bytes(),
+        })
     }
 
     /// Applies one exact kind-6 candidate application payload. Event metadata
@@ -660,7 +745,8 @@ impl SpaceReducer {
                 || relation.author != *event.author_fingerprint()
                 || relation.parent_epoch != event.mls_epoch()
                 || event.channel_id().is_some()
-                || (relation.action == MemberAction::Admit) != relation.key_package_hash.is_some())
+                || (relation.mls_action == lattice_mls::api::MlsMembershipAction::Add)
+                    != relation.key_package_hash.is_some())
         {
             return Err(RejectReason::InvalidControlRelation);
         }
@@ -832,6 +918,7 @@ impl SpaceReducer {
             || authorization.trusted_administrator != creator
             || authorization.recovery_id != recovery_id
             || authorization.new_group_reference != metadata.group_reference
+            || authorization.recovery_event_id != metadata.event_id
             || metadata.group_reference == prior_group
         {
             return ApplyResult::Rejected(RejectReason::InvalidRecoveryAuthorization);
@@ -1533,6 +1620,14 @@ fn apply_operation(
             let control_node = graph
                 .get(control_event_id)
                 .ok_or(RejectReason::InvalidControlRelation)?;
+            let proof_matches_action = match action {
+                MemberAction::Admit => {
+                    control.mls_action == lattice_mls::api::MlsMembershipAction::Add
+                }
+                MemberAction::Remove | MemberAction::Ban => {
+                    control.mls_action == lattice_mls::api::MlsMembershipAction::Remove
+                }
+            };
             if control_node.kind != EventKind::MlsControl
                 || !ancestors.contains(control_event_id)
                 || control.space_id != policy.space_id
@@ -1541,7 +1636,7 @@ fn apply_operation(
                 || control.parent_epoch != event_epoch
                 || control_node.epoch != event_epoch
                 || control.target != *target
-                || control.action != *action
+                || !proof_matches_action
             {
                 return Err(RejectReason::InvalidControlRelation);
             }
@@ -2702,6 +2797,103 @@ mod tests {
         assert_eq!(reducer.policy().unwrap().root_author, creator);
     }
 
+    fn recovery_genesis_payload(
+        creator: Fingerprint,
+        prior_group: GroupReference,
+        prior_root: EventReference,
+        recovery_id: EntityId,
+        channel: EntityId,
+    ) -> Value {
+        policy([
+            (0, Value::Unsigned(1)),
+            (1, Value::Unsigned(1)),
+            (2, Value::Bytes(creator.to_vec())),
+            (3, Value::Bytes(prior_group.to_vec())),
+            (4, Value::Bytes(prior_root.to_vec())),
+            (5, Value::Bytes(recovery_id.to_vec())),
+            (6, Value::Array(vec![channel_descriptor(channel)])),
+        ])
+    }
+
+    #[test]
+    fn recovery_requires_current_admin_and_binds_one_new_group_root() {
+        let identity = DeviceIdentity::generate().unwrap();
+        let creator = identity.public_bundle().fingerprint();
+        let space = [18; 16];
+        let prior_group = [19; 32];
+        let new_group = [20; 32];
+        let genesis = make_bound_event(
+            &identity,
+            space,
+            prior_group,
+            0,
+            Vec::new(),
+            genesis_payload(creator, [21; 16]),
+        );
+        let prior_root = *genesis.event().event_id().as_bytes();
+        let mut prior = SpaceReducer::new();
+        assert_eq!(
+            prior.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+
+        let recovery_id = [22; 16];
+        let recovery = make_bound_event(
+            &identity,
+            space,
+            new_group,
+            0,
+            Vec::new(),
+            recovery_genesis_payload(creator, prior_group, prior_root, recovery_id, [23; 16]),
+        );
+        let authorization = prior
+            .authorize_recovery_genesis(&recovery)
+            .expect("the active owner may recover into a new group");
+        let mut recovered = SpaceReducer::new();
+        assert_eq!(
+            recovered.apply(&recovery, Some(&authorization)),
+            ApplyResult::Applied { revision: 0 }
+        );
+        let policy = recovered.policy().expect("recovery root is active");
+        assert_eq!(policy.space_id, space);
+        assert_eq!(policy.group_reference, new_group);
+        assert_eq!(policy.root_author, creator);
+
+        let other_group = make_bound_event(
+            &identity,
+            space,
+            [24; 32],
+            0,
+            Vec::new(),
+            recovery_genesis_payload(creator, prior_group, prior_root, recovery_id, [25; 16]),
+        );
+        assert_eq!(
+            recovered.apply(&other_group, Some(&authorization)),
+            ApplyResult::Rejected(RejectReason::InvalidRecoveryAuthorization)
+        );
+
+        let outsider = DeviceIdentity::generate().unwrap();
+        let outsider_fingerprint = outsider.public_bundle().fingerprint();
+        let unauthorized = make_bound_event(
+            &outsider,
+            space,
+            [26; 32],
+            0,
+            Vec::new(),
+            recovery_genesis_payload(
+                outsider_fingerprint,
+                prior_group,
+                prior_root,
+                [27; 16],
+                [28; 16],
+            ),
+        );
+        assert_eq!(
+            prior.authorize_recovery_genesis(&unauthorized),
+            Err(RejectReason::InvalidRecoveryAuthorization)
+        );
+    }
+
     #[test]
     fn rejects_malformed_exact_keys_in_nested_descriptors() {
         let identity = DeviceIdentity::generate().unwrap();
@@ -2983,6 +3175,23 @@ mod tests {
         assert_eq!(reducer.policy().unwrap().revision, 0);
         assert_eq!(reducer.policy().unwrap().channels[0].name, "general");
         assert_eq!(reducer.conflict_evidence().len(), 2);
+        let recovery_event = make_bound_event(
+            &identity,
+            space,
+            [23; 32],
+            0,
+            Vec::new(),
+            recovery_genesis_payload(author, group, root_id, [24; 16], [25; 16]),
+        );
+        let recovery = reducer
+            .authorize_recovery_genesis(&recovery_event)
+            .expect("the owner retains invite authority in the common policy");
+        let mut recovered = SpaceReducer::new();
+        assert_eq!(
+            recovered.apply(&recovery_event, Some(&recovery)),
+            ApplyResult::Applied { revision: 0 }
+        );
+        assert_eq!(recovered.policy().unwrap().group_reference, [23; 32]);
     }
     // Keeps the cross-action causality and delivery-order convergence fixture
     // together; splitting it would obscure the shared event graph.
@@ -3798,5 +4007,161 @@ mod tests {
             reducer.authorize_application_event(&edit),
             EventAuthorization::Rejected(RejectReason::InvalidTarget)
         );
+    }
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn control_event_requires_exact_staged_commit_proof() {
+        use lattice_events::EventDraft;
+        use lattice_mls::api::{DeviceCredentialInput, GroupState, IncomingResult};
+        use openmls::credentials::{Credential, CredentialType};
+        use openmls_rust_crypto::OpenMlsRustCrypto;
+
+        fn test_credential(identity: &DeviceIdentity) -> DeviceCredentialInput {
+            let credential = Credential::new(
+                CredentialType::X509,
+                b"test-only untrusted X.509 placeholder".to_vec(),
+            );
+            DeviceCredentialInput::from_untrusted_x509_credential_for_tests(identity, &credential)
+                .expect("test credential matches the device signer")
+        }
+
+        let provider_alice = OpenMlsRustCrypto::default();
+        let provider_bob = OpenMlsRustCrypto::default();
+        let alice_identity = DeviceIdentity::generate().unwrap();
+        let bob_identity = DeviceIdentity::generate().unwrap();
+        let charlie_identity = DeviceIdentity::generate().unwrap();
+        let alice_credential = test_credential(&alice_identity);
+        let bob_credential = test_credential(&bob_identity);
+        let charlie_credential = test_credential(&charlie_identity);
+        let mut alice =
+            GroupState::create(&provider_alice, &alice_identity, &alice_credential).unwrap();
+        let bob_key_package =
+            GroupState::publish_key_package(&provider_bob, &bob_identity, &bob_credential).unwrap();
+        let bob_add = alice
+            .prepare_add(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                bob_key_package.as_bytes(),
+            )
+            .unwrap();
+        let group_id = alice.group_id();
+        let bob_welcome = alice
+            .accept_prepared_add(&provider_alice, &bob_add, bob_add.commit().as_bytes())
+            .unwrap();
+        let mut bob = GroupState::from_welcome(
+            &provider_bob,
+            &group_id,
+            &bob_credential,
+            bob_welcome.as_bytes(),
+        )
+        .unwrap();
+        let charlie_key_package = GroupState::publish_key_package(
+            &provider_alice,
+            &charlie_identity,
+            &charlie_credential,
+        )
+        .unwrap();
+        let charlie_add = alice
+            .prepare_add(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                charlie_key_package.as_bytes(),
+            )
+            .unwrap();
+        let commit = charlie_add.commit().as_bytes();
+        assert!(matches!(
+            bob.process_incoming(&provider_bob, commit),
+            Ok(IncomingResult::StagedCommit { .. })
+        ));
+        let proof = bob.take_staged_membership_change().unwrap();
+        let parent_epoch = proof.parent_epoch();
+        let space = [80; 16];
+        let group = alice.group_reference();
+        let channel = [81; 16];
+        let mut reducer = SpaceReducer::new();
+        let genesis = make_bound_event(
+            &alice_identity,
+            space,
+            group,
+            0,
+            Vec::new(),
+            genesis_payload(alice_identity.fingerprint(), channel),
+        );
+        let root_id = *genesis.event().event_id().as_bytes();
+        assert_eq!(
+            reducer.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+        let invite_id = [82; 16];
+        let target = charlie_identity.fingerprint();
+        let key_package_hash = *proof.key_package_hash().unwrap();
+        let invite = make_bound_event(
+            &alice_identity,
+            space,
+            group,
+            parent_epoch,
+            vec![root_id],
+            policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Unsigned(2)),
+                (2, Value::Bytes(invite_id.to_vec())),
+                (3, Value::Bytes(target.to_vec())),
+                (4, Value::Bytes(key_package_hash.to_vec())),
+                (5, Value::Null),
+                (6, Value::Null),
+            ]),
+        );
+        let invite_event_id = *invite.event().event_id().as_bytes();
+        assert_eq!(
+            reducer.apply(&invite, None),
+            ApplyResult::Applied { revision: 1 }
+        );
+        let make_control_event = |body: Vec<u8>, parents: Vec<EventReference>| {
+            VerifiedSignatureOnlyEvent::create(
+                &alice_identity,
+                EventDraft {
+                    space_id: space,
+                    channel_id: None,
+                    author_sequence: 3,
+                    lamport: 0,
+                    wall_time_hint: 0,
+                    parents: parents.into_iter().map(EventId::from_bytes).collect(),
+                    kind: EventKind::MlsControl,
+                    protected_body: body,
+                    mls_group_reference: group,
+                    mls_epoch: parent_epoch,
+                },
+            )
+            .unwrap()
+        };
+        let control = make_control_event(commit.to_vec(), vec![invite_event_id]);
+        let control_id = *control.event_id().as_bytes();
+        reducer
+            .observe_validated_control_event(&control, proof)
+            .expect("exact authenticated Commit binds to the signed control event");
+        let transition = make_bound_event(
+            &alice_identity,
+            space,
+            group,
+            parent_epoch,
+            vec![control_id],
+            policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Unsigned(6)),
+                (2, Value::Unsigned(0)),
+                (3, Value::Bytes(target.to_vec())),
+                (4, Value::Bytes(invite_event_id.to_vec())),
+                (5, Value::Bytes(control_id.to_vec())),
+            ]),
+        );
+        assert_eq!(
+            reducer.apply(&transition, None),
+            ApplyResult::Applied { revision: 2 }
+        );
+        let accepted = reducer.policy().unwrap();
+        assert_eq!(member_status(accepted, &target), Some(MemberStatus::Active));
+        assert_eq!(accepted.invites[0].uses, 1);
     }
 }

@@ -3,8 +3,10 @@
 //! The facade owns a durable store and device identity. It binds verified
 //! events to MLS results and can atomically create local candidate Spaces or
 //! stage application authorization with exact event bytes in a caller-owned
-//! `SQLite` transaction. Membership trust, Space join, later policy replay, and
-//! durable MLS conflict recovery remain incomplete.
+//! `SQLite` transaction. It also atomically validates a parent-epoch member
+//! transition, merges its staged MLS Commit, and stores both exact signed event
+//! records. Durable reducer replay, Welcome-based Space join, and durable MLS
+//! conflict recovery remain incomplete.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -14,14 +16,18 @@ use rusqlite::Transaction;
 use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
 use lattice_identity::{DeviceIdentity, IdentityError, IdentityPublicBundle, PrivateKeyProtector};
 use lattice_mls::{
-    ProtectedCodecError, ProtectedSqliteProvider, api::MlsApplication, migrate_protected_sqlite,
-    with_mls_storage_key,
+    ProtectedCodecError, ProtectedSqliteProvider,
+    api::{DeviceCredentialInput, GroupState, IncomingResult, MlsApplication},
+    migrate_protected_sqlite, with_mls_storage_key,
 };
-use lattice_protocol::{Value, encode_canonical};
-pub use lattice_storage::SpaceGenesisCursor;
+use lattice_protocol::{Value, decode_canonical, encode_canonical};
 use lattice_storage::{
-    CommitOutcome, MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, Store, StoreError,
+    CachedSpaceMessage, CommitOutcome, MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
+    MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, Store, StoreError,
 };
+pub use lattice_storage::{OutboxState, SpaceGenesisCursor};
+use openmls::credentials::Credential;
+use openmls::prelude::CredentialType;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -38,6 +44,9 @@ pub struct DeviceIdentityInfo {
     /// Full domain-separated SHA-256 fingerprint of `public_bundle`.
     pub fingerprint: [u8; 32],
 }
+
+/// Maximum RFC 9420 X.509 credential content accepted for local Space creation.
+pub const MAX_SPACE_CREDENTIAL_BYTES: usize = lattice_mls::api::MAX_CREDENTIAL_BYTES;
 
 /// Caller-selected fields for one initial channel; its identifier is generated
 /// by [`Client::create_space`].
@@ -62,6 +71,31 @@ pub struct CreatedSpace {
     group_reference: space::GroupReference,
     genesis_event: VerifiedSignatureOnlyEvent,
     reducer: space::SpaceReducer,
+}
+
+/// Event identifier for one locally authorized text message in the queued outbox.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueuedMessage {
+    event_id: [u8; 32],
+}
+
+impl QueuedMessage {
+    /// Returns the immutable identifier of the committed message event.
+    #[must_use]
+    pub const fn event_id(&self) -> &[u8; 32] {
+        &self.event_id
+    }
+}
+/// One locally retained, authorized outgoing text message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalTextMessageRecord {
+    pub event_id: [u8; 32],
+    pub channel_id: space::EntityId,
+    pub author_id: [u8; 32],
+    pub author_sequence: u64,
+    pub lamport: u64,
+    pub content: String,
+    pub outbox_state: Option<OutboxState>,
 }
 
 impl CreatedSpace {
@@ -123,10 +157,11 @@ impl RestoredSpacePage {
 /// Event payload bound to an MLS application or a locally authenticated Genesis.
 ///
 /// External applications enter through [`bind_mls_application`], which proves
-/// that `OpenMLS` processed the exact event ciphertext. Local Genesis creation
-/// and restore use the private `SQLite` transaction plus AEAD snapshot binding.
-/// Neither route validates MLS credential trust, group-reference mapping,
-/// Space/channel authorization, or application policy.
+/// that `OpenMLS` processed the exact event ciphertext and binds the sender's
+/// validated identity fingerprint. Local Genesis creation requires a
+/// production-validated credential. Restore checks persisted credential
+/// framing and key identity but does not recheck current path trust or expiry.
+/// Neither path evaluates Space/channel authorization or application policy.
 #[must_use]
 #[derive(Debug)]
 pub struct MlsBoundEvent {
@@ -150,21 +185,22 @@ impl MlsBoundEvent {
 
 /// Binds a signature-verified event to a successful MLS application result.
 ///
-/// The binding rejects events whose author key, protected body, MLS epoch, or
-/// event-visible MLS group reference differs from the authenticated MLS result.
+/// The binding rejects events whose author key or full identity fingerprint, protected body,
+/// MLS epoch, or event-visible MLS group reference differs from the authenticated MLS result.
 /// A successful value is not authorization and must not be treated as
 /// permission to mutate a Space.
 ///
 /// # Errors
 ///
-/// Returns [`CoreError::MlsEventBindingFailed`] if sender identity, exact
-/// ciphertext bytes, MLS epoch, or group reference do not match the signed event.
+/// Returns [`CoreError::MlsEventBindingFailed`] if the MLS member key or full
+/// identity fingerprint, exact ciphertext, epoch, or group reference differs.
 pub fn bind_mls_application(
     event: VerifiedSignatureOnlyEvent,
     application: MlsApplication,
 ) -> Result<MlsBoundEvent, CoreError> {
     let author_key = event.identity_bundle().ed25519_public_key();
     if application.member_signature_key() != Some(&author_key)
+        || application.member_identity_fingerprint() != Some(event.author_fingerprint())
         || !application.matches_ciphertext(event.protected_body())
         || application.epoch() != event.mls_epoch()
         || application.group_reference() != event.mls_group_reference()
@@ -223,6 +259,30 @@ pub fn authorize_and_store_application_event(
     Ok((staged_reducer, authorization))
 }
 
+fn store_received_event(
+    transaction: &Transaction<'_>,
+    event: &VerifiedSignatureOnlyEvent,
+) -> Result<(), CoreError> {
+    let parents = event
+        .parents()
+        .iter()
+        .map(|parent| *parent.as_bytes())
+        .collect::<Vec<_>>();
+    if let CommitOutcome::Equivocation { existing_event_id } =
+        Store::commit_received_in_transaction(
+            transaction,
+            *event.author_fingerprint(),
+            *event.event_id().as_bytes(),
+            event.author_sequence(),
+            event.encoded_bytes(),
+            &parents,
+        )?
+    {
+        return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
+    }
+    Ok(())
+}
+
 /// Local core setup, protected MLS state, and durable-store failures.
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -256,6 +316,9 @@ pub enum CoreError {
     /// Locally generated Space genesis did not satisfy its exact policy schema.
     #[error("candidate Space genesis rejected: {0:?}")]
     SpaceGenesisRejected(space::RejectReason),
+    /// The production X.509 credential failed validation against the local identity.
+    #[error("Space X.509 credential validation failed")]
+    SpaceCredentialInvalid,
     /// Canonical Space genesis CBOR could not be encoded.
     #[error(transparent)]
     Protocol(#[from] lattice_protocol::Error),
@@ -268,9 +331,27 @@ pub enum CoreError {
     /// A verified event did not match its authenticated MLS application result.
     #[error("event does not match the authenticated MLS application")]
     MlsEventBindingFailed,
+    /// A membership control event did not bind to the staged MLS proof.
+    #[error("Space membership control relation rejected: {0:?}")]
+    SpaceControlRejected(space::RejectReason),
+    /// The policy membership transition was not applied.
+    #[error("Space membership policy transition not applied: {0:?}")]
+    SpaceMembershipNotApplied(space::ApplyResult),
     /// A received author sequence is occupied by a different event ID.
     #[error("received author sequence conflicts with event {existing_event_id:02x?}")]
     ReceivedEventEquivocation { existing_event_id: [u8; 32] },
+    /// An encrypted local message cache row failed event binding or validation.
+    #[error("local Space message cache entry is invalid")]
+    LocalSpaceMessageCacheInvalid,
+    /// A locally authored message failed the Space policy gate.
+    #[error("Space message rejected: {0:?}")]
+    SpaceMessageRejected(space::EventAuthorization),
+    /// One of the current policy-head events is missing from local storage.
+    #[error("a Space policy parent event is missing")]
+    SpaceParentEventMissing,
+    /// The Lamport counter cannot advance beyond the parent events.
+    #[error("Space message Lamport counter is exhausted")]
+    SpaceLamportExhausted,
     /// A locally created Space Genesis or encrypted projection snapshot is absent.
     #[error("local Space Genesis snapshot was not found")]
     SpaceGenesisSnapshotNotFound,
@@ -343,6 +424,42 @@ fn space_genesis_context(
     context.extend_from_slice(group_reference);
     context.extend_from_slice(event_id);
     context
+}
+
+fn local_text_message_context(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+    channel_id: &space::EntityId,
+    event_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut context = Vec::with_capacity(34 + 16 + 32 + 16 + 32);
+    context.extend_from_slice(b"lattice-space-message-cache-v1\0");
+    context.extend_from_slice(space_id);
+    context.extend_from_slice(group_reference);
+    context.extend_from_slice(channel_id);
+    context.extend_from_slice(event_id);
+    context
+}
+
+fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
+    let Value::Map(fields) = decode_canonical(plaintext)? else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    let mut fields = fields.into_iter();
+    if fields.next() != Some((0, Value::Unsigned(1))) {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
+    let Some((1, Value::Text(content))) = fields.next() else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    if fields.next() != Some((2, Value::Null))
+        || fields.next() != Some((3, Value::Bool(false)))
+        || fields.next() != Some((4, Value::Array(Vec::new())))
+        || fields.next().is_some()
+    {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
+    Ok(content)
 }
 
 fn create_space_in_transaction(
@@ -578,6 +695,178 @@ impl Client {
             reducer,
         })
     }
+    /// Creates a local candidate Space from a system-trusted RFC 9420 X.509 credential vector.
+    ///
+    /// The credential content is leaf-first TLS certificate-vector bytes. It is
+    /// validated against this client's signing identity and the production OS
+    /// trust path before the atomic Space-creation transaction is entered.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` when the vector is malformed, untrusted,
+    /// or does not match this device's signing identity. Other failures from
+    /// Genesis construction, `OpenMLS`, or the atomic storage transaction are
+    /// propagated; failed creation rolls back all writes.
+    pub fn create_space_from_x509_credential(
+        &mut self,
+        credential_content: Vec<u8>,
+        channels: Vec<InitialChannel>,
+    ) -> Result<CreatedSpace, CoreError> {
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
+            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        self.create_space(&credential, channels)
+    }
+
+    /// Encrypts, authorizes, and atomically queues one local text message.
+    ///
+    /// The exact signed event, outbox envelope, and MLS sender state are
+    /// committed in one transaction. This performs no network I/O; the returned
+    /// receipt means `queued`, not forwarded or delivered.
+    ///
+    /// `created` must be the current local candidate generation and is updated
+    /// only after the transaction commits. `channel_id` must name an active
+    /// text or announcement channel in that reducer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpaceGenesisRejected` for an unavailable policy, `SpaceMessageRejected`
+    /// when the active policy denies the message, `SpaceParentEventMissing` if
+    /// an accepted policy head is absent from storage, or the underlying MLS,
+    /// protocol, signing, storage, or outbox error. A failed operation leaves
+    /// both the event and MLS sender state unchanged.
+    pub fn queue_text_message(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        channel_id: space::EntityId,
+        content: &str,
+    ) -> Result<QueuedMessage, CoreError> {
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
+        let plaintext = encode_text_message(content)?;
+        let message = LocalTextMessage {
+            group_id: created.group_id.clone(),
+            credential,
+            reducer: &created.reducer,
+            space_id: created.space_id,
+            group_reference: created.group_reference,
+            channel_id,
+            parents,
+            lamport,
+            plaintext,
+        };
+        let (receipt, staged_reducer) =
+            self.with_mls_transaction(|identity, provider, transaction| {
+                queue_text_message_in_transaction(identity, provider, transaction, message)
+            })?;
+        created.reducer = staged_reducer;
+        Ok(receipt)
+    }
+
+    /// Restores the local Genesis policy, validates an RFC 9420 X.509 credential,
+    /// then encrypts and atomically queues a text message without network I/O.
+    ///
+    /// This recovery path is limited to a locally created, unchanged generation;
+    /// a later MLS membership transition is rejected rather than authorized
+    /// against stale Genesis policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for malformed, mismatched, or untrusted
+    /// credential bytes, the same policy and transaction errors as
+    /// [`Client::queue_text_message`], or a restore error if the Space has
+    /// changed generation or lacks a valid local Genesis snapshot.
+    pub fn queue_text_message_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        channel_id: space::EntityId,
+        content: &str,
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
+            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_text_message(&mut created, &credential, channel_id, content)
+    }
+    /// Returns the newest bounded local outgoing-message history for one channel.
+    ///
+    /// encrypted cache entries. Incoming messages and rows beyond the latest
+    /// [`MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE`] are not included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the local Genesis generation cannot be restored,
+    /// cached event metadata or authentication fails, or storage is unavailable.
+    pub fn local_text_message_history(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        channel_id: &space::EntityId,
+    ) -> Result<Vec<LocalTextMessageRecord>, CoreError> {
+        self.restore_space(space_id, group_reference)?;
+        let cached = self.store.list_cached_space_messages(
+            space_id,
+            group_reference,
+            channel_id,
+            MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
+        )?;
+        let mut event_bytes = Vec::with_capacity(cached.len());
+        for message in &cached {
+            let record = self
+                .store
+                .load_event(&message.event_id)?
+                .ok_or(CoreError::LocalSpaceMessageCacheInvalid)?;
+            event_bytes.push(record.canonical_bytes);
+        }
+        self.with_mls_transaction(move |_identity, _provider, _transaction| {
+            let mut history = Vec::with_capacity(cached.len());
+            for (message, event_bytes) in cached.into_iter().zip(event_bytes) {
+                let event = VerifiedSignatureOnlyEvent::decode_verify(&event_bytes)?;
+                if event.event_id().as_bytes() != &message.event_id
+                    || event.space_id() != &message.space_id
+                    || event.mls_group_reference() != &message.group_reference
+                    || event.channel_id() != Some(&message.channel_id)
+                    || event.kind() != EventKind::Message
+                    || event.author_fingerprint() != &message.author_id
+                    || event.author_sequence() != message.author_seq
+                    || event.lamport() != message.lamport
+                    || event.mls_epoch() != 0
+                {
+                    return Err(CoreError::LocalSpaceMessageCacheInvalid);
+                }
+                let cache_aad = local_text_message_context(
+                    &message.space_id,
+                    &message.group_reference,
+                    &message.channel_id,
+                    &message.event_id,
+                );
+                let plaintext =
+                    lattice_mls::unprotect_local_record(&cache_aad, &message.encrypted_content)?;
+                let content = decode_text_message(&plaintext)?;
+                history.push(LocalTextMessageRecord {
+                    event_id: message.event_id,
+                    channel_id: message.channel_id,
+                    author_id: message.author_id,
+                    author_sequence: message.author_seq,
+                    lamport: message.lamport,
+                    content,
+                    outbox_state: message.outbox_state,
+                });
+            }
+            Ok(history)
+        })
+    }
 
     /// Restores a locally created Space policy projection after process restart.
     ///
@@ -697,6 +986,90 @@ impl Client {
         })
     }
 
+    /// Atomically accepts one staged MLS Commit and its parent-epoch policy transition.
+    ///
+    /// `control_event` must carry the exact TLS Commit in its protected body.
+    /// `transition_event` must carry MLS application data authenticated in the
+    /// Commit's parent epoch and must pass the reducer's invite/transition
+    /// policy. The Commit remains staged until that transition is accepted. The
+    /// MLS group writes and both verified event records share one `SQLite`
+    /// transaction. The returned reducer is a candidate; callers install it
+    /// only after this method commits. Reducer replay after process restart is
+    /// not implemented.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the group does not match the reducer generation,
+    /// either event does not match its authenticated MLS result, policy rejects
+    /// the transition, an author sequence equivocates, or any MLS/storage
+    /// operation fails. The transaction rolls back on every error.
+    pub fn accept_space_membership_transition(
+        &mut self,
+        group_id: &[u8],
+        reducer: &space::SpaceReducer,
+        control_event: VerifiedSignatureOnlyEvent,
+        transition_event: VerifiedSignatureOnlyEvent,
+    ) -> Result<space::SpaceReducer, CoreError> {
+        let Some(policy) = reducer.policy() else {
+            return Err(CoreError::SpaceMembershipNotApplied(
+                space::ApplyResult::Rejected(space::RejectReason::MissingPolicy),
+            ));
+        };
+        let expected_group_reference = policy.group_reference;
+        let group_id = group_id.to_vec();
+        let mut staged_reducer = reducer.clone();
+        self.with_mls_transaction(move |_identity, provider, transaction| {
+            let mut group = GroupState::load(provider, &group_id)?;
+            if group.group_reference() != expected_group_reference {
+                return Err(CoreError::SpaceMembershipNotApplied(
+                    space::ApplyResult::Rejected(space::RejectReason::WrongGeneration),
+                ));
+            }
+            let commit_wire = control_event.protected_body();
+            if !matches!(
+                group.process_incoming(provider, commit_wire)?,
+                IncomingResult::StagedCommit { .. }
+            ) {
+                return Err(CoreError::MlsEventBindingFailed);
+            }
+            let proof = group
+                .take_staged_membership_change()
+                .ok_or(CoreError::MlsEventBindingFailed)?;
+            staged_reducer
+                .observe_validated_control_event(&control_event, proof)
+                .map_err(CoreError::SpaceControlRejected)?;
+
+            let IncomingResult::Application(application) =
+                group.process_incoming(provider, transition_event.protected_body())?
+            else {
+                return Err(CoreError::MlsEventBindingFailed);
+            };
+            let bound = bind_mls_application(transition_event, application)?;
+            let result = staged_reducer.apply(&bound, None);
+            if !matches!(result, space::ApplyResult::Applied { .. }) {
+                return Err(CoreError::SpaceMembershipNotApplied(result));
+            }
+            store_received_event(transaction, &control_event)?;
+            store_received_event(transaction, bound.event())?;
+            group.accept_incoming_commit(provider, commit_wire)?;
+            Ok(staged_reducer)
+        })
+    }
+
+    /// Creates a DER PKCS#10 certificate signing request for this device.
+    ///
+    /// The request contains the public Ed25519 key and the full-fingerprint
+    /// URI SAN; private key material never leaves this process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::Identity`] if bounded DER encoding fails.
+    pub fn certificate_signing_request(&self) -> Result<Vec<u8>, CoreError> {
+        self.identity
+            .certificate_signing_request()
+            .map_err(CoreError::from)
+    }
+
     /// Returns the non-secret public identity bundle and fingerprint.
     #[must_use]
     pub fn identity_info(&self) -> DeviceIdentityInfo {
@@ -717,6 +1090,163 @@ impl Client {
             .store
             .next_author_sequence(&self.identity.fingerprint())?)
     }
+}
+
+struct LocalTextMessage<'a> {
+    group_id: Vec<u8>,
+    credential: &'a DeviceCredentialInput,
+    reducer: &'a space::SpaceReducer,
+    space_id: space::SpaceId,
+    group_reference: space::GroupReference,
+    channel_id: space::EntityId,
+    parents: Vec<lattice_protocol::EventId>,
+    lamport: u64,
+    plaintext: Vec<u8>,
+}
+
+fn resolve_policy_parents(
+    store: &Store,
+    policy: &space::SpacePolicy,
+) -> Result<(Vec<lattice_protocol::EventId>, u64), CoreError> {
+    let mut parent_ids = policy.heads.clone();
+    parent_ids.sort_unstable();
+    let mut maximum_lamport = 0;
+    for parent_id in &parent_ids {
+        let record = store
+            .load_event(parent_id)?
+            .ok_or(CoreError::SpaceParentEventMissing)?;
+        let parent = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+        if parent.event_id().as_bytes() != parent_id
+            || parent.space_id() != &policy.space_id
+            || parent.mls_group_reference() != &policy.group_reference
+        {
+            return Err(CoreError::SpaceParentEventMissing);
+        }
+        maximum_lamport = maximum_lamport.max(parent.lamport());
+    }
+    let lamport = maximum_lamport
+        .checked_add(1)
+        .ok_or(CoreError::SpaceLamportExhausted)?;
+    Ok((
+        parent_ids
+            .into_iter()
+            .map(lattice_protocol::EventId::from_bytes)
+            .collect(),
+        lamport,
+    ))
+}
+
+fn encode_text_message(content: &str) -> Result<Vec<u8>, CoreError> {
+    if content.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    let plaintext = encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Text(content.to_owned())),
+        (2, Value::Null),
+        (3, Value::Bool(false)),
+        (4, Value::Array(Vec::new())),
+    ]))?;
+    if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    Ok(plaintext)
+}
+
+fn queue_text_message_in_transaction(
+    identity: &DeviceIdentity,
+    provider: &ProtectedSqliteProvider<'_>,
+    transaction: &Transaction<'_>,
+    message: LocalTextMessage<'_>,
+) -> Result<(QueuedMessage, space::SpaceReducer), CoreError> {
+    let mut group = GroupState::load(provider, &message.group_id)?;
+    if group.group_reference() != message.group_reference
+        || group.epoch() != 0
+        || group.member_count() != 1
+    {
+        return Err(CoreError::SpaceGenesisRejected(
+            space::RejectReason::WrongGeneration,
+        ));
+    }
+    let protected =
+        group.encrypt_application(provider, identity, message.credential, &message.plaintext)?;
+    let sequence =
+        Store::next_author_sequence_in_transaction(transaction, &identity.fingerprint())?;
+    let event = VerifiedSignatureOnlyEvent::create(
+        identity,
+        EventDraft {
+            space_id: message.space_id,
+            channel_id: Some(message.channel_id),
+            author_sequence: sequence,
+            lamport: message.lamport,
+            wall_time_hint: 0,
+            parents: message.parents,
+            kind: EventKind::Message,
+            protected_body: protected.as_bytes().to_vec(),
+            mls_group_reference: message.group_reference,
+            mls_epoch: group.epoch(),
+        },
+    )?;
+    let bound = MlsBoundEvent {
+        event: event.clone(),
+        plaintext: message.plaintext,
+    };
+    let mut staged_reducer = message.reducer.clone();
+    let authorization = staged_reducer.authorize_application_event(&bound);
+    if !matches!(authorization, space::EventAuthorization::Authorized { .. }) {
+        return Err(CoreError::SpaceMessageRejected(authorization));
+    }
+    let parent_ids = event
+        .parents()
+        .iter()
+        .map(|parent| *parent.as_bytes())
+        .collect::<Vec<_>>();
+    if let CommitOutcome::Equivocation { existing_event_id } =
+        Store::commit_authored_with_outbox_in_transaction(
+            transaction,
+            *event.author_fingerprint(),
+            *event.event_id().as_bytes(),
+            sequence,
+            event.encoded_bytes(),
+            &parent_ids,
+            event.encoded_bytes(),
+            0,
+        )?
+    {
+        return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
+    }
+    let event_id = *event.event_id().as_bytes();
+    let context = local_text_message_context(
+        &message.space_id,
+        &message.group_reference,
+        &message.channel_id,
+        &event_id,
+    );
+    let encrypted_content = lattice_mls::protect_local_record(&context, bound.plaintext())?;
+    Store::save_cached_space_message_in_transaction(
+        transaction,
+        &CachedSpaceMessage {
+            event_id,
+            space_id: message.space_id,
+            group_reference: message.group_reference,
+            channel_id: message.channel_id,
+            author_id: *event.author_fingerprint(),
+            author_seq: sequence,
+            lamport: event.lamport(),
+            encrypted_content,
+            outbox_state: None,
+        },
+    )?;
+    Ok((
+        QueuedMessage {
+            event_id: *event.event_id().as_bytes(),
+        },
+        staged_reducer,
+    ))
 }
 fn load_or_create_mls_storage_key<P: PrivateKeyProtector>(
     store: &mut Store,
@@ -756,16 +1286,16 @@ fn unwrap_mls_storage_key<P: PrivateKeyProtector>(
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{Client, CoreError, bind_mls_application};
+    use super::{Client, CoreError, InitialChannel, bind_mls_application};
     use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
     use lattice_identity::{
         DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
         PrivateKeyProtectionError, PrivateKeyProtector,
     };
     use lattice_mls::api::{DeviceCredentialInput, GroupState, IncomingResult};
+    use lattice_storage::OutboxState;
     use openmls::credentials::Credential;
     use openmls::prelude::CredentialType;
-    use openmls::prelude::tls_codec::{Serialize as TlsSerialize, VLBytes};
     use openmls_rust_crypto::OpenMlsRustCrypto;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
@@ -806,11 +1336,9 @@ mod tests {
     fn test_credential(identity: &DeviceIdentity) -> DeviceCredentialInput {
         let credential = Credential::new(
             CredentialType::X509,
-            VLBytes::new(b"test-only untrusted X.509 placeholder".to_vec())
-                .tls_serialize_detached()
-                .expect("test credential encodes"),
+            b"test-only untrusted X.509 placeholder".to_vec(),
         );
-        DeviceCredentialInput::from_x509_credential(identity, credential)
+        DeviceCredentialInput::from_untrusted_x509_credential_for_tests(identity, &credential)
             .expect("device signer matches test credential")
     }
 
@@ -1007,6 +1535,16 @@ mod tests {
             Err(CoreError::MlsEventBindingFailed)
         ));
 
+        let fingerprint_mismatch_proof =
+            proof.clone().with_test_member_identity_fingerprint([9; 32]);
+        assert!(matches!(
+            bind_mls_application(
+                event(&alice_identity, wire.clone(), 1, group_reference),
+                fingerprint_mismatch_proof
+            ),
+            Err(CoreError::MlsEventBindingFailed)
+        ));
+
         let bound = bind_mls_application(event(&alice_identity, wire, 1, group_reference), proof)
             .expect("matching event and MLS proof bind");
         assert_eq!(bound.plaintext(), b"authenticated event plaintext");
@@ -1015,6 +1553,211 @@ mod tests {
             alice_identity.public_key()
         );
     }
+    #[test]
+    fn local_text_message_is_policy_checked_and_queued_atomically() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+
+        assert!(matches!(
+            client.queue_text_message(&mut created, &credential, [0xEE; 16], "rejected"),
+            Err(CoreError::SpaceMessageRejected(
+                super::space::EventAuthorization::Rejected(
+                    super::space::RejectReason::UnknownEntity
+                )
+            ))
+        ));
+        assert!(
+            client
+                .store
+                .list_outbox_page(None, 10)
+                .expect("read outbox after rejection")
+                .is_empty()
+        );
+        assert!(
+            client
+                .local_text_message_history(
+                    created.space_id(),
+                    created.group_reference(),
+                    &channel_id
+                )
+                .expect("empty message history after denied send")
+                .is_empty()
+        );
+
+        let receipt = client
+            .queue_text_message(&mut created, &credential, channel_id, "queued offline")
+            .expect("queue authorized local message");
+        let event_id = *receipt.event_id();
+        let event = client
+            .store
+            .load_event(&event_id)
+            .expect("load committed message event")
+            .expect("event persisted");
+        let verified_event = VerifiedSignatureOnlyEvent::decode_verify(&event.canonical_bytes)
+            .expect("verify stored event signature");
+        assert_eq!(verified_event.kind(), EventKind::Message);
+        assert_eq!(
+            created.reducer().message_history(&channel_id).messages()[0]
+                .current_version()
+                .content
+                .as_ref(),
+            "queued offline"
+        );
+        let history = client
+            .local_text_message_history(created.space_id(), created.group_reference(), &channel_id)
+            .expect("read authorized local history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].event_id, event_id);
+        assert_eq!(history[0].content, "queued offline");
+        assert_eq!(history[0].outbox_state, Some(OutboxState::Queued));
+        let queued = client
+            .store
+            .list_outbox_page(None, 10)
+            .expect("read committed outbox");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].event_id, event_id);
+        assert_eq!(queued[0].state, OutboxState::Queued);
+        assert_eq!(queued[0].envelope_bytes, event.canonical_bytes);
+
+        drop(client);
+        let mut reopened = Client::open_existing(&database.0, &protector).expect("reopen profile");
+        let outbox = reopened
+            .store
+            .list_outbox_page(None, 10)
+            .expect("restore queued status after restart");
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].event_id, event_id);
+        assert_eq!(outbox[0].state, OutboxState::Queued);
+        let history = reopened
+            .local_text_message_history(created.space_id(), created.group_reference(), &channel_id)
+            .expect("restore local history after restart");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "queued offline");
+        assert_eq!(history[0].event_id, event_id);
+    }
+
+    #[test]
+    fn tampered_local_message_history_fails_authentication() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+        let event_id = *client
+            .queue_text_message(&mut created, &credential, channel_id, "protected history")
+            .expect("queue local message")
+            .event_id();
+        let connection =
+            rusqlite::Connection::open(&database.0).expect("open cache for tamper simulation");
+        connection
+            .execute(
+                "UPDATE cached_space_messages
+                 SET encrypted_content = zeroblob(length(encrypted_content))
+                 WHERE event_id = ?1",
+                rusqlite::params![&event_id[..]],
+            )
+            .expect("alter authenticated cache ciphertext");
+        drop(connection);
+        let mut tampered = Client::open_existing(&database.0, &protector)
+            .expect("reopen profile with tampered cache row");
+        assert!(matches!(
+            tampered.local_text_message_history(
+                created.space_id(),
+                created.group_reference(),
+                &channel_id
+            ),
+            Err(CoreError::MlsStorageCodec(_))
+        ));
+    }
+    #[test]
+    fn local_message_queue_rejects_a_stale_genesis_policy_after_mls_advance() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+        let group_id = created.group_id().to_vec();
+
+        let bob_identity = DeviceIdentity::generate().expect("generate Bob identity");
+        let bob_credential = test_credential(&bob_identity);
+        let bob_key_package = GroupState::publish_key_package(
+            &OpenMlsRustCrypto::default(),
+            &bob_identity,
+            &bob_credential,
+        )
+        .expect("publish Bob KeyPackage")
+        .as_bytes()
+        .to_vec();
+        let (epoch, member_count) = client
+            .with_mls_transaction(|identity, provider, _transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                let prepared =
+                    group.prepare_add(provider, identity, &credential, &bob_key_package)?;
+                let commit = prepared.commit().as_bytes().to_vec();
+                group.accept_prepared_add(provider, &prepared, &commit)?;
+                Ok::<_, CoreError>((group.epoch(), group.member_count()))
+            })
+            .expect("advance local MLS generation");
+        assert_eq!(epoch, 1);
+        assert_eq!(member_count, 2);
+
+        assert!(matches!(
+            client.queue_text_message(&mut created, &credential, channel_id, "stale policy"),
+            Err(CoreError::SpaceGenesisRejected(
+                super::space::RejectReason::WrongGeneration
+            ))
+        ));
+        assert!(
+            client
+                .store
+                .list_outbox_page(None, 10)
+                .expect("read outbox after stale-policy rejection")
+                .is_empty()
+        );
+    }
+
     #[test]
     fn openmls_group_and_event_share_a_durable_transaction() {
         let database = TestDatabase::new();
@@ -1300,6 +2043,279 @@ mod tests {
                 CoreError::MlsStorageCodec(super::ProtectedCodecError::UnsupportedVersion)
             ),
             "unexpected restore error: {restore_error:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Exercises one end-to-end membership transaction.
+    fn membership_commit_policy_and_events_commit_atomically() {
+        use lattice_protocol::{Value, encode_canonical};
+
+        fn signed_event(
+            identity: &DeviceIdentity,
+            draft: EventDraft,
+        ) -> VerifiedSignatureOnlyEvent {
+            VerifiedSignatureOnlyEvent::create(identity, draft).expect("valid test event")
+        }
+
+        let alice_database = TestDatabase::new();
+        let bob_database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut alice = Client::open_or_create(&alice_database.0, &protector)
+            .expect("initialize Alice profile");
+        let mut bob =
+            Client::open_or_create(&bob_database.0, &protector).expect("initialize Bob profile");
+        let alice_credential = test_credential(&alice.identity);
+        let bob_credential = test_credential(&bob.identity);
+        let charlie_identity = DeviceIdentity::generate().expect("Charlie identity");
+        let charlie_credential = test_credential(&charlie_identity);
+        let created = alice
+            .create_space(
+                &alice_credential,
+                vec![super::InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create Genesis group");
+        let group_id = created.group_id().to_vec();
+        let space_id = *created.space_id();
+        let group_reference = *created.group_reference();
+        let mut reducer = created.reducer().clone();
+        let genesis_id = *created.genesis_event().event_id().as_bytes();
+
+        let bob_key_package = bob
+            .with_mls_transaction(|identity, provider, _transaction| {
+                let key_package =
+                    GroupState::publish_key_package(provider, identity, &bob_credential)?;
+                Ok::<_, CoreError>(key_package.as_bytes().to_vec())
+            })
+            .expect("publish Bob KeyPackage");
+        let welcome = alice
+            .with_mls_transaction(|identity, provider, _transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                let prepared =
+                    group.prepare_add(provider, identity, &alice_credential, &bob_key_package)?;
+                let welcome =
+                    group.accept_prepared_add(provider, &prepared, prepared.commit().as_bytes())?;
+                Ok::<_, CoreError>(welcome.as_bytes().to_vec())
+            })
+            .expect("commit Bob membership");
+        bob.with_mls_transaction(|_, provider, _transaction| {
+            GroupState::from_welcome(provider, &group_id, &bob_credential, &welcome)?;
+            Ok::<_, CoreError>(())
+        })
+        .expect("persist Bob's joined group");
+
+        let charlie_provider = OpenMlsRustCrypto::default();
+        let charlie_key_package = GroupState::publish_key_package(
+            &charlie_provider,
+            &charlie_identity,
+            &charlie_credential,
+        )
+        .expect("publish Charlie KeyPackage");
+        let charlie_key_package_hash =
+            lattice_mls::api::key_package_wire_sha256(charlie_key_package.as_bytes())
+                .expect("hash bounded Charlie KeyPackage");
+        let invite_id = [0x71; 16];
+        let invite_payload = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Unsigned(2)),
+            (2, Value::Bytes(invite_id.to_vec())),
+            (3, Value::Bytes(charlie_identity.fingerprint().to_vec())),
+            (4, Value::Bytes(charlie_key_package_hash.to_vec())),
+            (5, Value::Null),
+            (6, Value::Null),
+        ]))
+        .expect("encode invite policy");
+        let invite_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &invite_payload,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt invite at parent epoch");
+        let invite = signed_event(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: None,
+                author_sequence: 2,
+                lamport: 2,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(genesis_id)],
+                kind: EventKind::Membership,
+                protected_body: invite_ciphertext,
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        );
+        let invite_application = bob
+            .with_mls_transaction(|_, provider, _transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                match group.process_incoming(provider, invite.protected_body())? {
+                    IncomingResult::Application(application) => Ok(application),
+                    _ => Err(CoreError::MlsEventBindingFailed),
+                }
+            })
+            .expect("authenticate invite application with Bob's group");
+        let bound_invite = bind_mls_application(invite.clone(), invite_application)
+            .expect("bind exact invite ciphertext");
+        assert_eq!(
+            reducer.apply(&bound_invite, None),
+            super::space::ApplyResult::Applied { revision: 1 }
+        );
+        let invite_event_id = *invite.event_id().as_bytes();
+
+        let (control_event, transition_event) = alice
+            .with_mls_transaction(|identity, provider, _transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                let prepared = group.prepare_add(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    charlie_key_package.as_bytes(),
+                )?;
+                assert_eq!(prepared.key_package_sha256(), &charlie_key_package_hash);
+                let commit_wire = prepared.commit().as_bytes().to_vec();
+                let control = signed_event(
+                    identity,
+                    EventDraft {
+                        space_id,
+                        channel_id: None,
+                        author_sequence: 3,
+                        lamport: 3,
+                        wall_time_hint: 0,
+                        parents: vec![lattice_protocol::EventId::from_bytes(invite_event_id)],
+                        kind: EventKind::MlsControl,
+                        protected_body: commit_wire.clone(),
+                        mls_group_reference: group_reference,
+                        mls_epoch: 1,
+                    },
+                );
+                let control_id = *control.event_id().as_bytes();
+                let transition_payload = encode_canonical(&Value::Map(vec![
+                    (0, Value::Unsigned(1)),
+                    (1, Value::Unsigned(6)),
+                    (2, Value::Unsigned(0)),
+                    (3, Value::Bytes(charlie_identity.fingerprint().to_vec())),
+                    (4, Value::Bytes(invite_event_id.to_vec())),
+                    (5, Value::Bytes(control_id.to_vec())),
+                ]))
+                .expect("encode admission policy");
+                let ciphertext = group.encrypt_application_for_pending_membership(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &prepared,
+                    &transition_payload,
+                )?;
+                let transition = signed_event(
+                    identity,
+                    EventDraft {
+                        space_id,
+                        channel_id: None,
+                        author_sequence: 4,
+                        lamport: 4,
+                        wall_time_hint: 0,
+                        parents: vec![lattice_protocol::EventId::from_bytes(control_id)],
+                        kind: EventKind::Membership,
+                        protected_body: ciphertext.as_bytes().to_vec(),
+                        mls_group_reference: group_reference,
+                        mls_epoch: 1,
+                    },
+                );
+                group.accept_prepared_add(provider, &prepared, &commit_wire)?;
+                Ok::<_, CoreError>((control, transition))
+            })
+            .expect("prepare and commit Charlie add");
+
+        let invalid_control = signed_event(
+            &bob.identity,
+            EventDraft {
+                space_id,
+                channel_id: None,
+                author_sequence: 1,
+                lamport: 1,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(invite_event_id)],
+                kind: EventKind::MlsControl,
+                protected_body: control_event.protected_body().to_vec(),
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        );
+        let invalid_control_id = *invalid_control.event_id().as_bytes();
+        assert!(matches!(
+            bob.accept_space_membership_transition(
+                &group_id,
+                &reducer,
+                invalid_control,
+                transition_event.clone(),
+            ),
+            Err(CoreError::SpaceControlRejected(
+                super::space::RejectReason::InvalidControlRelation
+            ))
+        ));
+        let epoch_after_rollback = bob
+            .with_mls_transaction(|_, provider, _transaction| {
+                Ok::<_, CoreError>(GroupState::load(provider, &group_id)?.epoch())
+            })
+            .expect("inspect group after rejected transaction");
+        assert_eq!(epoch_after_rollback, 1);
+        assert!(
+            bob.store
+                .load_event(&invalid_control_id)
+                .expect("query rejected event")
+                .is_none()
+        );
+
+        let control_event_id = *control_event.event_id().as_bytes();
+        let updated = bob
+            .accept_space_membership_transition(
+                &group_id,
+                &reducer,
+                control_event.clone(),
+                transition_event.clone(),
+            )
+            .expect("commit MLS merge and admitted policy transition atomically");
+        let policy = updated.policy().expect("active updated policy");
+        assert_eq!(
+            policy
+                .members
+                .iter()
+                .find(|member| { member.fingerprint == charlie_identity.fingerprint() })
+                .map(|member| member.status),
+            Some(super::space::MemberStatus::Active)
+        );
+        assert_eq!(policy.invites[0].uses, 1);
+        let committed_epoch = bob
+            .with_mls_transaction(|_, provider, _transaction| {
+                Ok::<_, CoreError>(GroupState::load(provider, &group_id)?.epoch())
+            })
+            .expect("reload committed Bob group");
+        assert_eq!(committed_epoch, 2);
+        for event in [&control_event, &transition_event] {
+            let stored = bob
+                .store
+                .load_event(event.event_id().as_bytes())
+                .expect("query stored membership event")
+                .expect("membership event committed with MLS merge");
+            assert_eq!(stored.canonical_bytes, event.encoded_bytes());
+        }
+        assert!(
+            bob.store
+                .load_event(&control_event_id)
+                .expect("query committed control event")
+                .is_some()
         );
     }
 

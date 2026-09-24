@@ -28,13 +28,35 @@ pub const MAX_OUTBOX_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
 /// Maximum locally created Space Genesis records returned by one page.
 pub const MAX_SPACE_GENESIS_PAGE_SIZE: usize = 32;
+/// Maximum locally retained text-message rows.
+pub const MAX_LOCAL_SPACE_MESSAGES: usize = 4096;
+/// Maximum locally retained encrypted text-message bytes.
+pub const MAX_LOCAL_SPACE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum locally retained messages returned by one query.
+pub const MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE: usize = 100;
 
 const ID_BYTES: usize = 32;
-const SCHEMA_VERSION: i64 = 6;
+/// Latest `SQLite` schema version understood by this crate.
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
 const MAX_SPACE_GENESIS_GROUP_ID_BYTES: usize = 256;
 const MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
+const MAX_CACHED_SPACE_MESSAGE_BYTES: usize = 1024 * 1024;
+/// Encrypted local message content and signed-event routing metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CachedSpaceMessage {
+    pub event_id: [u8; ID_BYTES],
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub channel_id: [u8; 16],
+    pub author_id: [u8; ID_BYTES],
+    pub author_seq: u64,
+    pub lamport: u64,
+    pub encrypted_content: Vec<u8>,
+    pub outbox_state: Option<OutboxState>,
+}
 
 /// A committed event and its parent references.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +149,10 @@ pub enum StoreError {
     InvalidProtectedIdentity,
     InvalidProtectedMlsKey,
     InvalidSpaceGenesisSnapshot,
+    CachedSpaceMessageLimit,
+    CachedSpaceMessageByteLimit,
+    CachedSpaceMessagePageLimit,
+    InvalidCachedSpaceMessage,
     TrustedIdentityConflict,
     CorruptData(&'static str),
 }
@@ -180,6 +206,18 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidSpaceGenesisSnapshot => {
                 formatter.write_str("space Genesis snapshot has an invalid length")
+            }
+            Self::CachedSpaceMessageLimit => {
+                formatter.write_str("cached Space message count limit exceeded")
+            }
+            Self::CachedSpaceMessageByteLimit => {
+                formatter.write_str("cached Space message byte limit exceeded")
+            }
+            Self::CachedSpaceMessagePageLimit => {
+                formatter.write_str("cached Space message page limit exceeded")
+            }
+            Self::InvalidCachedSpaceMessage => {
+                formatter.write_str("cached Space message is invalid")
             }
             Self::TrustedIdentityConflict => formatter.write_str(
                 "trusted identity fingerprint is already associated with different bundle bytes",
@@ -361,8 +399,79 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 7 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE cached_space_messages (
+                    event_id BLOB PRIMARY KEY NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32),
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    channel_id BLOB NOT NULL
+                        CHECK(typeof(channel_id) = 'blob' AND length(channel_id) = 16),
+                    author_id BLOB NOT NULL
+                        CHECK(typeof(author_id) = 'blob' AND length(author_id) = 32),
+                    author_seq INTEGER NOT NULL CHECK(author_seq > 0),
+                    lamport INTEGER NOT NULL CHECK(lamport >= 0),
+                    encrypted_content BLOB NOT NULL
+                        CHECK(typeof(encrypted_content) = 'blob'
+                            AND length(encrypted_content) BETWEEN 1 AND 1048576)
+                );
+                CREATE INDEX cached_space_messages_by_channel
+                    ON cached_space_messages(
+                        space_id, group_reference, channel_id, lamport,
+                        author_id, author_seq, event_id
+                    );
+                PRAGMA user_version = 7;",
+            )?;
+            transaction.commit()?;
+        }
 
         Ok(Self { connection })
+    }
+
+    /// Opens an existing database without applying migrations or changing
+    /// persistent settings.
+    ///
+    /// Use this for diagnostic or inspection commands that must not upgrade
+    /// user data as a side effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened read-only.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(Self { connection })
+    }
+
+    /// Reports the `SQLite` application schema version without changing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `PRAGMA user_version` cannot be read.
+    pub fn schema_version(&self) -> Result<i64> {
+        self.connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(Into::into)
+    }
+
+    /// Runs `SQLite`'s bounded quick integrity check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot perform the check.
+    pub fn integrity_check(&self) -> Result<bool> {
+        let status: String = self
+            .connection
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+        Ok(status == "ok")
     }
     /// Gives a platform provider exclusive access to the `SQLite` connection.
     ///
@@ -655,6 +764,161 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+    /// Saves one locally encrypted text message in its authored-event transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when message metadata, total cache bounds, foreign keys,
+    /// or `SQLite` writes are invalid.
+    pub fn save_cached_space_message_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        message: &CachedSpaceMessage,
+    ) -> Result<()> {
+        if message.encrypted_content.is_empty()
+            || message.encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+            || message.author_seq == 0
+            || message.author_seq > i64::MAX as u64
+            || message.lamport > i64::MAX as u64
+        {
+            return Err(StoreError::InvalidCachedSpaceMessage);
+        }
+        let count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM cached_space_messages", [], |row| {
+                row.get(0)
+            })?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_LOCAL_SPACE_MESSAGES {
+            return Err(StoreError::CachedSpaceMessageLimit);
+        }
+        let bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(encrypted_content)), 0)
+             FROM cached_space_messages",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_add(message.encrypted_content.len())
+            > MAX_LOCAL_SPACE_MESSAGE_BYTES
+        {
+            return Err(StoreError::CachedSpaceMessageByteLimit);
+        }
+        transaction.execute(
+            "INSERT INTO cached_space_messages(
+                event_id, space_id, group_reference, channel_id, author_id,
+                author_seq, lamport, encrypted_content
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &message.event_id[..],
+                &message.space_id[..],
+                &message.group_reference[..],
+                &message.channel_id[..],
+                &message.author_id[..],
+                i64::try_from(message.author_seq)
+                    .map_err(|_| StoreError::InvalidCachedSpaceMessage)?,
+                i64::try_from(message.lamport)
+                    .map_err(|_| StoreError::InvalidCachedSpaceMessage)?,
+                &message.encrypted_content
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns the newest bounded local history for one channel, oldest first.
+    ///
+    /// This is a local outgoing-message cache, not a synced transcript. It does
+    /// not include incoming events or messages beyond the latest bounded page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested page is invalid or stored metadata
+    /// is malformed.
+    pub fn list_cached_space_messages(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+        limit: usize,
+    ) -> Result<Vec<CachedSpaceMessage>> {
+        if limit == 0 || limit > MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE {
+            return Err(StoreError::CachedSpaceMessagePageLimit);
+        }
+        let limit = i64::try_from(limit).map_err(|_| StoreError::CachedSpaceMessagePageLimit)?;
+        let mut statement = self.connection.prepare(
+            "SELECT m.event_id, m.space_id, m.group_reference, m.channel_id,
+                    m.author_id, m.author_seq, m.lamport, m.encrypted_content, o.state
+             FROM cached_space_messages AS m
+             LEFT JOIN outbox AS o ON o.event_id = m.event_id
+             WHERE m.space_id = ?1 AND m.group_reference = ?2 AND m.channel_id = ?3
+             ORDER BY m.lamport DESC, m.author_id DESC, m.author_seq DESC, m.event_id DESC
+             LIMIT ?4",
+        )?;
+        let rows = statement.query_map(
+            params![&space_id[..], &group_reference[..], &channel_id[..], limit],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )?;
+        let mut messages = rows
+            .map(|row| {
+                let (
+                    event_id,
+                    space_id,
+                    group_reference,
+                    channel_id,
+                    author_id,
+                    author_seq,
+                    lamport,
+                    encrypted_content,
+                    outbox_state,
+                ) = row?;
+                if encrypted_content.is_empty()
+                    || encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+                    || author_seq <= 0
+                    || lamport < 0
+                {
+                    return Err(StoreError::CorruptData("invalid cached Space message"));
+                }
+                Ok(CachedSpaceMessage {
+                    event_id: event_id
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("invalid cached message event ID"))?,
+                    space_id: space_id
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("invalid cached message Space ID"))?,
+                    group_reference: group_reference.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid cached message group reference")
+                    })?,
+                    channel_id: channel_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid cached message channel ID")
+                    })?,
+                    author_id: author_id
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("invalid cached message author ID"))?,
+                    author_seq: u64::try_from(author_seq)
+                        .map_err(|_| StoreError::CorruptData("invalid cached message sequence"))?,
+                    lamport: u64::try_from(lamport)
+                        .map_err(|_| StoreError::CorruptData("invalid cached message Lamport"))?,
+                    encrypted_content,
+                    outbox_state: outbox_state
+                        .as_deref()
+                        .map(decode_outbox_state)
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        messages.reverse();
+        Ok(messages)
     }
 
     /// Lists local Space Genesis keys in bounded, stable keyset pages.
@@ -1455,6 +1719,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn read_only_store_open_does_not_apply_old_schema_migrations() {
+        let database = TempDatabase::new();
+        let connection = rusqlite::Connection::open(database.path()).expect("create database");
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("set old schema version");
+        drop(connection);
+
+        let store = Store::open_read_only(database.path()).expect("open read-only store");
+        assert_eq!(store.schema_version().expect("read schema version"), 2);
+        assert!(store.integrity_check().expect("check database integrity"));
+        drop(store);
+
+        let connection = rusqlite::Connection::open_with_flags(
+            database.path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("reopen database read-only");
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("confirm unchanged version"),
+            2
+        );
+        let identity_table_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'protected_identity'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("check protected identity table");
+        assert_eq!(identity_table_count, 0);
+    }
+
     fn id(value: u8) -> [u8; 32] {
         [value; 32]
     }
@@ -1557,7 +1856,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE protected_identity;
+                    "DROP TABLE cached_space_messages;
+                     DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
                      DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
@@ -1613,7 +1913,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_genesis_snapshots;
+                    "DROP TABLE cached_space_messages;
+                     DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 4;",
                 )
@@ -1625,7 +1926,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         assert_eq!(
             store
                 .load_event(&event)
@@ -1656,7 +1957,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE trusted_identities;
+                    "DROP TABLE cached_space_messages;
+                     DROP TABLE trusted_identities;
                      PRAGMA user_version = 5;",
                 )
                 .expect("restore v5 schema fixture");
@@ -1666,7 +1968,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         assert_eq!(
             store
                 .load_event(&event)

@@ -2,9 +2,12 @@
 //!
 //! The production [`api`] module performs real `OpenMLS` operations with a
 //! caller-supplied provider and a signer backed by [`lattice_identity::DeviceIdentity`].
-//! `MLS` key possession is not Space identity or authorization. Callers supply
-//! their own opaque X.509 credential bytes and must verify/bind them through
-//! their identity and policy layer; `OpenMLS` does not validate X.509 credentials.
+//! MLS key possession is not Space identity or authorization. Production
+//! credentials are accepted only when their RFC 9420 X.509 chain validates to
+//! operating-system trust, the leaf Ed25519 SPKI matches the MLS signature key,
+//! and one canonical Lattice URI SAN carries the full device fingerprint.
+//! Callers must still bind that fingerprint to the invited or signed-event
+//! identity and apply Space policy.
 //! `OpenMLS` secrets are stored only through the caller's provider, whose
 //! encryption and persistence guarantees remain the caller's responsibility.
 //! This crate does not integrate group transitions with the application event
@@ -853,10 +856,12 @@ pub mod test_interop {
 
             let content = VLBytes::new(b"not a DER certificate; test fixture".to_vec())
                 .tls_serialize_detached()?;
-            Ok(crate::api::DeviceCredentialInput::from_x509_credential(
-                identity,
-                Credential::new(CredentialType::X509, content),
-            )?)
+            Ok(
+                crate::api::DeviceCredentialInput::from_untrusted_x509_credential_for_tests(
+                    identity,
+                    &Credential::new(CredentialType::X509, content),
+                )?,
+            )
         }
 
         #[test]
@@ -1192,20 +1197,20 @@ pub mod test_interop {
             let alice_identity = DeviceIdentity::generate()?;
             let bob_identity = DeviceIdentity::generate()?;
 
-            // The TLS vector is correctly framed, but its contents are not a
-            // real certificate or trusted identity; OpenMLS does not validate it.
+            // A test-only marker keeps these credentials explicitly untrusted
+            // while exercising OpenMLS's opaque credential handling.
             let x509_test_content = || {
                 VLBytes::new(b"not a DER certificate; test fixture".to_vec())
                     .tls_serialize_detached()
                     .expect("short test credential encodes")
             };
-            let alice_credential = DeviceCredentialInput::from_x509_credential(
+            let alice_credential = DeviceCredentialInput::from_untrusted_x509_credential_for_tests(
                 &alice_identity,
-                Credential::new(CredentialType::X509, x509_test_content()),
+                &Credential::new(CredentialType::X509, x509_test_content()),
             )?;
-            let bob_credential = DeviceCredentialInput::from_x509_credential(
+            let bob_credential = DeviceCredentialInput::from_untrusted_x509_credential_for_tests(
                 &bob_identity,
-                Credential::new(CredentialType::X509, x509_test_content()),
+                &Credential::new(CredentialType::X509, x509_test_content()),
             )?;
 
             let mut alice =
@@ -1251,6 +1256,10 @@ pub mod test_interop {
                 ProductionIncoming::Application(decrypted) => {
                     assert_eq!(decrypted.plaintext(), b"production OpenMLS application");
                     assert_eq!(decrypted.member_signature_key(), Some(&alice_public_key));
+                    assert_eq!(
+                        decrypted.member_identity_fingerprint(),
+                        Some(&alice_identity.fingerprint())
+                    );
                     assert_eq!(decrypted.ciphertext_sha256(), &ciphertext_sha256);
                     assert_eq!(decrypted.epoch(), 1);
                     assert_eq!(decrypted.group_reference(), &alice.group_reference());
@@ -1283,6 +1292,14 @@ pub mod test_interop {
                     b"must not sign",
                 ),
                 Err(MlsError::CredentialKeyMismatch)
+            );
+            assert_eq!(
+                DeviceCredentialInput::from_x509_credential(
+                    &alice_identity,
+                    Credential::new(CredentialType::X509, x509_test_content()),
+                )
+                .unwrap_err(),
+                MlsError::CredentialValidationFailed
             );
             assert_eq!(
                 DeviceCredentialInput::from_x509_credential(

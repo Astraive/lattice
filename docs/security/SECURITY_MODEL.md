@@ -21,10 +21,12 @@ Adversaries include passive local radio sniffer; active frame injector/replayer;
 3. Space/DM: MLS 1.0 group membership/epochs. Removed member does not receive future valid epoch keys; confidentiality of prior plaintext is not retroactively restored.
 4. Local data: protected keys plus encrypted sensitive blobs, while documenting any plaintext indexing metadata. “Encrypted database” is not claimed unless measured true for the shipped schema.
 5. Voice: WebRTC media path with current Space/session authorization. TURN routes packets but is not Space authority.
+6. MLS credential trust: RFC 9420 X.509 credential chains must validate to operating-system roots, and the leaf Ed25519 SPKI and exactly one canonical URI SAN must match the device's Ed25519 key and full identity fingerprint. The URI format is `urn:lattice:identity:v1:<64 lowercase hex characters>`. CSR generation does not issue, import, or validate a certificate.
 
 ## Non-negotiable security checks
 
 - A signature proves key possession, not `ROLE_MANAGE` or other permission. Policy evaluation is causal and client-consistent; missing prerequisites are pending, not guessed.
+- An MLS X.509 certificate is not identity proof by itself: require a valid OS-rooted path, exact device signing-key SPKI and one canonical full-fingerprint URI SAN. Do not treat a generated CSR as a trusted certificate.
 - A Space-wide MLS exporter cannot give private-channel secrecy against another member who can derive it. ADR-002 selects per-channel cryptographic isolation or explicitly restricts “private” to write/join policy.
 - Peer-to-peer MLS delivery can fork on simultaneous Commits. ADR-001 specifies tie breaking, Welcome acceptance, losing-branch content and secret deletion; [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) gives the applicable design space.
 - Member ban/removal and moderation are prospective. Clients can refuse new valid epoch content to removed users; they cannot erase what others already know.
