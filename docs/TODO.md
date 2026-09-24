@@ -11,6 +11,7 @@
 - [ ] Create Android BLE GATT spike with physical hardware and no Internet. (MOB-002–003, NET-001–002; M1)
 - [ ] Decide ADR-001 competing MLS Commit ordering, Welcome coupling and losing-branch behavior before secure Spaces. (SPC-006–007; M3)
 - [ ] Decide ADR-002 whether channel privacy restricts reads, and choose independent keying if so. (SPC-011; M3)
+- [ ] Specify signed Space genesis, membership/policy payloads, permission-bit IDs, causal conflicts, and MLS credential/group transaction binding. (SPC-001–010, LAT-003, LAT-007; M3)
 
 ## P1 — functional build sequence
 
