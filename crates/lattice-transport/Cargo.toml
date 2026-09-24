@@ -8,6 +8,7 @@ version.workspace = true
 
 [dependencies]
 lattice-platform = { path = "../lattice-platform" }
+tokio = { version = "=1.53.1", features = ["io-util", "net", "rt", "macros", "sync"] }
 
 [lints]
 workspace = true

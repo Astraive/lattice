@@ -1,9 +1,13 @@
 //! Bounded transport orchestration over the shared platform adapter port.
 //!
-//! This crate does not implement BLE, LAN, Wi-Fi Aware, sockets, or relay
-//! networking. Send success means exact-hop adapter acceptance only.
+//! The direct TCP adapter frames one opaque envelope per bounded stream
+//! record. Send success means exact-hop operating-system queue acceptance only.
 
 use lattice_platform::{EnvelopeBytes, TransportAdapter, TransportError, TransportLifecycle};
+
+mod tcp_peer;
+
+pub use tcp_peer::TcpPeerAdapter;
 
 /// Package's published crate name.
 pub const CRATE_NAME: &str = "lattice-transport";

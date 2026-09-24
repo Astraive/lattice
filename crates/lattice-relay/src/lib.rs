@@ -1,10 +1,12 @@
-//! Candidate-only delivery envelope codec.
+//! Candidate delivery-envelope codec and optional Nostr relay client.
 //!
-//! This implements optional candidate envelope accounting plus strict NIP-01
-//! signed-event and NIP-11 capability codecs. It does not connect to a relay or
-//! claim interoperability. The exact signed Lattice event remains independently
-//! verified by `lattice-events`; envelope IDs and inner event IDs are distinct.
+//! This implements candidate envelope accounting, strict NIP-01 signed-event
+//! and NIP-11 capability codecs, cross-layer profile validation, and bounded
+//! asynchronous relay operations. Relay use remains optional and relay
+//! acceptance never represents recipient delivery. Envelope IDs and inner
+//! event IDs are distinct.
 
+pub mod network;
 pub mod nip01;
 pub mod nip11;
 pub mod profile;

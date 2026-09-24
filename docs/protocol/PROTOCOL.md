@@ -1,10 +1,10 @@
 # Protocol profile and interoperability boundaries
 
-**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. A bounded executable candidate currently exists for canonical CBOR, event-ID hashing, and the local identity bundle; see [`protocol/specs/00-overview.md`](../../protocol/specs/00-overview.md) and its vector file. Those candidate bytes are not an interoperability claim. Do not ship independent client implementations from this summary alone.
+**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. Bounded executable candidates cover canonical CBOR, event-ID hashing, local identity, and NIP-01/NIP-11 relay networking; see [`protocol/specs/00-overview.md`](../../protocol/specs/00-overview.md) and its vector file. These candidates are not an interoperability claim. Do not ship independent client implementations from this summary alone.
 
 ## Current executable candidate
 
-The Rust workspace now has bounded candidate implementations for canonical CBOR, signed event framing, event authorization, protected OpenMLS state operations, signature-to-ciphertext binding, delivery envelopes, and NIP-01/NIP-11 relay profile validation. These pieces do not establish interoperable or end-to-end behavior: membership credential trust, durable reducer recovery, native path adapters, and relay networking remain incomplete.
+The Rust workspace has bounded candidates for canonical CBOR, signed event framing, event authorization, protected OpenMLS state operations, signature-to-ciphertext binding, delivery envelopes, NIP-01/NIP-11 relay profile validation, a secure WebSocket relay client, and bounded direct TCP framing. These do not establish interoperable or end-to-end behavior: credential trust, durable reducer recovery, authenticated native path integration, two-relay interoperability, and app wiring remain incomplete.
 
 ## Layer map
 
@@ -45,7 +45,7 @@ An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rf
 
 ## Relay and files
 
-Nostr is an optional opaque-envelope carrier defined by the local candidate [`13-relay.md`](../../protocol/specs/13-relay.md) and [ADR-003](../decisions/ADR-003-nostr-envelope-relay-profile.md). It uses NIP-01 kind `39001`, a relay-only key, an MLS-protected opaque mailbox tag, NIP-40 expiry, and bounded best-effort backfill; [`09-envelope.md`](../../protocol/specs/09-envelope.md) defines the carrier object. Neither document implies a production adapter or Nostr interoperability. [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) defines events/subscriptions, not Lattice authorization. Never claim NIP-17 or Bitchat interoperability from similar wrapping. File manifests/chunks have independent hashes and transfer quotas; general event relays are not assumed to store file payloads.
+Nostr is an optional opaque-envelope carrier defined by the local candidate [`13-relay.md`](../../protocol/specs/13-relay.md) and [ADR-003](../decisions/ADR-003-nostr-envelope-relay-profile.md). It uses NIP-01 kind `39001`, a relay-only key, an MLS-protected opaque mailbox tag, NIP-40 expiry, and bounded best-effort backfill; [`09-envelope.md`](../../protocol/specs/09-envelope.md) defines the carrier object. A bounded Rust `wss://` client now fetches compatible NIP-11 metadata, publishes only with a positive matching NIP-01 `OK`, and retrieves an exact mailbox filter. This implementation and its unit tests do not establish two-relay interoperability or app integration. [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) defines events/subscriptions, not Lattice authorization. Never claim NIP-17 or Bitchat interoperability from similar wrapping. File manifests/chunks have independent hashes and transfer quotas; general event relays are not file stores.
 
 ## Compatibility, error classes and vectors
 
@@ -63,7 +63,7 @@ References: [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), [RFC 9750](https
 | `05-events`, `06-spaces`, `07-permissions` | Signed event framing, Space/membership payloads, permission registry and causal conflicts; candidate specs exist, reducers remain incomplete |
 | `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts, delivery class/TTL/copy budget, fragmentation and GATT profile; MLS protected persistence is integrated, link profile remains candidate |
 | `11-sync`, `12-routing` | Gap summaries, snapshots, path metrics, retry and courier rules |
-| `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; relay adapter and cross-platform interop remain unimplemented |
+| `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; bounded Rust relay networking exists, while app integration and independent-relay interoperability remain unimplemented |
 | `16-versioning` | Required/optional feature bits, downgrade prevention and migration |
 
 Before a document freezes, it must define maxima for strings, arrays, event bodies, parent lists, fragments, pending dependencies, and queue bytes, and include byte-exact positive and negative vectors. Candidate bounds are not proof of implementation conformance. A field marked “future” in the integrated spec does not silently become required for v1. No implementer may derive a byte limit from a UI placeholder or radio MTU alone.
