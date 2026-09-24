@@ -101,7 +101,7 @@ function App() {
           </p>
           <div className="principles">
             <span>Offline correctness</span>
-            <span>Explicit delivery state</span>
+            <span>Explicit local outbox state</span>
             <span>Replaceable paths</span>
           </div>
         </section>
