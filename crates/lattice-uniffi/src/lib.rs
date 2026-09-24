@@ -518,6 +518,28 @@ mod tests {
             Err(MobileError::InvalidMessageInput)
         ));
         assert!(matches!(
+            client.queue_local_text_message_edit(
+                vec![0; 16],
+                vec![0; 32],
+                vec![1],
+                vec![0; 16],
+                vec![0; 31],
+                "edit".into()
+            ),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.queue_local_text_message_edit(
+                vec![0; 16],
+                vec![0; 32],
+                vec![1],
+                vec![0; 16],
+                vec![0; 32],
+                "x".repeat(lattice_core::space::MAX_SPACE_PAYLOAD_BYTES + 1),
+            ),
+            Err(MobileError::InvalidMessageInput)
+        ));
+        assert!(matches!(
             client.list_local_text_messages(vec![0; 15], vec![0; 32], vec![0; 16]),
             Err(MobileError::InvalidSpaceMessageId)
         ));

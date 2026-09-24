@@ -1133,6 +1133,37 @@ impl Client {
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_text_message(&mut created, &credential, channel_id, content)
     }
+
+    /// Restores a local Space, validates its X.509 device credential, and
+    /// atomically queues an authorized edit of an authored message.
+    ///
+    /// The encrypted local history cache is updated with the edited body in
+    /// the same transaction as the immutable Edit event and outbox entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for malformed or untrusted credential
+    /// bytes, the same policy and transaction errors as
+    /// [`Client::queue_text_message_edit`], or a restore error if the local
+    /// Space generation cannot be restored.
+    pub fn queue_text_message_edit_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        channel_id: space::EntityId,
+        target: [u8; 32],
+        content: &str,
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
+            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_text_message_edit(&mut created, &credential, channel_id, target, content)
+    }
     /// Returns the newest bounded local outgoing-message history for one channel.
     ///
     /// encrypted cache entries. Incoming messages and rows beyond the latest

@@ -355,6 +355,61 @@ impl MobileClient {
             event_id: queued.event_id().to_vec(),
         })
     }
+
+    /// Queues a locally authorized immutable Edit event and updates the
+    /// encrypted local message cache.
+    ///
+    /// This operation does not forward the edit or claim recipient delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `InvalidSpaceCredential` for malformed or untrusted credentials,
+    /// `InvalidMessageInput` for oversized text, `MessageRejected` when local
+    /// policy denies the edit, or `MessageQueueFailed` for other failures.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_local_text_message_edit(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        channel_id: Vec<u8>,
+        target_message_id: Vec<u8>,
+        content: String,
+    ) -> Result<MobileQueuedMessage, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let target: [u8; 32] = target_message_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        if content.len() > MAX_SPACE_PAYLOAD_BYTES {
+            return Err(MobileError::InvalidMessageInput);
+        }
+        let queued = self
+            .lock_client()?
+            .queue_text_message_edit_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+                channel_id,
+                target,
+                &content,
+            )
+            .map_err(|error| map_queue_message_error(&error))?;
+        Ok(MobileQueuedMessage {
+            event_id: queued.event_id().to_vec(),
+        })
+    }
 }
 
 fn channel_summaries<'a>(
