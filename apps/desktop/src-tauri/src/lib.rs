@@ -14,7 +14,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             identity::initialize_device_identity,
             identity::get_device_identity,
+            identity::get_device_certificate_signing_request,
             spaces::list_local_spaces,
+            spaces::create_local_space,
+            spaces::queue_local_text_message,
+            spaces::list_local_text_messages,
             identity::pin_peer_identity,
             identity::get_pinned_identity
         ])

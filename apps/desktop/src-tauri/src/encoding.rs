@@ -19,6 +19,33 @@ pub(crate) fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Resul
     Ok(bytes)
 }
 
+pub(crate) fn parse_hex_bytes(
+    value: &str,
+    label: &str,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return Err(format!(
+            "{label} must contain complete hexadecimal byte pairs"
+        ));
+    }
+    if value.len() / 2 > maximum_bytes {
+        return Err(format!(
+            "{label} exceeds the maximum of {maximum_bytes} bytes"
+        ));
+    }
+    let input = value.as_bytes();
+    let mut bytes = Vec::with_capacity(input.len() / 2);
+    for pair in input.chunks_exact(2) {
+        let high = hex_value(pair[0])
+            .ok_or_else(|| format!("{label} contains a non-hexadecimal character"))?;
+        let low = hex_value(pair[1])
+            .ok_or_else(|| format!("{label} contains a non-hexadecimal character"))?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn parse_space_cursor(value: &str) -> Result<SpaceGenesisCursor, String> {
     if value.len() != 96 {
         return Err("Space cursor must contain exactly 96 hexadecimal characters".to_owned());
@@ -70,8 +97,17 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_fixed_hex, parse_space_cursor, space_cursor_hex};
+    use super::{parse_fixed_hex, parse_hex_bytes, parse_space_cursor, space_cursor_hex};
     use lattice_core::SpaceGenesisCursor;
+
+    #[test]
+    fn bounded_hex_vector_rejects_oversized_and_malformed_input() {
+        assert_eq!(parse_hex_bytes("01aF", "credential", 2), Ok(vec![1, 0xaf]));
+        assert!(parse_hex_bytes("010203", "credential", 2).is_err());
+        assert!(parse_hex_bytes("0", "credential", 2).is_err());
+        assert!(parse_hex_bytes("0z", "credential", 2).is_err());
+        assert!(parse_hex_bytes("ＦＦ", "credential", 2).is_err());
+    }
 
     #[test]
     fn fixed_hex_parser_checks_exact_ascii_bytes() {

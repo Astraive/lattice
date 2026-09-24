@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 import { PeerIdentityPinPanel } from "./features/identity/PeerIdentityPinPanel";
 import { LocalSpaceBrowser } from "./features/spaces/LocalSpaceBrowser";
+import { LocalSpaceCreator } from "./features/spaces/LocalSpaceCreator";
 import "./App.css";
 
 const stack = [
@@ -17,8 +18,8 @@ const stack = [
   },
   {
     label: "Spaces and messaging",
-    state: "Disabled",
-    detail: "Production MLS, authorization, and event integration are not complete",
+    state: "Local Space creation",
+    detail: "Creates/restores local Genesis snapshots and can queue text to the local outbox only",
   },
   {
     label: "Desktop discovery",
@@ -47,6 +48,8 @@ function App() {
   const [identity, setIdentity] = useState<IdentityStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
+  const [copyError, setCopyError] = useState<string | null>(null);
   const runtimeAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   async function runIdentityCommand(command: "initialize_device_identity" | "get_device_identity") {
@@ -59,6 +62,21 @@ function App() {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyIdentityValue(label: string, value: string) {
+    setCopyStatus("");
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus(`${label} copied to the clipboard.`);
+    } catch (cause) {
+      setCopyError(
+        cause instanceof Error
+          ? `Could not copy ${label.toLowerCase()}: ${cause.message}. Select the value and copy it instead.`
+          : `Could not copy ${label.toLowerCase()}. Select the value and copy it instead.`,
+      );
     }
   }
 
@@ -77,9 +95,9 @@ function App() {
           <p className="eyebrow">Local-first community communication</p>
           <h1 id="page-title">Your communities should not depend on a central account.</h1>
           <p className="lede">
-            The desktop client can browse locally recovered Spaces and protect a device identity
-            with the OS credential store. Authenticated membership, message authoring, and delivery
-            remain disabled until their MLS and authorization paths are complete.
+            The desktop client protects the device identity, creates local Space Genesis snapshots
+            from a system-trusted device credential, and inspects recovered local snapshots.
+            Authenticated joining, messaging, and network delivery remain unavailable.
           </p>
           <div className="principles">
             <span>Offline correctness</span>
@@ -117,7 +135,7 @@ function App() {
               persists only protected key material in the local database.
             </p>
             {runtimeAvailable ? (
-              <div>
+              <div className="identity-actions">
                 <button
                   type="button"
                   disabled={busy}
@@ -136,17 +154,40 @@ function App() {
             ) : (
               <p>Open the Tauri desktop app to use its native OS-keyring commands.</p>
             )}
+            {busy && <p role="status">Opening the protected local identity…</p>}
             {error && <p role="alert">{error}</p>}
             {identity && (
-              <div aria-live="polite">
+              <div className="identity-status" aria-live="polite">
                 <p>
-                  Fingerprint: <code>{identity.fingerprint}</code>
+                  Local identity fingerprint: <code>{identity.fingerprint}</code>
                 </p>
-                <p>Next local event sequence: {identity.next_author_sequence}</p>
+                <div className="identity-actions">
+                  <button
+                    type="button"
+                    onClick={() => void copyIdentityValue("Fingerprint", identity.fingerprint)}
+                  >
+                    Copy fingerprint
+                  </button>
+                </div>
+                <p>Next local author sequence: {identity.next_author_sequence}</p>
                 <details>
                   <summary>Public identity bundle</summary>
                   <code>{identity.public_bundle}</code>
+                  <div className="identity-actions">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void copyIdentityValue("Public bundle", identity.public_bundle)
+                      }
+                    >
+                      Copy public bundle
+                    </button>
+                  </div>
                 </details>
+                <p role="status" aria-live="polite">
+                  {copyStatus}
+                </p>
+                {copyError && <p role="alert">{copyError}</p>}
               </div>
             )}
             <PeerIdentityPinPanel
@@ -154,6 +195,10 @@ function App() {
               identityReady={identity !== null}
             />
           </section>
+          <LocalSpaceCreator
+            runtimeAvailable={runtimeAvailable}
+            identityReady={identity !== null}
+          />
           <LocalSpaceBrowser runtimeAvailable={runtimeAvailable} />
         </section>
       </main>

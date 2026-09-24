@@ -257,17 +257,20 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
+.identity-csr,
 .identity-pin {
   margin-top: 24px;
   padding-top: 24px;
   border-top: 1px solid var(--line);
 }
 
+.identity-csr h4,
 .identity-pin h4 {
   margin: 0;
   font-size: 0.96rem;
 }
 
+.identity-csr p,
 .identity-pin p {
   color: var(--muted);
   font-size: 0.82rem;
@@ -303,8 +306,82 @@ h2 {
   outline-offset: 2px;
 }
 
+.identity-pin-fields textarea {
+  width: 100%;
+  min-height: 12rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #e3ebe5;
+  background: var(--surface-raised);
+  font:
+    0.76rem / 1.55 ui-monospace,
+    "Cascadia Code",
+    monospace;
+}
+
+.identity-pin-fields textarea:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+.identity-csr-output {
+  display: grid;
+  gap: 6px;
+  max-width: 760px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.identity-csr-output textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #e3ebe5;
+  background: var(--surface-raised);
+  font:
+    0.76rem / 1.55 ui-monospace,
+    "Cascadia Code",
+    monospace;
+}
+
+.identity-csr-output textarea:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.identity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block: 10px;
+}
+
 .space-browser-heading button {
   white-space: nowrap;
+}
+.identity-actions button + button {
+  margin-inline-start: 0;
+}
+
+.identity-status {
+  overflow-wrap: anywhere;
+}
+
+.identity-status code,
+.identity-pin-result code {
+  overflow-wrap: anywhere;
+}
+
+.identity-pin-fields input[aria-invalid="true"] {
+  border-color: var(--accent-strong);
+}
+
+.identity-pin-fields input:disabled {
+  opacity: 0.65;
 }
 .identity-pin-actions {
   display: flex;
@@ -366,6 +443,111 @@ h2 {
   color: #dce8de;
   font-size: 0.74rem;
   line-height: 1.5;
+}
+
+.local-channel-list,
+.local-message-composer {
+  grid-column: 1 / -1;
+}
+
+.local-channel-list {
+  display: grid;
+  gap: 8px;
+}
+
+.local-channel-list > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 6px 12px;
+}
+
+.local-message-composer {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgb(16 22 18 / 72%);
+}
+
+.local-message-history {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.local-message-history ol {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  margin: 0;
+  padding-inline-start: 20px;
+  overflow: auto;
+}
+
+.local-message-history li {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(8 12 9 / 58%);
+  overflow-wrap: anywhere;
+}
+
+.local-message-history li small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.local-message-composer h4,
+.local-message-composer p {
+  margin: 0;
+}
+
+.local-message-composer h4 {
+  font-size: 0.95rem;
+}
+
+.local-message-composer p {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.local-message-composer label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.local-message-composer textarea,
+.local-message-composer select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #101612;
+  color: var(--ink);
+  padding: 10px 12px;
+}
+
+.local-message-composer textarea {
+  resize: vertical;
+  overflow-wrap: anywhere;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.space-list .local-message-composer button {
+  justify-self: start;
+}
+
+.local-message-composer button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 footer {

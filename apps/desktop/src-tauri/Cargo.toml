@@ -19,6 +19,7 @@ lattice-core = { path = "../../../crates/lattice-core" }
 lattice-platform = { path = "../../../crates/lattice-platform" }
 serde = { version = "1", features = ["derive"] }
 directories = "=6.0.0"
+base64 = "=0.22.1"
 
 [lints]
 workspace = true
