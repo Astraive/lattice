@@ -15,6 +15,10 @@ tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 tauri = { version = "=2.11.6", features = [] }
+lattice-core = { path = "../../../crates/lattice-core" }
+lattice-platform = { path = "../../../crates/lattice-platform" }
+serde = { version = "1", features = ["derive"] }
+directories = "=6.0.0"
 
 [lints]
 workspace = true

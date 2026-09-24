@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { useState } from "react";
 import "./App.css";
 
 const stack = [
@@ -7,14 +9,19 @@ const stack = [
     detail: "React, TypeScript, Vite, and Tauri v2",
   },
   {
-    label: "Protocol lab",
-    state: "Planned",
-    detail: "Canonical events and convergence arrive in M0",
+    label: "Protected identity",
+    state: "Available",
+    detail: "Device keys are wrapped by the OS credential store",
   },
   {
-    label: "Nearby paths",
-    state: "Not configured",
-    detail: "No Bluetooth or local network access is active",
+    label: "Spaces and messaging",
+    state: "Disabled",
+    detail: "Production MLS, authorization, and event integration are not complete",
+  },
+  {
+    label: "Desktop discovery",
+    state: "Not enabled",
+    detail: "No nearby or LAN transport is active on desktop",
   },
 ] as const;
 
@@ -28,7 +35,30 @@ function Mark() {
   );
 }
 
+type IdentityStatus = {
+  fingerprint: string;
+  public_bundle: string;
+  next_author_sequence: number;
+};
 function App() {
+  const [identity, setIdentity] = useState<IdentityStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const runtimeAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  async function runIdentityCommand(command: "initialize_device_identity" | "get_device_identity") {
+    setBusy(true);
+    setError(null);
+    try {
+      setIdentity(await invoke<IdentityStatus>(command));
+    } catch (cause) {
+      setIdentity(null);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -36,7 +66,7 @@ function App() {
           <Mark />
           <span>Lattice</span>
         </a>
-        <span className="stage">Protocol lab</span>
+        <span className="stage">Local client</span>
       </header>
 
       <main>
@@ -44,9 +74,9 @@ function App() {
           <p className="eyebrow">Local-first community communication</p>
           <h1 id="page-title">Your communities should not depend on a central account.</h1>
           <p className="lede">
-            Lattice keeps authenticated state on your devices and uses nearby or optional relay
-            paths when available. This repository is in protocol-lab development; identity,
-            messaging, and network actions are not enabled yet.
+            The desktop client can create and reopen a device identity protected by the OS
+            credential store. Authenticated Spaces, message authoring, and delivery remain disabled
+            until their MLS and authorization paths are complete.
           </p>
           <div className="principles">
             <span>Offline correctness</span>
@@ -63,7 +93,7 @@ function App() {
             </div>
             <span className="local-badge">
               <span className="status-dot" aria-hidden="true" />
-              Local shell
+              Local profile
             </span>
           </div>
 
@@ -76,6 +106,47 @@ function App() {
               </article>
             ))}
           </div>
+
+          <section aria-labelledby="identity-title">
+            <h3 id="identity-title">Device identity</h3>
+            <p>
+              Private keys are never displayed. Initializing uses the OS credential store and
+              persists only protected key material in the local database.
+            </p>
+            {runtimeAvailable ? (
+              <div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void runIdentityCommand("initialize_device_identity")}
+                >
+                  {busy ? "Working…" : "Initialize or reopen identity"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void runIdentityCommand("get_device_identity")}
+                >
+                  Show existing identity
+                </button>
+              </div>
+            ) : (
+              <p>Open the Tauri desktop app to use its native OS-keyring commands.</p>
+            )}
+            {error && <p role="alert">{error}</p>}
+            {identity && (
+              <div aria-live="polite">
+                <p>
+                  Fingerprint: <code>{identity.fingerprint}</code>
+                </p>
+                <p>Next local event sequence: {identity.next_author_sequence}</p>
+                <details>
+                  <summary>Public identity bundle</summary>
+                  <code>{identity.public_bundle}</code>
+                </details>
+              </div>
+            )}
+          </section>
         </section>
       </main>
 
