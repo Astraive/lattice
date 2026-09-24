@@ -1,9 +1,16 @@
 //! Lattice group membership and epoch state.
 //!
-//! Production membership remains unavailable until MLS credentials are bound
-//! to verified Space identities, epoch changes are integrated with the
-//! authenticated event log, ADR-001 conflict handling is durable, and secure
-//! persistence is available.
+//! The production [`api`] module performs real OpenMLS operations with a
+//! caller-supplied provider and a signer backed by [`lattice_identity::DeviceIdentity`].
+//! MLS key possession is not Space identity or authorization. Callers supply
+//! their own opaque X.509 credential bytes and must verify/bind them through
+//! their identity and policy layer; OpenMLS does not validate X.509 credentials.
+//! OpenMLS secrets are stored only through the caller's provider, whose
+//! encryption and persistence guarantees remain the caller's responsibility.
+//! This crate does not integrate group transitions with the application event
+//! log or persist its in-memory conflict quarantine.
+
+pub mod api;
 
 pub const CRATE_NAME: &str = "lattice-mls";
 
@@ -785,6 +792,20 @@ pub mod test_interop {
             }
         }
 
+        fn production_credential(
+            identity: &lattice_identity::DeviceIdentity,
+        ) -> Result<crate::api::DeviceCredentialInput, Box<dyn std::error::Error>> {
+            use openmls::credentials::Credential;
+            use openmls::prelude::tls_codec::{Serialize as TlsSerialize, VLBytes};
+
+            let content = VLBytes::new(b"not a DER certificate; test fixture".to_vec())
+                .tls_serialize_detached()?;
+            Ok(crate::api::DeviceCredentialInput::from_x509_credential(
+                identity,
+                Credential::new(CredentialType::X509, content),
+            )?)
+        }
+
         #[test]
         fn official_openmls_sequential_interop_and_sqlite_reload() -> InteropResult<()> {
             let alice_db = TestDatabase::new("alice");
@@ -1097,6 +1118,261 @@ pub mod test_interop {
         fn untrusted_test_identity_has_a_hard_input_bound() {
             let oversized = vec![0; MAX_TEST_IDENTITY_BYTES + 1];
             assert!(UntrustedTestIdentity::untrusted_for_interop(&oversized).is_err());
+        }
+        #[test]
+        fn production_api_uses_device_signer_and_real_openmls_group_ops() -> InteropResult<()> {
+            use crate::api::{
+                DeviceCredentialInput, GroupState, IncomingResult as ProductionIncoming, MlsError,
+                SpaceAuthorization,
+            };
+            use lattice_identity::DeviceIdentity;
+            use openmls::credentials::Credential;
+            use openmls::prelude::tls_codec::{Serialize as TlsSerialize, VLBytes};
+
+            let alice_db = TestDatabase::new("production-alice");
+            let bob_db = TestDatabase::new("production-bob");
+            let alice_provider =
+                TestProvider::open_unprotected_sqlite_for_interop(alice_db.path())?;
+            let bob_provider = TestProvider::open_unprotected_sqlite_for_interop(bob_db.path())?;
+            let alice_identity = DeviceIdentity::generate()?;
+            let bob_identity = DeviceIdentity::generate()?;
+
+            // The TLS vector is correctly framed, but its contents are not a
+            // real certificate or trusted identity; OpenMLS does not validate it.
+            let x509_test_content = || {
+                VLBytes::new(b"not a DER certificate; test fixture".to_vec())
+                    .tls_serialize_detached()
+                    .expect("short test credential encodes")
+            };
+            let alice_credential = DeviceCredentialInput::from_x509_credential(
+                &alice_identity,
+                Credential::new(CredentialType::X509, x509_test_content()),
+            )?;
+            let bob_credential = DeviceCredentialInput::from_x509_credential(
+                &bob_identity,
+                Credential::new(CredentialType::X509, x509_test_content()),
+            )?;
+
+            let mut alice =
+                GroupState::create(&alice_provider, &alice_identity, &alice_credential)?;
+            let bob_key_package =
+                GroupState::publish_key_package(&bob_provider, &bob_identity, &bob_credential)?;
+            let prepared = alice.prepare_add(
+                &alice_provider,
+                &alice_identity,
+                &alice_credential,
+                bob_key_package.as_bytes(),
+            )?;
+            let commit = prepared.commit().as_bytes().to_vec();
+            assert_eq!(
+                alice.accept_prepared_add(
+                    &alice_provider,
+                    &prepared,
+                    b"not the accepted MLS Commit",
+                ),
+                Err(MlsError::AcceptanceMismatch)
+            );
+            let welcome = alice.accept_prepared_add(&alice_provider, &prepared, &commit)?;
+            let mut bob = GroupState::from_welcome(
+                &bob_provider,
+                &alice.group_id(),
+                &alice_credential,
+                welcome.as_bytes(),
+            )?;
+            assert_eq!(alice.epoch(), 1);
+            assert_eq!(bob.epoch(), 1);
+            assert_eq!(bob.member_count(), 2);
+
+            let application = alice.encrypt_application(
+                &alice_provider,
+                &alice_identity,
+                &alice_credential,
+                b"production OpenMLS application",
+            )?;
+            assert!(matches!(
+                bob.process_incoming(&bob_provider, application.as_bytes())?,
+                ProductionIncoming::Application {
+                    plaintext,
+                    space_authorization: SpaceAuthorization::NotEvaluated,
+                } if plaintext == b"production OpenMLS application"
+            ));
+            let oversized_plaintext = vec![0; crate::api::MAX_APPLICATION_BYTES + 1];
+            assert_eq!(
+                alice.encrypt_application(
+                    &alice_provider,
+                    &alice_identity,
+                    &alice_credential,
+                    &oversized_plaintext,
+                ),
+                Err(MlsError::InputTooLarge {
+                    kind: "MLS application plaintext",
+                    maximum: crate::api::MAX_APPLICATION_BYTES,
+                    actual: crate::api::MAX_APPLICATION_BYTES + 1,
+                })
+            );
+            assert_eq!(alice.status(), crate::api::GroupStatus::Operational);
+
+            let wrong_identity = DeviceIdentity::generate()?;
+            assert_eq!(
+                alice.encrypt_application(
+                    &alice_provider,
+                    &wrong_identity,
+                    &alice_credential,
+                    b"must not sign",
+                ),
+                Err(MlsError::CredentialKeyMismatch)
+            );
+            assert_eq!(
+                DeviceCredentialInput::from_x509_credential(
+                    &alice_identity,
+                    BasicCredential::new(b"test-only basic credential".to_vec()).into(),
+                )
+                .unwrap_err(),
+                MlsError::BasicCredentialForbidden
+            );
+            assert_eq!(
+                bob.process_incoming(&bob_provider, &vec![0; crate::api::MAX_MLS_WIRE_BYTES + 1],),
+                Err(MlsError::InputTooLarge {
+                    kind: "MLS wire message",
+                    maximum: crate::api::MAX_MLS_WIRE_BYTES,
+                    actual: crate::api::MAX_MLS_WIRE_BYTES + 1,
+                })
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn production_api_quarantines_competing_valid_successor_commits() -> InteropResult<()> {
+            use crate::api::{GroupState, IncomingResult, MlsError};
+            use lattice_identity::DeviceIdentity;
+
+            let alice_db = TestDatabase::new("conflict-alice");
+            let bob_db = TestDatabase::new("conflict-bob");
+            let charlie_db = TestDatabase::new("conflict-charlie");
+            let dave_db = TestDatabase::new("conflict-dave");
+            let eve_db = TestDatabase::new("conflict-eve");
+            let alice_provider =
+                TestProvider::open_unprotected_sqlite_for_interop(alice_db.path())?;
+            let bob_provider = TestProvider::open_unprotected_sqlite_for_interop(bob_db.path())?;
+            let charlie_provider =
+                TestProvider::open_unprotected_sqlite_for_interop(charlie_db.path())?;
+            let dave_provider = TestProvider::open_unprotected_sqlite_for_interop(dave_db.path())?;
+            let eve_provider = TestProvider::open_unprotected_sqlite_for_interop(eve_db.path())?;
+
+            let alice_identity = DeviceIdentity::generate()?;
+            let bob_identity = DeviceIdentity::generate()?;
+            let charlie_identity = DeviceIdentity::generate()?;
+            let dave_identity = DeviceIdentity::generate()?;
+            let eve_identity = DeviceIdentity::generate()?;
+            let alice_credential = production_credential(&alice_identity)?;
+            let bob_credential = production_credential(&bob_identity)?;
+            let charlie_credential = production_credential(&charlie_identity)?;
+            let dave_credential = production_credential(&dave_identity)?;
+            let eve_credential = production_credential(&eve_identity)?;
+
+            let mut alice =
+                GroupState::create(&alice_provider, &alice_identity, &alice_credential)?;
+            let bob_key_package =
+                GroupState::publish_key_package(&bob_provider, &bob_identity, &bob_credential)?;
+            let add_bob = alice.prepare_add(
+                &alice_provider,
+                &alice_identity,
+                &alice_credential,
+                bob_key_package.as_bytes(),
+            )?;
+            let bob_commit = add_bob.commit().as_bytes().to_vec();
+            let bob_welcome = alice.accept_prepared_add(&alice_provider, &add_bob, &bob_commit)?;
+            let mut bob = GroupState::from_welcome(
+                &bob_provider,
+                &alice.group_id(),
+                &alice_credential,
+                bob_welcome.as_bytes(),
+            )?;
+
+            let charlie_key_package = GroupState::publish_key_package(
+                &charlie_provider,
+                &charlie_identity,
+                &charlie_credential,
+            )?;
+            let add_charlie = alice.prepare_add(
+                &alice_provider,
+                &alice_identity,
+                &alice_credential,
+                charlie_key_package.as_bytes(),
+            )?;
+            let charlie_commit = add_charlie.commit().as_bytes().to_vec();
+            let charlie_welcome =
+                alice.accept_prepared_add(&alice_provider, &add_charlie, &charlie_commit)?;
+            assert!(matches!(
+                bob.process_incoming(&bob_provider, &charlie_commit)?,
+                IncomingResult::StagedCommit {
+                    parent_epoch: 1,
+                    ..
+                }
+            ));
+            assert_eq!(
+                bob.accept_incoming_commit(&bob_provider, b"wrong Commit bytes"),
+                Err(MlsError::AcceptanceMismatch)
+            );
+            bob.accept_incoming_commit(&bob_provider, &charlie_commit)?;
+            let mut charlie = GroupState::from_welcome(
+                &charlie_provider,
+                &alice.group_id(),
+                &alice_credential,
+                charlie_welcome.as_bytes(),
+            )?;
+            assert_eq!(alice.epoch(), 2);
+            assert_eq!(bob.epoch(), 2);
+            assert_eq!(charlie.epoch(), 2);
+
+            let dave_key_package =
+                GroupState::publish_key_package(&dave_provider, &dave_identity, &dave_credential)?;
+            let eve_key_package =
+                GroupState::publish_key_package(&eve_provider, &eve_identity, &eve_credential)?;
+            let alice_branch = alice.prepare_add(
+                &alice_provider,
+                &alice_identity,
+                &alice_credential,
+                dave_key_package.as_bytes(),
+            )?;
+            let bob_branch = bob.prepare_add(
+                &bob_provider,
+                &bob_identity,
+                &bob_credential,
+                eve_key_package.as_bytes(),
+            )?;
+            let alice_commit = alice_branch.commit().as_bytes().to_vec();
+            let bob_commit = bob_branch.commit().as_bytes().to_vec();
+            assert_ne!(alice_commit, bob_commit);
+
+            assert!(matches!(
+                charlie.process_incoming(&charlie_provider, &alice_commit)?,
+                IncomingResult::StagedCommit {
+                    parent_epoch: 2,
+                    ..
+                }
+            ));
+            assert_eq!(
+                charlie.process_incoming(&charlie_provider, &bob_commit),
+                Err(MlsError::ConflictDetected { parent_epoch: 2 })
+            );
+            assert_eq!(charlie.status(), crate::api::GroupStatus::Conflicted);
+            let evidence = charlie
+                .conflict_evidence()
+                .expect("both validated successor Commits must be retained");
+            assert_eq!(evidence.parent_epoch(), 2);
+            assert_eq!(evidence.first_commit(), alice_commit);
+            assert_eq!(evidence.second_commit(), bob_commit);
+            assert_eq!(
+                charlie.encrypt_application(
+                    &charlie_provider,
+                    &charlie_identity,
+                    &charlie_credential,
+                    b"conflicted groups cannot send",
+                ),
+                Err(MlsError::Conflicted)
+            );
+            Ok(())
         }
     }
 

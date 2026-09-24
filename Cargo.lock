@@ -2859,6 +2859,7 @@ dependencies = [
  "directories",
  "lattice-core",
  "lattice-platform",
+ "serde_json",
 ]
 
 [[package]]
@@ -2927,6 +2928,7 @@ version = "0.1.0"
 name = "lattice-mls"
 version = "0.1.0"
 dependencies = [
+ "lattice-identity",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",

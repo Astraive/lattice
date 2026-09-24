@@ -18,6 +18,7 @@ CLI output should support human and machine-readable modes with stable error cla
 ## Command behavior and output
 
 All commands operate on an explicitly selected local profile/data directory, preventing accidental overlap between two identities. Read-only commands (`identity show`, `sync status`, `doctor`) must not mutate network membership. Mutating commands show the event ID and accurate local/destination state; `--json` returns versioned field names and stable error code, while human output may be reformatted. Secret export or reset, if implemented, requires a separate explicit confirmation and protected destination; a normal diagnostic never prints secret bytes.
+JSON output uses `schema_version: 1`. `identity` returns lowercase hexadecimal `fingerprint` and `public_bundle` fields plus `private_key_exposed: false`; `status` returns the identity state and explicit unavailable capability booleans; `about` separates `available` from `unavailable` capability names. Errors are emitted as one JSON object on stderr with the stable `COMMAND_FAILED` code and a human-readable `message`.
 
 | Command | Success signal | Common failure |
 | --- | --- | --- |

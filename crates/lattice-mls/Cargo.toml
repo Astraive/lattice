@@ -9,12 +9,16 @@ version.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+lattice-identity = { path = "../lattice-identity" }
+openmls = "=0.9.0"
+openmls_traits = "=0.6.0"
+
 [dev-dependencies]
 openmls = { version = "=0.9.0", features = ["test-utils"] }
 openmls_basic_credential = "=0.6.0"
 openmls_rust_crypto = "=0.6.0"
 openmls_sqlite_storage = "=0.3.0"
-openmls_traits = "=0.6.0"
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
