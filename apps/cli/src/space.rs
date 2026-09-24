@@ -15,7 +15,35 @@ pub(super) enum SpaceCommand {
         #[arg(long = "channel", required = true)]
         channels: Vec<String>,
     },
-    /// Show one bounded page; use --after with the returned cursor to continue.
+    /// Restore one locally persisted Space Genesis snapshot by its identifiers.
+    ///
+    /// Restoration verifies the local signed Genesis and protected MLS snapshot;
+    /// it does not establish remote membership or contact the network.
+    Restore {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+    },
+    /// Create a new one-member recovery generation from a local snapshot.
+    ///
+    /// This preserves the Space ID and channel descriptors but resets membership
+    /// to the local authorized administrator; it does not contact the network.
+    Recover {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte prior MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// RFC 9420 TLS-encoded X.509 credential vector for this device.
+        #[arg(long)]
+        credential: PathBuf,
+    },
+    /// Show one bounded page of locally persisted Spaces; each result is restored and verified.
+    /// Use --after with the returned cursor to continue.
     List {
         /// Exclusive cursor encoded as 96 hexadecimal characters.
         #[arg(long)]
@@ -24,7 +52,8 @@ pub(super) enum SpaceCommand {
     /// Read the bounded encrypted local outgoing-message cache.
     ///
     /// The cache is device-local and does not include incoming or synchronized
-    /// history.
+    /// history. Any outbox state is a local record, not proof of recipient
+    /// delivery.
     History {
         /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
         #[arg(long)]
@@ -178,6 +207,7 @@ pub(super) fn print_space_history(
             .iter()
             .map(|message| {
                 serde_json::json!({
+                    "schema_version": 1,
                     "event_id": hex(&message.event_id),
                     "channel_id": hex(&message.channel_id),
                     "author_id": hex(&message.author_id),
@@ -197,6 +227,8 @@ pub(super) fn print_space_history(
                 "group_reference": hex(group_reference),
                 "channel_id": hex(channel_id),
                 "source": "encrypted_local_outgoing_cache",
+                "outbox_state_source": "local_outbox_record",
+                "recipient_delivery_claimed": false,
                 "network_contacted": false,
                 "messages": messages,
             })
@@ -220,5 +252,8 @@ pub(super) fn print_space_history(
             );
         }
         println!("No synchronized or incoming history was loaded; no network contact was made.");
+        println!(
+            "Outbox states are local records; a destination-receipt state is not independently verified here."
+        );
     }
 }

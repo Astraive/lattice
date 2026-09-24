@@ -57,7 +57,7 @@ enum Command {
         #[command(subcommand)]
         command: IdentityCommand,
     },
-    /// List or create local Space Genesis generations.
+    /// Create, list, or restore locally persisted Space Genesis generations.
     Space {
         #[command(subcommand)]
         command: SpaceCommand,
@@ -82,9 +82,12 @@ type PinInput = ([u8; 65], [u8; 32]);
 type SpaceMessageInput = ([u8; 16], [u8; 32], [u8; 16]);
 type SpaceEditInput = ([u8; 16], [u8; 32], [u8; 16], [u8; 32]);
 type SpaceHistoryInput = ([u8; 16], [u8; 32], [u8; 16]);
+type SpaceRestoreInput = ([u8; 16], [u8; 32]);
 #[derive(Clone, Copy)]
 enum SpaceCommandInput {
     None,
+    Restore(SpaceRestoreInput),
+    Recover(SpaceRestoreInput),
     Message(SpaceMessageInput),
     Edit(SpaceEditInput),
     History(SpaceHistoryInput),
@@ -399,6 +402,27 @@ fn parse_space_edit_input(command: &Command) -> Result<Option<SpaceEditInput>, C
         _ => Ok(None),
     }
 }
+fn parse_space_restore_input(command: &Command) -> Result<Option<SpaceRestoreInput>, CliError> {
+    match command {
+        Command::Space {
+            command:
+                SpaceCommand::Restore {
+                    space_id,
+                    group_reference,
+                }
+                | SpaceCommand::Recover {
+                    space_id,
+                    group_reference,
+                    ..
+                },
+        } => Ok(Some((
+            parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<32>(group_reference, "group reference")
+                .map_err(CliError::invalid_input)?,
+        ))),
+        _ => Ok(None),
+    }
+}
 
 fn parse_space_history_input(command: &Command) -> Result<Option<SpaceHistoryInput>, CliError> {
     match command {
@@ -421,6 +445,16 @@ fn parse_space_history_input(command: &Command) -> Result<Option<SpaceHistoryInp
 fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, CliError> {
     match command {
         Command::Space {
+            command: SpaceCommand::Restore { .. } | SpaceCommand::Recover { .. },
+        } => parse_space_restore_input(command)?
+            .map(|input| match command {
+                Command::Space {
+                    command: SpaceCommand::Recover { .. },
+                } => SpaceCommandInput::Recover(input),
+                _ => SpaceCommandInput::Restore(input),
+            })
+            .ok_or_else(|| CliError::invalid_input("Space identifiers were not parsed")),
+        Command::Space {
             command: SpaceCommand::Message { .. },
         } => parse_space_message_input(command)?
             .map(SpaceCommandInput::Message)
@@ -442,6 +476,7 @@ fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn E
     let Command::Space {
         command:
             SpaceCommand::Create { credential, .. }
+            | SpaceCommand::Recover { credential, .. }
             | SpaceCommand::Message { credential, .. }
             | SpaceCommand::Edit { credential, .. },
     } = command
@@ -569,6 +604,12 @@ fn execute_space(
                 .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
             execute_space_create(credential_bytes, channels, database_path, protector, json)?;
         }
+        SpaceCommand::Restore { .. } => {
+            execute_space_restore(input, database_path, protector, json)?;
+        }
+        SpaceCommand::Recover { .. } => {
+            execute_space_recovery(credential_bytes, input, database_path, protector, json)?;
+        }
         SpaceCommand::List { after } => {
             let after = after
                 .as_deref()
@@ -648,6 +689,110 @@ fn execute_space(
                 client.local_text_message_history(&space_id, &group_reference, &channel_id)?;
             print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
         }
+    }
+    Ok(())
+}
+
+fn execute_space_recovery(
+    credential_bytes: Option<Vec<u8>>,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let credential_bytes = credential_bytes
+        .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+    let SpaceCommandInput::Recover((space_id, prior_group_reference)) = input else {
+        return Err(CliError::invalid_input("recovery identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => {
+            return Err(CliError::missing_identity().into());
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let space = client.recover_space_generation_from_x509_credential(
+        &space_id,
+        &prior_group_reference,
+        credential_bytes,
+    )?;
+    let space_id = hex(space.space_id());
+    let group_reference = hex(space.group_reference());
+    let channels = space::channel_summaries(space.reducer());
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_recover",
+                "state": "one_member_recovery_generation_created",
+                "space_id": space_id,
+                "prior_group_reference": hex(&prior_group_reference),
+                "group_reference": group_reference,
+                "channels": channels,
+                "prior_members_rejoined": false,
+                "network_contacted": false,
+            })
+        );
+    } else {
+        println!("Created a local one-member Space recovery generation.");
+        println!("Space ID: {space_id}");
+        println!("Prior MLS group reference: {}", hex(&prior_group_reference));
+        println!("New MLS group reference: {group_reference}");
+        println!("Existing members were not rejoined; no network contact was made.");
+    }
+    Ok(())
+}
+
+fn execute_space_restore(
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let SpaceCommandInput::Restore((space_id, group_reference)) = input else {
+        return Err(CliError::invalid_input("restore identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => {
+            return Err(CliError::missing_identity().into());
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let space = client.restore_space(&space_id, &group_reference)?;
+    let space_id = hex(space.space_id());
+    let group_reference = hex(space.group_reference());
+    let channels = space::channel_summaries(space.reducer());
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_restore",
+                "state": "local_snapshot_restored",
+                "space_id": space_id,
+                "group_reference": group_reference,
+                "channels": channels,
+                "remote_membership": "not_checked",
+                "network_contacted": false,
+            })
+        );
+    } else {
+        println!("Restored local Space Genesis snapshot.");
+        println!("Space ID: {space_id}");
+        println!("MLS group reference: {group_reference}");
+        for channel in channels {
+            println!(
+                "Channel {}: {} (type: {}, archived: {})",
+                channel["id"].as_str().unwrap_or_default(),
+                channel["name"].as_str().unwrap_or_default(),
+                channel["type"].as_str().unwrap_or_default(),
+                channel["archived"].as_bool().unwrap_or(false)
+            );
+        }
+        println!("This verifies local state only; remote membership was not checked.");
     }
     Ok(())
 }
@@ -813,7 +958,6 @@ fn execute_status(
     }
     Ok(())
 }
-
 fn print_about(json: bool) {
     if json {
         println!(
@@ -823,18 +967,23 @@ fn print_about(json: bool) {
                 "command": "about",
                 "available": [
                     "protected_device_identity",
+                    "identity_csr_export",
+                    "local_identity_pinning",
                     "local_event_storage",
-                    "local_space_genesis_listing",
                     "local_space_genesis_creation",
-                    "local_sync_queue_inspection",
+                    "local_space_genesis_listing_and_restoration",
+                    "local_text_message_queue_and_edit",
+                    "local_outgoing_message_history",
+                    "local_outbox_state_inspection",
                     "local_relay_settings",
-                    "relay_nip11_probe",
-                    "local_profile_diagnostics",
-                    "local_text_message_queue"
+                    "relay_nip11_metadata_probe",
+                    "local_profile_diagnostics"
                 ],
                 "unavailable": [
-                    "authenticated_spaces",
-                    "network_delivery",
+                    "authenticated_space_join_or_leave",
+                    "certificate_issuance_or_import",
+                    "network_message_forwarding_or_delivery",
+                    "peer_synchronization",
                     "voice_media"
                 ],
             })
@@ -842,9 +991,12 @@ fn print_about(json: bool) {
     } else {
         println!("Lattice local-first communication");
         println!(
-            "Available: protected identity, local event storage and Space Genesis, outbox-only text messages, local sync queues, relay settings/NIP-11 probing, profile diagnostics, and candidate wire codecs."
+            "Available: protected device identity, CSR export and local identity pins; local Space Genesis create/list/restore; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
         );
-        println!("Unavailable: authenticated Space membership, network delivery, and voice media.");
+        println!(
+            "Not available: authenticated Space join/leave, certificate issuance/import, peer synchronization, message forwarding/delivery, or voice media."
+        );
+        println!("A local queue state is not evidence of relay forwarding or recipient delivery.");
     }
 }
 
