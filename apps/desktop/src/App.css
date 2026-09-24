@@ -257,15 +257,76 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
+.identity-pin {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.identity-pin h4 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.identity-pin p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.identity-pin-fields {
+  display: grid;
+  gap: 12px;
+  max-width: 760px;
+  margin-top: 14px;
+}
+
+.identity-pin-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.identity-pin-fields input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #e3ebe5;
+  background: var(--surface-raised);
+  font: inherit;
+}
+
+.identity-pin-fields input:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.space-browser-heading button {
+  white-space: nowrap;
+}
+.identity-pin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.identity-pin-actions button + button {
+  margin-inline-start: 0;
+}
+
+.identity-pin-result {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
 .space-browser-heading {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 14px;
-}
-
-.space-browser-heading button {
-  white-space: nowrap;
 }
 
 .space-browser-heading h3 {
