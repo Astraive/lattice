@@ -1,9 +1,9 @@
 //! Bounded transport orchestration over the shared platform adapter port.
 //!
 //! This crate does not implement BLE, LAN, Wi-Fi Aware, sockets, or relay
-//! networking. A successful send means exact-hop adapter acceptance only.
+//! networking. Send success means exact-hop adapter acceptance only.
 
-use lattice_platform::{TransportAdapter, TransportError};
+use lattice_platform::{EnvelopeBytes, TransportAdapter, TransportError, TransportLifecycle};
 
 /// Package's published crate name.
 pub const CRATE_NAME: &str = "lattice-transport";
@@ -21,10 +21,10 @@ pub const CRATE_NAME: &str = "lattice-transport";
 /// error returned by the platform adapter.
 pub async fn send_bounded<A: TransportAdapter + ?Sized>(
     adapter: &A,
-    envelope: lattice_platform::EnvelopeBytes,
+    envelope: EnvelopeBytes,
 ) -> Result<lattice_platform::TransportReceipt, TransportError> {
     let maximum = adapter.capabilities().max_envelope_bytes();
-    if adapter.lifecycle() != lattice_platform::TransportLifecycle::Running {
+    if adapter.lifecycle() != TransportLifecycle::Running {
         return Err(TransportError::NotRunning);
     }
     if envelope.as_bytes().len() > maximum {
@@ -33,9 +33,32 @@ pub async fn send_bounded<A: TransportAdapter + ?Sized>(
     adapter.send(envelope).await
 }
 
+/// Receives one bounded opaque envelope from a running platform adapter.
+///
+/// # Errors
+///
+/// Returns `NotRunning`, rejects envelopes over the adapter's advertised cap,
+/// or propagates the platform adapter's error.
+pub async fn receive_bounded<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+) -> Result<Option<EnvelopeBytes>, TransportError> {
+    let maximum = adapter.capabilities().max_envelope_bytes();
+    if adapter.lifecycle() != TransportLifecycle::Running {
+        return Err(TransportError::NotRunning);
+    }
+    let Some(envelope) = adapter.receive().await? else {
+        return Ok(None);
+    };
+    if envelope.as_bytes().len() > maximum {
+        return Err(TransportError::EnvelopeTooLarge);
+    }
+    Ok(Some(envelope))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll, Wake, Waker};
 
@@ -44,12 +67,14 @@ mod tests {
         TransportError, TransportLifecycle, TransportReceipt,
     };
 
-    use super::send_bounded;
+    use super::{receive_bounded, send_bounded};
 
     struct MockAdapter {
         capabilities: TransportCapabilities,
         lifecycle: TransportLifecycle,
         sends: AtomicUsize,
+        receives: AtomicUsize,
+        incoming: Mutex<Option<EnvelopeBytes>>,
     }
 
     impl MockAdapter {
@@ -62,6 +87,8 @@ mod tests {
                 .expect("valid capability bound"),
                 lifecycle,
                 sends: AtomicUsize::new(0),
+                receives: AtomicUsize::new(0),
+                incoming: Mutex::new(None),
             }
         }
     }
@@ -93,6 +120,13 @@ mod tests {
                 Ok(TransportReceipt::AcceptedByNextHop)
             })
         }
+
+        fn receive(&self) -> PortFuture<'_, Result<Option<EnvelopeBytes>, TransportError>> {
+            Box::pin(async {
+                self.receives.fetch_add(1, Ordering::Relaxed);
+                Ok(self.incoming.lock().expect("mock lock").take())
+            })
+        }
     }
 
     struct NoopWake;
@@ -116,13 +150,18 @@ mod tests {
     }
 
     #[test]
-    fn checks_lifecycle_and_adapter_limit_before_native_io() {
+    fn checks_lifecycle_and_adapter_limit_before_send_or_receive_io() {
         let stopped = MockAdapter::new(TransportLifecycle::Stopped, 4);
         assert_eq!(
             run_ready(send_bounded(&stopped, envelope(b"x"))),
             Err(TransportError::NotRunning)
         );
+        assert!(matches!(
+            run_ready(receive_bounded(&stopped)),
+            Err(TransportError::NotRunning)
+        ));
         assert_eq!(stopped.sends.load(Ordering::Relaxed), 0);
+        assert_eq!(stopped.receives.load(Ordering::Relaxed), 0);
 
         let running = MockAdapter::new(TransportLifecycle::Running, 4);
         assert_eq!(
@@ -133,12 +172,27 @@ mod tests {
     }
 
     #[test]
-    fn passing_send_returns_only_the_adapter_hop_receipt() {
+    fn bounded_send_and_receive_preserve_exact_hop_semantics() {
         let adapter = MockAdapter::new(TransportLifecycle::Running, 4);
         assert_eq!(
             run_ready(send_bounded(&adapter, envelope(b"data"))),
             Ok(TransportReceipt::AcceptedByNextHop)
         );
         assert_eq!(adapter.sends.load(Ordering::Relaxed), 1);
+
+        *adapter.incoming.lock().expect("mock lock") = Some(envelope(b"toolong"));
+        assert!(matches!(
+            run_ready(receive_bounded(&adapter)),
+            Err(TransportError::EnvelopeTooLarge)
+        ));
+        *adapter.incoming.lock().expect("mock lock") = Some(envelope(b"ok"));
+        assert_eq!(
+            run_ready(receive_bounded(&adapter))
+                .expect("receive succeeds")
+                .expect("one object available")
+                .as_bytes(),
+            b"ok"
+        );
+        assert_eq!(adapter.receives.load(Ordering::Relaxed), 2);
     }
 }

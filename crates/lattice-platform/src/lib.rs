@@ -806,7 +806,8 @@ pub enum TransportError {
     OperationFailed,
 }
 
-/// Lifecycle and opaque-send boundary for one platform transport.
+/// Lifecycle and bounded opaque send/receive boundary for one platform
+/// transport.
 ///
 /// A successful send returns only exact-hop acceptance. Destination delivery,
 /// event validity, retries, and delivery policy belong to higher layers.
@@ -828,6 +829,12 @@ pub trait TransportAdapter: Send + Sync {
         &self,
         envelope: EnvelopeBytes,
     ) -> PortFuture<'_, Result<TransportReceipt, TransportError>>;
+
+    /// Receives one complete bounded opaque envelope, if one is available.
+    ///
+    /// Adapters must inspect framing lengths before allocation and return only
+    /// values constructed through the shared `EnvelopeBytes` bound.
+    fn receive(&self) -> PortFuture<'_, Result<Option<EnvelopeBytes>, TransportError>>;
 }
 
 /// Fixed-width event identifier for immutable canonical event bytes.
