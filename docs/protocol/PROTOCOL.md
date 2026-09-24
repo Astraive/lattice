@@ -41,11 +41,11 @@ Per authorized scope, exchange `{author_id, contiguous_seq, gap_digest}`, recent
 
 ## Membership and conflict
 
-An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes peer delivery and simultaneous Commit strategies. ADR-001 must specify deterministic acceptance/wait period, losing-branch messages, Welcome handling, fork-state retention/deletion, and explicit recovery. ADR-002 fixes channel confidentiality semantics. Generic Lamport sorting is only for presentation. Until those decisions are implemented, secure concurrent-admin operation is not supported.
+An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes peer delivery and simultaneous Commit strategies. [ADR-001](../decisions/ADR-001-membership-commit-conflicts.md) accepts fail-closed conflict handling and explicit new-group recovery; [ADR-002](../decisions/ADR-002-channel-read-semantics.md) makes channels policy-only. [`06-spaces.md`](../../protocol/specs/06-spaces.md) and [`07-permissions.md`](../../protocol/specs/07-permissions.md) specify candidate payload, causal and permission rules, but reducers, credential trust, durable conflict recovery and complete tests remain incomplete. Generic Lamport sorting is only for presentation; secure concurrent-admin operation is not enabled.
 
 ## Relay and files
 
-Nostr is an optional opaque-envelope carrier following a versioned profile: event kind, outer key policy, retrieval tags, expiration hint, size/duplicate handling, relay set, and backfill window. [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) defines basic events/subscriptions, not Lattice's group authorization. Never claim NIP-17 or Bitchat interoperability from similar wrapping. File manifests/chunks have independent hashes and transfer quotas; general event relays are not assumed to store file payloads.
+Nostr is an optional opaque-envelope carrier defined by the local candidate [`13-relay.md`](../../protocol/specs/13-relay.md) and [ADR-003](../decisions/ADR-003-nostr-envelope-relay-profile.md). It uses NIP-01 kind `39001`, a relay-only key, an MLS-protected opaque mailbox tag, NIP-40 expiry, and bounded best-effort backfill; [`09-envelope.md`](../../protocol/specs/09-envelope.md) defines the carrier object. Neither document implies a production adapter or Nostr interoperability. [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) defines events/subscriptions, not Lattice authorization. Never claim NIP-17 or Bitchat interoperability from similar wrapping. File manifests/chunks have independent hashes and transfer quotas; general event relays are not assumed to store file payloads.
 
 ## Compatibility, error classes and vectors
 
@@ -60,11 +60,10 @@ References: [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), [RFC 9750](https
 | `00-overview` | Version/capability matrix, normative language and scopes |
 | `01-identifiers`, `02-encoding` | Field widths, byte order/CBOR profile, domain strings, canonical hashes |
 | `03-identity`, `04-sessions` | Identity bundle, credential verification, Noise pattern/prologue/replay |
-| `05-events`, `06-spaces`, `07-permissions` | Event kinds, causal references, authorization context, role bit registry |
-| `08-mls` | Ciphersuite, KeyPackages, Welcome, Commit ordering/fork profile, exporter labels |
-| `09-envelope`, `10-ble` | Delivery classes, hop/copy budget, fragmentation, GATT UUIDs, flow control |
+| `05-events`, `06-spaces`, `07-permissions` | Signed event framing, Space/membership payloads, permission registry and causal conflicts; candidate specs exist, reducers remain incomplete |
+| `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts, delivery class/TTL/copy budget, fragmentation and GATT profile; MLS protected persistence is integrated, link profile remains candidate |
 | `11-sync`, `12-routing` | Gap summaries, snapshots, path metrics, retry and courier rules |
-| `13-relay`, `14-files`, `15-voice` | Mailbox profile, manifest/chunks, room incarnation and signaling |
+| `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; relay adapter and cross-platform interop remain unimplemented |
 | `16-versioning` | Required/optional feature bits, downgrade prevention and migration |
 
 Each document defines maxima for strings, arrays, event body, parent list, fragments, pending dependencies and queue bytes, and contains byte-exact positive/negative vectors. A field marked “future” in the integrated spec does not silently become required for v1. No implementer may derive a byte limit from a UI placeholder or radio MTU alone.

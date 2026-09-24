@@ -1,10 +1,10 @@
 # Lattice protocol candidate 1 — overview
 
-**Status:** candidate, not an interoperable release. The source of truth remains [`docs/protocol/PROTOCOL.md`](../../docs/protocol/PROTOCOL.md); this document records the executable candidate currently implemented in Rust. Do not advertise wire compatibility until independent implementations pass published vectors and the security gates.
+**Status:** candidate, not an interoperable release. This overview distinguishes the implemented Rust subset from candidate schemas that have not passed independent interoperability and security gates. Do not advertise wire compatibility until those gates pass.
 
 ## Scope
 
-Candidate 1 specifies strict canonical CBOR value encoding, SHA-256 event-ID derivation, and the public device bundle byte format. Signed application event framing, MLS lifecycle and storage recovery, link handshakes, forwarding envelopes, capability negotiation, and relay/file/voice wire semantics are not yet frozen. An encoded value is not an accepted event. A signature is not authorization, membership, encryption, delivery, or identity verification by a human.
+The executable Rust subset covers strict canonical CBOR values, SHA-256 event-ID derivation, the local identity bundle, signed event inspection, and encrypted durable OpenMLS provider records through the core. Candidate documents define Space/membership and permission payloads, delivery envelopes, and a Nostr relay profile; these are not implemented end-to-end or interoperable. Link handshakes, BLE, file and voice wire semantics remain open. An encoded value is not an accepted event. A signature is not authorization, membership, encryption, delivery, or human identity verification.
 
 ## Version and failure rules
 
@@ -22,9 +22,12 @@ The CBOR candidate has profile version 1. Objects that require semantics outside
 
 The per-item limits are implemented in `crates/lattice-protocol`; they are not a whole-database, aggregate-queue, BLE-frame, file, or MLS limit. Local storage and transport impose their own additional independent quotas.
 
-## Implemented components
+## Candidate documents and implementation boundary
 
-- [`02-encoding.md`](02-encoding.md): supported value subset, canonical rules and hash preimage.
-- [`03-identity.md`](03-identity.md): candidate public key bundle and fingerprint.
+- [`02-encoding.md`](02-encoding.md) and [`03-identity.md`](03-identity.md): implemented candidate primitives with shared vectors.
+- [`05-events.md`](05-events.md): signed-event candidate; the TypeScript inspector verifies shape, event ID, identity fingerprint, and signature only.
+- [`06-spaces.md`](06-spaces.md) and [`07-permissions.md`](07-permissions.md): exact candidate payload/permission schemas; Rust authorization reducers are not implemented.
+- [`08-mls.md`](08-mls.md): MLS event binding and encrypted durable provider boundary; credential trust, causal membership reduction, and durable conflict recovery remain incomplete.
+- [`09-envelope.md`](09-envelope.md) and [`13-relay.md`](13-relay.md): candidate envelope and NIP-01/NIP-40 relay formats; no production relay adapter or interoperability claim.
 
 Other entries in the planned [`PROTOCOL.md` document map](../../docs/protocol/PROTOCOL.md#wire-document-decomposition-and-freeze-order) remain unimplemented. See `docs/TODO.md` and `docs/quality/TEST_PLAN.md` for evidence and release gates.

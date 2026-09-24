@@ -1,6 +1,6 @@
 # Candidate 1 — MLS group state and event binding
 
-**Status:** executable candidate, not an interoperability release. The production API uses OpenMLS, but callers must verify external credentials, protect and persist provider state, and persist/recover the application conflict metadata before enabling Space membership workflows.
+**Status:** executable candidate, not an interoperability release. The core constructs an OpenMLS provider backed by encrypted SQLite records and wraps its random storage key with the configured private-key protector. Callers must still verify external credentials and durably persist/recover application authorization and conflict metadata before enabling Space membership workflows.
 
 ## Event-visible MLS group reference
 
@@ -31,6 +31,6 @@ External senders without a member key cannot pass this binding. Passing it prove
 
 MLS Commit validation is independent from application membership authorization. Commits are staged against the locally current parent epoch and require explicit exact-byte acceptance before merge. Competing valid successors are quarantined as conflict evidence and stop group mutation under [ADR-001](../../docs/decisions/ADR-001-membership-commit-conflicts.md). Staged-Commit and conflict metadata is currently process-local; a provider/database reload must not be treated as a recoverable operational group until authenticated durable recovery metadata is implemented.
 
-## Credential and persistence boundary
+Core-owned storage uses the same configured `PrivateKeyProtector` as identity storage to protect a random 32-byte OpenMLS storage key. OpenMLS values are AES-256-GCM encrypted with a fresh nonce per record; the public database lookup encodings for `GroupId` and `GroupEpoch` are stable and unencrypted so OpenMLS can address records. The core opens/migrates the provider and scopes its key to a transaction callback. The transaction callback atomically composes provider writes with application-store writes, but does not itself authorize caller operations or persist staged-Commit/conflict quarantine metadata.
 
-The caller supplies an OpenMLS provider and an X.509 credential. The API binds the local signing key to that credential object but does not parse an X.509 certificate, validate a chain, establish a trust anchor, or map its subject to a human identity. Credential verification policy remains a required caller prerequisite. Provider storage may contain group secrets and must be protected by the application. The test fixture deliberately uses a non-certificate and makes no production trust assertion.
+Lower-level callers may supply another OpenMLS provider, but must protect it because it may contain group secrets. The core provider's storage encryption does not parse X.509 certificates, validate a chain, establish a trust anchor, or map a subject to a human identity. Credential verification policy remains a required caller prerequisite. The test fixture deliberately uses a non-certificate and makes no production trust assertion.

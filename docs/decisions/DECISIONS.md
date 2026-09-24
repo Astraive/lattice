@@ -6,7 +6,7 @@ This index tracks decisions. Create one `ADR-xxx-title.md` per resolved item wit
 | --- | --- | --- | --- | --- |
 | ADR-001 | Concurrent MLS Commit order, policy conflict, fork recovery | Accepted fail-closed policy: no winner selection; conflict blocks mutations and requires new-group recovery. | SPC-006–007, LAT-007 | Accepted; implementation evidence pending |
 | ADR-002 | Does channel privacy include read confidentiality from other Space members? | Accepted policy-only channel access; read-private channel types are unsupported. | SPC-011, LAT-003 | Accepted; implementation evidence pending |
-| ADR-003 | Relay kind, tags, outer identity, expiration/size and backfill | Experimental relay profile only; no Nostr-wide interop claim. | NET-010 | M5 |
+| ADR-003 | Relay kind, tags, outer identity, expiration/size and backfill | Accepted Nostr mailbox candidate with stable per-generation tag; no interop or deletion claim. | NET-010 | Candidate accepted; two-relay evidence pending |
 | ADR-004 | Snapshot provenance, compaction, retention and history recovery | Retain dependencies; surface gaps rather than accepting unverifiable snapshot. | MSG-011, LAT-007 | M8 |
 | ADR-005 | Rotating BLE advertisement/rendezvous token design | Avoid stable app identity, but do not claim anonymity/unlinkability. | NET-001, LAT-010 | M2/M8 |
 | ADR-006 | One human on multiple devices and key recovery | Each installation is a separate v1 MLS member. | IDN-006 | After v1 |
@@ -46,11 +46,9 @@ Requirements: IDs
 
 ## Questions with no safe implicit answer
 
-**MLS ordering:** Do we wait a bounded time for competing Commits, or apply speculatively and retain the previous epoch? How do disconnected peers agree on tie-break bytes? Who signs/publishes branch resolution? What do we do with content already sent on the losing branch? How long can an old secret be retained without undermining forward secrecy? Which Welcome should a new member process? What if the tie-break winning Commit is invalid to one replica because policy state diverged?
+**MLS trust and recovery:** What independent credential verifier and pinning model qualifies a device as a trusted recovery administrator? How are staged-Commit and conflict-evidence records authenticated and recovered across process/device restart without reactivating an ambiguous branch?
 
-**Channel confidentiality:** Does “read-private” hide ciphertext from Space members or simply hide the UI/deny normal reads? If separate group, how are member changes synchronized between Space and channel groups, how many groups per device, and how are old messages handled? If subordinate keys, who distributes them in a partition and how are they revoked? No choice is free of state and recovery costs.
-
-**Relay privacy:** What tags enable retrieval without exposing Space identity? How are Nostr outer keys rotated while retaining queued mail? What is the largest relay-acceptable envelope and what happens when relay rejects it? Do relays support expiration, or must recipients ignore it? What is the user-visible statement about IP/timing/subscription metadata?
+**Relay interoperability:** Which independent NIP-01 implementations and relays will run the required candidate vectors, and how will operators verify advertised NIP-11 message limits in practice? The profile itself remains optional until this evidence passes.
 
 **Snapshots:** Who can sign a snapshot, how is its event frontier proven, how can a late peer distinguish authorized compaction from censored history, and how is conflicting snapshot evidence reported? A small device cannot retain unlimited history, but it also cannot trust an unverified volunteer node as authoritative.
 
