@@ -2878,6 +2878,46 @@ mod tests {
     }
 
     #[test]
+    fn unpin_revokes_local_trust_and_survives_restart() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let peer = DeviceIdentity::generate().expect("peer identity");
+        let bundle = peer.public_bundle();
+        let fingerprint = bundle.fingerprint();
+        {
+            let mut client =
+                Client::open_or_create(&database.0, &protector).expect("initialize client");
+            client
+                .pin_identity(&bundle.to_bytes(), fingerprint)
+                .expect("pin verified peer");
+            assert!(
+                client
+                    .unpin_identity(&fingerprint)
+                    .expect("remove local trust")
+            );
+            assert_eq!(
+                client
+                    .pinned_identity(&fingerprint)
+                    .expect("revoked pin lookup"),
+                None
+            );
+            assert!(
+                !client
+                    .unpin_identity(&fingerprint)
+                    .expect("repeat removal is idempotent")
+            );
+        }
+
+        let client = Client::open_existing(&database.0, &protector).expect("reopen client");
+        assert_eq!(
+            client
+                .pinned_identity(&fingerprint)
+                .expect("revoked pin remains absent"),
+            None
+        );
+    }
+
+    #[test]
     fn modified_pinned_bundle_is_rejected_on_lookup() {
         let database = TestDatabase::new();
         let protector = TestProtector;

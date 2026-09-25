@@ -76,4 +76,20 @@ impl Store {
             })
             .transpose()
     }
+
+    /// Removes a local peer pin by its exact full fingerprint.
+    ///
+    /// This revokes this profile's local trust decision only; it does not
+    /// notify the peer or change any remote identity or membership state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the pin cannot be removed.
+    pub fn remove_trusted_identity(&mut self, fingerprint: &[u8; 32]) -> Result<bool> {
+        let removed = self.connection.execute(
+            "DELETE FROM trusted_identities WHERE fingerprint = ?1",
+            params![&fingerprint[..]],
+        )?;
+        Ok(removed != 0)
+    }
 }

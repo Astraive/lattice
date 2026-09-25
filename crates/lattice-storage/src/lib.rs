@@ -308,6 +308,20 @@ impl From<rusqlite::Error> for StoreError {
     }
 }
 
+fn classify_database_error(error: rusqlite::Error) -> StoreError {
+    match error {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ) =>
+        {
+            StoreError::CorruptData("SQLite database image is malformed or unsupported")
+        }
+        error => StoreError::Sqlite(error),
+    }
+}
+
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 
 /// Durable `SQLite` event store.
@@ -603,7 +617,7 @@ impl Store {
     pub fn schema_version(&self) -> Result<i64> {
         self.connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(Into::into)
+            .map_err(classify_database_error)
     }
 
     /// Runs `SQLite`'s bounded quick integrity check.
@@ -614,7 +628,8 @@ impl Store {
     pub fn integrity_check(&self) -> Result<bool> {
         let status: String = self
             .connection
-            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+            .map_err(classify_database_error)?;
         Ok(status == "ok")
     }
     /// Gives a platform provider exclusive access to the `SQLite` connection.

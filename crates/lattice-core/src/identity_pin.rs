@@ -61,6 +61,18 @@ impl Client {
         Ok(Some(pinned))
     }
 
+    /// Removes one local peer pin, blocking future operations that require it.
+    ///
+    /// This revokes trust only in this profile. It does not revoke the remote
+    /// identity, notify other devices, or remove MLS membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::Storage`] if the pin cannot be removed.
+    pub fn unpin_identity(&mut self, fingerprint: &[u8; 32]) -> Result<bool, CoreError> {
+        Ok(self.store.remove_trusted_identity(fingerprint)?)
+    }
+
     /// Runs an asynchronous operation with the local identity borrowed and an
     /// exact persisted peer pin loaded and revalidated first.
     ///

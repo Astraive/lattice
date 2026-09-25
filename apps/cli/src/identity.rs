@@ -37,6 +37,12 @@ pub(super) enum IdentityCommand {
         #[arg(long)]
         fingerprint_hex: String,
     },
+    /// Remove this profile's local trust pin; this does not revoke the remote identity.
+    Unpin {
+        /// Full 32-byte fingerprint encoded as 64 hexadecimal characters.
+        #[arg(long)]
+        fingerprint_hex: String,
+    },
 }
 
 pub(super) fn print_pinned_identity(

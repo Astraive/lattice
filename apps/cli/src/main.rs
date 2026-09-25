@@ -349,7 +349,8 @@ fn parse_pin_input(command: &Command) -> Result<Option<PinInput>, CliError> {
 fn parse_lookup_fingerprint(command: &Command) -> Result<Option<[u8; 32]>, CliError> {
     match command {
         Command::Identity {
-            command: IdentityCommand::Pinned { fingerprint_hex },
+            command:
+                IdentityCommand::Pinned { fingerprint_hex } | IdentityCommand::Unpin { fingerprint_hex },
         } => Ok(Some(
             parse_fixed_hex::<32>(fingerprint_hex, "fingerprint")
                 .map_err(CliError::invalid_input)?,
@@ -654,6 +655,46 @@ fn execute_identity(
                 "identity_pinned",
             );
         }
+        IdentityCommand::Unpin { .. } => execute_unpin_identity(
+            &lookup_fingerprint.expect("unpin fingerprint was parsed"),
+            database_path,
+            protector,
+            json,
+        )?,
+    }
+    Ok(())
+}
+
+fn execute_unpin_identity(
+    fingerprint: &[u8; 32],
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let removed = client.unpin_identity(fingerprint)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "identity_unpin",
+                "fingerprint": hex(fingerprint),
+                "locally_removed": removed,
+                "remote_identity_revoked": false,
+            })
+        );
+    } else if removed {
+        println!(
+            "Removed local trust for peer {}; remote identity was not revoked.",
+            hex(fingerprint)
+        );
+    } else {
+        println!("No local trust pin exists for peer {}.", hex(fingerprint));
     }
     Ok(())
 }
@@ -1115,6 +1156,7 @@ fn print_about(json: bool) {
                     "protected_device_identity",
                     "identity_csr_export",
                     "local_identity_pinning",
+                    "local_peer_pin_revocation",
                     "local_event_storage",
                     "local_space_genesis_creation",
                     "local_space_genesis_listing_and_restoration",
@@ -1132,17 +1174,18 @@ fn print_about(json: bool) {
                     "certificate_issuance_or_import",
                     "network_message_forwarding_or_delivery",
                     "peer_synchronization",
-                    "voice_media"
+                    "voice_media",
+                    "remote_identity_revocation"
                 ],
             })
         );
     } else {
         println!("Lattice local-first communication");
         println!(
-            "Available: protected device identity, CSR export and local identity pins; local Space Genesis create/list/restore, pinned-inviter Welcome bootstrap import, and one-member recovery; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
+            "Available: protected device identity, CSR export, local identity pins and local trust removal; local Space Genesis create/list/restore, pinned-inviter Welcome bootstrap import, and one-member recovery; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
         );
         println!(
-            "Not available: full Space invite/leave and ongoing membership lifecycle, certificate issuance/import, peer synchronization, message forwarding/delivery, or voice media."
+            "Not available: full Space invite/leave and ongoing membership lifecycle, certificate issuance/import, remote identity revocation, peer synchronization, message forwarding/delivery, or voice media."
         );
         println!("A local queue state is not evidence of relay forwarding or recipient delivery.");
     }
@@ -1261,9 +1304,9 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex, parse_send_input,
-        parse_space_cursor, parse_space_edit_input, parse_space_history_input, queued_event_json,
-        space_cursor_hex,
+        Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex,
+        parse_lookup_fingerprint, parse_send_input, parse_space_cursor, parse_space_edit_input,
+        parse_space_history_input, queued_event_json, space_cursor_hex,
     };
     use clap::Parser;
     use lattice_core::SpaceGenesisCursor;
@@ -1400,6 +1443,18 @@ mod tests {
                 command: IdentityCommand::Pinned { .. }
             }
         ));
+        let unpin = Cli::try_parse_from([
+            "lattice",
+            "identity",
+            "unpin",
+            "--fingerprint-hex",
+            &"ef".repeat(32),
+        ])
+        .expect("unpin arguments parse");
+        assert_eq!(
+            parse_lookup_fingerprint(&unpin.command).expect("unpin fingerprint parses"),
+            Some([0xef; 32])
+        );
     }
 
     #[test]
