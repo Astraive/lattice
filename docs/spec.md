@@ -2377,33 +2377,34 @@ Reserved bits remain zero until assigned by a protocol revision. Custom roles ar
 
 ## Invite object
 
-An invite is a signed object with a short expiration and optional single-use nonce:
-
+`SpaceInviteV1` is a signed, canonical version-one token that references one accepted, MLS-authenticated Space invite policy event:
 
 ```text
-Invite {
-  version,
+SpaceInviteV1 {
+  version: 1,
   space_id,
-  genesis_hash,
-  inviter_identity,
-  inviter_signature,
-  expires_at,
-  max_uses,
-  nonce,
-  join_policy,
-  rendezvous_hints: [
-    { type: BLE_HINT, value: ... },
-    { type: RELAY_URL, value: ... },
-    { type: LAN_HINT, value: ... }
+  genesis_event_id,
+  invite_event_id,
+  invite_id,
+  target_fingerprint,
+  key_package_hash,
+  expires_at_unix_seconds,
+  max_uses,                 // null or 1..65535
+  nonce,                    // 16 bytes
+  join_policy: 0,            // authorized member + MLS transition required
+  rendezvous_hints: [       // zero to eight bounded text values
+    { type: 0, value: ... }, // BLE
+    { type: 1, value: ... }, // relay URL
+    { type: 2, value: ... }  // LAN
   ],
-  inviter_key_package_hint,
+  inviter_identity_bundle,
+  inviter_signature,
 }
 ```
 
-*Listing: Invite structure.*
+The Ed25519 signature covers the exact canonical unsigned map with a version-specific domain separator. Version one limits each hint to 256 UTF-8 bytes and the entire token to 16 KiB. Hints are untrusted connectivity data; they do not establish inviter trust, grant membership, or override installation network policy. The inviter must be pinned and hold current `MEMBER_INVITE` permission, and the referenced invite record must match the token's Space genesis, target, KeyPackage hash, and use limit.
 
-
-Rendezvous hints are untrusted connectivity hints. A successful connection must still verify Space genesis and inviter authorization.
+Clients reject a token when its signed wall-clock expiry has passed. During peer synchronization, deterministic policy-revision expiry and the replicated use counter are authoritative; relay time and relay deletion are not. A causally ordered admission consumes one use. Concurrent offline admissions from the same policy head create sibling MLS membership Commits and enter the explicit membership-conflict state; clients accept neither branch until an authorized recovery generation is established.
 
 ## QR/deep link
 

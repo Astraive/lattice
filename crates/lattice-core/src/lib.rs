@@ -39,7 +39,12 @@ use zeroize::Zeroizing;
 mod bootstrap_snapshot;
 mod identity_pin;
 mod space_bootstrap;
+mod space_invite;
 pub use space_bootstrap::{MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, SpaceWelcomeBootstrapV1};
+pub use space_invite::{
+    MAX_SPACE_INVITE_BYTES, MAX_SPACE_INVITE_HINTS, SpaceInviteError, SpaceInviteHint,
+    SpaceInviteHintKind, SpaceInviteV1,
+};
 pub mod space;
 /// Stable name of this local orchestration facade.
 pub const CRATE_NAME: &str = "lattice-core";

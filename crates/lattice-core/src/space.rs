@@ -51,6 +51,7 @@ const SPACE_MANAGE: u64 = 1 << 0;
 const CHANNEL_MANAGE: u64 = 1 << 1;
 const ROLE_MANAGE: u64 = 1 << 2;
 const MEMBER_INVITE: u64 = 1 << 3;
+pub(crate) const INVITE_PERMISSION_REQUIREMENTS: u64 = SPACE_MANAGE | MEMBER_INVITE;
 const MEMBER_REMOVE: u64 = 1 << 4;
 const MEMBER_BAN: u64 = 1 << 5;
 const MESSAGE_SEND: u64 = 1 << 6;
@@ -2166,7 +2167,7 @@ fn require_permission(
     Ok(())
 }
 
-fn effective_space(policy: &SpacePolicy, fingerprint: &Fingerprint) -> u64 {
+pub(crate) fn effective_space(policy: &SpacePolicy, fingerprint: &Fingerprint) -> u64 {
     if *fingerprint == policy.root_author {
         return OWNER_GRANTS;
     }
