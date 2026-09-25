@@ -521,7 +521,8 @@ where
 ///
 /// The request header is inspected only to identify the requested scope. The
 /// callback runs before the remote summary is decoded or either caller-owned
-/// summary/event source is accessed.
+/// summary/event source is accessed. After exchanging validated summaries, the
+/// responder serves only targets present in their bounded sync plan.
 ///
 /// # Errors
 ///
@@ -567,7 +568,7 @@ where
     let local_summary = summary_source
         .load_summary(requested_scope)
         .map_err(AuthenticatedSyncError::EventSource)?;
-    plan_sync(&peer_summary, &local_summary).map_err(AuthenticatedSyncError::Plan)?;
+    let plan = plan_sync(&peer_summary, &local_summary).map_err(AuthenticatedSyncError::Plan)?;
     let max_plaintext = max_v2_plaintext_frame(adapter);
     let summary_response =
         encode_v2_summary(&local_summary, V2_RESPONDER_SUMMARY_KIND, max_plaintext)
@@ -578,6 +579,11 @@ where
     let request = receive_decrypted(adapter, &mut channel, cancellation).await?;
     let targets =
         decode_v2_request(&request, requested_scope).map_err(AuthenticatedSyncError::Protocol)?;
+    if !super::request_targets_are_planned(&plan, &targets) {
+        return Err(AuthenticatedSyncError::Protocol(
+            SyncProtocolError::UnrequestedTarget,
+        ));
+    }
     let mut response =
         encode_v2_response_header(requested_scope).map_err(AuthenticatedSyncError::Protocol)?;
     let mut omitted_targets = Vec::with_capacity(targets.len());

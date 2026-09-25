@@ -344,6 +344,10 @@ fn bounded_targets(
     (targets, unresolved_dependencies, unresolved_ranges)
 }
 
+fn request_targets_are_planned(plan: &SyncPlan, targets: &[SyncRequestTarget]) -> bool {
+    let (planned, _, _) = bounded_targets(plan, usize::MAX);
+    targets.iter().all(|target| planned.contains(target))
+}
 fn encode_request(scope: ScopeId, targets: &[SyncRequestTarget]) -> Vec<u8> {
     let target_bytes = targets.iter().copied().map(target_wire_size).sum::<usize>();
     let mut bytes = Vec::with_capacity(WIRE_HEADER_BYTES + target_bytes);
@@ -901,7 +905,7 @@ mod tests {
 
     use lattice_identity::{DeviceIdentity, PinnedIdentity};
     use lattice_router::EventDeduplicator;
-    use lattice_sync::{AuthorSummary, KnownEvent, ScopeId, ScopeSummary};
+    use lattice_sync::{AuthorId, AuthorSummary, EventId, KnownEvent, ScopeId, ScopeSummary};
     use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
     use tokio_util::sync::CancellationToken;
 
@@ -912,6 +916,43 @@ mod tests {
         execute_authenticated_sync_v2_once, serve_authenticated_sync_request_once,
         serve_authenticated_sync_v2_once, space_generation_scope_id,
     };
+
+    #[test]
+    fn v2_request_targets_must_come_from_the_scoped_summary_plan() {
+        let scope = ScopeId::new([0x51; 32]);
+        let author = AuthorId::new([0x52; 32]);
+        let event_id = EventId::new([0x53; 32]);
+        let local = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary::new(author, 0)],
+            missing_dependencies: Vec::new(),
+        };
+        let peer = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary {
+                author,
+                contiguous_sequence: 1,
+                known_events: vec![KnownEvent {
+                    sequence: 1,
+                    event_id,
+                }],
+                unavailable: Vec::new(),
+            }],
+            missing_dependencies: Vec::new(),
+        };
+        let plan = lattice_sync::plan_sync(&local, &peer).expect("valid scoped plan");
+        let planned = SyncRequestTarget::Sequence {
+            author,
+            sequence: 1,
+        };
+        let unplanned = SyncRequestTarget::Sequence {
+            author,
+            sequence: 2,
+        };
+
+        assert!(super::request_targets_are_planned(&plan, &[planned]));
+        assert!(!super::request_targets_are_planned(&plan, &[unplanned]));
+    }
 
     #[test]
     fn space_generation_scope_id_is_stable_and_separates_generations() {
