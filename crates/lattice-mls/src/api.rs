@@ -1462,6 +1462,14 @@ impl GroupState {
         self.inner.members().count()
     }
 
+    /// Reports whether a validated current group member has this full identity fingerprint.
+    #[must_use]
+    pub fn contains_member_identity(&self, fingerprint: &[u8; 32]) -> bool {
+        self.member_identity_fingerprints
+            .values()
+            .any(|member_fingerprint| member_fingerprint == fingerprint)
+    }
+
     /// Returns current state relevant to MLS transitions.
     #[must_use]
     pub fn status(&self) -> GroupStatus {

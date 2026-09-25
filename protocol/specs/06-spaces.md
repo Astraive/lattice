@@ -182,3 +182,91 @@ On discovery of a policy fork, restore the reducer projection to the policy stat
 A valid MLS commit based on a non-current epoch is retained as conflict evidence, not applied. Two valid commits succeeding the same epoch put the MLS group in `conflicted`; freeze membership and other authorization-sensitive state changes. A missing commit parent is pending. No client may choose a commit using time, arrival, hash, or role. Recover by the recovery-genesis process above, using a fresh MLS group and explicit new invitations. Do not reissue old Welcome messages or claim to restore history omitted from the recovered generation.
 
 Every receiver retains old event bytes and keeps generations separate by their MLS group reference. The event signature proves possession of the embedded signing key only. MLS key equality does not establish X.509 chain trust, a human identity, or human pinning.
+
+## Versioned Welcome bootstrap package, version 1
+
+An RFC 9420 Welcome installs MLS state at its current epoch; it does not
+decrypt Genesis at epoch zero or carry the Space policy reducer. A joining
+device therefore requires a `SpaceWelcomeBootstrapV1` package. This package is
+an application-level, inviter-signed policy checkpoint bound to one exact
+Welcome. It is not an MLS message and does not replace MLS credential
+validation.
+
+The package is one canonical CBOR map with exactly keys `{0,1,2,3,4,5,6,7,8,9,10,11,12,13}` and total encoded size at most 1 MiB:
+
+| Key | Type and rule |
+| ---: | --- |
+| 0 | Unsigned package version, exactly `1`. |
+| 1 | Space ID, 16 bytes. |
+| 2 | MLS group ID, 1 through 256 bytes. |
+| 3 | MLS group reference, 32 bytes, derived from key `2` by `08-mls.md`. |
+| 4 | Unsigned current MLS epoch. |
+| 5 | Exact TLS serialization of one RFC 9420 Welcome. |
+| 6 | Exact signed root Membership event bytes. |
+| 7 | Canonical Genesis or RecoveryGenesis plaintext corresponding to key `6`. |
+| 8 | Canonical current `SpacePolicy` snapshot, at most 256 KiB. |
+| 9 | Exact signed Invite event bytes followed by its canonical plaintext in a two-item array. |
+| 10 | Array of 1 through 64 exact signed event bytes whose event IDs equal snapshot key `3`, sorted by event ID. |
+| 11 | Null at MLS epoch `0`; otherwise the exact signed latest accepted kind-7 control event, at parent epoch `key 4 - 1`. |
+| 12 | Exact 65-byte versioned inviter identity public bundle. |
+| 13 | Ed25519 signature, 64 bytes. |
+
+The signature input is `UTF8("lattice:space-welcome-bootstrap:v1") || 0x00 ||
+canonical_cbor(package_without_key_13)`. The inviter bundle in key `12`
+determines the signature key and full fingerprint; no fingerprint supplied
+outside that bundle is authoritative. The package MUST be rejected if its
+canonical encoding, nesting, collection, or total-size limit is exceeded.
+
+The snapshot in key `8` is a canonical map with exactly keys `{0,1,2,3,4,5,6,7,8}`:
+
+| Key | Type and rule |
+| ---: | --- |
+| 0 | Root event ID, 32 bytes; MUST match key `6`'s verified event ID. |
+| 1 | Root author fingerprint, 32 bytes; MUST match key `6`'s verified author. |
+| 2 | Unsigned current policy revision. |
+| 3 | Nonempty array of sorted, unique policy-head event IDs, each 32 bytes. |
+| 4 | Current channel descriptors, using the nested descriptor schema above. |
+| 5 | Full channel order, an array of unique 16-byte channel IDs in snapshot key `4`. |
+| 6 | Current custom-role descriptors, using the nested descriptor schema above. |
+| 7 | Current member descriptors `{0: fingerprint, 1: status, 2: assigned-role-IDs}`. Status is `0` active, `1` invited, `2` removed, `3` banned; fingerprints and role IDs are unique and bytewise sorted. |
+| 8 | Current invite descriptors `{0: invite ID, 1: event ID, 2: target fingerprint, 3: KeyPackage SHA-256, 4: expiry revision or null, 5: use limit or null, 6: uses}`; invite IDs and event IDs are unique and bounded by the existing invite and member limits. |
+
+The snapshot MUST match the Space ID, group reference, root ID, root author,
+and baseline channel descriptors authenticated by keys `1`, `3`, `6`, and `7`.
+It MUST contain the package invite from key `9`, with exactly the invite's
+target fingerprint and KeyPackage digest, and MUST record that target as
+active. The inviter MUST be active in the snapshot and hold both
+`SPACE_MANAGE` and `MEMBER_INVITE`. Active member fingerprints in the snapshot
+MUST equal the X.509 identity fingerprints of the current Welcome group
+members; invited, removed, and banned members MUST NOT occur in that roster,
+and no unlisted MLS member is implicitly authorized.
+
+Import requires the user-selected full fingerprint of the expected inviter to
+match key `12` and a locally pinned identity bundle. The inviter MUST also be
+a validated member of the Welcome group. The receiver MUST validate the
+Welcome's group ID, reference, epoch, every MLS member credential, and its own
+credential against local production trust policy. The local device fingerprint
+MUST equal the target fingerprint in the Invite plaintext of key `9` and occur
+as active in the snapshot. The Invite event MUST be signature-valid, authored
+by the inviter, belong to the same Space and group, and decode to the
+snapshot's target and exact KeyPackage digest. Every key `10` event MUST be
+signature-valid, in the same Space and group, and be a snapshot policy head.
+Key `11`, when non-null, MUST be a signature-valid kind-7 event in the same
+Space and group whose outer parent epoch is exactly one less than key `4`.
+
+Genesis plaintext and the snapshot are application data inside the package,
+not derivable from an epoch-later Welcome. The inviter signature attests that
+the inviter's local reducer accepted this root, invite, policy state, and
+membership roster. The receiver MUST NOT describe the package as an
+independent replay or proof of historical MLS Commits. This trust boundary is
+why import requires both an explicit, locally pinned inviter and a valid
+current Welcome; an untrusted package, a bare Welcome, or a package from an
+unapproved inviter MUST NOT create a visible Space.
+
+Implementations persist the exact accepted package as device-local
+authenticated state and reconstruct the reducer from its signed root,
+attested snapshot, and invite on restart. The imported MLS group, root event,
+and protected package record MUST commit atomically. A corrupt or missing
+package record fails restoration closed. The inviter MUST issue a fresh
+package for a later join; packages cannot be retargeted, edited, or reused for
+a different Welcome, Space, group, epoch, invite, inviter, or recipient.

@@ -35,7 +35,10 @@ use openmls::prelude::CredentialType;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+mod bootstrap_snapshot;
 mod identity_pin;
+mod space_bootstrap;
+pub use space_bootstrap::SpaceWelcomeBootstrapV1;
 pub mod space;
 /// Stable name of this local orchestration facade.
 pub const CRATE_NAME: &str = "lattice-core";
@@ -345,6 +348,12 @@ pub enum CoreError {
     /// A locally authenticated membership replay record failed validation.
     #[error("local Space membership transition snapshot is invalid")]
     SpaceMembershipSnapshotInvalid,
+    /// A Welcome bootstrap package failed its signature or policy binding.
+    #[error("Space Welcome bootstrap package is invalid")]
+    SpaceWelcomeBootstrapInvalid,
+    /// The inviter in a Welcome bootstrap package is not locally pinned.
+    #[error("Space Welcome bootstrap inviter is not locally trusted")]
+    SpaceWelcomeBootstrapUntrustedInviter,
     /// A conflict between valid sibling MLS Commits has been durably recorded.
     #[error("Space MLS membership generation is conflicted")]
     SpaceMembershipConflicted,
@@ -1537,6 +1546,12 @@ impl Client {
                 space::RejectReason::InvalidGenesisContext,
             ));
         }
+        if let Some(joined_snapshot) = self
+            .store
+            .load_space_welcome_bootstrap_snapshot(space_id, group_reference)?
+        {
+            return self.restore_joined_space(&snapshot, event, &joined_snapshot);
+        }
         let recovery_context = space_genesis_context(
             &snapshot.space_id,
             &snapshot.group_reference,
@@ -1765,7 +1780,8 @@ impl Client {
     /// reducer replay evidence share one `SQLite` transaction. The returned
     /// reducer is a candidate; callers install it only after this method
     /// Restore replays locally accepted transitions and revalidates durable
-    /// sibling-Commit conflicts; Welcome-based joins remain unsupported.
+    /// sibling-Commit conflicts; joined generations replay from their signed
+    /// Welcome checkpoints.
     ///
     /// # Errors
     ///
@@ -1773,6 +1789,7 @@ impl Client {
     /// either event does not match its authenticated MLS result, policy rejects
     /// the transition, an author sequence equivocates, or any MLS/storage
     /// operation fails. The transaction rolls back on every error.
+    #[allow(clippy::too_many_lines)] // One membership transition is an atomic authenticated boundary.
     pub fn accept_space_membership_transition(
         &mut self,
         group_id: &[u8],
@@ -1793,9 +1810,12 @@ impl Client {
             &expected_space_id,
             &expected_group_reference,
         )?;
-        let replay_base_revision = existing_snapshots
-            .last()
-            .map_or(0, |snapshot| snapshot.policy_revision);
+        let replay_base_revision = match existing_snapshots.last() {
+            Some(snapshot) => snapshot.policy_revision,
+            None => reducer.policy_replay_base_revision().map_err(|reason| {
+                CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
+            })?,
+        };
         let policy_events = reducer
             .policy_replay_events_after(replay_base_revision)
             .map_err(|reason| {
@@ -3863,5 +3883,346 @@ mod tests {
             Client::open_existing(&database.0, &TestProtector),
             Err(CoreError::MissingIdentity)
         ));
+    }
+    #[allow(clippy::too_many_lines)] // Covers the accepted join and durable history replay path.
+    #[test]
+    fn pinned_welcome_bootstrap_joins_and_restores_checkpoint_policy() {
+        use lattice_protocol::{Value, encode_canonical};
+
+        let alice_database = TestDatabase::new();
+        let bob_database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut alice = Client::open_or_create(&alice_database.0, &protector)
+            .expect("initialize inviter profile");
+        let mut bob =
+            Client::open_or_create(&bob_database.0, &protector).expect("initialize recipient");
+        let alice_credential = test_credential(&alice.identity);
+        let bob_credential = test_credential(&bob.identity);
+        let bob_fingerprint = bob.identity.fingerprint();
+        let alice_fingerprint = alice.identity.fingerprint();
+        let created = alice
+            .create_space(
+                &alice_credential,
+                vec![super::InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create inviter Space");
+        let group_id = created.group_id().to_vec();
+        let space_id = *created.space_id();
+        let group_reference = *created.group_reference();
+        let root_id = *created.genesis_event().event_id().as_bytes();
+        let bob_key_package = bob
+            .with_mls_transaction(|identity, provider, _| {
+                let key_package =
+                    GroupState::publish_key_package(provider, identity, &bob_credential)?;
+                Ok::<_, CoreError>(key_package.as_bytes().to_vec())
+            })
+            .expect("publish recipient KeyPackage");
+        let key_package_hash = lattice_mls::api::key_package_wire_sha256(&bob_key_package)
+            .expect("hash recipient KeyPackage");
+        let (welcome, control_event) = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                let prepared =
+                    group.prepare_add(provider, identity, &alice_credential, &bob_key_package)?;
+                let commit = prepared.commit().as_bytes().to_vec();
+                let welcome = group.accept_prepared_add(provider, &prepared, &commit)?;
+                let control = VerifiedSignatureOnlyEvent::create(
+                    identity,
+                    EventDraft {
+                        space_id,
+                        channel_id: None,
+                        author_sequence: 2,
+                        lamport: 2,
+                        wall_time_hint: 0,
+                        parents: vec![lattice_protocol::EventId::from_bytes(root_id)],
+                        kind: EventKind::MlsControl,
+                        protected_body: commit,
+                        mls_group_reference: group_reference,
+                        mls_epoch: 0,
+                    },
+                )?;
+                Ok::<_, CoreError>((welcome.as_bytes().to_vec(), control))
+            })
+            .expect("commit recipient membership");
+
+        let invite_id = [0x42; 16];
+        let invite_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Unsigned(2)),
+            (2, Value::Bytes(invite_id.to_vec())),
+            (3, Value::Bytes(bob_fingerprint.to_vec())),
+            (4, Value::Bytes(key_package_hash.to_vec())),
+            (5, Value::Null),
+            (6, Value::Null),
+        ]))
+        .expect("encode invite policy");
+        let invite_event = VerifiedSignatureOnlyEvent::create(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: None,
+                author_sequence: 3,
+                lamport: 3,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(root_id)],
+                kind: EventKind::Membership,
+                protected_body: vec![0xA5],
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        )
+        .expect("sign invite head");
+        let invite_event_id = *invite_event.event_id().as_bytes();
+        let mut policy = created.reducer().policy().expect("Genesis policy").clone();
+        policy.revision = 1;
+        policy.heads = vec![invite_event_id];
+        policy.members.push(super::space::Member {
+            fingerprint: bob_fingerprint,
+            status: super::space::MemberStatus::Active,
+            assigned_roles: Vec::new(),
+        });
+        policy
+            .members
+            .sort_unstable_by_key(|member| member.fingerprint);
+        policy.invites.push(super::space::Invite {
+            id: invite_id,
+            event_id: invite_event_id,
+            target: bob_fingerprint,
+            key_package_hash,
+            expires_at_revision: None,
+            max_uses: None,
+            uses: 1,
+        });
+        let genesis_snapshot = alice
+            .store
+            .load_space_genesis_snapshot(&space_id, &group_reference)
+            .expect("load protected Genesis")
+            .expect("Genesis snapshot exists");
+        let genesis_context =
+            super::space_genesis_context(&space_id, &group_reference, &genesis_snapshot.event_id);
+        let encrypted_genesis = genesis_snapshot.encrypted_state;
+        let genesis_plaintext = alice
+            .with_mls_transaction(move |_, _, _| {
+                lattice_mls::unprotect_local_record(&genesis_context, &encrypted_genesis)
+                    .map_err(CoreError::from)
+            })
+            .expect("decrypt Genesis for inviter-signed checkpoint");
+        let package = super::space_bootstrap::SpaceWelcomeBootstrapV1::sign(
+            &alice.identity,
+            space_id,
+            group_id,
+            group_reference,
+            1,
+            welcome,
+            created.genesis_event().encoded_bytes().to_vec(),
+            genesis_plaintext,
+            super::bootstrap_snapshot::encode_policy_snapshot(&policy)
+                .expect("encode policy checkpoint"),
+            invite_event.encoded_bytes().to_vec(),
+            invite_plaintext,
+            vec![invite_event.encoded_bytes().to_vec()],
+            Some(control_event.encoded_bytes().to_vec()),
+        )
+        .expect("sign versioned bootstrap package")
+        .to_bytes()
+        .expect("encode bootstrap package");
+
+        assert!(matches!(
+            bob.join_space_from_welcome_bootstrap(&package, alice_fingerprint, &bob_credential),
+            Err(CoreError::SpaceWelcomeBootstrapUntrustedInviter)
+        ));
+        assert!(
+            bob.store
+                .load_space_genesis_snapshot(&space_id, &group_reference)
+                .expect("check that rejected package persisted nothing")
+                .is_none()
+        );
+        bob.pin_identity(
+            &alice.identity.public_bundle().to_bytes(),
+            alice_fingerprint,
+        )
+        .expect("pin inviter full fingerprint");
+        let joined = bob
+            .join_space_from_welcome_bootstrap(&package, alice_fingerprint, &bob_credential)
+            .expect("validate pinned inviter package and import Welcome");
+        assert_eq!(joined.reducer().policy().expect("joined policy"), &policy);
+        let charlie_database = TestDatabase::new();
+        let mut charlie = Client::open_or_create(&charlie_database.0, &protector)
+            .expect("initialize next recipient");
+        let charlie_credential = test_credential(&charlie.identity);
+        let charlie_fingerprint = charlie.identity.fingerprint();
+        let charlie_key_package = charlie
+            .with_mls_transaction(|identity, provider, _| {
+                let key_package =
+                    GroupState::publish_key_package(provider, identity, &charlie_credential)?;
+                Ok::<_, CoreError>(key_package.as_bytes().to_vec())
+            })
+            .expect("publish next recipient KeyPackage");
+        let charlie_key_package_hash =
+            lattice_mls::api::key_package_wire_sha256(&charlie_key_package)
+                .expect("hash next recipient KeyPackage");
+        let charlie_invite_id = [0x43; 16];
+        let charlie_invite_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Unsigned(2)),
+            (2, Value::Bytes(charlie_invite_id.to_vec())),
+            (3, Value::Bytes(charlie_fingerprint.to_vec())),
+            (4, Value::Bytes(charlie_key_package_hash.to_vec())),
+            (5, Value::Null),
+            (6, Value::Null),
+        ]))
+        .expect("encode next recipient invite");
+        let charlie_invite_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &charlie_invite_plaintext,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt invite for joined member");
+        let charlie_invite = VerifiedSignatureOnlyEvent::create(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: None,
+                author_sequence: 4,
+                lamport: 4,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(invite_event_id)],
+                kind: EventKind::Membership,
+                protected_body: charlie_invite_ciphertext,
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        )
+        .expect("sign next recipient invite");
+        let charlie_invite_event_id = *charlie_invite.event_id().as_bytes();
+        let charlie_invite_application = bob
+            .with_mls_transaction(|_, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                match group.process_incoming(provider, charlie_invite.protected_body())? {
+                    IncomingResult::Application(application) => Ok(application),
+                    _ => Err(CoreError::MlsEventBindingFailed),
+                }
+            })
+            .expect("authenticate invite at joined epoch");
+        let bound_charlie_invite = bind_mls_application(charlie_invite, charlie_invite_application)
+            .expect("bind authenticated invite");
+        let mut policy_before_add = joined.reducer().clone();
+        assert_eq!(
+            policy_before_add.apply(&bound_charlie_invite, None),
+            super::space::ApplyResult::Applied { revision: 2 }
+        );
+        let (control, transition) = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                let prepared = group.prepare_add(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &charlie_key_package,
+                )?;
+                let commit = prepared.commit().as_bytes().to_vec();
+                let control = VerifiedSignatureOnlyEvent::create(
+                    identity,
+                    EventDraft {
+                        space_id,
+                        channel_id: None,
+                        author_sequence: 5,
+                        lamport: 5,
+                        wall_time_hint: 0,
+                        parents: vec![lattice_protocol::EventId::from_bytes(
+                            charlie_invite_event_id,
+                        )],
+                        kind: EventKind::MlsControl,
+                        protected_body: commit.clone(),
+                        mls_group_reference: group_reference,
+                        mls_epoch: 1,
+                    },
+                )?;
+                let control_id = *control.event_id().as_bytes();
+                let transition_plaintext = encode_canonical(&Value::Map(vec![
+                    (0, Value::Unsigned(1)),
+                    (1, Value::Unsigned(6)),
+                    (2, Value::Unsigned(0)),
+                    (3, Value::Bytes(charlie_fingerprint.to_vec())),
+                    (4, Value::Bytes(charlie_invite_event_id.to_vec())),
+                    (5, Value::Bytes(control_id.to_vec())),
+                ]))
+                .expect("encode admission transition");
+                let transition_ciphertext = group.encrypt_application_for_pending_membership(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &prepared,
+                    &transition_plaintext,
+                )?;
+                let transition = VerifiedSignatureOnlyEvent::create(
+                    identity,
+                    EventDraft {
+                        space_id,
+                        channel_id: None,
+                        author_sequence: 6,
+                        lamport: 6,
+                        wall_time_hint: 0,
+                        parents: vec![lattice_protocol::EventId::from_bytes(control_id)],
+                        kind: EventKind::Membership,
+                        protected_body: transition_ciphertext.as_bytes().to_vec(),
+                        mls_group_reference: group_reference,
+                        mls_epoch: 1,
+                    },
+                )?;
+                let _welcome = group.accept_prepared_add(provider, &prepared, &commit)?;
+                Ok::<_, CoreError>((control, transition))
+            })
+            .expect("commit next membership transition");
+        let updated = bob
+            .accept_space_membership_transition(
+                &created.group_id,
+                &policy_before_add,
+                control,
+                transition,
+            )
+            .expect("accept authenticated transition after Welcome");
+        assert!(updated.policy().is_some_and(|current| {
+            current.revision == 3
+                && current.members.iter().any(|member| {
+                    member.fingerprint == charlie_fingerprint
+                        && member.status == super::space::MemberStatus::Active
+                })
+        }));
+
+        let mut tampered = package.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(super::space_bootstrap::SpaceWelcomeBootstrapV1::from_bytes(&tampered).is_err());
+
+        drop(joined);
+        drop(bob);
+        let mut reopened =
+            Client::open_existing(&bob_database.0, &protector).expect("reopen recipient");
+        let restored = reopened
+            .restore_space(&space_id, &group_reference)
+            .expect("restore joined checkpoint and Welcome group");
+        let restored_policy = restored.reducer().policy().expect("restored policy");
+        assert_eq!(restored_policy.revision, 3);
+        assert!(restored_policy.members.iter().any(|member| {
+            member.fingerprint == charlie_fingerprint
+                && member.status == super::space::MemberStatus::Active
+        }));
+        assert_eq!(
+            restored.reducer().status(),
+            super::space::ReducerStatus::Active { revision: 3 }
+        );
     }
 }

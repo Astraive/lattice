@@ -18,7 +18,10 @@
 //! recovery Genesis. Accepted membership transitions replay their protected
 //! policy history; Welcome-based join remains incomplete.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use lattice_events::{EventKind, VerifiedSignatureOnlyEvent};
 use lattice_files::AttachmentManifest;
@@ -282,6 +285,7 @@ pub struct SpaceReducer {
     history_base: Option<SpacePolicy>,
     root_signed_event: Option<Arc<[u8]>>,
     graph: BTreeMap<EventReference, GraphNode>,
+    bootstrap_anchors: BTreeSet<EventReference>,
     pending: Vec<PendingPolicy>,
     history: Vec<AcceptedPolicyEvent>,
     conflicted: bool,
@@ -314,15 +318,213 @@ impl SpaceReducer {
         self.policy.as_ref()
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Keeps signed checkpoint validation together.
+    /// Reconstructs a joined generation from an inviter-signed bootstrap checkpoint.
+    ///
+    /// Historical policy/MLS acceptance is attested by the pinned inviter;
+    /// this method validates the signed root, snapshot consistency, invite,
+    /// signed head anchors, inviter authority in the attested snapshot, and
+    /// recipient's active membership without claiming historical MLS replay.
+    pub(crate) fn from_welcome_bootstrap(
+        root: &VerifiedSignatureOnlyEvent,
+        genesis_plaintext: &[u8],
+        snapshot: SpacePolicy,
+        invite_event: &VerifiedSignatureOnlyEvent,
+        invite_plaintext: &[u8],
+        head_events: &[VerifiedSignatureOnlyEvent],
+        last_control_event: Option<&VerifiedSignatureOnlyEvent>,
+        inviter: &Fingerprint,
+        target: &Fingerprint,
+        current_epoch: u64,
+    ) -> Result<Self, RejectReason> {
+        if root.kind() != EventKind::Membership
+            || root.channel_id().is_some()
+            || !root.parents().is_empty()
+            || root.mls_epoch() != 0
+            || root.space_id() != &snapshot.space_id
+            || root.mls_group_reference() != &snapshot.group_reference
+            || root.event_id().as_bytes() != &snapshot.root_event_id
+            || root.author_fingerprint() != &snapshot.root_author
+            || genesis_plaintext.len() > MAX_SPACE_PAYLOAD_BYTES
+        {
+            return Err(RejectReason::InvalidGenesisContext);
+        }
+        let payload = decode_canonical(genesis_plaintext)
+            .map_err(|_| RejectReason::InvalidCanonicalPayload)?;
+        let (creator, baseline_channels) = match parse_operation(&payload)? {
+            Operation::Genesis { creator, channels } => (creator, channels),
+            Operation::RecoveryGenesis {
+                creator, channels, ..
+            } if creator == *inviter => (creator, channels),
+            _ => return Err(RejectReason::InvalidGenesisContext),
+        };
+        if creator != *root.author_fingerprint()
+            || snapshot.root_author != creator
+            || snapshot.heads.is_empty()
+            || snapshot.heads.len() != head_events.len()
+            || snapshot.heads.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(RejectReason::CreatorMismatch);
+        }
+
+        let baseline_ids = baseline_channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect::<BTreeSet<_>>();
+        if baseline_ids.len() != baseline_channels.len()
+            || baseline_channels.iter().any(|baseline| {
+                !snapshot.channels.iter().any(|current| {
+                    current.id == baseline.id && current.channel_type == baseline.channel_type
+                })
+            })
+        {
+            return Err(RejectReason::InvalidValue);
+        }
+        let mut reducer = Self::new();
+        reducer.register_event(root, None, false)?;
+        let channel_order = baseline_channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect::<Vec<_>>();
+        let baseline = SpacePolicy {
+            space_id: *root.space_id(),
+            group_reference: *root.mls_group_reference(),
+            root_event_id: *root.event_id().as_bytes(),
+            root_author: creator,
+            revision: 0,
+            heads: vec![*root.event_id().as_bytes()],
+            channels: baseline_channels,
+            channel_order,
+            custom_roles: Vec::new(),
+            members: vec![Member {
+                fingerprint: creator,
+                status: MemberStatus::Active,
+                assigned_roles: vec![BUILTIN_ROLE_IDS[0]],
+            }],
+            invites: Vec::new(),
+        };
+        reducer.history_base = Some(baseline);
+        reducer.root_signed_event = Some(Arc::from(root.encoded_bytes()));
+
+        if snapshot.space_id != *root.space_id()
+            || snapshot.group_reference != *root.mls_group_reference()
+            || snapshot.root_event_id != *root.event_id().as_bytes()
+            || snapshot.root_author != creator
+            || snapshot.revision == 0 && snapshot.heads != [snapshot.root_event_id]
+            || snapshot
+                .members
+                .iter()
+                .find(|member| member.fingerprint == *target)
+                .is_none_or(|member| member.status != MemberStatus::Active)
+            || snapshot
+                .members
+                .iter()
+                .find(|member| member.fingerprint == *inviter)
+                .is_none_or(|member| member.status != MemberStatus::Active)
+            || effective_space(&snapshot, inviter) & (SPACE_MANAGE | MEMBER_INVITE)
+                != (SPACE_MANAGE | MEMBER_INVITE)
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+
+        if invite_event.kind() != EventKind::Membership
+            || invite_event.channel_id().is_some()
+            || invite_event.space_id() != root.space_id()
+            || invite_event.mls_group_reference() != root.mls_group_reference()
+            || invite_event.author_fingerprint() != inviter
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        let invite_payload = decode_canonical(invite_plaintext)
+            .map_err(|_| RejectReason::InvalidCanonicalPayload)?;
+        let Operation::Invite {
+            id,
+            target: invite_target,
+            key_package_hash,
+            expires_at_revision,
+            max_uses,
+        } = parse_operation(&invite_payload)?
+        else {
+            return Err(RejectReason::InvalidTransition);
+        };
+        let invite_id = *invite_event.event_id().as_bytes();
+        if invite_target != *target
+            || snapshot.invites.iter().all(|invite| {
+                invite.id != id
+                    || invite.event_id != invite_id
+                    || invite.target != invite_target
+                    || invite.key_package_hash != key_package_hash
+                    || invite.expires_at_revision != expires_at_revision
+                    || invite.max_uses != max_uses
+                    || invite.uses == 0
+            })
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        reducer.register_event(invite_event, None, false)?;
+        reducer.bootstrap_anchors.insert(invite_id);
+
+        for (expected_id, head) in snapshot.heads.iter().zip(head_events) {
+            if head.kind() != EventKind::Membership
+                || head.channel_id().is_some()
+                || head.space_id() != root.space_id()
+                || head.mls_group_reference() != root.mls_group_reference()
+                || head.event_id().as_bytes() != expected_id
+            {
+                return Err(RejectReason::IncompletePolicyHeads);
+            }
+            reducer.register_event(head, None, false)?;
+            reducer.bootstrap_anchors.insert(*expected_id);
+        }
+        match last_control_event {
+            Some(event)
+                if event.kind() == EventKind::MlsControl
+                    && event.channel_id().is_none()
+                    && event.space_id() == root.space_id()
+                    && event.mls_group_reference() == root.mls_group_reference()
+                    && current_epoch > 0
+                    && event.mls_epoch().checked_add(1) == Some(current_epoch) =>
+            {
+                let event_id = *event.event_id().as_bytes();
+                reducer.register_event(event, None, false)?;
+                reducer.bootstrap_anchors.insert(event_id);
+            }
+            None if current_epoch == 0 => {}
+            _ => return Err(RejectReason::InvalidControlRelation),
+        }
+        if current_epoch > 0 && last_control_event.is_none() {
+            return Err(RejectReason::InvalidControlRelation);
+        }
+        reducer.policy = Some(snapshot.clone());
+        reducer.history_base = Some(snapshot);
+        Ok(reducer)
+    }
+
     pub(crate) fn has_projected_message(&self, event_id: &EventReference) -> bool {
         self.graph
             .get(event_id)
             .is_some_and(|node| node.kind == EventKind::Message && node.application_authorized)
     }
+    pub(crate) fn mark_membership_conflicted(
+        &mut self,
+        first: &VerifiedSignatureOnlyEvent,
+        second: &VerifiedSignatureOnlyEvent,
+    ) {
+        self.conflicted = true;
+        for event in [first, second] {
+            let event_id = *event.event_id().as_bytes();
+            self.insert_conflict_evidence(ConflictEvidence {
+                event_id,
+                signed_event: Arc::from(event.encoded_bytes()),
+            });
+            self.quarantined_event_ids.push(event_id);
+        }
+        self.sort_quarantined();
+    }
 
     /// Returns the exact accepted policy events after a previously checkpointed
     /// revision. Replay is refused when this reducer has unresolved or conflicted
-    /// state, or when retained history no longer begins at Genesis.
+    /// state, or when retained history does not begin at its checkpoint.
     pub(crate) fn policy_replay_events_after(
         &self,
         base_revision: u64,
@@ -335,7 +537,7 @@ impl SpaceReducer {
             || self
                 .history_base
                 .as_ref()
-                .is_none_or(|base| base.revision != 0)
+                .is_none_or(|base| base_revision < base.revision)
             || base_revision > policy.revision
         {
             return Err(RejectReason::InvalidTransition);
@@ -362,6 +564,12 @@ impl SpaceReducer {
             return Err(RejectReason::InvalidTransition);
         }
         Ok(events)
+    }
+    pub(crate) fn policy_replay_base_revision(&self) -> Result<u64, RejectReason> {
+        self.history_base
+            .as_ref()
+            .map(|base| base.revision)
+            .ok_or(RejectReason::MissingPolicy)
     }
     /// Materializes the authorized message actions retained by this reducer.
     ///
@@ -1289,6 +1497,10 @@ impl SpaceReducer {
             ancestors.insert(id);
             if ancestors.len() > MAX_GRAPH_EVENTS {
                 return Err(AncestorError::Rejected(RejectReason::LimitExceeded));
+            }
+            if self.bootstrap_anchors.contains(&id) {
+                visited.insert(id);
+                continue;
             }
             stack.push((id, true));
             for parent in node.parents.iter().rev() {

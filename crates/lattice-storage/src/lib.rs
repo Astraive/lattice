@@ -41,7 +41,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 10;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -49,6 +49,7 @@ const MAX_SPACE_GENESIS_GROUP_ID_BYTES: usize = 256;
 const MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
 const MAX_CACHED_SPACE_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
+const MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES: usize = 1024 * 1024;
 /// Encrypted local message content and signed-event routing metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CachedSpaceMessage {
@@ -122,6 +123,15 @@ pub struct SpaceMembershipTransitionSnapshot {
     pub encrypted_state: Vec<u8>,
 }
 
+/// Encrypted package retained from an accepted Welcome for durable Space bootstrap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceWelcomeBootstrapSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub root_event_id: [u8; ID_BYTES],
+    pub encrypted_package: Vec<u8>,
+}
+
 /// Exact signed control events that established two valid sibling MLS commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpaceMembershipConflictSnapshot {
@@ -177,6 +187,7 @@ pub enum StoreError {
     InvalidProtectedIdentity,
     InvalidProtectedMlsKey,
     InvalidSpaceGenesisSnapshot,
+    InvalidSpaceWelcomeBootstrapSnapshot,
     InvalidSpaceMembershipTransitionSnapshot,
     SpaceMembershipTransitionLimit,
     InvalidSpaceMembershipConflictSnapshot,
@@ -248,6 +259,9 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidSpaceMembershipConflictSnapshot => {
                 formatter.write_str("space membership conflict snapshot is invalid")
+            }
+            Self::InvalidSpaceWelcomeBootstrapSnapshot => {
+                formatter.write_str("space Welcome bootstrap snapshot is invalid")
             }
             Self::SpaceMembershipConflictLimit => {
                 formatter.write_str("space membership conflict limit exceeded")
@@ -532,6 +546,28 @@ impl Store {
                     CHECK(first_control_event_id <> second_control_event_id)
                 );
                 PRAGMA user_version = 9;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 10 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_welcome_bootstrap_snapshots (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    root_event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(root_event_id) = 'blob' AND length(root_event_id) = 32),
+                    encrypted_package BLOB NOT NULL
+                        CHECK(typeof(encrypted_package) = 'blob'
+                            AND length(encrypted_package) BETWEEN 1 AND 1048576),
+                    PRIMARY KEY(space_id, group_reference)
+                );
+                PRAGMA user_version = 10;",
             )?;
             transaction.commit()?;
         }
@@ -865,6 +901,37 @@ impl Store {
                 &snapshot.group_id,
                 &snapshot.event_id[..],
                 &snapshot.encrypted_state
+            ],
+        )?;
+        Ok(())
+    }
+    /// Saves an accepted Welcome bootstrap package in the event transaction.
+    ///
+    /// The referenced root event must already exist in this transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is outside its permitted bounds, the
+    /// root event row is missing, a key or root event is already stored, or
+    /// the database write fails.
+    pub fn save_space_welcome_bootstrap_snapshot_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceWelcomeBootstrapSnapshot,
+    ) -> Result<()> {
+        if snapshot.encrypted_package.is_empty()
+            || snapshot.encrypted_package.len() > MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES
+        {
+            return Err(StoreError::InvalidSpaceWelcomeBootstrapSnapshot);
+        }
+        transaction.execute(
+            "INSERT INTO space_welcome_bootstrap_snapshots(
+                space_id, group_reference, root_event_id, encrypted_package
+            ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                &snapshot.root_event_id[..],
+                &snapshot.encrypted_package,
             ],
         )?;
         Ok(())
@@ -1287,6 +1354,60 @@ impl Store {
             group_id,
             event_id,
             encrypted_state,
+        }))
+    }
+    /// Loads and validates a saved Welcome bootstrap package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or the stored row is
+    /// malformed.
+    pub fn load_space_welcome_bootstrap_snapshot(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Option<SpaceWelcomeBootstrapSnapshot>> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT space_id, group_reference, root_event_id, encrypted_package
+                 FROM space_welcome_bootstrap_snapshots
+                 WHERE space_id = ?1 AND group_reference = ?2",
+                params![&space_id[..], &group_reference[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((space_id, group_reference, root_event_id, encrypted_package)) = stored else {
+            return Ok(None);
+        };
+        let space_id = space_id
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid Welcome bootstrap space ID"))?;
+        let group_reference = group_reference
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid Welcome bootstrap group reference"))?;
+        let root_event_id = root_event_id
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid Welcome bootstrap root event ID"))?;
+        if encrypted_package.is_empty()
+            || encrypted_package.len() > MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES
+        {
+            return Err(StoreError::CorruptData(
+                "invalid Welcome bootstrap encrypted package",
+            ));
+        }
+        Ok(Some(SpaceWelcomeBootstrapSnapshot {
+            space_id,
+            group_reference,
+            root_event_id,
+            encrypted_package,
         }))
     }
 
@@ -2087,7 +2208,8 @@ mod tests {
     use super::{
         CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
         MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
-        SpaceMembershipTransitionSnapshot, Store, StoreError, TrustedIdentityRecord,
+        SpaceMembershipTransitionSnapshot, SpaceWelcomeBootstrapSnapshot, Store, StoreError,
+        TrustedIdentityRecord,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -2257,7 +2379,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_membership_conflicts;
+                    "DROP TABLE space_welcome_bootstrap_snapshots;
+                     DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
                      DROP TABLE protected_identity;
@@ -2316,7 +2439,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_membership_conflicts;
+                    "DROP TABLE space_welcome_bootstrap_snapshots;
+                     DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
                      DROP TABLE space_genesis_snapshots;
@@ -2331,7 +2455,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2362,7 +2486,8 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_membership_conflicts;
+                    "DROP TABLE space_welcome_bootstrap_snapshots;
+                     DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
                      DROP TABLE trusted_identities;
@@ -2375,7 +2500,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2494,6 +2619,98 @@ mod tests {
                 .expect("load saved snapshot"),
             Some(snapshot)
         );
+    }
+
+    #[test]
+    fn welcome_bootstrap_snapshot_round_trips_transactionally_and_enforces_bounds() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        assert_eq!(store.schema_version().expect("read schema version"), 10);
+        let snapshot = SpaceWelcomeBootstrapSnapshot {
+            space_id: [0x11; 16],
+            group_reference: [0x22; 32],
+            root_event_id: id(112),
+            encrypted_package: vec![0xD3, 0x5A, 0x00, 0xC7],
+        };
+        assert_eq!(
+            store
+                .load_space_welcome_bootstrap_snapshot(
+                    &snapshot.space_id,
+                    &snapshot.group_reference,
+                )
+                .expect("query absent bootstrap package"),
+            None
+        );
+
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(113),
+                    snapshot.root_event_id,
+                    1,
+                    &[0xB1],
+                    &[],
+                )?;
+                Store::save_space_welcome_bootstrap_snapshot_in_transaction(transaction, &snapshot)
+            })
+            .expect("commit root event and bootstrap package");
+        assert_eq!(
+            store
+                .load_space_welcome_bootstrap_snapshot(
+                    &snapshot.space_id,
+                    &snapshot.group_reference,
+                )
+                .expect("load saved bootstrap package"),
+            Some(snapshot.clone())
+        );
+
+        for encrypted_package in [Vec::new(), vec![0xA4; 1_048_577]] {
+            let invalid = SpaceWelcomeBootstrapSnapshot {
+                encrypted_package,
+                ..snapshot.clone()
+            };
+            assert!(matches!(
+                store.with_transaction(|transaction| {
+                    Store::save_space_welcome_bootstrap_snapshot_in_transaction(
+                        transaction,
+                        &invalid,
+                    )
+                }),
+                Err(StoreError::InvalidSpaceWelcomeBootstrapSnapshot)
+            ));
+        }
+        let malformed_root = id(114);
+        store
+            .commit_authored(id(115), malformed_root, 1, &[0xB2], &[])
+            .expect("commit malformed fixture root event");
+
+        store
+            .connection
+            .pragma_update(None, "ignore_check_constraints", true)
+            .expect("allow malformed fixture row");
+        store
+            .connection
+            .execute(
+                "INSERT INTO space_welcome_bootstrap_snapshots(
+                    space_id, group_reference, root_event_id, encrypted_package
+                ) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    [0x31_u8; 16].as_slice(),
+                    [0x42_u8; 32].as_slice(),
+                    &malformed_root[..],
+                    Vec::<u8>::new(),
+                ],
+            )
+            .expect("insert malformed fixture row");
+        store
+            .connection
+            .pragma_update(None, "ignore_check_constraints", false)
+            .expect("restore SQL checks");
+        assert!(matches!(
+            store.load_space_welcome_bootstrap_snapshot(&[0x31; 16], &[0x42; 32]),
+            Err(StoreError::CorruptData(_))
+        ));
     }
 
     #[test]
