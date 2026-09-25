@@ -954,6 +954,40 @@ mod tests {
             Err(EventError::EmptyProtectedBody)
         );
     }
+
+    #[test]
+    fn hostile_event_byte_corpus_never_bypasses_signature_validation() {
+        let signer = identity();
+        let event = VerifiedSignatureOnlyEvent::create(&signer, draft(vec![0x42; 32]))
+            .expect("valid signed seed");
+        let encoded = event.encode();
+        for index in 0..encoded.len() {
+            for mask in [0x01, 0x80] {
+                let mut mutated = encoded.to_vec();
+                mutated[index] ^= mask;
+                if let Ok(decoded) = VerifiedSignatureOnlyEvent::decode_verify(&mutated) {
+                    assert_eq!(decoded.encode(), mutated);
+                    assert_eq!(decoded.event_id(), event.event_id());
+                }
+            }
+        }
+
+        let mut state = 0xa409_3822_299f_31d0_u64;
+        for _ in 0..2_048 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            let _ = VerifiedSignatureOnlyEvent::decode_verify(&input);
+        }
+    }
     fn replace_kind(fields: &EventFields, author_fingerprint: [u8; 32], kind: u64) -> Vec<u8> {
         let mut value = fields.to_preimage_value(author_fingerprint);
         let Value::Map(entries) = &mut value else {
