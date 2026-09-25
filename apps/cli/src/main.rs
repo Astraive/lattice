@@ -58,6 +58,24 @@ enum Command {
         #[command(subcommand)]
         command: IdentityCommand,
     },
+    /// Queue an authorized text event locally without contacting the network.
+    Send {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+        /// Random 16-byte channel ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        channel_id: String,
+        /// Text body to queue.
+        #[arg(long)]
+        text: String,
+    },
     /// Create, import, list, restore, or recover local Space generations.
     Space {
         #[command(subcommand)]
@@ -80,17 +98,16 @@ enum Command {
 }
 
 type PinInput = ([u8; 65], [u8; 32]);
-type SpaceMessageInput = ([u8; 16], [u8; 32], [u8; 16]);
 type SpaceEditInput = ([u8; 16], [u8; 32], [u8; 16], [u8; 32]);
 type SpaceHistoryInput = ([u8; 16], [u8; 32], [u8; 16]);
 type SpaceRestoreInput = ([u8; 16], [u8; 32]);
+type SendInput = ([u8; 16], [u8; 32], [u8; 16]);
 #[derive(Clone, Copy)]
 enum SpaceCommandInput {
     None,
     Restore(SpaceRestoreInput),
     Recover(SpaceRestoreInput),
     Join([u8; 32]),
-    Message(SpaceMessageInput),
     Edit(SpaceEditInput),
     History(SpaceHistoryInput),
 }
@@ -250,6 +267,7 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let lookup_fingerprint = parse_lookup_fingerprint(&cli.command)?;
     validate_command_inputs(&cli.command)?;
     let space_input = parse_space_command_input(&cli.command)?;
+    let send_input = parse_send_input(&cli.command)?;
     let space_credential = read_space_credential(&cli.command)?;
     let space_package = read_space_package(&cli.command)?;
     let data_dir = match cli.data_dir {
@@ -273,6 +291,19 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 json,
                 pin_input,
                 lookup_fingerprint,
+            )
+        }
+        Command::Send { text, .. } => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            execute_send(
+                send_input
+                    .ok_or_else(|| CliError::invalid_input("send identifiers were not parsed"))?,
+                space_credential
+                    .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?,
+                &text,
+                &database_path,
+                &protector,
+                json,
             )
         }
         Command::Space { command } => {
@@ -356,8 +387,9 @@ fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
                 .into());
             }
         }
-        Command::Space {
-            command: SpaceCommand::Message { text, .. } | SpaceCommand::Edit { text, .. },
+        Command::Send { text, .. }
+        | Command::Space {
+            command: SpaceCommand::Edit { text, .. },
         } if text.len() > lattice_core::space::MAX_SPACE_PAYLOAD_BYTES => {
             return Err(CliError::invalid_input(format!(
                 "text must contain at most {} UTF-8 bytes",
@@ -370,24 +402,22 @@ fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_space_message_input(command: &Command) -> Result<Option<SpaceMessageInput>, CliError> {
-    match command {
-        Command::Space {
-            command:
-                SpaceCommand::Message {
-                    space_id,
-                    group_reference,
-                    channel_id,
-                    ..
-                },
-        } => Ok(Some((
-            parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
-            parse_fixed_hex::<32>(group_reference, "group reference")
-                .map_err(CliError::invalid_input)?,
-            parse_fixed_hex::<16>(channel_id, "channel ID").map_err(CliError::invalid_input)?,
-        ))),
-        _ => Ok(None),
-    }
+fn parse_send_input(command: &Command) -> Result<Option<SendInput>, CliError> {
+    let Command::Send {
+        space_id,
+        group_reference,
+        channel_id,
+        ..
+    } = command
+    else {
+        return Ok(None);
+    };
+    Ok(Some((
+        parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
+        parse_fixed_hex::<32>(group_reference, "group reference")
+            .map_err(CliError::invalid_input)?,
+        parse_fixed_hex::<16>(channel_id, "channel ID").map_err(CliError::invalid_input)?,
+    )))
 }
 
 fn parse_space_edit_input(command: &Command) -> Result<Option<SpaceEditInput>, CliError> {
@@ -465,11 +495,6 @@ fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, Cli
             })
             .ok_or_else(|| CliError::invalid_input("Space identifiers were not parsed")),
         Command::Space {
-            command: SpaceCommand::Message { .. },
-        } => parse_space_message_input(command)?
-            .map(SpaceCommandInput::Message)
-            .ok_or_else(|| CliError::invalid_input("message identifiers were not parsed")),
-        Command::Space {
             command: SpaceCommand::Edit { .. },
         } => parse_space_edit_input(command)?
             .map(SpaceCommandInput::Edit)
@@ -493,18 +518,20 @@ fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, Cli
     }
 }
 fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-    let Command::Space {
-        command:
-            SpaceCommand::Create { credential, .. }
-            | SpaceCommand::Recover { credential, .. }
-            | SpaceCommand::Message { credential, .. }
-            | SpaceCommand::Edit { credential, .. }
-            | SpaceCommand::Join { credential, .. },
-    } = command
-    else {
-        return Ok(None);
+    let credential = match command {
+        Command::Send { credential, .. } => Some(credential),
+        Command::Space {
+            command:
+                SpaceCommand::Create { credential, .. }
+                | SpaceCommand::Recover { credential, .. }
+                | SpaceCommand::Edit { credential, .. }
+                | SpaceCommand::Join { credential, .. },
+        } => Some(credential),
+        _ => None,
     };
-    Ok(Some(read_credential_vector(credential)?))
+    credential
+        .map(|path| read_credential_vector(path))
+        .transpose()
 }
 
 fn read_space_package(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
@@ -665,28 +692,6 @@ fn execute_space(
         SpaceCommand::List { after } => {
             execute_space_list(after.as_deref(), database_path, protector, json)?;
         }
-        SpaceCommand::Message { text, .. } => {
-            let credential_bytes = credential_bytes
-                .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
-            let SpaceCommandInput::Message((space_id, group_reference, channel_id)) = input else {
-                return Err(CliError::invalid_input("message identifiers were not parsed").into());
-            };
-            let mut client = match Client::open_existing(database_path, protector) {
-                Ok(client) => client,
-                Err(CoreError::MissingIdentity) => {
-                    return Err(CliError::missing_identity().into());
-                }
-                Err(error) => return Err(Box::new(error)),
-            };
-            let queued = client.queue_text_message_from_x509_credential(
-                &space_id,
-                &group_reference,
-                credential_bytes,
-                channel_id,
-                &text,
-            )?;
-            print_queued_event(json, "space_message", "Queued", queued.event_id());
-        }
         SpaceCommand::Edit { text, .. } => {
             let credential_bytes = credential_bytes
                 .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
@@ -727,6 +732,32 @@ fn execute_space(
             print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
         }
     }
+    Ok(())
+}
+fn execute_send(
+    input: SendInput,
+    credential_bytes: Vec<u8>,
+    text: &str,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (space_id, group_reference, channel_id) = input;
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => {
+            return Err(CliError::missing_identity().into());
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let queued = client.queue_text_message_from_x509_credential(
+        &space_id,
+        &group_reference,
+        credential_bytes,
+        channel_id,
+        text,
+    )?;
+    print_queued_event(json, "send", "Queued", queued.event_id());
     Ok(())
 }
 
@@ -1229,8 +1260,8 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex, parse_space_cursor,
-        parse_space_edit_input, parse_space_history_input, space_cursor_hex,
+        Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex, parse_send_input,
+        parse_space_cursor, parse_space_edit_input, parse_space_history_input, space_cursor_hex,
     };
     use clap::Parser;
     use lattice_core::SpaceGenesisCursor;
@@ -1263,6 +1294,61 @@ mod tests {
         assert!(!data_dir.exists());
     }
 
+    #[test]
+    fn top_level_send_parses_canonical_arguments_and_rejects_invalid_identifiers() {
+        let mut parsed = Cli::try_parse_from([
+            "lattice",
+            "send",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--credential",
+            "device.der",
+            "--channel-id",
+            &"33".repeat(16),
+            "--text",
+            "queued text",
+        ])
+        .expect("top-level send arguments parse");
+        assert_eq!(
+            parse_send_input(&parsed.command).expect("fixed IDs parse"),
+            Some(([0x11; 16], [0x22; 32], [0x33; 16]))
+        );
+        if let Command::Send { channel_id, .. } = &mut parsed.command {
+            *channel_id = "not-a-channel-id".to_owned();
+        } else {
+            panic!("expected top-level send command");
+        }
+        assert!(parse_send_input(&parsed.command).is_err());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!(
+            "lattice-cli-invalid-send-{}-{nonce}",
+            std::process::id(),
+        ));
+        let credential_path = std::env::temp_dir().join(format!(
+            "lattice-cli-send-credential-{}-{nonce}.der",
+            std::process::id(),
+        ));
+        std::fs::write(&credential_path, b"invalid fixture").expect("write credential input");
+        if let Command::Send { credential, .. } = &mut parsed.command {
+            *credential = credential_path.clone();
+        }
+        let result = execute(
+            Cli {
+                data_dir: Some(data_dir.clone()),
+                json: true,
+                command: parsed.command,
+            },
+            true,
+        );
+        assert!(result.is_err());
+        assert!(!data_dir.exists());
+        std::fs::remove_file(credential_path).expect("remove credential fixture");
+    }
     #[test]
     fn identity_pin_and_lookup_parse_exact_cli_arguments() {
         let pin = Cli::try_parse_from([

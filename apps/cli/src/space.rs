@@ -81,28 +81,6 @@ pub(super) enum SpaceCommand {
         #[arg(long)]
         channel_id: String,
     },
-    /// Queue a text message locally without contacting the network.
-    ///
-    /// The credential must be a bounded RFC 9420 X.509 credential vector.
-    /// Success means the event was queued locally only; it is not forwarded
-    /// or delivered.
-    Message {
-        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
-        #[arg(long)]
-        space_id: String,
-        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
-        #[arg(long)]
-        group_reference: String,
-        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
-        #[arg(long)]
-        credential: PathBuf,
-        /// Random 16-byte channel ID as exactly 32 hexadecimal characters.
-        #[arg(long)]
-        channel_id: String,
-        /// Text body to queue.
-        #[arg(long)]
-        text: String,
-    },
     /// Queue an authorized immutable edit to a locally authored message.
     ///
     /// The edit and encrypted local cached body are committed locally; no
