@@ -998,6 +998,7 @@ mod tests {
         let (server_adapter, _) = server_result.expect("accept direct TCP path");
         let client_cancellation = CancellationToken::new();
         let server_cancellation = CancellationToken::new();
+        let cancel_client_on_denial = client_cancellation.clone();
         let (client_result, server_result) = tokio::join!(
             super::negotiate_authenticated_path_upgrades_once(
                 &client_adapter,
@@ -1014,7 +1015,10 @@ mod tests {
                 bob_pins_alice,
                 NoiseRole::Responder,
                 PathUpgradeCapabilities::default(),
-                |_| false,
+                |_| {
+                    cancel_client_on_denial.cancel();
+                    false
+                },
                 &server_cancellation,
             ),
         );
