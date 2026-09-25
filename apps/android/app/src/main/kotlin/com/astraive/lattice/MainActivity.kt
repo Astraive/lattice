@@ -210,6 +210,7 @@ class MainActivity : ComponentActivity() {
                     onGenerateCertificateRequest = ::generateCertificateRequest,
                     onCopyCertificateRequest = ::copyCertificateRequest,
                     onLookupPinnedIdentity = ::lookupPinnedIdentity,
+                    onUnpinPeerIdentity = ::unpinPeerIdentity,
                     onCopyPinnedBundle = { bundle -> copyPublicValue("peer identity bundle", bundle) },
                     onCopyIdentityBundle = {
                         screenState.identityBundleHex?.let { copyPublicValue("device public bundle", it) }
@@ -1168,7 +1169,9 @@ class MainActivity : ComponentActivity() {
 
     private fun lookupPinnedIdentity() {
         val currentPinState = screenState.identityPin
-        if (currentPinState.lookingUpPinnedIdentity || currentPinState.pinningIdentity) return
+        if (currentPinState.lookingUpPinnedIdentity || currentPinState.pinningIdentity ||
+            currentPinState.unpinningIdentity
+        ) return
         val profile = mobileProfile ?: run {
             screenState = screenState.copy(
                 identityPin = screenState.identityPin.copy(
@@ -1237,6 +1240,73 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun unpinPeerIdentity() {
+        val pin = screenState.identityPin
+        if (pin.lookingUpPinnedIdentity || pin.pinningIdentity || pin.unpinningIdentity) return
+        val savedFingerprint = pin.pinnedPeerFingerprint
+        val fingerprint = savedFingerprint?.let { decodeIdentityHex(it, 32) }
+        if (fingerprint == null) {
+            screenState = screenState.copy(
+                identityPin = pin.copy(
+                    identityPinStatus = "Look up the exact saved fingerprint before removing its local pin.",
+                ),
+            )
+            return
+        }
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                identityPin = pin.copy(identityPinStatus = "The protected profile is not ready."),
+            )
+            return
+        }
+
+        screenState = screenState.copy(
+            identityPin = pin.copy(
+                unpinningIdentity = true,
+                identityPinStatus = "Removing the local peer pin…",
+            ),
+        )
+        lifecycleScope.launch {
+            try {
+                val removed = withContext(Dispatchers.IO) { profile.unpinIdentity(fingerprint) }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            unpinningIdentity = false,
+                            pinnedPeerFingerprint = null,
+                            pinnedPeerBundleHex = null,
+                            identityPinStatus = if (removed) {
+                                "Local peer pin removed. Remote identity and Space membership are unchanged."
+                            } else {
+                                "No local pin exists for this fingerprint."
+                            },
+                        ),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            unpinningIdentity = false,
+                            identityPinStatus = mobileErrorStatus(error),
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        identityPin = screenState.identityPin.copy(
+                            unpinningIdentity = false,
+                            identityPinStatus = "The local identity pin could not be removed.",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
     private fun copyPublicValue(label: String, value: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         if (clipboard == null) {
@@ -1279,7 +1349,9 @@ class MainActivity : ComponentActivity() {
 
     private fun pinPeerIdentity() {
         val currentPinState = screenState.identityPin
-        if (currentPinState.pinningIdentity || currentPinState.lookingUpPinnedIdentity) return
+        if (currentPinState.pinningIdentity || currentPinState.lookingUpPinnedIdentity ||
+            currentPinState.unpinningIdentity
+        ) return
         val profile = mobileProfile ?: run {
             screenState = screenState.copy(
                 identityPin = screenState.identityPin.copy(
@@ -1616,6 +1688,7 @@ private fun NearbyReadinessScreen(
     onPeerFingerprintHexChanged: (String) -> Unit,
     onPinPeerIdentity: () -> Unit,
     onLookupPinnedIdentity: () -> Unit,
+    onUnpinPeerIdentity: () -> Unit,
     onCopyPinnedBundle: (String) -> Unit,
     onGenerateCertificateRequest: () -> Unit,
     onCopyCertificateRequest: () -> Unit,
@@ -1687,6 +1760,7 @@ private fun NearbyReadinessScreen(
                 onPeerFingerprintHexChanged = onPeerFingerprintHexChanged,
                 onPinPeerIdentity = onPinPeerIdentity,
                 onLookupPinnedIdentity = onLookupPinnedIdentity,
+                onUnpinPeerIdentity = onUnpinPeerIdentity,
                 onCopyPinnedBundle = onCopyPinnedBundle,
             )
             Spacer(Modifier.height(20.dp))

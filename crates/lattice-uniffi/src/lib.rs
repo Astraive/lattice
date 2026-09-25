@@ -498,6 +498,26 @@ mod tests {
                 .expect("load exact pin"),
             Some(pinned)
         );
+        assert!(
+            client
+                .unpin_identity(identity.fingerprint.clone())
+                .expect("remove exact local pin")
+        );
+        assert_eq!(
+            client
+                .pinned_identity(identity.fingerprint.clone())
+                .expect("query removed pin"),
+            None
+        );
+        assert!(
+            !client
+                .unpin_identity(identity.fingerprint.clone())
+                .expect("repeat local removal")
+        );
+        assert!(matches!(
+            client.unpin_identity(vec![0; 31]),
+            Err(MobileError::InvalidFingerprint)
+        ));
     }
 
     #[test]

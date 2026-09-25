@@ -149,6 +149,26 @@ impl MobileClient {
             .map_err(|error| map_pin_error(&error))
     }
 
+    /// Removes one full-fingerprint peer pin from this local profile.
+    ///
+    /// This revokes trust only on this device. It does not revoke the remote
+    /// identity or change Space membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidFingerprint` for a non-32-byte fingerprint, or
+    /// `ProfileUnavailable` if the profile cannot update its trust store.
+    // UniFFI exports byte buffers as owned Vec values at the Rust boundary.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn unpin_identity(&self, fingerprint: Vec<u8>) -> Result<bool, MobileError> {
+        let fingerprint: [u8; 32] = fingerprint
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        self.lock_client()?
+            .unpin_identity(&fingerprint)
+            .map_err(|error| map_pin_error(&error))
+    }
+
     /// Returns the next durable author sequence for this identity.
     ///
     /// # Errors

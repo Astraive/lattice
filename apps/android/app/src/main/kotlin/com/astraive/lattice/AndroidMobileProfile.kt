@@ -73,6 +73,8 @@ internal class AndroidMobileProfile private constructor(
     fun pinnedIdentity(fingerprint: ByteArray): MobilePinnedIdentity? =
         client.pinnedIdentity(fingerprint)
 
+    fun unpinIdentity(fingerprint: ByteArray): Boolean = client.unpinIdentity(fingerprint)
+
     fun localSpaces(after: MobileSpaceCursor? = null): MobileSpacePage =
         client.listLocalSpaces(after)
 

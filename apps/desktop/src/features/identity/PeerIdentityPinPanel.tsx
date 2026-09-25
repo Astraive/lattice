@@ -11,7 +11,7 @@ type PeerIdentityPinPanelProps = {
   identityReady: boolean;
 };
 
-type ActiveTask = "csr" | "pin" | "lookup" | null;
+type ActiveTask = "csr" | "pin" | "lookup" | "unpin" | null;
 
 function isFixedHex(value: string, characterCount: number) {
   return value.length === characterCount && /^[0-9a-fA-F]+$/.test(value);
@@ -140,6 +140,36 @@ export function PeerIdentityPinPanel({
     }
   }
 
+  async function unpinIdentity() {
+    if (!isFixedHex(fingerprintHex, 64)) {
+      setError(hexValidationMessage("Full fingerprint", 64, fingerprintHex));
+      setInvalidField("fingerprint");
+      return;
+    }
+    if (!pinned || pinned.fingerprint.toLowerCase() !== fingerprintHex.toLowerCase()) {
+      setError("Look up the exact locally pinned fingerprint before removing it.");
+      setInvalidField("fingerprint");
+      return;
+    }
+
+    setActiveTask("unpin");
+    setError(null);
+    setInvalidField(null);
+    try {
+      const removed = await invoke<boolean>("unpin_peer_identity", { fingerprintHex });
+      setPinned(null);
+      setStatus(
+        removed
+          ? "Local peer pin removed. This does not revoke the remote identity or change Space membership."
+          : "No local pin exists for this fingerprint.",
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setActiveTask(null);
+    }
+  }
+
   return (
     <>
       <section className="identity-csr" aria-labelledby="identity-csr-title">
@@ -258,6 +288,15 @@ export function PeerIdentityPinPanel({
               >
                 {activeTask === "lookup" ? "Looking up…" : "Look up saved pin"}
               </button>
+              {pinned && (
+                <button
+                  type="button"
+                  disabled={busy || !identityReady}
+                  onClick={() => void unpinIdentity()}
+                >
+                  {activeTask === "unpin" ? "Removing local pin…" : "Remove local pin"}
+                </button>
+              )}
             </div>
           </form>
         ) : (

@@ -62,10 +62,12 @@ sync serving, local relay URL settings/NIP-11 tests, and a non-mutating storage
 doctor. The server is direct-only and does not apply remote events or claim
 recipient delivery. Desktop can create
 local one-member Genesis snapshots from a system-trusted X.509 credential
-vector, browse local snapshots, pin peers, and export a CSR. Android exposes a
-protected identity snapshot, exact peer pins, CSR export, permission-aware BLE
-discovery/fragment framing, bounded local Space creation from an OS-trusted
-X.509 vector, and local Genesis listing. Space creation creates only a local
+vector, browse local snapshots, pin peers, remove local pins without revoking
+remote identities or changing Space membership, and export a CSR. Android
+exposes a protected identity snapshot, exact peer pins with local-only removal,
+CSR export, permission-aware BLE discovery/fragment framing, bounded local
+Space creation from an OS-trusted X.509 vector, and local Genesis listing.
+Space creation creates only a local
 one-member candidate; it does not establish remote membership or contact a
 network. CSR export does not issue certificates.
 

@@ -107,3 +107,16 @@ pub(crate) fn get_pinned_identity(
         public_bundle: encoding::hex(&pinned.bundle().to_bytes()),
     }))
 }
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn unpin_peer_identity(fingerprint_hex: String) -> Result<bool, String> {
+    let fingerprint = encoding::parse_fixed_hex::<32>(&fingerprint_hex, "fingerprint")?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    client
+        .unpin_identity(&fingerprint)
+        .map_err(|error| error.to_string())
+}

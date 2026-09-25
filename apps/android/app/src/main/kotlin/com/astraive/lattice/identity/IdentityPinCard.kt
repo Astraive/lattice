@@ -22,6 +22,7 @@ internal data class IdentityPinUiState(
     val pinnedPeerBundleHex: String? = null,
     val pinningIdentity: Boolean = false,
     val lookingUpPinnedIdentity: Boolean = false,
+    val unpinningIdentity: Boolean = false,
 )
 
 @Composable
@@ -32,6 +33,7 @@ internal fun IdentityPinCard(
     onPeerFingerprintHexChanged: (String) -> Unit,
     onPinPeerIdentity: () -> Unit,
     onLookupPinnedIdentity: () -> Unit,
+    onUnpinPeerIdentity: () -> Unit,
     onCopyPinnedBundle: (String) -> Unit,
 ) {
     Surface(
@@ -53,7 +55,10 @@ internal fun IdentityPinCard(
                 value = state.peerBundleHexInput,
                 onValueChange = onPeerBundleHexChanged,
                 label = { Text("65-byte public bundle (hex)") },
-                enabled = profileReady && !state.pinningIdentity && !state.lookingUpPinnedIdentity,
+                enabled = profileReady &&
+                    !state.pinningIdentity &&
+                    !state.lookingUpPinnedIdentity &&
+                    !state.unpinningIdentity,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -61,23 +66,46 @@ internal fun IdentityPinCard(
                 value = state.peerFingerprintHexInput,
                 onValueChange = onPeerFingerprintHexChanged,
                 label = { Text("Full 32-byte fingerprint (hex)") },
-                enabled = profileReady && !state.pinningIdentity && !state.lookingUpPinnedIdentity,
+                enabled = profileReady &&
+                    !state.pinningIdentity &&
+                    !state.lookingUpPinnedIdentity &&
+                    !state.unpinningIdentity,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             Button(
                 onClick = onLookupPinnedIdentity,
-                enabled = !state.lookingUpPinnedIdentity && !state.pinningIdentity && profileReady,
+                enabled = profileReady &&
+                    !state.lookingUpPinnedIdentity &&
+                    !state.pinningIdentity &&
+                    !state.unpinningIdentity,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (state.lookingUpPinnedIdentity) "Checking saved pin…" else "Look up saved pin")
             }
             Button(
                 onClick = onPinPeerIdentity,
-                enabled = !state.pinningIdentity && !state.lookingUpPinnedIdentity && profileReady,
+                enabled = profileReady &&
+                    !state.pinningIdentity &&
+                    !state.lookingUpPinnedIdentity &&
+                    !state.unpinningIdentity,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (state.pinningIdentity) "Saving identity pin…" else "Pin exact identity")
+            }
+            state.pinnedPeerFingerprint?.let {
+                Button(
+                    onClick = onUnpinPeerIdentity,
+                    enabled = !state.pinningIdentity && !state.lookingUpPinnedIdentity &&
+                        !state.unpinningIdentity && profileReady,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (state.unpinningIdentity) "Removing local pin…" else "Remove local pin")
+                }
+                Text(
+                    "Removes trust only from this device. Remote identity and Space membership are unchanged.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             Text(state.identityPinStatus, style = MaterialTheme.typography.bodySmall)
             state.pinnedPeerFingerprint?.let { fingerprint ->

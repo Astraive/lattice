@@ -24,7 +24,8 @@ pub fn run() {
             spaces::list_local_text_messages,
             spaces::search_local_text_messages,
             identity::pin_peer_identity,
-            identity::get_pinned_identity
+            identity::get_pinned_identity,
+            identity::unpin_peer_identity
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Lattice desktop application");
