@@ -3127,6 +3127,21 @@ mod tests {
             Some("text/plain"),
         )
         .expect("build attachment manifest");
+        let mut invalid_manifest = manifest.clone();
+        invalid_manifest.filename = "../unsafe.txt".to_owned();
+        assert!(matches!(
+            client.queue_file_manifest(&mut created, &credential, channel_id, &invalid_manifest),
+            Err(CoreError::Attachment(
+                lattice_files::AttachmentError::InvalidFilenameHint
+            ))
+        ));
+        assert!(
+            client
+                .store
+                .list_outbox_page(None, 10)
+                .expect("read outbox after invalid manifest")
+                .is_empty()
+        );
 
         let receipt = client
             .queue_file_manifest(&mut created, &credential, channel_id, &manifest)
