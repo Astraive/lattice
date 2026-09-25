@@ -504,6 +504,8 @@ The `space_id` is random and is not derived from the human-readable name, preven
 
 Space membership is cryptographic. Joining requires an invitation or an authenticated Add operation authorized under the current policy. An invitation contains enough information to locate existing peers/relays, verify the Space genesis fingerprint, and present an MLS key package or join request. Invitations may be encoded as QR, deep link, or file; they **MUST NOT** embed reusable administrator private keys.
 
+Each non-last-resort `KeyPackage` is one-use. A device records its suite-defined MLS reference and expiry alongside the protected OpenMLS private bundle; an accepted Welcome consumes the matching inventory entry in the same transaction as group import. Failed or rejected Welcomes do not consume the package. Expired packages leave available inventory; a package whose delivery is lost can be explicitly discarded, deleting its private bundle and marking the record lost so a fresh package can be issued immediately. Callers advertise only fresh packages. Implementations MUST reject reuse after consumption and MUST NOT count expired or lost entries toward replenishment.
+
 ## MLS epoch as membership-security epoch
 
 Each membership change that affects confidentiality produces a new MLS epoch. Removed members do not receive the new epoch secret. RFC 9420 specifies asynchronous group key establishment with forward secrecy and post-compromise security properties when correctly used ([rfc9420](#ref-rfc9420)). Application roles and channel permissions remain separate authorization metadata layered above MLS: cryptographic membership answers “is this device in the Space cryptographic group?” while permissions answer “may this member perform this operation?”

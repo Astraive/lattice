@@ -11,7 +11,7 @@ One installation equals one v1 cryptographic device identity. Multi-device user 
 | IDN-005 | A user shall be able to pin a verified peer after QR or session-bound code comparison. | Key substitution after pin prompts mismatch and rejects silent trust rollover. | M3 |
 | IDN-006 | Identity reset shall clearly create a new member identity and require authorized re-add to Spaces. | Old key cannot sign new member actions; recovery path is explicit. | M3 |
 | IDN-007 | Secret storage shall use Keychain/Keystore wrapping where supported and report hardware protection accurately. | Test locked/unlocked/reinstalled app cases; no plaintext key in SQLite. | M3 |
-| IDN-008 | MLS KeyPackages shall have explicit lifecycle, consumption and replenishment behavior. | Reused non-last-resort package is rejected; lost package yields recoverable join state. | M3 |
+| IDN-008 | MLS KeyPackages shall have explicit lifecycle, consumption and replenishment behavior. | A non-last-resort package is consumed atomically with Welcome acceptance and cannot be reused; expired inventory is replaced from protected local MLS state, so a dropped package can be recovered by publishing a fresh one. | M3 |
 | IDN-009 | A device may generate a PKCS#10 request bound to its exact full identity fingerprint. | Verify CSR signature and Ed25519 SPKI; require exactly `urn:lattice:identity:v1:<lowercase-full-fingerprint>` as URI SAN; request creation never exports private material or claims certificate issuance. | M7 |
 
 Onboarding screens: introduction → create/import device identity → profile → nearby permissions → optional relay choice → create/join Space. Never force relay consent. Backup/export is a future separate profile; no password-reset claim in v1. [MLS architecture](https://www.rfc-editor.org/rfc/rfc9750) describes authentication and KeyPackage delivery responsibilities.
@@ -23,6 +23,7 @@ Onboarding screens: introduction → create/import device identity → profile �
 3. **Discover:** A BLE beacon uses a rotating, installation-local token. It identifies a compatible radio service for contact scheduling, not an authenticated person. Only an encrypted and authenticated handshake binds the radio peer to a device key.
 4. **Verify:** On first contact, present the key fingerprint or a short authentication string bound to the current session transcript. A user may leave a peer unverified, but the UI must not silently upgrade an unverified nickname into trusted identity. A changed key on a previously pinned contact triggers a blocking warning and an explicit new verification flow.
 5. **Join:** Scan/import a signed invite, verify expiry, signer and genesis fingerprint, reach an authorized member, provide a fresh KeyPackage, receive a valid Welcome for the accepted Commit, and persist membership/keys transactionally. A successful scan or relay lookup alone is not a join.
+   The profile tracks bounded unexpired one-time packages separately from OpenMLS private bundles; only an accepted Welcome consumes a package, in the same SQLite transaction as the joined MLS state.
 6. **Rotate/reset:** Profile rename is a normal event; key rotation requires a defined signed transition while old key is usable. Loss of the signing root creates a new device identity, and each Space must re-add it through authorized membership. Do not invent account recovery through an untrusted relay.
 7. **Request enrollment:** Generate a PKCS#10 certificate request locally with the device signing key and its exact full-fingerprint URI SAN. The CSR is public and contains no private key. The issuer must preserve the SAN; certificate issuance and import are distinct operations and do not occur merely by generating the request.
 
@@ -32,6 +33,7 @@ Onboarding screens: introduction → create/import device identity → profile �
 | --- | --- |
 | Keychain/Keystore unavailable or locked | Do not send/authenticate; display locked-key state and retry after unlock. |
 | KeyPackage stale or consumed | Fetch/advertise a fresh package; reject reuse that would weaken expected secrecy. |
+| KeyPackage publication lost or package expires unused | For a known delivery loss, discard its local private bundle and mark it lost, then replenish immediately; otherwise stop counting expired inventory and publish a fresh distinct package. Never reuse a consumed package. |
 | Wrong Space genesis for an invite | Reject the invite and show the conflicting fingerprint; never substitute a similarly named Space. |
 | Expired invite while offline | Locally warn; final authorization occurs on connection with a member under current policy. |
 | Two devices claiming same display name | Display verification state/fingerprint; never merge identities by name. |

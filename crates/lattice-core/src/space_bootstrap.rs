@@ -527,6 +527,8 @@ impl Client {
                 if identity.fingerprint() != target {
                     return Err(CoreError::SpaceCredentialInvalid);
                 }
+                let consumed_key_package =
+                    lattice_mls::api::welcome_key_package_reference(provider, &welcome)?;
                 let group = GroupState::from_welcome(provider, &group_id, credential, &welcome)?;
                 if group.group_reference() != package_for_transaction.group_reference
                     || group.epoch() != package_for_transaction.epoch
@@ -558,6 +560,9 @@ impl Client {
                     if head.event_id() != invite_event.event_id() {
                         store_received_event(transaction, head)?;
                     }
+                }
+                if let Some(reference) = consumed_key_package {
+                    Store::consume_key_package_in_transaction(transaction, &reference)?;
                 }
                 let encrypted_genesis = lattice_mls::protect_local_record(
                     &protected_genesis_context,

@@ -64,6 +64,9 @@ pub const MAX_SPACE_CREDENTIAL_BYTES: usize = lattice_mls::api::MAX_CREDENTIAL_B
 pub const MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES: usize = 256;
 /// Maximum matching messages returned by one local search.
 pub const MAX_LOCAL_TEXT_SEARCH_RESULTS: usize = 100;
+/// Maximum number of locally available one-time `KeyPackages` maintained by
+/// [`Client::replenish_key_packages`].
+pub const MAX_LOCAL_KEY_PACKAGE_INVENTORY: usize = 32;
 const MAX_SPACE_RECOVERY_DEPTH: usize = 32;
 
 /// Caller-selected fields for one initial channel; its identifier is generated
@@ -375,6 +378,12 @@ pub enum CoreError {
     /// The production X.509 credential failed validation against the local identity.
     #[error("Space X.509 credential validation failed")]
     SpaceCredentialInvalid,
+    /// The requested `KeyPackage` inventory exceeds the local bound.
+    #[error("requested KeyPackage inventory exceeds the local maximum")]
+    KeyPackageInventoryLimit,
+    /// The local clock makes a newly generated `KeyPackage` immediately stale.
+    #[error("system time is beyond the generated KeyPackage lifetime")]
+    KeyPackageExpiredAtIssuance,
     /// Canonical Space genesis CBOR could not be encoded.
     #[error(transparent)]
     Protocol(#[from] lattice_protocol::Error),
@@ -1121,6 +1130,73 @@ impl Client {
             })
             .map_err(CoreError::from)
             .map_err(E::from)?
+        })
+    }
+
+    /// Publishes fresh one-time `KeyPackage`s until the requested unexpired
+    /// inventory target is met.
+    ///
+    /// `OpenMLS` private bundles and their app-visible lifecycle records are
+    /// committed atomically. Existing packages are never re-published; each
+    /// returned wire package is a distinct MLS object.
+    ///
+    /// `now` is Unix time in seconds and is explicit so callers can apply the
+    /// same clock policy to their local inventory decisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::KeyPackageInventoryLimit`] for a target above the
+    /// supported bound, or any credential, `OpenMLS`, or storage error.
+    pub fn replenish_key_packages(
+        &mut self,
+        credential: &DeviceCredentialInput,
+        target_available: usize,
+        now: u64,
+    ) -> Result<Vec<Vec<u8>>, CoreError> {
+        if target_available > MAX_LOCAL_KEY_PACKAGE_INVENTORY {
+            return Err(CoreError::KeyPackageInventoryLimit);
+        }
+        let available = self.store.available_key_package_count(now)?;
+        let mut generated = Vec::with_capacity(target_available.saturating_sub(available));
+        for _ in available..target_available {
+            let wire = self.with_mls_transaction(|identity, provider, transaction| {
+                let message = GroupState::publish_key_package(provider, identity, credential)?;
+                let wire = message.as_bytes().to_vec();
+                let (reference, expires_at) =
+                    lattice_mls::api::key_package_lifecycle_metadata(provider, &wire)?;
+                if expires_at <= now {
+                    return Err(CoreError::KeyPackageExpiredAtIssuance);
+                }
+                Store::record_key_package_in_transaction(transaction, &reference, expires_at)?;
+                Ok::<_, CoreError>(wire)
+            })?;
+            generated.push(wire);
+        }
+        Ok(generated)
+    }
+    /// Discards a locally published package that can no longer be delivered.
+    ///
+    /// This removes its private bundle and marks the inventory record lost in
+    /// one transaction. Subsequent replenishment can immediately issue a
+    /// distinct package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the package is malformed, the MLS provider fails, or
+    /// durable storage rejects the transition.
+    pub fn discard_key_package(&mut self, package_wire: &[u8]) -> Result<bool, CoreError> {
+        self.with_mls_transaction(|_, provider, transaction| {
+            let (reference, _) =
+                lattice_mls::api::key_package_lifecycle_metadata(provider, package_wire)?;
+            if !Store::lose_key_package_in_transaction(transaction, &reference)? {
+                return Ok(false);
+            }
+            let deleted_reference =
+                lattice_mls::api::delete_key_package_bundle(provider, package_wire)?;
+            if deleted_reference != reference {
+                return Err(CoreError::Mls(lattice_mls::api::MlsError::OpenMlsFailure));
+            }
+            Ok(true)
         })
     }
     fn ensure_space_generation_mutable(
@@ -4598,20 +4674,29 @@ mod tests {
         let space_id = *created.space_id();
         let group_reference = *created.group_reference();
         let root_id = *created.genesis_event().event_id().as_bytes();
-        let bob_key_package = bob
-            .with_mls_transaction(|identity, provider, _| {
-                let key_package =
-                    GroupState::publish_key_package(provider, identity, &bob_credential)?;
-                Ok::<_, CoreError>(key_package.as_bytes().to_vec())
-            })
+        let bob_key_packages = bob
+            .replenish_key_packages(&bob_credential, 1, 0)
             .expect("publish recipient KeyPackage");
-        let key_package_hash = lattice_mls::api::key_package_wire_sha256(&bob_key_package)
+        assert_eq!(bob_key_packages.len(), 1);
+        assert!(
+            bob.replenish_key_packages(&bob_credential, 1, 0)
+                .expect("leave available inventory unchanged")
+                .is_empty()
+        );
+        assert_eq!(
+            bob.store
+                .available_key_package_count(0)
+                .expect("count available packages"),
+            1
+        );
+        let bob_key_package = &bob_key_packages[0];
+        let key_package_hash = lattice_mls::api::key_package_wire_sha256(bob_key_package)
             .expect("hash recipient KeyPackage");
         let (welcome, control_event) = alice
             .with_mls_transaction(|identity, provider, _| {
                 let mut group = GroupState::load(provider, &group_id)?;
                 let prepared =
-                    group.prepare_add(provider, identity, &alice_credential, &bob_key_package)?;
+                    group.prepare_add(provider, identity, &alice_credential, bob_key_package)?;
                 let commit = prepared.commit().as_bytes().to_vec();
                 let welcome = group.accept_prepared_add(provider, &prepared, &commit)?;
                 let control = VerifiedSignatureOnlyEvent::create(
@@ -4741,6 +4826,34 @@ mod tests {
         let mut joined = bob
             .join_space_from_welcome_bootstrap(&package, alice_fingerprint, &bob_credential)
             .expect("validate pinned inviter package and import Welcome");
+        assert_eq!(
+            bob.store
+                .available_key_package_count(0)
+                .expect("consumption persists"),
+            0
+        );
+        assert!(
+            bob.join_space_from_welcome_bootstrap(&package, alice_fingerprint, &bob_credential)
+                .is_err(),
+            "a Welcome cannot reuse the consumed non-last-resort package"
+        );
+        let replacement = bob
+            .replenish_key_packages(&bob_credential, 1, 0)
+            .expect("replenish consumed package");
+        assert_eq!(replacement.len(), 1);
+        assert!(
+            bob.discard_key_package(&replacement[0])
+                .expect("discard package whose delivery was lost")
+        );
+        assert!(
+            !bob.discard_key_package(&replacement[0])
+                .expect("lost package cannot be discarded twice")
+        );
+        let recovered_package = bob
+            .replenish_key_packages(&bob_credential, 1, 0)
+            .expect("replace the lost package");
+        assert_eq!(recovered_package.len(), 1);
+        assert_ne!(recovered_package[0], replacement[0]);
         assert_eq!(joined.reducer().policy().expect("joined policy"), &policy);
         let charlie_database = TestDatabase::new();
         let mut charlie = Client::open_or_create(&charlie_database.0, &protector)

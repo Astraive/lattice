@@ -49,7 +49,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 11;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -637,6 +637,22 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 12 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE key_package_lifecycle (
+                    key_package_ref BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(key_package_ref) = 'blob' AND length(key_package_ref) = 32),
+                    expires_at INTEGER NOT NULL CHECK(expires_at >= 0),
+                    state TEXT NOT NULL CHECK(state IN ('available', 'consumed', 'expired', 'lost'))
+                );
+                CREATE INDEX key_package_lifecycle_available
+                    ON key_package_lifecycle(state, expires_at);
+                PRAGMA user_version = 12;",
+            )?;
+            transaction.commit()?;
+        }
 
         Ok(Self { connection })
     }
@@ -936,6 +952,90 @@ impl Store {
             .map_err(StoreError::from)
             .map_err(E::from)?;
         Ok(value)
+    }
+    /// Records a locally published MLS `KeyPackage` in the same transaction as
+    /// its `OpenMLS` private key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference or expiry is invalid, the reference
+    /// was already tracked, or `SQLite` rejects the write.
+    pub fn record_key_package_in_transaction(
+        transaction: &Transaction<'_>,
+        key_package_ref: &[u8; ID_BYTES],
+        expires_at: u64,
+    ) -> Result<()> {
+        let expires_at = i64::try_from(expires_at)
+            .map_err(|_| StoreError::CorruptData("KeyPackage expiry exceeds SQLite range"))?;
+        transaction.execute(
+            "INSERT INTO key_package_lifecycle(key_package_ref, expires_at, state)
+             VALUES (?1, ?2, 'available')",
+            params![&key_package_ref[..], expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a matching locally published `KeyPackage` as consumed.
+    ///
+    /// A `KeyPackage` supplied by a prior application version may not have an
+    /// inventory row; in that case `OpenMLS` remains authoritative and no row is
+    /// created.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` rejects the update.
+    pub fn consume_key_package_in_transaction(
+        transaction: &Transaction<'_>,
+        key_package_ref: &[u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.execute(
+            "UPDATE key_package_lifecycle SET state = 'consumed'
+             WHERE key_package_ref = ?1 AND state = 'available'",
+            params![&key_package_ref[..]],
+        )? > 0)
+    }
+    /// Removes a package that can no longer be delivered from the available
+    /// inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` rejects the update.
+    pub fn lose_key_package_in_transaction(
+        transaction: &Transaction<'_>,
+        key_package_ref: &[u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.execute(
+            "UPDATE key_package_lifecycle SET state = 'lost'
+             WHERE key_package_ref = ?1 AND state = 'available'",
+            params![&key_package_ref[..]],
+        )? > 0)
+    }
+
+    /// Counts unexpired locally published packages available for one-time use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub fn available_key_package_count(&mut self, now: u64) -> Result<usize> {
+        let now = i64::try_from(now)
+            .map_err(|_| StoreError::CorruptData("current time exceeds SQLite range"))?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE key_package_lifecycle SET state = 'expired'
+             WHERE state = 'available' AND expires_at <= ?1",
+            params![now],
+        )?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM key_package_lifecycle
+             WHERE state = 'available' AND expires_at > ?1",
+            params![now],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        usize::try_from(count)
+            .map_err(|_| StoreError::CorruptData("invalid KeyPackage inventory count"))
     }
 
     /// Saves an encrypted space Genesis snapshot inside its event's transaction.
@@ -2649,6 +2749,7 @@ mod tests {
                      DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
+                     DROP TABLE key_package_lifecycle;
                      DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
                      DROP TABLE space_genesis_snapshots;
@@ -2711,6 +2812,7 @@ mod tests {
                      DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
+                     DROP TABLE key_package_lifecycle;
                      DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 4;",
@@ -2723,7 +2825,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2760,6 +2862,7 @@ mod tests {
                      DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
+                     DROP TABLE key_package_lifecycle;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 5;",
                 )
@@ -2770,7 +2873,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2895,7 +2998,7 @@ mod tests {
     fn welcome_bootstrap_snapshot_round_trips_transactionally_and_enforces_bounds() {
         let database = TempDatabase::new();
         let mut store = Store::open(database.path()).expect("open database");
-        assert_eq!(store.schema_version().expect("read schema version"), 11);
+        assert_eq!(store.schema_version().expect("read schema version"), 12);
         let snapshot = SpaceWelcomeBootstrapSnapshot {
             space_id: [0x11; 16],
             group_reference: [0x22; 32],
@@ -2981,6 +3084,63 @@ mod tests {
             store.load_space_welcome_bootstrap_snapshot(&[0x31; 16], &[0x42; 32]),
             Err(StoreError::CorruptData(_))
         ));
+    }
+
+    #[test]
+    fn key_package_inventory_persists_consumption_and_expiry_transitions() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let unexpired = [0xA1; 32];
+        let expiring = [0xB2; 32];
+        store
+            .with_transaction(|transaction| {
+                Store::record_key_package_in_transaction(transaction, &unexpired, 100)?;
+                Store::record_key_package_in_transaction(transaction, &expiring, 10)
+            })
+            .expect("persist package inventory");
+        assert_eq!(
+            store
+                .available_key_package_count(9)
+                .expect("count available packages"),
+            2
+        );
+        store
+            .with_transaction(|transaction| {
+                assert!(Store::consume_key_package_in_transaction(
+                    transaction,
+                    &unexpired
+                )?);
+                assert!(!Store::consume_key_package_in_transaction(
+                    transaction,
+                    &unexpired
+                )?);
+                Ok::<_, StoreError>(())
+            })
+            .expect("consume package once");
+        assert_eq!(
+            store
+                .available_key_package_count(10)
+                .expect("expire stale package"),
+            0
+        );
+        drop(store);
+
+        let mut reopened = Store::open(database.path()).expect("reopen inventory");
+        assert_eq!(
+            reopened
+                .available_key_package_count(0)
+                .expect("consumed state survives reopen"),
+            0
+        );
+        let state: String = reopened
+            .connection
+            .query_row(
+                "SELECT state FROM key_package_lifecycle WHERE key_package_ref = ?1",
+                rusqlite::params![&expiring[..]],
+                |row| row.get(0),
+            )
+            .expect("read persisted expiry state");
+        assert_eq!(state, "expired");
     }
 
     #[test]

@@ -51,6 +51,7 @@ use openmls::{
 use openmls_traits::{
     OpenMlsProvider,
     signatures::{Signer, SignerError},
+    storage::StorageProvider,
     types::SignatureScheme,
 };
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
@@ -2176,6 +2177,103 @@ pub fn key_package_wire_sha256(wire: &[u8]) -> MlsResult<[u8; 32]> {
         .tls_serialize_detached()
         .map_err(|_| MlsError::MalformedMessage)?;
     Ok(Sha256::digest(encoded).into())
+}
+/// Returns the native MLS `KeyPackage` reference and expiry from a
+/// `KeyPackage` message.
+///
+/// The reference is the suite-defined MLS hash reference, not a digest of the
+/// outer message or TLS bytes.
+///
+/// # Errors
+///
+/// Returns an error for an oversized, malformed, unsupported, or invalid
+/// `KeyPackage`.
+pub fn key_package_lifecycle_metadata<P: OpenMlsProvider>(
+    provider: &P,
+    wire: &[u8],
+) -> MlsResult<([u8; 32], u64)> {
+    let parsed = parse_message(wire)?;
+    let key_package: KeyPackageIn = match parsed.extract() {
+        openmls::prelude::MlsMessageBodyIn::KeyPackage(key_package) => key_package,
+        _ => return Err(MlsError::UnsupportedMessage),
+    };
+    let key_package = key_package
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    let reference = key_package
+        .hash_ref(provider.crypto())
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    let reference = reference
+        .as_slice()
+        .try_into()
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    Ok((reference, key_package.life_time().not_after()))
+}
+
+/// Deletes the local private bundle for a published `KeyPackage`.
+///
+/// Returns its suite-defined reference so the caller can update the app
+/// inventory in the same provider transaction.
+///
+/// # Errors
+///
+/// Returns an error for invalid package data or provider storage failures.
+pub fn delete_key_package_bundle<P: OpenMlsProvider>(
+    provider: &P,
+    wire: &[u8],
+) -> MlsResult<[u8; 32]> {
+    let parsed = parse_message(wire)?;
+    let key_package: KeyPackageIn = match parsed.extract() {
+        openmls::prelude::MlsMessageBodyIn::KeyPackage(key_package) => key_package,
+        _ => return Err(MlsError::UnsupportedMessage),
+    };
+    let key_package = key_package
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    let reference = key_package
+        .hash_ref(provider.crypto())
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    let reference_bytes = reference
+        .as_slice()
+        .try_into()
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    provider
+        .storage()
+        .delete_key_package(&reference)
+        .map_err(|_| MlsError::OpenMlsFailure)?;
+    Ok(reference_bytes)
+}
+
+/// Finds the `KeyPackage` reference in a `Welcome` for which this provider holds
+/// the corresponding private bundle.
+///
+/// # Errors
+///
+/// Returns an error for malformed Welcome data or provider storage failures.
+pub fn welcome_key_package_reference<P: OpenMlsProvider>(
+    provider: &P,
+    wire: &[u8],
+) -> MlsResult<Option<[u8; 32]>> {
+    let parsed = parse_message(wire)?;
+    let openmls::prelude::MlsMessageBodyIn::Welcome(welcome) = parsed.extract() else {
+        return Err(MlsError::UnsupportedMessage);
+    };
+    for encrypted_secrets in welcome.secrets() {
+        let reference = encrypted_secrets.new_member();
+        if provider
+            .storage()
+            .key_package::<_, openmls::key_packages::KeyPackageBundle>(&reference)
+            .map_err(|_| MlsError::OpenMlsFailure)?
+            .is_some()
+        {
+            let reference = reference
+                .as_slice()
+                .try_into()
+                .map_err(|_| MlsError::OpenMlsFailure)?;
+            return Ok(Some(reference));
+        }
+    }
+    Ok(None)
 }
 
 struct DecodedKeyPackage {
