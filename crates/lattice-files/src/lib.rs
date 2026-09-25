@@ -7,6 +7,9 @@ use sha2::{Digest as Sha2Digest, Sha256};
 
 /// SHA-256 digest bytes.
 pub type Sha256Hash = [u8; 32];
+/// Deterministic identity for one manifest attached to one signed event.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AttachmentTransferId(pub Sha256Hash);
 
 /// Fixed chunk size used for every attachment manifest.
 pub const CHUNK_SIZE: usize = 64 * 1024;
@@ -176,6 +179,43 @@ pub struct ChunkRange {
 }
 
 impl AttachmentManifest {
+    /// Bind this manifest's bounded metadata and integrity digests to an event ID.
+    ///
+    /// This identity is deterministic, not an authorization proof. Callers
+    /// must obtain the event ID and manifest from their authenticated policy
+    /// boundary before using it to route a transfer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the manifest is not valid within this
+    /// crate's size, metadata, and digest bounds.
+    pub fn transfer_id(
+        &self,
+        event_id: &[u8; 32],
+    ) -> Result<AttachmentTransferId, AttachmentError> {
+        self.validate()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"lattice-attachment-transfer-v1\0");
+        hasher.update(event_id);
+        hasher.update(self.file_size.to_le_bytes());
+        hasher.update(self.file_hash);
+        hasher.update((self.filename.len() as u64).to_le_bytes());
+        hasher.update(self.filename.as_bytes());
+        match &self.mime_type {
+            Some(mime_type) => {
+                hasher.update([1]);
+                hasher.update((mime_type.len() as u64).to_le_bytes());
+                hasher.update(mime_type.as_bytes());
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update((self.chunk_hashes.len() as u64).to_le_bytes());
+        for hash in &self.chunk_hashes {
+            hasher.update(hash);
+        }
+        Ok(AttachmentTransferId(hasher.finalize().into()))
+    }
+
     /// Hash a reader incrementally and construct a bounded manifest.
     ///
     /// At most one fixed-size chunk is held in memory at a time. The filename

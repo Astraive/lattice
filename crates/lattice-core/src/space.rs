@@ -253,6 +253,66 @@ pub struct RecoveryAuthorization {
     recovery_event_id: EventReference,
 }
 
+/// Attachment manifest admitted by this reducer for one exact signed event.
+///
+/// Only [`SpaceReducer::authorized_attachment_manifest`] can construct this
+/// capability. It binds receiver creation to the reducer-retained manifest;
+/// filenames and MIME hints remain untrusted display metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedAttachmentManifest {
+    event_id: EventReference,
+    manifest: AttachmentManifest,
+}
+
+impl AuthorizedAttachmentManifest {
+    #[must_use]
+    pub fn event_id(&self) -> &EventReference {
+        &self.event_id
+    }
+
+    #[must_use]
+    pub fn manifest(&self) -> &AttachmentManifest {
+        &self.manifest
+    }
+
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the retained manifest fails its bounds
+    /// validation.
+    pub fn transfer_id(
+        &self,
+    ) -> Result<lattice_files::AttachmentTransferId, lattice_files::AttachmentError> {
+        self.manifest.transfer_id(&self.event_id)
+    }
+
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the staging limit is smaller than the
+    /// manifest size or the retained manifest fails validation.
+    pub fn new_receiver(
+        &self,
+        staging_limit: u64,
+    ) -> Result<lattice_files::AttachmentReceiver, lattice_files::AttachmentError> {
+        lattice_files::AttachmentReceiver::new(self.manifest.clone(), staging_limit)
+    }
+
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the staging limit is insufficient, the
+    /// manifest is invalid, or the supplied store cannot be initialized.
+    pub fn new_streamed_receiver<S: std::io::Read + std::io::Write + std::io::Seek>(
+        &self,
+        staging_limit: u64,
+        storage: S,
+    ) -> Result<lattice_files::StreamedAttachmentReceiver<S>, lattice_files::AttachmentError> {
+        lattice_files::StreamedAttachmentReceiver::new(
+            self.manifest.clone(),
+            staging_limit,
+            storage,
+        )
+    }
+}
+
 /// Member action recorded by an admitted kind-6 policy transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemberAction {
@@ -579,6 +639,23 @@ impl SpaceReducer {
     pub fn message_history(&self, channel_id: &EntityId) -> message_projection::MessageHistory {
         message_projection::project_channel(&self.graph, channel_id)
     }
+    /// Return a receiver capability only for a manifest authorized from an
+    /// MLS-bound event retained by this reducer.
+    #[must_use]
+    pub fn authorized_attachment_manifest(
+        &self,
+        event_id: &EventReference,
+    ) -> Option<AuthorizedAttachmentManifest> {
+        let node = self.graph.get(event_id)?;
+        if !node.mls_bound || !node.application_authorized || node.kind != EventKind::FileManifest {
+            return None;
+        }
+        let manifest = node.attachment_manifest.as_ref()?;
+        Some(AuthorizedAttachmentManifest {
+            event_id: *event_id,
+            manifest: manifest.clone(),
+        })
+    }
     /// Returns a candidate Space mask unless this generation is conflicted.
     /// A returned mask is not an authorization grant until integration gates
     /// described in the module documentation are connected.
@@ -894,10 +971,11 @@ impl SpaceReducer {
         if channel.archived {
             return EventAuthorization::Rejected(RejectReason::UnknownEntity);
         }
-        let action = match parse_application_action(verified_event.kind(), event.plaintext()) {
-            Ok(action) => action,
-            Err(reason) => return EventAuthorization::Rejected(reason),
-        };
+        let (action, attachment_manifest) =
+            match parse_application_action(verified_event.kind(), event.plaintext()) {
+                Ok(parsed) => parsed,
+                Err(reason) => return EventAuthorization::Rejected(reason),
+            };
         if channel.channel_type == ChannelType::Voice {
             return EventAuthorization::Rejected(RejectReason::WrongChannelType);
         }
@@ -912,7 +990,9 @@ impl SpaceReducer {
         {
             return EventAuthorization::Rejected(RejectReason::Unauthorized);
         }
-        if let Err(reason) = self.retain_application_action(metadata.event_id, action) {
+        if let Err(reason) =
+            self.retain_application_action(metadata.event_id, action, attachment_manifest)
+        {
             return EventAuthorization::Rejected(reason);
         }
         EventAuthorization::Authorized {
@@ -924,6 +1004,7 @@ impl SpaceReducer {
         &mut self,
         event_id: EventReference,
         action: ApplicationAction,
+        attachment_manifest: Option<AttachmentManifest>,
     ) -> Result<(), RejectReason> {
         let reaction_tag = match &action {
             ApplicationAction::Reaction {
@@ -937,20 +1018,34 @@ impl SpaceReducer {
             }),
             _ => None,
         };
+        let current_node = self.graph.get(&event_id);
         if reaction_tag.as_ref().is_some_and(|reaction_tag| {
-            self.graph
-                .get(&event_id)
+            current_node
                 .and_then(|node| node.reaction_tag.as_ref())
                 .is_some_and(|existing| existing != reaction_tag)
         }) {
             return Err(RejectReason::GraphConflict);
         }
-        let current_action = self
-            .graph
-            .get(&event_id)
-            .and_then(|node| node.application_action.as_ref());
+        if attachment_manifest.is_some() != matches!(&action, ApplicationAction::FileManifest) {
+            return Err(RejectReason::GraphConflict);
+        }
+        if current_node
+            .and_then(|node| node.attachment_manifest.as_ref())
+            .is_some_and(|existing| Some(existing) != attachment_manifest.as_ref())
+        {
+            return Err(RejectReason::GraphConflict);
+        }
+        let current_action = current_node.and_then(|node| node.application_action.as_ref());
+        if current_action.is_some_and(|existing| existing != &action) {
+            return Err(RejectReason::GraphConflict);
+        }
+        let manifest_bytes = attachment_manifest.as_ref().map_or(0, |manifest| {
+            manifest.filename.len()
+                + manifest.mime_type.as_ref().map_or(0, String::len)
+                + manifest.chunk_hashes.len() * std::mem::size_of::<[u8; 32]>()
+        });
         let additional_history_bytes = if current_action.is_none() {
-            action.retained_bytes()
+            action.retained_bytes() + manifest_bytes
         } else {
             0
         };
@@ -965,15 +1060,11 @@ impl SpaceReducer {
             .graph
             .get_mut(&event_id)
             .ok_or(RejectReason::GraphConflict)?;
-        if node
-            .application_action
-            .as_ref()
-            .is_some_and(|existing| existing != &action)
-        {
-            return Err(RejectReason::GraphConflict);
-        }
         node.application_authorized = true;
         node.application_action = Some(action);
+        if attachment_manifest.is_some() {
+            node.attachment_manifest = attachment_manifest;
+        }
         if reaction_tag.is_some() {
             node.reaction_tag = reaction_tag;
         }
@@ -1055,6 +1146,7 @@ impl SpaceReducer {
             mls_bound,
             application_authorized: false,
             application_action: None,
+            attachment_manifest: None,
             reaction_tag: None,
         };
         if let Some(previous) = self.graph.get(&id) {
@@ -1583,6 +1675,7 @@ struct GraphNode {
     mls_bound: bool,
     application_authorized: bool,
     application_action: Option<ApplicationAction>,
+    attachment_manifest: Option<AttachmentManifest>,
     reaction_tag: Option<ReactionTag>,
 }
 
@@ -2381,15 +2474,16 @@ fn parse_channel_order(payload: &Value) -> Result<Operation, RejectReason> {
 fn parse_application_action(
     kind: EventKind,
     plaintext: &[u8],
-) -> Result<ApplicationAction, RejectReason> {
+) -> Result<(ApplicationAction, Option<AttachmentManifest>), RejectReason> {
     let payload = decode_canonical(plaintext).map_err(|_| RejectReason::InvalidCanonicalPayload)?;
     match kind {
-        EventKind::Message => parse_message_action(&payload),
-        EventKind::Edit => parse_edit_action(&payload),
-        EventKind::Tombstone => parse_tombstone_action(&payload),
-        EventKind::Reaction => parse_reaction_action(&payload),
-        EventKind::Pin => parse_pin_action(&payload),
-        EventKind::FileManifest => parse_file_manifest_action(&payload),
+        EventKind::Message => parse_message_action(&payload).map(|action| (action, None)),
+        EventKind::Edit => parse_edit_action(&payload).map(|action| (action, None)),
+        EventKind::Tombstone => parse_tombstone_action(&payload).map(|action| (action, None)),
+        EventKind::Reaction => parse_reaction_action(&payload).map(|action| (action, None)),
+        EventKind::Pin => parse_pin_action(&payload).map(|action| (action, None)),
+        EventKind::FileManifest => parse_file_manifest_action(&payload)
+            .map(|manifest| (ApplicationAction::FileManifest, Some(manifest))),
         EventKind::VoiceSignal => Err(RejectReason::UnsupportedAction),
         EventKind::Membership | EventKind::MlsControl => Err(RejectReason::WrongEventKind),
     }
@@ -2513,7 +2607,8 @@ fn parse_pin_action(payload: &Value) -> Result<ApplicationAction, RejectReason> 
         tag,
     })
 }
-fn parse_file_manifest_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+
+fn parse_file_manifest_action(payload: &Value) -> Result<AttachmentManifest, RejectReason> {
     let fields = exact_map(payload, &[0, 1, 2, 3, 4, 5])?;
     if unsigned(fields[0])? != 1 {
         return Err(RejectReason::InvalidSchema);
@@ -2541,16 +2636,17 @@ fn parse_file_manifest_action(payload: &Value) -> Result<ApplicationAction, Reje
         .iter()
         .map(fixed_bytes::<32>)
         .collect::<Result<Vec<_>, _>>()?;
-    AttachmentManifest {
+    let manifest = AttachmentManifest {
         filename: filename.clone(),
         mime_type,
         file_size,
         file_hash,
         chunk_hashes,
-    }
-    .validate()
-    .map_err(|_| RejectReason::InvalidValue)?;
-    Ok(ApplicationAction::FileManifest)
+    };
+    manifest
+        .validate()
+        .map_err(|_| RejectReason::InvalidValue)?;
+    Ok(manifest)
 }
 
 fn application_permissions(
@@ -3977,13 +4073,33 @@ mod tests {
                 (5, Value::Array(vec![Value::Bytes(vec![0; 32])])),
             ]),
         );
+        let manifest_id = *file_manifest.event().event_id().as_bytes();
+        assert!(
+            reducer
+                .authorized_attachment_manifest(&manifest_id)
+                .is_none()
+        );
         assert_eq!(
             reducer.authorize_application_event(&file_manifest),
             EventAuthorization::Authorized {
                 required_permissions: MESSAGE_SEND | MESSAGE_ATTACH
             }
         );
-        let manifest_id = *file_manifest.event().event_id().as_bytes();
+        let authorized_manifest = reducer
+            .authorized_attachment_manifest(&manifest_id)
+            .expect("only the authorized event yields a receiver capability");
+        assert_eq!(authorized_manifest.event_id(), &manifest_id);
+        let _transfer_id = authorized_manifest.transfer_id().unwrap();
+        let mut receiver = authorized_manifest.new_receiver(1).unwrap();
+        assert!(matches!(
+            receiver.verified_bytes(),
+            Err(lattice_files::AttachmentError::TransferNotAccepted)
+        ));
+        receiver.accept().unwrap();
+        assert!(matches!(
+            receiver.verified_bytes(),
+            Err(lattice_files::AttachmentError::TransferIncomplete)
+        ));
         let message = make_application_event(
             &identity,
             space,
