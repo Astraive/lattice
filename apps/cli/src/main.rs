@@ -22,7 +22,8 @@ use std::{
 use clap::{Parser, Subcommand};
 use directories::BaseDirs;
 use lattice_core::{
-    Client, CoreError, DeviceIdentityInfo, InitialChannel, SpaceGenesisCursor, space::ChannelType,
+    Client, CoreError, DeviceIdentityInfo, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
+    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, SpaceGenesisCursor, space::ChannelType,
 };
 use lattice_mls::api::DeviceCredentialInput;
 use lattice_platform::{OsKeyringProtectionError, OsKeyringProtector};
@@ -57,7 +58,7 @@ enum Command {
         #[command(subcommand)]
         command: IdentityCommand,
     },
-    /// Create, list, restore, or recover local Space generations.
+    /// Create, import, list, restore, or recover local Space generations.
     Space {
         #[command(subcommand)]
         command: SpaceCommand,
@@ -88,6 +89,7 @@ enum SpaceCommandInput {
     None,
     Restore(SpaceRestoreInput),
     Recover(SpaceRestoreInput),
+    Join([u8; 32]),
     Message(SpaceMessageInput),
     Edit(SpaceEditInput),
     History(SpaceHistoryInput),
@@ -192,6 +194,9 @@ fn error_code(error: &(dyn Error + 'static)) -> &'static str {
             CoreError::Storage(_) => "STORAGE_ERROR",
             CoreError::Identity(_) => "IDENTITY_ERROR",
             CoreError::Mls(_) => "MLS_ERROR",
+            CoreError::SpaceCredentialInvalid => "SPACE_CREDENTIAL_INVALID",
+            CoreError::SpaceWelcomeBootstrapInvalid => "SPACE_WELCOME_PACKAGE_INVALID",
+            CoreError::SpaceWelcomeBootstrapUntrustedInviter => "SPACE_INVITER_NOT_PINNED",
             CoreError::SpaceGenesisRejected(_) => "SPACE_REJECTED",
             CoreError::SpaceGenesisSnapshotNotFound => "SPACE_SNAPSHOT_NOT_FOUND",
             _ => "CORE_ERROR",
@@ -246,6 +251,7 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     validate_command_inputs(&cli.command)?;
     let space_input = parse_space_command_input(&cli.command)?;
     let space_credential = read_space_credential(&cli.command)?;
+    let space_package = read_space_package(&cli.command)?;
     let data_dir = match cli.data_dir {
         Some(path) => path,
         None => default_data_directory()?,
@@ -277,6 +283,7 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 &protector,
                 json,
                 space_credential,
+                space_package,
                 space_input,
             )
         }
@@ -469,6 +476,16 @@ fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, Cli
         } => parse_space_history_input(command)?
             .map(SpaceCommandInput::History)
             .ok_or_else(|| CliError::invalid_input("history identifiers were not parsed")),
+        Command::Space {
+            command:
+                SpaceCommand::Join {
+                    inviter_fingerprint,
+                    ..
+                },
+        } => Ok(SpaceCommandInput::Join(
+            parse_fixed_hex::<32>(inviter_fingerprint, "inviter fingerprint")
+                .map_err(CliError::invalid_input)?,
+        )),
         _ => Ok(SpaceCommandInput::None),
     }
 }
@@ -478,12 +495,33 @@ fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn E
             SpaceCommand::Create { credential, .. }
             | SpaceCommand::Recover { credential, .. }
             | SpaceCommand::Message { credential, .. }
-            | SpaceCommand::Edit { credential, .. },
+            | SpaceCommand::Edit { credential, .. }
+            | SpaceCommand::Join { credential, .. },
     } = command
     else {
         return Ok(None);
     };
     Ok(Some(read_credential_vector(credential)?))
+}
+
+fn read_space_package(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    let Command::Space {
+        command: SpaceCommand::Join { package, .. },
+    } = command
+    else {
+        return Ok(None);
+    };
+    let mut file = std::fs::File::open(package)?;
+    let mut bytes = Vec::with_capacity(MAX_SPACE_WELCOME_BOOTSTRAP_BYTES.min(4096));
+    Read::take(&mut file, (MAX_SPACE_WELCOME_BOOTSTRAP_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
+        return Err(CliError::invalid_input(format!(
+            "Welcome bootstrap package must contain 1 to {MAX_SPACE_WELCOME_BOOTSTRAP_BYTES} bytes"
+        ))
+        .into());
+    }
+    Ok(Some(bytes))
 }
 
 fn open_profile(data_dir: &Path) -> Result<(PathBuf, OsKeyringProtector), Box<dyn Error>> {
@@ -596,6 +634,7 @@ fn execute_space(
     protector: &OsKeyringProtector,
     json: bool,
     credential_bytes: Option<Vec<u8>>,
+    package_bytes: Option<Vec<u8>>,
     input: SpaceCommandInput,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
@@ -604,6 +643,16 @@ fn execute_space(
                 .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
             execute_space_create(credential_bytes, channels, database_path, protector, json)?;
         }
+        SpaceCommand::Join { .. } => {
+            execute_space_join(
+                credential_bytes,
+                package_bytes,
+                input,
+                database_path,
+                protector,
+                json,
+            )?;
+        }
         SpaceCommand::Restore { .. } => {
             execute_space_restore(input, database_path, protector, json)?;
         }
@@ -611,22 +660,7 @@ fn execute_space(
             execute_space_recovery(credential_bytes, input, database_path, protector, json)?;
         }
         SpaceCommand::List { after } => {
-            let after = after
-                .as_deref()
-                .map(parse_space_cursor)
-                .transpose()
-                .map_err(|error| {
-                    CliError::invalid_input(format!("invalid --after cursor: {error}"))
-                })?;
-            let mut client = match Client::open_existing(database_path, protector) {
-                Ok(client) => client,
-                Err(CoreError::MissingIdentity) => {
-                    return Err(CliError::missing_identity().into());
-                }
-                Err(error) => return Err(Box::new(error)),
-            };
-            let page = client.restore_space_page(after)?;
-            print_space_page(&page, json);
+            execute_space_list(after.as_deref(), database_path, protector, json)?;
         }
         SpaceCommand::Message { text, .. } => {
             let credential_bytes = credential_bytes
@@ -689,6 +723,88 @@ fn execute_space(
                 client.local_text_message_history(&space_id, &group_reference, &channel_id)?;
             print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
         }
+    }
+    Ok(())
+}
+
+fn execute_space_list(
+    after: Option<&str>,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let after = after
+        .map(parse_space_cursor)
+        .transpose()
+        .map_err(|error| CliError::invalid_input(format!("invalid --after cursor: {error}")))?;
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => {
+            return Err(CliError::missing_identity().into());
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let page = client.restore_space_page(after)?;
+    print_space_page(&page, json);
+    Ok(())
+}
+
+fn execute_space_join(
+    credential_bytes: Option<Vec<u8>>,
+    package_bytes: Option<Vec<u8>>,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let credential_bytes = credential_bytes
+        .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+    let package_bytes = package_bytes
+        .ok_or_else(|| CliError::invalid_input("Welcome bootstrap package was not loaded"))?;
+    let SpaceCommandInput::Join(expected_inviter) = input else {
+        return Err(CliError::invalid_input("inviter fingerprint was not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => {
+            return Err(CliError::missing_identity().into());
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let space = client.join_space_from_welcome_bootstrap_from_x509_credential(
+        &package_bytes,
+        expected_inviter,
+        credential_bytes,
+    )?;
+    let space_id = hex(space.space_id());
+    let group_reference = hex(space.group_reference());
+    let root_event_id = hex(space.genesis_event().event_id().as_bytes());
+    let channels = space::channel_summaries(space.reducer());
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_join",
+                "state": "local_welcome_imported",
+                "space_id": space_id,
+                "group_reference": group_reference,
+                "root_event_id": root_event_id,
+                "channels": channels,
+                "local_state_persisted": true,
+                "network_contacted": false,
+                "peer_delivery": false,
+                "general_history_replayed": false,
+            })
+        );
+    } else {
+        println!("Imported a local Space generation from the Welcome package.");
+        println!("Space ID: {space_id}");
+        println!("MLS group reference: {group_reference}");
+        println!("Root event ID: {root_event_id}");
+        println!(
+            "This import persisted local state only; no relay or peer delivery, and no general message history replay."
+        );
     }
     Ok(())
 }
@@ -820,16 +936,11 @@ fn print_queued_event(json: bool, command: &str, label: &str, event_id: &[u8; 32
 
 fn read_credential_vector(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut file = std::fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity(lattice_mls::api::MAX_CREDENTIAL_BYTES.min(4096));
-    Read::take(
-        &mut file,
-        (lattice_mls::api::MAX_CREDENTIAL_BYTES + 1) as u64,
-    )
-    .read_to_end(&mut bytes)?;
-    if bytes.is_empty() || bytes.len() > lattice_mls::api::MAX_CREDENTIAL_BYTES {
+    let mut bytes = Vec::with_capacity(MAX_SPACE_CREDENTIAL_BYTES.min(4096));
+    Read::take(&mut file, (MAX_SPACE_CREDENTIAL_BYTES + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > MAX_SPACE_CREDENTIAL_BYTES {
         return Err(CliError::invalid_input(format!(
-            "credential vector must contain 1 to {} bytes",
-            lattice_mls::api::MAX_CREDENTIAL_BYTES
+            "credential vector must contain 1 to {MAX_SPACE_CREDENTIAL_BYTES} bytes"
         ))
         .into());
     }
@@ -973,6 +1084,7 @@ fn print_about(json: bool) {
                     "local_space_genesis_creation",
                     "local_space_genesis_listing_and_restoration",
                     "local_space_one_member_recovery",
+                    "local_pinned_welcome_bootstrap_import",
                     "local_text_message_queue_and_edit",
                     "local_outgoing_message_history",
                     "local_outbox_state_inspection",
@@ -981,7 +1093,7 @@ fn print_about(json: bool) {
                     "local_profile_diagnostics"
                 ],
                 "unavailable": [
-                    "authenticated_space_join_or_leave",
+                    "complete_space_invite_leave_and_membership_lifecycle",
                     "certificate_issuance_or_import",
                     "network_message_forwarding_or_delivery",
                     "peer_synchronization",
@@ -992,10 +1104,10 @@ fn print_about(json: bool) {
     } else {
         println!("Lattice local-first communication");
         println!(
-            "Available: protected device identity, CSR export and local identity pins; local Space Genesis create/list/restore and one-member recovery; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
+            "Available: protected device identity, CSR export and local identity pins; local Space Genesis create/list/restore, pinned-inviter Welcome bootstrap import, and one-member recovery; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
         );
         println!(
-            "Not available: authenticated Space join/leave, certificate issuance/import, peer synchronization, message forwarding/delivery, or voice media."
+            "Not available: full Space invite/leave and ongoing membership lifecycle, certificate issuance/import, peer synchronization, message forwarding/delivery, or voice media."
         );
         println!("A local queue state is not evidence of relay forwarding or recipient delivery.");
     }

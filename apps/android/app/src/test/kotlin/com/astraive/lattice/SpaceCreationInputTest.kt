@@ -20,6 +20,20 @@ class SpaceCreationInputTest {
     }
 
     @Test
+    fun boundsWelcomeBootstrapBase64ToOneMebibyteAndStandardAlphabet() {
+        assertFalse(isSpaceWelcomeBootstrapBase64Input(""))
+        assertTrue(isSpaceWelcomeBootstrapBase64Input("AQID"))
+        assertFalse(isSpaceWelcomeBootstrapBase64Input("AQ=I"))
+        assertFalse(isSpaceWelcomeBootstrapBase64Input("AQID\n"))
+
+        val exactMaximum =
+            "A".repeat(MAX_SPACE_WELCOME_BOOTSTRAP_BASE64_CHARS - 2) + "=="
+        val overMaximum = "A".repeat(MAX_SPACE_WELCOME_BOOTSTRAP_BASE64_CHARS - 1) + "="
+        assertTrue(isSpaceWelcomeBootstrapBase64Input(exactMaximum))
+        assertFalse(isSpaceWelcomeBootstrapBase64Input(overMaximum))
+    }
+
+    @Test
     fun validatesChannelNamesByUtf8BytesAndRejectsNul() {
         assertTrue(isValidInitialChannelName("g".repeat(128)))
         assertFalse(isValidInitialChannelName("g".repeat(129)))

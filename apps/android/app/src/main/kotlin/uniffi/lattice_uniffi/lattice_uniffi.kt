@@ -772,6 +772,8 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -792,6 +794,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
 ): Short
@@ -876,6 +880,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(`pt
 fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`channels`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(`ptr`: Pointer,`bootstrapPackage`: RustBuffer.ByValue,`expectedInviterFingerprint`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointer,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1036,6 +1042,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap() != 17509.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces() != 30649.toShort()) {
@@ -1506,6 +1515,23 @@ public interface MobileClientInterface {
     fun `identityInfo`(): MobileIdentityInfo
     
     /**
+     * Joins one validated MLS Welcome using a signed policy checkpoint from
+     * an explicitly pinned inviter.
+     *
+     * The result restores the signed checkpoint and exact Welcome generation;
+     * it does not claim that relays or other recipients received the package.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceBootstrap` for empty or oversized package bytes,
+     * `InvalidFingerprint` for a malformed inviter fingerprint,
+     * `InvalidSpaceCredential` for malformed or untrusted X.509 bytes,
+     * `UntrustedSpaceInviter` when the exact inviter bundle is not pinned, and
+     * `SpaceJoinFailed` for other policy, MLS, or storage failures.
+     */
+    fun `joinSpaceFromWelcomeBootstrap`(`bootstrapPackage`: kotlin.ByteArray, `expectedInviterFingerprint`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace
+
+    /**
      * Restores one bounded page of local Genesis snapshots.
      *
      * This lists locally created candidate generations only. It does not
@@ -1773,6 +1799,34 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
 
     
+    /**
+     * Joins one validated MLS Welcome using a signed policy checkpoint from
+     * an explicitly pinned inviter.
+     *
+     * The result restores the signed checkpoint and exact Welcome generation;
+     * it does not claim that relays or other recipients received the package.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceBootstrap` for empty or oversized package bytes,
+     * `InvalidFingerprint` for a malformed inviter fingerprint,
+     * `InvalidSpaceCredential` for malformed or untrusted X.509 bytes,
+     * `UntrustedSpaceInviter` when the exact inviter bundle is not pinned, and
+     * `SpaceJoinFailed` for other policy, MLS, or storage failures.
+     */
+    @Throws(MobileException::class)override fun `joinSpaceFromWelcomeBootstrap`(`bootstrapPackage`: kotlin.ByteArray, `expectedInviterFingerprint`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace {
+            return FfiConverterTypeMobileCreatedSpace.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(
+        it, FfiConverterByteArray.lower(`bootstrapPackage`),FfiConverterByteArray.lower(`expectedInviterFingerprint`),FfiConverterByteArray.lower(`credentialVector`),_status)
+}
+    }
+    )
+    }
+
+
+
     /**
      * Restores one bounded page of local Genesis snapshots.
      *
@@ -3027,6 +3081,33 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
+     * Bootstrap package bytes are empty, oversized, or invalid.
+     */
+    class InvalidSpaceBootstrap(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+
+    /**
+     * The Welcome inviter's complete identity bundle is not pinned.
+     */
+    class UntrustedSpaceInviter(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+
+    /**
+     * A validated Welcome could not be imported into the local profile.
+     */
+    class SpaceJoinFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+
+    /**
      * A supplied Space, group, or channel identifier has the wrong byte length.
      */
     class InvalidSpaceMessageId(
@@ -3101,11 +3182,14 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             12 -> MobileException.InvalidSpaceInput()
             13 -> MobileException.SpaceCreationFailed()
             14 -> MobileException.SpaceRecoveryFailed()
-            15 -> MobileException.InvalidSpaceMessageId()
-            16 -> MobileException.InvalidMessageInput()
-            17 -> MobileException.MessageRejected()
-            18 -> MobileException.MessageQueueFailed()
-            19 -> MobileException.MessageHistoryUnavailable()
+            15 -> MobileException.InvalidSpaceBootstrap()
+            16 -> MobileException.UntrustedSpaceInviter()
+            17 -> MobileException.SpaceJoinFailed()
+            18 -> MobileException.InvalidSpaceMessageId()
+            19 -> MobileException.InvalidMessageInput()
+            20 -> MobileException.MessageRejected()
+            21 -> MobileException.MessageQueueFailed()
+            22 -> MobileException.MessageHistoryUnavailable()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -3165,6 +3249,18 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.SpaceRecoveryFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidSpaceBootstrap -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.UntrustedSpaceInviter -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.SpaceJoinFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -3249,24 +3345,36 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(14)
                 Unit
             }
-            is MobileException.InvalidSpaceMessageId -> {
+            is MobileException.InvalidSpaceBootstrap -> {
                 buf.putInt(15)
                 Unit
             }
-            is MobileException.InvalidMessageInput -> {
+            is MobileException.UntrustedSpaceInviter -> {
                 buf.putInt(16)
                 Unit
             }
-            is MobileException.MessageRejected -> {
+            is MobileException.SpaceJoinFailed -> {
                 buf.putInt(17)
                 Unit
             }
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.InvalidSpaceMessageId -> {
                 buf.putInt(18)
                 Unit
             }
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.InvalidMessageInput -> {
                 buf.putInt(19)
+                Unit
+            }
+            is MobileException.MessageRejected -> {
+                buf.putInt(20)
+                Unit
+            }
+            is MobileException.MessageQueueFailed -> {
+                buf.putInt(21)
+                Unit
+            }
+            is MobileException.MessageHistoryUnavailable -> {
+                buf.putInt(22)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

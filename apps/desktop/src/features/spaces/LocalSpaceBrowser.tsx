@@ -43,6 +43,17 @@ type LocalTextMessage = {
   outboxState: "queued" | "forwarded" | "delivered" | "failed" | null;
 };
 
+type LocalSpaceImport = {
+  state: "local_welcome_checkpoint_imported";
+  spaceId: string;
+  groupReference: string;
+  localCheckpointImported: true;
+  networkContacted: false;
+};
+
+const MAX_BOOTSTRAP_HEX_LENGTH = 1024 * 1024 * 2;
+const INVITER_FINGERPRINT_HEX_LENGTH = 32 * 2;
+
 function localOutboxLabel(state: LocalTextMessage["outboxState"]): string {
   if (state === "queued") return "queued locally · no network delivery";
   if (state === null) return "retained locally · no outbox status";
@@ -312,6 +323,12 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
   const [spaceError, setSpaceError] = useState<string | null>(null);
   const [spacesBusy, setSpacesBusy] = useState(false);
   const [spacesLoaded, setSpacesLoaded] = useState(false);
+  const [packageHex, setPackageHex] = useState("");
+  const [inviterFingerprintHex, setInviterFingerprintHex] = useState("");
+  const [credentialVectorHex, setCredentialVectorHex] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [imported, setImported] = useState<LocalSpaceImport | null>(null);
 
   async function runSpacesCommand(after: string | null = null) {
     setSpacesBusy(true);
@@ -328,20 +345,58 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
     }
   }
 
+  async function importWelcomeBootstrap(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      packageHex.length === 0 ||
+      packageHex.length > MAX_BOOTSTRAP_HEX_LENGTH ||
+      packageHex.length % 2 !== 0 ||
+      !/^[\da-f]+$/i.test(packageHex) ||
+      inviterFingerprintHex.length !== INVITER_FINGERPRINT_HEX_LENGTH ||
+      !/^[\da-f]+$/i.test(inviterFingerprintHex) ||
+      credentialVectorHex.length === 0 ||
+      credentialVectorHex.length > MAX_CREDENTIAL_HEX_LENGTH ||
+      credentialVectorHex.length % 2 !== 0 ||
+      !/^[\da-f]+$/i.test(credentialVectorHex)
+    ) {
+      return;
+    }
+    setImportBusy(true);
+    setImportError(null);
+    setImported(null);
+    try {
+      const result = await invoke<LocalSpaceImport>("import_local_space_welcome_bootstrap", {
+        packageHex,
+        expectedInviterFingerprintHex: inviterFingerprintHex,
+        credentialVectorHex,
+      });
+      setImported(result);
+      await runSpacesCommand(null);
+    } catch (cause) {
+      setImportError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   return (
-    <section className="space-browser" aria-labelledby="spaces-title" aria-busy={spacesBusy}>
+    <section
+      className="space-browser"
+      aria-labelledby="spaces-title"
+      aria-busy={spacesBusy || importBusy}
+    >
       <div className="space-browser-heading">
         <div>
           <h3 id="spaces-title">Local Space snapshots</h3>
           <p>
-            Integrity-checked local Genesis snapshots only. A snapshot is not proof of current Space
-            membership.
+            Locally integrity-checked Genesis snapshots and imported signed policy checkpoints. A
+            snapshot is not proof of current Space membership.
           </p>
         </div>
         {runtimeAvailable && (
           <button
             type="button"
-            disabled={spacesBusy}
+            disabled={spacesBusy || importBusy}
             onClick={() => void runSpacesCommand(spacesLoaded ? spaceCursor : null)}
           >
             {spacesBusy
@@ -354,6 +409,96 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
           </button>
         )}
       </div>
+      {runtimeAvailable && (
+        <form
+          className="identity-pin-fields"
+          onSubmit={(event) => void importWelcomeBootstrap(event)}
+        >
+          <h4>Import a pinned-inviter Welcome bootstrap</h4>
+          <p>
+            Imports a signed local policy checkpoint and validated MLS Welcome into this protected
+            profile. It does not prove package delivery or independently replay historical events.
+            No relay or network is contacted.
+          </p>
+          <label htmlFor="space-welcome-package">Versioned Welcome bootstrap package (hex)</label>
+          <textarea
+            id="space-welcome-package"
+            autoComplete="off"
+            maxLength={MAX_BOOTSTRAP_HEX_LENGTH}
+            disabled={importBusy}
+            value={packageHex}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              if (value.length <= MAX_BOOTSTRAP_HEX_LENGTH) setPackageHex(value);
+              setImported(null);
+              setImportError(null);
+            }}
+            spellCheck={false}
+            aria-describedby="space-welcome-package-help"
+          />
+          <p id="space-welcome-package-help">Maximum package size: 1 MiB before hex encoding.</p>
+          <label htmlFor="space-welcome-inviter">Pinned inviter's full fingerprint (hex)</label>
+          <input
+            id="space-welcome-inviter"
+            autoComplete="off"
+            maxLength={INVITER_FINGERPRINT_HEX_LENGTH}
+            disabled={importBusy}
+            value={inviterFingerprintHex}
+            onChange={(event) => {
+              setInviterFingerprintHex(event.currentTarget.value);
+              setImported(null);
+              setImportError(null);
+            }}
+            spellCheck={false}
+          />
+          <label htmlFor="space-welcome-credential">X.509 credential vector content (hex)</label>
+          <textarea
+            id="space-welcome-credential"
+            autoComplete="off"
+            maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+            disabled={importBusy}
+            value={credentialVectorHex}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              if (value.length <= MAX_CREDENTIAL_HEX_LENGTH) setCredentialVectorHex(value);
+              setImported(null);
+              setImportError(null);
+            }}
+            spellCheck={false}
+          />
+          <p>Maximum credential size: 16 KiB before hex encoding.</p>
+          <button
+            type="submit"
+            disabled={
+              importBusy ||
+              packageHex.length === 0 ||
+              packageHex.length > MAX_BOOTSTRAP_HEX_LENGTH ||
+              packageHex.length % 2 !== 0 ||
+              !/^[\da-f]+$/i.test(packageHex) ||
+              inviterFingerprintHex.length !== INVITER_FINGERPRINT_HEX_LENGTH ||
+              !/^[\da-f]+$/i.test(inviterFingerprintHex) ||
+              credentialVectorHex.length === 0 ||
+              credentialVectorHex.length > MAX_CREDENTIAL_HEX_LENGTH ||
+              credentialVectorHex.length % 2 !== 0 ||
+              !/^[\da-f]+$/i.test(credentialVectorHex)
+            }
+          >
+            {importBusy ? "Importing locally…" : "Import Welcome bootstrap"}
+          </button>
+        </form>
+      )}
+      {importBusy && (
+        <p role="status">
+          Validating the pinned inviter, credential, Welcome, and signed checkpoint…
+        </p>
+      )}
+      {importError && <p role="alert">Could not import the Welcome bootstrap: {importError}</p>}
+      {imported && (
+        <p role="status">
+          Signed policy checkpoint and Welcome imported locally for Space {imported.spaceId}. No
+          network was contacted; delivery and independent historical replay are not established.
+        </p>
+      )}
       {!runtimeAvailable && <p>Open the desktop app to inspect its protected local Space store.</p>}
       {spacesBusy && <p role="status">Checking local Space snapshots…</p>}
       {spaceError && (

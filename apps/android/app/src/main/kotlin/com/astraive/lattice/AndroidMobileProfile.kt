@@ -47,6 +47,16 @@ internal class AndroidMobileProfile private constructor(
         channels: List<MobileInitialChannel>,
     ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels)
 
+    fun joinSpaceFromWelcomeBootstrap(
+        bootstrapPackage: ByteArray,
+        expectedInviterFingerprint: ByteArray,
+        credentialVector: ByteArray,
+    ): MobileCreatedSpace = client.joinSpaceFromWelcomeBootstrap(
+        bootstrapPackage,
+        expectedInviterFingerprint,
+        credentialVector,
+    )
+
     fun recoverLocalSpaceGeneration(
         spaceId: ByteArray,
         groupReference: ByteArray,

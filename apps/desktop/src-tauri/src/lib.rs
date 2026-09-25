@@ -18,6 +18,7 @@ pub fn run() {
             spaces::list_local_spaces,
             spaces::recover_local_space_generation,
             spaces::create_local_space,
+            spaces::import_local_space_welcome_bootstrap,
             spaces::queue_local_text_message,
             spaces::queue_local_text_message_edit,
             spaces::list_local_text_messages,

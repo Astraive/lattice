@@ -15,6 +15,22 @@ pub(super) enum SpaceCommand {
         #[arg(long = "channel", required = true)]
         channels: Vec<String>,
     },
+    /// Import a versioned Welcome bootstrap package into the local protected profile.
+    ///
+    /// The inviter fingerprint must already be pinned locally. Import validates
+    /// the package and persists local MLS/policy state only; it does not contact
+    /// relays, deliver to peers, or replay general message history.
+    Join {
+        /// Path to the raw versioned Welcome bootstrap package bytes.
+        #[arg(long)]
+        package: PathBuf,
+        /// Pinned inviter fingerprint as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        inviter_fingerprint: String,
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+    },
     /// Restore one locally persisted Space Genesis snapshot by its identifiers.
     ///
     /// Restoration verifies the local signed Genesis and protected MLS snapshot;

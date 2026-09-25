@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lattice_core::{
-    Client, CoreError, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES, OutboxState, SpaceGenesisCursor,
+    Client, CoreError, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
+    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState, SpaceGenesisCursor,
     space::{Channel, ChannelType, MAX_SPACE_PAYLOAD_BYTES},
 };
 use lattice_identity::{IdentityError, PrivateKeyProtectionError, PrivateKeyProtector};
@@ -213,6 +214,58 @@ impl MobileClient {
                     .policy()
                     .into_iter()
                     .flat_map(|p| &p.channels),
+            ),
+        })
+    }
+    /// Joins one validated MLS Welcome using a signed policy checkpoint from
+    /// an explicitly pinned inviter.
+    ///
+    /// The result restores the signed checkpoint and exact Welcome generation;
+    /// it does not claim that relays or other recipients received the package.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceBootstrap` for empty or oversized package bytes,
+    /// `InvalidFingerprint` for a malformed inviter fingerprint,
+    /// `InvalidSpaceCredential` for malformed or untrusted X.509 bytes,
+    /// `UntrustedSpaceInviter` when the exact inviter bundle is not pinned, and
+    /// `SpaceJoinFailed` for other policy, MLS, or storage failures.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn join_space_from_welcome_bootstrap(
+        &self,
+        bootstrap_package: Vec<u8>,
+        expected_inviter_fingerprint: Vec<u8>,
+        credential_vector: Vec<u8>,
+    ) -> Result<MobileCreatedSpace, MobileError> {
+        if bootstrap_package.is_empty()
+            || bootstrap_package.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES
+        {
+            return Err(MobileError::InvalidSpaceBootstrap);
+        }
+        let expected_inviter_fingerprint: [u8; 32] = expected_inviter_fingerprint
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let created = self
+            .lock_client()?
+            .join_space_from_welcome_bootstrap_from_x509_credential(
+                &bootstrap_package,
+                expected_inviter_fingerprint,
+                credential_vector,
+            )
+            .map_err(|error| map_welcome_join_error(&error))?;
+        Ok(MobileCreatedSpace {
+            space_id: created.space_id().to_vec(),
+            group_reference: created.group_reference().to_vec(),
+            genesis_event_id: created.genesis_event().event_id().as_bytes().to_vec(),
+            channels: channel_summaries(
+                created
+                    .reducer()
+                    .policy()
+                    .into_iter()
+                    .flat_map(|policy| &policy.channels),
             ),
         })
     }
@@ -500,6 +553,14 @@ fn map_recovery_space_error(error: &CoreError) -> MobileError {
     match error {
         CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
         _ => MobileError::SpaceRecoveryFailed,
+    }
+}
+fn map_welcome_join_error(error: &CoreError) -> MobileError {
+    match error {
+        CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
+        CoreError::SpaceWelcomeBootstrapInvalid => MobileError::InvalidSpaceBootstrap,
+        CoreError::SpaceWelcomeBootstrapUntrustedInviter => MobileError::UntrustedSpaceInviter,
+        _ => MobileError::SpaceJoinFailed,
     }
 }
 

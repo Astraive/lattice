@@ -1,5 +1,6 @@
 use lattice_core::{
-    Client, CoreError, CreatedSpace, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES, OutboxState,
+    Client, CoreError, CreatedSpace, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
+    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
     space::{Channel, ChannelType},
 };
 use serde::Serialize;
@@ -141,6 +142,80 @@ pub(crate) fn create_local_space(
         channels: project_channels(&created)?,
         local_snapshot_persisted: true,
         membership_claimed: false,
+        network_contacted: false,
+    })
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalSpaceImport {
+    state: &'static str,
+    space_id: String,
+    group_reference: String,
+    channels: Vec<LocalChannelSummary>,
+    local_checkpoint_imported: bool,
+    network_contacted: bool,
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn import_local_space_welcome_bootstrap(
+    package_hex: String,
+    expected_inviter_fingerprint_hex: String,
+    credential_vector_hex: String,
+) -> Result<LocalSpaceImport, String> {
+    if package_hex.is_empty() || package_hex.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES * 2 {
+        return Err(
+            "invalid Welcome bootstrap package: hex input must encode 1 byte to 1 MiB".to_owned(),
+        );
+    }
+    if credential_vector_hex.is_empty()
+        || credential_vector_hex.len() > MAX_SPACE_CREDENTIAL_BYTES * 2
+    {
+        return Err("invalid X.509 credential: hex input must encode 1 byte to 16 KiB".to_owned());
+    }
+    let package = encoding::parse_hex_bytes(
+        &package_hex,
+        "Welcome bootstrap package",
+        MAX_SPACE_WELCOME_BOOTSTRAP_BYTES,
+    )
+    .map_err(|error| format!("invalid Welcome bootstrap package: {error}"))?;
+    let credential = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )
+    .map_err(|error| format!("invalid X.509 credential: {error}"))?;
+    let expected_inviter = encoding::parse_fixed_hex::<32>(
+        &expected_inviter_fingerprint_hex,
+        "expected inviter fingerprint",
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let imported = client
+        .join_space_from_welcome_bootstrap_from_x509_credential(
+            &package,
+            expected_inviter,
+            credential,
+        )
+        .map_err(|error| match error {
+            CoreError::SpaceWelcomeBootstrapInvalid => {
+                "invalid Welcome bootstrap package".to_owned()
+            }
+            CoreError::SpaceCredentialInvalid => "invalid X.509 credential".to_owned(),
+            CoreError::SpaceWelcomeBootstrapUntrustedInviter => {
+                "expected inviter fingerprint is not pinned or does not match the package"
+                    .to_owned()
+            }
+            other => other.to_string(),
+        })?;
+    Ok(LocalSpaceImport {
+        state: "local_welcome_checkpoint_imported",
+        space_id: encoding::hex(imported.space_id()),
+        group_reference: encoding::hex(imported.group_reference()),
+        channels: project_channels(&imported)?,
+        local_checkpoint_imported: true,
         network_contacted: false,
     })
 }

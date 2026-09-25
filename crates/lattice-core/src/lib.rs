@@ -8,8 +8,8 @@
 //! Accepted local membership transitions replay their protected policy
 //! history; sibling-Commit conflicts are durably recorded and revalidated on
 //! restore. Authorized owners can create and restore a fresh root from retained
-//! common policy; adding members through new Welcome flows and general reducer
-//! projection replay remain incomplete.
+//! common policy; pinned Welcome imports restore their signed checkpoint and
+//! locally authenticated membership-transition history.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -38,7 +38,7 @@ use zeroize::Zeroizing;
 mod bootstrap_snapshot;
 mod identity_pin;
 mod space_bootstrap;
-pub use space_bootstrap::SpaceWelcomeBootstrapV1;
+pub use space_bootstrap::{MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, SpaceWelcomeBootstrapV1};
 pub mod space;
 /// Stable name of this local orchestration facade.
 pub const CRATE_NAME: &str = "lattice-core";
@@ -4033,6 +4033,14 @@ mod tests {
         .to_bytes()
         .expect("encode bootstrap package");
 
+        assert!(matches!(
+            bob.join_space_from_welcome_bootstrap_from_x509_credential(
+                &package,
+                alice_fingerprint,
+                vec![1],
+            ),
+            Err(CoreError::SpaceCredentialInvalid)
+        ));
         assert!(matches!(
             bob.join_space_from_welcome_bootstrap(&package, alice_fingerprint, &bob_credential),
             Err(CoreError::SpaceWelcomeBootstrapUntrustedInviter)

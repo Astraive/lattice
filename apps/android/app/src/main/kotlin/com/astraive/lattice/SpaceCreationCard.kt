@@ -121,6 +121,122 @@ internal fun LocalSpaceRecoveryCard(
         }
     }
 }
+
+internal const val MAX_SPACE_WELCOME_BOOTSTRAP_BYTES = 1_048_576
+internal const val MAX_SPACE_WELCOME_BOOTSTRAP_BASE64_CHARS = 1_398_104
+
+internal data class SpaceWelcomeJoinUiState(
+    val bootstrapPackageBase64: String = "",
+    val inviterFingerprintHex: String = "",
+    val credentialVectorHex: String = "",
+    val joining: Boolean = false,
+    val status: String = "A pinned inviter's signed Welcome bootstrap is required.",
+    val joined: MobileCreatedSpace? = null,
+)
+
+internal fun isSpaceWelcomeBootstrapBase64Input(value: String): Boolean {
+    if (value.isEmpty() ||
+        value.length > MAX_SPACE_WELCOME_BOOTSTRAP_BASE64_CHARS ||
+        value.length % 4 != 0
+    ) {
+        return false
+    }
+    var padding = 0
+    for (character in value) {
+        when {
+            character in 'A'..'Z' || character in 'a'..'z' ||
+                character in '0'..'9' || character == '+' || character == '/' -> {
+                if (padding != 0) return false
+            }
+            character == '=' -> padding++
+            else -> return false
+        }
+    }
+    return padding <= 2 && (value.length / 4) * 3 - padding <= MAX_SPACE_WELCOME_BOOTSTRAP_BYTES
+}
+
+@Composable
+internal fun SpaceWelcomeJoinCard(
+    state: SpaceWelcomeJoinUiState,
+    profileReady: Boolean,
+    onBootstrapPackageChanged: (String) -> Unit,
+    onInviterFingerprintChanged: (String) -> Unit,
+    onCredentialVectorChanged: (String) -> Unit,
+    onJoin: () -> Unit,
+) {
+    val packageIsBounded = isSpaceWelcomeBootstrapBase64Input(state.bootstrapPackageBase64)
+    val inviterFingerprintIsValid =
+        state.inviterFingerprintHex.length == 64 &&
+            state.inviterFingerprintHex.all { it.digitToIntOrNull(16) != null }
+    val credentialIsValid = isCredentialVectorHex(state.credentialVectorHex)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Join from a pinned Welcome", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Import a signed Welcome package from a peer whose complete identity bundle is already pinned in this profile. The package carries a signed policy checkpoint; it is not independent MLS history replay or a delivery confirmation.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = state.bootstrapPackageBase64,
+                onValueChange = onBootstrapPackageChanged,
+                label = { Text("Welcome bootstrap package (base64)") },
+                supportingText = { Text("Maximum 1 MiB decoded. Paste unwrapped standard Base64.") },
+                enabled = profileReady && !state.joining,
+                isError = state.bootstrapPackageBase64.isNotEmpty() && !packageIsBounded,
+                minLines = 4,
+                maxLines = 8,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.inviterFingerprintHex,
+                onValueChange = onInviterFingerprintChanged,
+                label = { Text("Pinned inviter's full fingerprint (hex)") },
+                enabled = profileReady && !state.joining,
+                isError = state.inviterFingerprintHex.isNotEmpty() && !inviterFingerprintIsValid,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.credentialVectorHex,
+                onValueChange = onCredentialVectorChanged,
+                label = { Text("Trusted X.509 credential vector (hex)") },
+                supportingText = { Text("Up to 16 KiB decoded. Do not paste a PEM-encoded certificate.") },
+                enabled = profileReady && !state.joining,
+                isError = state.credentialVectorHex.isNotEmpty() && !credentialIsValid,
+                minLines = 4,
+                maxLines = 8,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = onJoin,
+                enabled = profileReady && !state.joining && packageIsBounded &&
+                    inviterFingerprintIsValid && credentialIsValid,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.joining) "Validating and joining…" else "Import verified Welcome")
+            }
+            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            state.joined?.let { joined ->
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("The signed checkpoint and Welcome generation were imported locally.")
+                        Text("Space ID: ${joined.spaceId.toLowerHex()}")
+                        Text("Group reference: ${joined.groupReference.toLowerHex()}")
+                        Text("Root event ID: ${joined.genesisEventId.toLowerHex()}")
+                    }
+                }
+            }
+        }
+    }
+}
 internal data class SpaceCreationUiState(
     val credentialVectorHex: String = "",
     val channelName: String = "general",

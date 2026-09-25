@@ -46,6 +46,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.lattice_uniffi.MobileException
+import uniffi.lattice_uniffi.MobileCreatedSpace
 import uniffi.lattice_uniffi.MobileSpaceCursor
 import uniffi.lattice_uniffi.MobileSpaceSummary
 import uniffi.lattice_uniffi.MobileChannelType
@@ -83,6 +84,7 @@ internal data class NearbyScreenState(
     val nextSpaceCursor: MobileSpaceCursor? = null,
     val loadingSpacePage: Boolean = false,
     val spaceCreation: SpaceCreationUiState = SpaceCreationUiState(),
+    val spaceWelcomeJoin: SpaceWelcomeJoinUiState = SpaceWelcomeJoinUiState(),
     val spaceRecovery: LocalSpaceRecoveryUiState = LocalSpaceRecoveryUiState(),
     val identityClipboardStatus: String? = null,
     val messageComposers: Map<String, LocalMessageComposerState> = emptyMap(),
@@ -201,6 +203,10 @@ class MainActivity : ComponentActivity() {
                     onRecoveryCredentialChanged = ::onRecoveryCredentialChanged,
                     onRecoverLocalSpace = ::recoverLocalSpace,
                     onCreateLocalSpace = ::createLocalSpace,
+                    onWelcomeBootstrapBase64Changed = ::onWelcomeBootstrapBase64Changed,
+                    onWelcomeInviterFingerprintChanged = ::onWelcomeInviterFingerprintChanged,
+                    onWelcomeCredentialVectorChanged = ::onWelcomeCredentialVectorChanged,
+                    onJoinSpaceFromWelcome = ::joinSpaceFromWelcome,
                     onGenerateCertificateRequest = ::generateCertificateRequest,
                     onCopyCertificateRequest = ::copyCertificateRequest,
                     onLookupPinnedIdentity = ::lookupPinnedIdentity,
@@ -772,6 +778,167 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun onWelcomeBootstrapBase64Changed(value: String) {
+        if (value.length > MAX_SPACE_WELCOME_BOOTSTRAP_BASE64_CHARS) {
+            screenState = screenState.copy(
+                spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                    status = "The bootstrap package exceeds the 1 MiB decoded package bound.",
+                ),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                bootstrapPackageBase64 = value,
+                joined = null,
+                status = "Package input changed; the signature and Welcome have not been validated.",
+            ),
+        )
+    }
+
+    private fun onWelcomeInviterFingerprintChanged(value: String) {
+        if (value.length > 64) {
+            screenState = screenState.copy(
+                spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                    status = "The inviter fingerprint must be exactly 32 bytes.",
+                ),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                inviterFingerprintHex = value,
+                joined = null,
+                status = "Inviter fingerprint changed; no pin or join was performed.",
+            ),
+        )
+    }
+
+    private fun onWelcomeCredentialVectorChanged(value: String) {
+        if (value.length > MAX_CREDENTIAL_HEX_LENGTH) {
+            screenState = screenState.copy(
+                spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                    status = "The credential vector exceeds the 16 KiB input limit.",
+                ),
+            )
+            return
+        }
+        screenState = screenState.copy(
+            spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                credentialVectorHex = value,
+                joined = null,
+                status = "Credential changed; it has not been validated.",
+            ),
+        )
+    }
+
+    private fun joinSpaceFromWelcome() {
+        val current = screenState.spaceWelcomeJoin
+        if (current.joining) return
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                spaceWelcomeJoin = current.copy(status = "The protected local profile is not ready."),
+            )
+            return
+        }
+        val packageBytes = try {
+            if (!isSpaceWelcomeBootstrapBase64Input(current.bootstrapPackageBase64)) {
+                null
+            } else {
+                Base64.decode(current.bootstrapPackageBase64, Base64.NO_WRAP)
+            }
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+        val inviterFingerprint = decodeIdentityHex(current.inviterFingerprintHex, 32)
+        val credentialVector = decodeIdentityHex(
+            current.credentialVectorHex,
+            current.credentialVectorHex.length / 2,
+        )
+        if (packageBytes == null || packageBytes.isEmpty() ||
+            packageBytes.size > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES ||
+            inviterFingerprint == null || credentialVector == null ||
+            current.credentialVectorHex.length % 2 != 0
+        ) {
+            screenState = screenState.copy(
+                spaceWelcomeJoin = current.copy(
+                    status = "Enter a bounded Base64 package, a 32-byte inviter fingerprint, and an even-length credential vector.",
+                ),
+            )
+            credentialVector?.fill(0)
+            return
+        }
+        screenState = screenState.copy(
+            spaceWelcomeJoin = current.copy(
+                joining = true,
+                joined = null,
+                status = "Validating the pinned inviter, X.509 identity, Welcome, and signed checkpoint.",
+            ),
+        )
+        lifecycleScope.launch {
+            var joined: MobileCreatedSpace? = null
+            try {
+                joined = withContext(Dispatchers.IO) {
+                    try {
+                        profile.joinSpaceFromWelcomeBootstrap(
+                            packageBytes,
+                            inviterFingerprint,
+                            credentialVector,
+                        )
+                    } finally {
+                        credentialVector.fill(0)
+                    }
+                }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                            status = "Signed Welcome and policy checkpoint imported locally; no relay was contacted.",
+                            joined = joined,
+                        ),
+                    )
+                }
+                val page = withContext(Dispatchers.IO) { profile.localSpaces() }
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        localSpaces = page.spaces,
+                        localSpacesStatus = localSpacesStatus(page.spaces.size, page.nextCursor != null),
+                        nextSpaceCursor = page.nextCursor,
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                            status = if (joined == null) mobileErrorStatus(error) else {
+                                "Welcome was committed locally, but the snapshot list could not be refreshed."
+                            },
+                            joined = joined,
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(
+                            status = if (joined == null) "The Welcome package could not be imported." else {
+                                "Welcome was committed locally, but the snapshot list could not be refreshed."
+                            },
+                            joined = joined,
+                        ),
+                    )
+                }
+            } finally {
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceWelcomeJoin = screenState.spaceWelcomeJoin.copy(joining = false),
+                    )
+                }
+            }
+        }
+    }
+
     private fun onRecoverySpaceSelected(spaceKey: String) {
         val space = screenState.localSpaces.firstOrNull { localSpaceKey(it) == spaceKey } ?: return
         screenState = screenState.copy(
@@ -1104,6 +1271,9 @@ class MainActivity : ComponentActivity() {
         is MobileException.MessageQueueFailed -> "The local message could not be durably queued."
         is MobileException.MessageHistoryUnavailable -> "The locally retained message history is unavailable or failed authentication."
         is MobileException.SpaceRecoveryFailed -> "The prior local generation could not be restored or authorized for recovery."
+        is MobileException.InvalidSpaceBootstrap -> "The Welcome bootstrap package is invalid or exceeds its size bound."
+        is MobileException.UntrustedSpaceInviter -> "The inviter identity is not pinned to the exact expected bundle."
+        is MobileException.SpaceJoinFailed -> "The signed Welcome or policy checkpoint could not be imported."
     }
 
     private fun pinPeerIdentity() {
@@ -1434,6 +1604,10 @@ private fun NearbyReadinessScreen(
     onCredentialVectorHexChanged: (String) -> Unit,
     onSpaceChannelNameChanged: (String) -> Unit,
     onCreateLocalSpace: () -> Unit,
+    onWelcomeBootstrapBase64Changed: (String) -> Unit,
+    onWelcomeInviterFingerprintChanged: (String) -> Unit,
+    onWelcomeCredentialVectorChanged: (String) -> Unit,
+    onJoinSpaceFromWelcome: () -> Unit,
     onRecoverySpaceSelected: (String) -> Unit,
     onRecoveryCredentialChanged: (String) -> Unit,
     onRecoverLocalSpace: () -> Unit,
@@ -1560,6 +1734,15 @@ private fun NearbyReadinessScreen(
                 onCreateLocalSpace = onCreateLocalSpace,
             )
             Spacer(Modifier.height(20.dp))
+            SpaceWelcomeJoinCard(
+                state = state.spaceWelcomeJoin,
+                profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                onBootstrapPackageChanged = onWelcomeBootstrapBase64Changed,
+                onInviterFingerprintChanged = onWelcomeInviterFingerprintChanged,
+                onCredentialVectorChanged = onWelcomeCredentialVectorChanged,
+                onJoin = onJoinSpaceFromWelcome,
+            )
+            Spacer(Modifier.height(20.dp))
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,
@@ -1579,7 +1762,7 @@ private fun NearbyReadinessScreen(
                         Text(if (state.loadingSpacePage) "Restoring local snapshots…" else "Restore local snapshot list")
                     }
                     Text(
-                        "These locally restored Genesis snapshots are records on this device, not current membership. Authenticated join/leave, later policy state, relay publishing, and synchronization are not supported.",
+                        "Locally restored snapshots include generations imported from signed Welcome checkpoints. They retain the accepted policy view and local transition history; they are not independent historical MLS replay proofs. Relay publishing and synchronization remain separate.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

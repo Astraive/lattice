@@ -3,10 +3,12 @@ use lattice_identity::{DeviceIdentity, IdentityPublicBundle, verify};
 use lattice_mls::api::{DeviceCredentialInput, GroupState, IncomingResult};
 use lattice_protocol::{Value, decode_canonical, encode_canonical};
 use lattice_storage::{SpaceGenesisSnapshot, SpaceWelcomeBootstrapSnapshot, Store};
+use openmls::credentials::Credential;
+use openmls::prelude::CredentialType;
 
 use crate::{Client, CoreError, CreatedSpace, space, store_received_event};
 
-const MAX_BOOTSTRAP_BYTES: usize = 1_048_576;
+pub const MAX_SPACE_WELCOME_BOOTSTRAP_BYTES: usize = 1_048_576;
 const MAX_GROUP_ID_BYTES: usize = 256;
 const BOOTSTRAP_SIGNATURE_DOMAIN: &[u8] = b"lattice:space-welcome-bootstrap:v1\0";
 
@@ -67,7 +69,7 @@ impl SpaceWelcomeBootstrapV1 {
         package.validate_bounds()?;
         package.signature = identity.sign(&package.signature_input()?);
         let encoded = package.to_bytes()?;
-        if encoded.len() > MAX_BOOTSTRAP_BYTES {
+        if encoded.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
         Ok(package)
@@ -82,7 +84,7 @@ impl SpaceWelcomeBootstrapV1 {
     /// Returns [`CoreError::SpaceWelcomeBootstrapInvalid`] for malformed,
     /// non-canonical, oversized, or incorrectly signed packages.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, CoreError> {
-        if bytes.is_empty() || bytes.len() > MAX_BOOTSTRAP_BYTES {
+        if bytes.is_empty() || bytes.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
         let Value::Map(mut fields) =
@@ -145,7 +147,7 @@ impl SpaceWelcomeBootstrapV1 {
         fields.push((13, Value::Bytes(self.signature.to_vec())));
         let encoded = encode_canonical(&Value::Map(fields))
             .map_err(|_| CoreError::SpaceWelcomeBootstrapInvalid)?;
-        if encoded.len() > MAX_BOOTSTRAP_BYTES {
+        if encoded.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
         Ok(encoded)
@@ -157,7 +159,7 @@ impl SpaceWelcomeBootstrapV1 {
         if encoded
             .len()
             .saturating_add(BOOTSTRAP_SIGNATURE_DOMAIN.len())
-            > MAX_BOOTSTRAP_BYTES
+            > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES
         {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
@@ -311,7 +313,7 @@ impl Client {
         invite_event: &VerifiedSignatureOnlyEvent,
         invite_plaintext: &[u8],
     ) -> Result<Vec<u8>, CoreError> {
-        if welcome_wire.is_empty() || welcome_wire.len() > MAX_BOOTSTRAP_BYTES {
+        if welcome_wire.is_empty() || welcome_wire.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
         let policy = joined_space
@@ -591,6 +593,30 @@ impl Client {
             genesis_event: root_event,
             reducer,
         })
+    }
+    /// Joins one signed Welcome package after validating an RFC 9420 X.509
+    /// credential vector against the local device identity and trust policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for malformed or untrusted credential
+    /// content, or the original join error for any rejected package or profile
+    /// transaction.
+    pub fn join_space_from_welcome_bootstrap_from_x509_credential(
+        &mut self,
+        package_bytes: &[u8],
+        expected_inviter: [u8; 32],
+        credential_content: Vec<u8>,
+    ) -> Result<CreatedSpace, CoreError> {
+        if credential_content.is_empty()
+            || credential_content.len() > crate::MAX_SPACE_CREDENTIAL_BYTES
+        {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
+            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        self.join_space_from_welcome_bootstrap(package_bytes, expected_inviter, &credential)
     }
 
     #[allow(clippy::too_many_lines)] // Restore keeps package, replay, and MLS checks fail-closed.

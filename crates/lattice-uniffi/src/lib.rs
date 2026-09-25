@@ -225,6 +225,15 @@ pub enum MobileError {
     /// A local Space generation could not be restored or recovered.
     #[error("local Space recovery generation failed")]
     SpaceRecoveryFailed,
+    /// Bootstrap package bytes are empty, oversized, or invalid.
+    #[error("invalid Space Welcome bootstrap package")]
+    InvalidSpaceBootstrap,
+    /// The Welcome inviter's complete identity bundle is not pinned.
+    #[error("Space Welcome inviter is not trusted")]
+    UntrustedSpaceInviter,
+    /// A validated Welcome could not be imported into the local profile.
+    #[error("Space Welcome join failed")]
+    SpaceJoinFailed,
 
     /// A supplied Space, group, or channel identifier has the wrong byte length.
     #[error("invalid Space message identifier")]
@@ -382,6 +391,42 @@ mod tests {
     }
 
     #[test]
+    fn welcome_join_rejects_invalid_input_bounds() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let client = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("profile.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "android-welcome-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        assert!(matches!(
+            client.join_space_from_welcome_bootstrap(Vec::new(), vec![0; 32], vec![1]),
+            Err(MobileError::InvalidSpaceBootstrap)
+        ));
+        assert!(matches!(
+            client.join_space_from_welcome_bootstrap(
+                vec![0; lattice_core::MAX_SPACE_WELCOME_BOOTSTRAP_BYTES + 1],
+                vec![0; 32],
+                vec![1],
+            ),
+            Err(MobileError::InvalidSpaceBootstrap)
+        ));
+        assert!(matches!(
+            client.join_space_from_welcome_bootstrap(vec![0], vec![0; 31], vec![1]),
+            Err(MobileError::InvalidFingerprint)
+        ));
+        assert!(matches!(
+            client.join_space_from_welcome_bootstrap(vec![0], vec![0; 32], Vec::new()),
+            Err(MobileError::InvalidSpaceCredential)
+        ));
+    }
+
+    #[test]
     fn stores_only_exactly_fingerprinted_identity_pins() {
         let directory = tempfile::tempdir().expect("temporary profile directory");
         let database_path = directory
@@ -475,15 +520,14 @@ mod tests {
     }
 
     #[test]
-    fn queue_local_message_rejects_malformed_ids_and_invalid_credentials() {
+    fn queue_local_message_rejects_malformed_ids_credentials_and_empty_history() {
         let directory = tempfile::tempdir().expect("temporary profile directory");
-        let database_path = directory
-            .path()
-            .join("profile.sqlite")
-            .to_string_lossy()
-            .into_owned();
         let client = MobileClient::open_or_create(
-            database_path,
+            directory
+                .path()
+                .join("profile.sqlite")
+                .to_string_lossy()
+                .into_owned(),
             "android-queue-profile".to_owned(),
             std::sync::Arc::new(TestProtector::default()),
         )
@@ -540,6 +584,30 @@ mod tests {
             Err(MobileError::InvalidSpaceMessageId)
         ));
         assert!(matches!(
+            client.list_local_text_messages(vec![0; 15], vec![0; 32], vec![0; 16]),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client.list_local_text_messages(vec![0; 16], vec![0; 32], vec![0; 16]),
+            Err(MobileError::MessageHistoryUnavailable)
+        ));
+    }
+
+    #[test]
+    fn queue_and_edit_local_message_reject_oversized_payloads() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let client = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("profile.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "android-queue-size-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        assert!(matches!(
             client.queue_local_text_message(
                 vec![0; 16],
                 vec![0; 32],
@@ -570,14 +638,6 @@ mod tests {
                 "x".repeat(lattice_core::space::MAX_SPACE_PAYLOAD_BYTES + 1),
             ),
             Err(MobileError::InvalidMessageInput)
-        ));
-        assert!(matches!(
-            client.list_local_text_messages(vec![0; 15], vec![0; 32], vec![0; 16]),
-            Err(MobileError::InvalidSpaceMessageId)
-        ));
-        assert!(matches!(
-            client.list_local_text_messages(vec![0; 16], vec![0; 32], vec![0; 16]),
-            Err(MobileError::MessageHistoryUnavailable)
         ));
     }
 

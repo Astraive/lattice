@@ -20,18 +20,25 @@ fn about_json_reports_versioned_capability_boundaries() {
             .iter()
             .any(|capability| capability == "protected_device_identity")
     );
+    let available = value["available"]
+        .as_array()
+        .expect("available capabilities should be an array");
     assert!(
-        value["available"]
-            .as_array()
-            .expect("available capabilities should be an array")
+        available
             .iter()
-            .any(|capability| capability == "local_space_one_member_recovery")
+            .any(|capability| capability == "local_pinned_welcome_bootstrap_import")
+    );
+    let unavailable = value["unavailable"]
+        .as_array()
+        .expect("unavailable capabilities should be an array");
+    assert!(
+        unavailable
+            .iter()
+            .any(|capability| capability == "complete_space_invite_leave_and_membership_lifecycle")
     );
     assert!(
-        value["unavailable"]
-            .as_array()
-            .expect("unavailable capabilities should be an array")
+        unavailable
             .iter()
-            .any(|capability| capability == "authenticated_space_join_or_leave")
+            .any(|capability| capability == "network_message_forwarding_or_delivery")
     );
 }
