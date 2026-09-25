@@ -1501,7 +1501,7 @@ impl Client {
     /// Accepted local membership transitions are replayed from their exact
     /// signed events and AEAD-protected local proof records. Durable
     /// sibling-Commit conflicts are revalidated from their exact signed control
-    /// events; Welcome-based joins remain unsupported.
+    /// events; Welcome-based checkpoints are revalidated and restored from their signed records.
     ///
     /// # Errors
     ///
