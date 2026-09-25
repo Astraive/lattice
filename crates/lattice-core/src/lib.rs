@@ -4098,6 +4098,14 @@ mod tests {
                 .map(|member| member.status),
             Some(super::space::MemberStatus::Active)
         );
+
+        drop(bob);
+        let reopened_bob = Client::open_existing(&bob_database.0, &protector)
+            .expect("reopen Bob after durable sibling-Commit conflict");
+        assert!(matches!(
+            reopened_bob.ensure_space_generation_mutable(&space_id, &group_reference),
+            Err(CoreError::SpaceMembershipConflicted)
+        ));
     }
 
     #[test]
