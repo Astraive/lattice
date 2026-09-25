@@ -99,6 +99,20 @@ impl QueuedMessage {
         &self.event_id
     }
 }
+
+/// Event identifier for one locally authorized attachment manifest in the outbox.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueuedFileManifest {
+    event_id: [u8; 32],
+}
+
+impl QueuedFileManifest {
+    /// Returns the immutable identifier of the committed manifest event.
+    #[must_use]
+    pub const fn event_id(&self) -> &[u8; 32] {
+        &self.event_id
+    }
+}
 /// One locally retained, authorized text message; authored or received.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalTextMessageRecord {
@@ -1400,7 +1414,7 @@ impl Client {
         credential: &DeviceCredentialInput,
         channel_id: space::EntityId,
         manifest: &AttachmentManifest,
-    ) -> Result<QueuedMessage, CoreError> {
+    ) -> Result<QueuedFileManifest, CoreError> {
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
         manifest.validate()?;
         let policy = created
@@ -1446,7 +1460,7 @@ impl Client {
         credential_content: Vec<u8>,
         channel_id: space::EntityId,
         manifest: &AttachmentManifest,
-    ) -> Result<QueuedMessage, CoreError> {
+    ) -> Result<QueuedFileManifest, CoreError> {
         if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
             return Err(CoreError::SpaceCredentialInvalid);
         }
@@ -2533,7 +2547,7 @@ fn queue_file_manifest_in_transaction(
     provider: &ProtectedSqliteProvider<'_>,
     transaction: &Transaction<'_>,
     message: LocalFileManifestEvent<'_>,
-) -> Result<(QueuedMessage, space::SpaceReducer), CoreError> {
+) -> Result<(QueuedFileManifest, space::SpaceReducer), CoreError> {
     let mut group = GroupState::load(provider, &message.group_id)?;
     if group.group_reference() != message.group_reference
         || group.epoch() != 0
@@ -2591,7 +2605,7 @@ fn queue_file_manifest_in_transaction(
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
     Ok((
-        QueuedMessage {
+        QueuedFileManifest {
             event_id: *event.event_id().as_bytes(),
         },
         staged_reducer,
