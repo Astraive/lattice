@@ -2270,6 +2270,309 @@ impl GroupState {
         }))
     }
 }
+/// A persistent MLS group constrained to one local device and one peer device.
+///
+/// Direct-message groups do not evaluate application identity authorization.
+/// Callers must bind the peer fingerprint to their trusted conversation target.
+pub struct DirectMessageGroup {
+    group: GroupState,
+    local_identity: [u8; 32],
+    peer_identity: [u8; 32],
+    closed: bool,
+    peer_removal_pending: bool,
+}
+
+/// The first two-member MLS transition, ready to deliver to the peer.
+pub struct DirectMessageInvitation {
+    group_id: Vec<u8>,
+    group_reference: [u8; 32],
+    commit: MlsMessage,
+    welcome: MlsMessage,
+}
+
+impl DirectMessageInvitation {
+    /// Returns the identifier needed to import the Welcome.
+    #[must_use]
+    pub fn group_id(&self) -> &[u8] {
+        &self.group_id
+    }
+
+    /// Returns the stable reference for routing messages to this group.
+    #[must_use]
+    pub const fn group_reference(&self) -> &[u8; 32] {
+        &self.group_reference
+    }
+
+    /// Returns the exact Add Commit that establishes the two-device group.
+    #[must_use]
+    pub const fn commit(&self) -> &MlsMessage {
+        &self.commit
+    }
+
+    /// Returns the Welcome that allows the invited device to join.
+    #[must_use]
+    pub const fn welcome(&self) -> &MlsMessage {
+        &self.welcome
+    }
+}
+
+impl DirectMessageGroup {
+    /// Creates a two-device group in the caller-owned provider.
+    ///
+    /// No group state is created when the verified peer fingerprint differs
+    /// from the recipient `KeyPackage` identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InvalidInput`] for identical local and peer
+    /// identities, [`MlsError::CredentialValidationFailed`] when the
+    /// `KeyPackage` identity differs from `peer_identity`, or an MLS/provider
+    /// error from group creation and membership setup.
+    pub fn create<P: OpenMlsProvider>(
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+        peer_identity: [u8; 32],
+        peer_key_package: &[u8],
+    ) -> MlsResult<(Self, DirectMessageInvitation)> {
+        if peer_identity == *credential.identity_fingerprint() {
+            return Err(MlsError::InvalidInput);
+        }
+        let decoded = decode_key_package(provider, peer_key_package)?;
+        if decoded.identity_fingerprint != peer_identity {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        let mut group = GroupState::create(provider, identity, credential)?;
+        let prepared = group.prepare_add(provider, identity, credential, peer_key_package)?;
+        let invitation = DirectMessageInvitation {
+            group_id: group.group_id(),
+            group_reference: group.group_reference(),
+            commit: prepared.commit().clone(),
+            welcome: group.accept_prepared_add(
+                provider,
+                &prepared,
+                prepared.commit().as_bytes(),
+            )?,
+        };
+        let direct = Self {
+            group,
+            local_identity: *credential.identity_fingerprint(),
+            peer_identity,
+            closed: false,
+            peer_removal_pending: false,
+        };
+        direct.ensure_pair()?;
+        Ok((direct, invitation))
+    }
+
+    /// Imports a Welcome only when it establishes exactly the pinned pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an MLS/provider error for an invalid Welcome, group identifier,
+    /// local credential, or group membership; returns
+    /// [`MlsError::GroupInactive`] unless exactly the pinned pair joined.
+    pub fn from_welcome<P: OpenMlsProvider>(
+        provider: &P,
+        expected_group_id: &[u8],
+        local_credential: &DeviceCredentialInput,
+        peer_identity: [u8; 32],
+        welcome_wire: &[u8],
+    ) -> MlsResult<Self> {
+        if peer_identity == *local_credential.identity_fingerprint() {
+            return Err(MlsError::InvalidInput);
+        }
+        let group =
+            GroupState::from_welcome(provider, expected_group_id, local_credential, welcome_wire)?;
+        let direct = Self {
+            group,
+            local_identity: *local_credential.identity_fingerprint(),
+            peer_identity,
+            closed: false,
+            peer_removal_pending: false,
+        };
+        direct.ensure_pair()?;
+        Ok(direct)
+    }
+
+    /// Reloads a persisted pairwise group and verifies its exact membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InvalidInput`] for identical identities,
+    /// [`MlsError::GroupNotFound`] when the group is absent, or an MLS/provider
+    /// error when the stored group cannot be loaded as exactly the pinned pair.
+    pub fn load<P: OpenMlsProvider>(
+        provider: &P,
+        group_id: &[u8],
+        local_identity: [u8; 32],
+        peer_identity: [u8; 32],
+    ) -> MlsResult<Self> {
+        if peer_identity == local_identity {
+            return Err(MlsError::InvalidInput);
+        }
+        let group = GroupState::load(provider, group_id)?;
+        let direct = Self {
+            group,
+            local_identity,
+            peer_identity,
+            closed: false,
+            peer_removal_pending: false,
+        };
+        direct.ensure_pair()?;
+        Ok(direct)
+    }
+
+    /// Returns the MLS group identifier bytes.
+    #[must_use]
+    pub fn group_id(&self) -> Vec<u8> {
+        self.group.group_id()
+    }
+
+    /// Returns the routing reference for this group.
+    #[must_use]
+    pub fn group_reference(&self) -> [u8; 32] {
+        self.group.group_reference()
+    }
+
+    /// Returns the current MLS epoch.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.group.epoch()
+    }
+
+    /// Encrypts application data only while the pinned pair remains exact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::GroupInactive`] when the pair is closed or no longer
+    /// exact, [`MlsError::CredentialKeyMismatch`] for a different local
+    /// credential, or an MLS/provider error during encryption.
+    pub fn encrypt_application<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+        plaintext: &[u8],
+    ) -> MlsResult<MlsMessage> {
+        self.ensure_pair()?;
+        if *credential.identity_fingerprint() != self.local_identity {
+            return Err(MlsError::CredentialKeyMismatch);
+        }
+        self.group
+            .encrypt_application(provider, identity, credential, plaintext)
+    }
+
+    /// Authenticates an incoming application message or stages its Commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an MLS/provider error for invalid or unauthenticated wire data,
+    /// [`MlsError::CredentialValidationFailed`] when the sender identity is
+    /// not one of the pinned devices, or [`MlsError::UnsupportedMessage`] for
+    /// any Commit other than removal of this local device.
+    pub fn process_incoming<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        wire: &[u8],
+    ) -> MlsResult<IncomingResult> {
+        self.ensure_pair()?;
+        let result = self.group.process_incoming(provider, wire)?;
+        if let IncomingResult::Application(application) = &result
+            && application.member_identity_fingerprint() != Some(&self.peer_identity)
+            && application.member_identity_fingerprint() != Some(&self.local_identity)
+        {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        if matches!(result, IncomingResult::StagedCommit { .. }) {
+            let change = self
+                .group
+                .take_staged_membership_change()
+                .ok_or(MlsError::UnsupportedMessage)?;
+            if change.action() != MlsMembershipAction::Remove
+                || change.target() != &self.local_identity
+            {
+                self.closed = true;
+                return Err(MlsError::UnsupportedMessage);
+            }
+            self.peer_removal_pending = true;
+        }
+        Ok(result)
+    }
+
+    /// Accepts the exact staged Commit and closes after removing this device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::UnsupportedMessage`] unless processing staged the
+    /// exact local-device removal transition, or an MLS/provider error if the
+    /// supplied Commit does not match that staged transition.
+    pub fn accept_incoming_commit<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        accepted_commit_wire: &[u8],
+    ) -> MlsResult<()> {
+        if !self.peer_removal_pending {
+            return Err(MlsError::UnsupportedMessage);
+        }
+        self.group
+            .accept_incoming_commit(provider, accepted_commit_wire)?;
+        self.peer_removal_pending = false;
+        self.closed = true;
+        Ok(())
+    }
+
+    /// Prepares removal of the pinned peer device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::GroupInactive`] for a closed pair,
+    /// [`MlsError::CredentialKeyMismatch`] for a different local credential,
+    /// or an MLS/provider error when preparing the exact peer removal.
+    pub fn prepare_remove_peer<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+    ) -> MlsResult<PreparedRemoval> {
+        self.ensure_pair()?;
+        if *credential.identity_fingerprint() != self.local_identity {
+            return Err(MlsError::CredentialKeyMismatch);
+        }
+        self.group
+            .prepare_remove(provider, identity, credential, &self.peer_identity)
+    }
+
+    /// Merges the exact peer-removal Commit and permanently closes this pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::GroupInactive`] for a closed pair or an MLS/provider
+    /// error when the exact removal Commit cannot be accepted.
+    pub fn accept_prepared_remove<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        prepared: &PreparedRemoval,
+        accepted_commit_wire: &[u8],
+    ) -> MlsResult<()> {
+        self.ensure_pair()?;
+        self.group
+            .accept_prepared_remove(provider, prepared, accepted_commit_wire)?;
+        self.closed = true;
+        Ok(())
+    }
+
+    fn ensure_pair(&self) -> MlsResult<()> {
+        if self.closed
+            || self.group.member_count() != 2
+            || !self.group.contains_member_identity(&self.local_identity)
+            || !self.group.contains_member_identity(&self.peer_identity)
+        {
+            return Err(MlsError::GroupInactive);
+        }
+        Ok(())
+    }
+}
 
 fn check_wire_size(wire: &[u8]) -> MlsResult<()> {
     if wire.is_empty() {
@@ -2733,7 +3036,7 @@ mod group_reference_tests {
 #[cfg(test)]
 mod membership_change_tests {
     use super::{
-        DeviceCredentialInput, GroupState, IncomingResult, MlsMembershipAction,
+        DeviceCredentialInput, DirectMessageGroup, GroupState, IncomingResult, MlsMembershipAction,
         ValidatedMlsMembershipChange, key_package_wire_sha256,
     };
     use lattice_identity::DeviceIdentity;
@@ -2930,6 +3233,111 @@ mod membership_change_tests {
                 .process_incoming(&provider_charlie, future_epoch_message.as_bytes())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn direct_message_group_is_pinned_to_two_devices() {
+        let provider_alice = OpenMlsRustCrypto::default();
+        let provider_bob = OpenMlsRustCrypto::default();
+        let alice_identity = DeviceIdentity::generate().expect("Alice identity");
+        let bob_identity = DeviceIdentity::generate().expect("Bob identity");
+        let alice_credential = test_credential(&alice_identity);
+        let bob_credential = test_credential(&bob_identity);
+        let bob_key_package =
+            GroupState::publish_key_package(&provider_bob, &bob_identity, &bob_credential)
+                .expect("publish Bob KeyPackage");
+
+        let (mut alice, invitation) = DirectMessageGroup::create(
+            &provider_alice,
+            &alice_identity,
+            &alice_credential,
+            bob_identity.fingerprint(),
+            bob_key_package.as_bytes(),
+        )
+        .expect("create direct-message pair");
+        let mut bob = DirectMessageGroup::from_welcome(
+            &provider_bob,
+            invitation.group_id(),
+            &bob_credential,
+            alice_identity.fingerprint(),
+            invitation.welcome().as_bytes(),
+        )
+        .expect("join direct-message pair");
+        let restored = DirectMessageGroup::load(
+            &provider_alice,
+            invitation.group_id(),
+            alice_identity.fingerprint(),
+            bob_identity.fingerprint(),
+        )
+        .expect("reload exact persisted pair");
+        assert_eq!(restored.group_reference(), *invitation.group_reference());
+        assert_eq!(alice.group_reference(), *invitation.group_reference());
+        assert_eq!(bob.group_reference(), *invitation.group_reference());
+        assert_eq!(alice.epoch(), 1);
+        assert_eq!(bob.epoch(), 1);
+
+        let message = alice
+            .encrypt_application(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                b"only the invited device can read this",
+            )
+            .expect("encrypt direct message");
+        assert!(matches!(
+            bob.process_incoming(&provider_bob, message.as_bytes()),
+            Ok(IncomingResult::Application(application))
+                if application.plaintext() == b"only the invited device can read this"
+                    && application.member_identity_fingerprint()
+                        == Some(&alice_identity.fingerprint())
+        ));
+
+        let wrong_peer_key_package =
+            GroupState::publish_key_package(&provider_bob, &bob_identity, &bob_credential)
+                .expect("publish another Bob KeyPackage");
+        assert!(matches!(
+            DirectMessageGroup::create(
+                &OpenMlsRustCrypto::default(),
+                &alice_identity,
+                &alice_credential,
+                [0x55; 32],
+                wrong_peer_key_package.as_bytes(),
+            ),
+            Err(super::MlsError::CredentialValidationFailed)
+        ));
+
+        let removal = alice
+            .prepare_remove_peer(&provider_alice, &alice_identity, &alice_credential)
+            .expect("prepare peer removal");
+        let removal_commit = removal.commit().as_bytes().to_vec();
+        alice
+            .accept_prepared_remove(&provider_alice, &removal, &removal_commit)
+            .expect("accept peer removal");
+        assert!(matches!(
+            alice.encrypt_application(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                b"after removal",
+            ),
+            Err(super::MlsError::GroupInactive)
+        ));
+        let result = bob.process_incoming(&provider_bob, &removal_commit);
+        assert!(
+            matches!(result, Ok(IncomingResult::StagedCommit { .. })),
+            "incoming peer removal: {result:?}"
+        );
+        bob.accept_incoming_commit(&provider_bob, &removal_commit)
+            .expect("accept peer removal transition");
+        assert!(matches!(
+            bob.encrypt_application(
+                &provider_bob,
+                &bob_identity,
+                &bob_credential,
+                b"after removal",
+            ),
+            Err(super::MlsError::GroupInactive)
+        ));
     }
     #[test]
     fn control_binding_consumes_only_exact_staged_context() {
