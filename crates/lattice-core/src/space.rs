@@ -16,7 +16,7 @@
 //! separate by MLS group reference. Recovery authorization uses the prior
 //! reducer's retained common policy and binds one exact MLS-authenticated
 //! recovery Genesis. Accepted membership transitions replay their protected
-//! policy history; Welcome-based join remains incomplete.
+//! Welcome bootstrap import restores one pinned-inviter checkpoint; ongoing invitations, membership changes, and general history replay remain incomplete.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
