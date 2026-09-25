@@ -23,6 +23,13 @@ pub const MAX_COLLECTION_ITEMS: usize = 4_096;
 /// Maximum number of nested array/map containers.
 pub const MAX_NESTING_DEPTH: usize = 32;
 
+mod path_upgrade;
+
+pub use path_upgrade::{
+    MAX_PATH_UPGRADE_FRAME_BYTES, NegotiatedPathUpgrades, PATH_UPGRADE_VERSION,
+    PathUpgradeCapabilities, PathUpgradeError,
+};
+
 const EVENT_ID_DOMAIN: &[u8] = b"lattice:event:v1";
 
 /// Values supported by the candidate integer-key CBOR profile.
