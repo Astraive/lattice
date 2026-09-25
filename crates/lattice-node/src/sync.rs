@@ -1,25 +1,16 @@
-//! One-shot scoped anti-entropy exchanges over an already-running transport.
+//! Bounded scoped anti-entropy over authenticated direct transports.
 //!
-//! This module joins `lattice-sync` planning to the opaque `TransportAdapter`
-//! port. It sends one bounded request and consumes at most one bounded reply;
-//! it does not authenticate peers, authorize scopes, persist history, or treat a
-//! transport receipt as remote delivery. Callers must serialize exchanges on a
-//! shared adapter and validate returned event bytes at their existing trust
-//! boundary before accepting them.
+//! Noise identity binding and scope authorization are required before sync
+//! frames or repository records are accessed. Bytes remain caller-validated
+//! application input and are not committed by this transport layer.
 
 use std::collections::BTreeSet;
 
-use lattice_platform::{
-    EnvelopeBytes, MAX_ENVELOPE_BYTES, MAX_EVENT_BYTES, TransportAdapter, TransportError,
-    TransportReceipt,
-};
-use lattice_router::{DeduplicationOutcome, EventDeduplicator, EventId as RouterEventId};
+use lattice_platform::{MAX_EVENT_BYTES, TransportError, TransportReceipt};
 use lattice_sync::{
-    AuthorId, EventId, MAX_BATCH_EVENTS, PlanError, ScopeId, ScopeSummary, SyncPlan,
-    SyncRequestRange, UnresolvedHistory, plan_sync,
+    AuthorId, EventId, MAX_BATCH_EVENTS, ScopeId, ScopeSummary, SyncPlan,
+    SyncRequestRange, UnresolvedHistory,
 };
-use lattice_transport::{receive_bounded, send_bounded};
-use tokio_util::sync::CancellationToken;
 
 const WIRE_MAGIC: &[u8; 4] = b"LSYN";
 const WIRE_VERSION: u8 = 1;
@@ -28,6 +19,12 @@ const RESPONSE_KIND: u8 = 2;
 const WIRE_HEADER_BYTES: usize = 40;
 const TARGET_BY_ID: u8 = 0;
 const TARGET_BY_SEQUENCE: u8 = 1;
+
+mod direct_session;
+pub use direct_session::{
+    AuthenticatedSyncError, AuthenticatedSyncExchange, AuthenticatedSyncServeResult,
+    execute_authenticated_sync_once, serve_authenticated_sync_request_once,
+};
 
 /// Maximum requested event records in one exchange, inherited from sync's
 /// bounded batch contract.
@@ -201,7 +198,7 @@ pub struct SyncExchange<E> {
     pub unresolved_history: Vec<UnresolvedHistory>,
 }
 
-/// Receive-side status for one call to [`serve_sync_request_once`].
+/// Receive-side status for one call to [`serve_authenticated_sync_request_once`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncServeReceiveOutcome {
     Received,
@@ -222,326 +219,6 @@ pub struct SyncServeResult {
     /// Requests not answered because no matching event was available or the
     /// response frame byte cap did not leave room for them.
     pub omitted_targets: Vec<SyncRequestTarget>,
-}
-
-/// Plans and executes one bounded anti-entropy request over an existing
-/// transport. The `peer` summary is used only for planning; the peer must run
-/// [`serve_sync_request_once`] on its matching adapter to answer.
-///
-/// The caller controls scope authorization, peer authentication, validator
-/// policy, cancellation, and serialization of concurrent exchanges. The
-/// adapter stays caller-owned and is not stopped on return. Each operation sends
-/// at most one request and receives at most one response; no retries or history
-/// subscriptions are started.
-///
-/// # Errors
-///
-/// Returns `PlanError` if the summaries are malformed, exceed planner limits,
-/// or conflict about an event identity at a shared author sequence.
-#[allow(clippy::too_many_lines)] // Keeps one exchange's outcome transitions auditable.
-pub async fn execute_sync_once<A, V>(
-    adapter: &A,
-    local: &ScopeSummary,
-    peer: &ScopeSummary,
-    deduplicator: &mut EventDeduplicator,
-    validator: &mut V,
-    cancellation: &CancellationToken,
-) -> Result<SyncExchange<V::Error>, PlanError>
-where
-    A: TransportAdapter + ?Sized,
-    V: SyncEventValidator,
-{
-    let plan = plan_sync(local, peer)?;
-    let request_frame_limit = adapter
-        .capabilities()
-        .max_envelope_bytes()
-        .min(MAX_ENVELOPE_BYTES);
-    let (requested, mut unresolved_dependencies, mut unresolved_ranges) =
-        bounded_targets(&plan, request_frame_limit);
-    let mut exchange = SyncExchange {
-        unresolved_history: plan.unresolved_history.clone(),
-        plan,
-        request_hop: HopOutcome::NotAttempted,
-        response: SyncReceiveOutcome::NotAttempted,
-        requested: requested.clone(),
-        events: Vec::with_capacity(requested.len()),
-        duplicates: Vec::new(),
-        rejected_events: Vec::new(),
-        unresolved_dependencies: Vec::new(),
-        unresolved_ranges: Vec::new(),
-    };
-
-    if requested.is_empty() {
-        exchange.unresolved_dependencies = unresolved_dependencies;
-        exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-        return Ok(exchange);
-    }
-
-    let request = encode_request(local.scope, &requested);
-    if cancellation.is_cancelled() {
-        exchange.request_hop = HopOutcome::Cancelled;
-        exchange.unresolved_dependencies = unresolved_dependencies;
-        exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-        return Ok(exchange);
-    }
-
-    let Ok(request_bytes) = EnvelopeBytes::try_from(request) else {
-        exchange.request_hop = HopOutcome::Failed(TransportError::EnvelopeTooLarge);
-        exchange.unresolved_dependencies = unresolved_dependencies;
-        exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-        return Ok(exchange);
-    };
-    let send_result = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => None,
-        result = send_bounded(adapter, request_bytes) => Some(result),
-    };
-    let Some(send_result) = send_result else {
-        exchange.request_hop = HopOutcome::Cancelled;
-        exchange.unresolved_dependencies = unresolved_dependencies;
-        exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-        return Ok(exchange);
-    };
-    match send_result {
-        Ok(receipt) => exchange.request_hop = HopOutcome::Accepted(receipt),
-        Err(error) => {
-            exchange.request_hop = HopOutcome::Failed(error);
-            exchange.unresolved_dependencies = unresolved_dependencies;
-            exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-            return Ok(exchange);
-        }
-    }
-
-    let incoming = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => None,
-        result = receive_bounded(adapter) => Some(result),
-    };
-    let Some(incoming) = incoming else {
-        exchange.response = SyncReceiveOutcome::Cancelled;
-        exchange.unresolved_dependencies = unresolved_dependencies;
-        exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-        return Ok(exchange);
-    };
-    let frame = match incoming {
-        Ok(Some(frame)) => frame,
-        Ok(None) => {
-            exchange.response = SyncReceiveOutcome::Closed;
-            exchange.unresolved_dependencies = unresolved_dependencies;
-            exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-            return Ok(exchange);
-        }
-        Err(error) => {
-            exchange.response = SyncReceiveOutcome::Failed(error);
-            exchange.unresolved_dependencies = unresolved_dependencies;
-            exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-            return Ok(exchange);
-        }
-    };
-
-    let expected = requested.iter().copied().collect::<BTreeSet<_>>();
-    let records = match decode_response(frame.as_bytes(), local.scope, &expected) {
-        Ok(records) => records,
-        Err(error) => {
-            exchange.response = SyncReceiveOutcome::Rejected(error);
-            exchange.unresolved_dependencies = unresolved_dependencies;
-            exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-            return Ok(exchange);
-        }
-    };
-    exchange.response = SyncReceiveOutcome::Received;
-    let mut pending = expected;
-    for record in records {
-        let expected_id = match record.target {
-            SyncRequestTarget::EventId(event_id) => Some(event_id),
-            SyncRequestTarget::Sequence { author, sequence } => {
-                known_summary_event(peer, author, sequence)
-            }
-        };
-        let validation = validator.validate(
-            local.scope,
-            record.author,
-            record.sequence,
-            expected_id,
-            record.bytes,
-        );
-        let validated_id = match validation {
-            Ok(event_id) => event_id,
-            Err(error) => {
-                exchange
-                    .rejected_events
-                    .push((record.target, SyncEventRejection::Validation(error)));
-                continue;
-            }
-        };
-        if validated_id != record.event_id {
-            exchange
-                .rejected_events
-                .push((record.target, SyncEventRejection::AdvertisedIdMismatch));
-            continue;
-        }
-        if expected_id.is_some_and(|expected| expected != validated_id) {
-            exchange
-                .rejected_events
-                .push((record.target, SyncEventRejection::SummaryIdMismatch));
-            continue;
-        }
-
-        match deduplicator.observe(RouterEventId(*validated_id.as_bytes())) {
-            DeduplicationOutcome::Duplicate => {
-                exchange.duplicates.push(validated_id);
-                pending.remove(&record.target);
-            }
-            DeduplicationOutcome::FirstSeen { .. } => {
-                exchange.events.push(ValidatedSyncEvent {
-                    author: record.author,
-                    sequence: record.sequence,
-                    event_id: validated_id,
-                    bytes: record.bytes.to_vec(),
-                });
-                pending.remove(&record.target);
-            }
-        }
-    }
-    for target in pending {
-        add_unresolved_target(target, &mut unresolved_dependencies, &mut unresolved_ranges);
-    }
-    exchange.unresolved_dependencies = sort_dedup(unresolved_dependencies);
-    exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
-    Ok(exchange)
-}
-
-/// Receives one scoped sync request, resolves at most 128 exact records, and
-/// sends at most one response frame. `authorized_scope` is a caller-selected
-/// scope boundary, not an authentication mechanism. The caller owns adapter
-/// lifecycle and must serialize this call with other reads on that adapter.
-///
-/// # Errors
-///
-/// Returns `SyncProtocolError` when the single incoming frame is malformed,
-/// requests an invalid count, or uses an unexpected scope or target encoding.
-#[allow(clippy::too_many_lines)] // Keeps bounded resolution and receipt reporting together.
-pub async fn serve_sync_request_once<A, S>(
-    adapter: &A,
-    authorized_scope: ScopeId,
-    source: &mut S,
-    cancellation: &CancellationToken,
-) -> Result<SyncServeResult, SyncProtocolError>
-where
-    A: TransportAdapter + ?Sized,
-    S: SyncEventSource + ?Sized,
-{
-    let incoming = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => {
-            return Ok(SyncServeResult {
-                receive: SyncServeReceiveOutcome::Cancelled,
-                response_hop: HopOutcome::NotAttempted,
-                included_events: 0,
-                omitted_targets: Vec::new(),
-            });
-        }
-        result = receive_bounded(adapter) => result,
-    };
-    let frame = match incoming {
-        Ok(Some(frame)) => frame,
-        Ok(None) => {
-            return Ok(SyncServeResult {
-                receive: SyncServeReceiveOutcome::Closed,
-                response_hop: HopOutcome::NotAttempted,
-                included_events: 0,
-                omitted_targets: Vec::new(),
-            });
-        }
-        Err(error) => {
-            return Ok(SyncServeResult {
-                receive: SyncServeReceiveOutcome::Failed(error),
-                response_hop: HopOutcome::NotAttempted,
-                included_events: 0,
-                omitted_targets: Vec::new(),
-            });
-        }
-    };
-    let targets = decode_request(frame.as_bytes(), authorized_scope)?;
-    if targets.is_empty() {
-        return Err(SyncProtocolError::InvalidCount);
-    }
-
-    let max_bytes = adapter
-        .capabilities()
-        .max_envelope_bytes()
-        .min(MAX_ENVELOPE_BYTES);
-    let mut response = response_header(authorized_scope);
-    let mut omitted_targets = Vec::with_capacity(targets.len());
-    let mut included_events = 0_usize;
-    for target in targets {
-        let Some(record) = source.load(authorized_scope, target) else {
-            omitted_targets.push(target);
-            continue;
-        };
-        if record.sequence == 0
-            || record.bytes.is_empty()
-            || record.bytes.len() > MAX_EVENT_BYTES
-            || !record_matches_target(target, &record)
-        {
-            omitted_targets.push(target);
-            continue;
-        }
-        let Some(record_size) = target_wire_size(target)
-            .checked_add(32 + 8 + 32 + 4)
-            .and_then(|size| size.checked_add(record.bytes.len()))
-        else {
-            omitted_targets.push(target);
-            continue;
-        };
-        if response
-            .len()
-            .checked_add(record_size)
-            .is_none_or(|size| size > max_bytes)
-        {
-            omitted_targets.push(target);
-            continue;
-        }
-        encode_target(&mut response, target);
-        response.extend_from_slice(record.author.as_bytes());
-        response.extend_from_slice(&record.sequence.to_be_bytes());
-        response.extend_from_slice(record.event_id.as_bytes());
-        let Ok(event_len) = u32::try_from(record.bytes.len()) else {
-            omitted_targets.push(target);
-            continue;
-        };
-        response.extend_from_slice(&event_len.to_be_bytes());
-        response.extend_from_slice(&record.bytes);
-        included_events += 1;
-    }
-    let count = u16::try_from(included_events).map_err(|_| SyncProtocolError::InvalidCount)?;
-    response[38..40].copy_from_slice(&count.to_be_bytes());
-
-    let response_hop = if cancellation.is_cancelled() {
-        HopOutcome::Cancelled
-    } else {
-        match EnvelopeBytes::try_from(response) {
-            Ok(response_bytes) => {
-                let send = tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => None,
-                    result = send_bounded(adapter, response_bytes) => Some(result),
-                };
-                match send {
-                    None => HopOutcome::Cancelled,
-                    Some(Ok(receipt)) => HopOutcome::Accepted(receipt),
-                    Some(Err(error)) => HopOutcome::Failed(error),
-                }
-            }
-            Err(_) => HopOutcome::Failed(TransportError::EnvelopeTooLarge),
-        }
-    };
-    Ok(SyncServeResult {
-        receive: SyncServeReceiveOutcome::Received,
-        response_hop,
-        included_events,
-        omitted_targets,
-    })
 }
 
 fn bounded_targets(
@@ -881,22 +558,38 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use lattice_identity::{DeviceIdentity, PinnedIdentity};
     use lattice_router::EventDeduplicator;
     use lattice_sync::{AuthorSummary, KnownEvent, ScopeId, ScopeSummary};
     use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        HopOutcome, SyncEventRecord, SyncReceiveOutcome, SyncRequestTarget,
-        SyncServeReceiveOutcome, execute_sync_once, serve_sync_request_once,
+        AuthenticatedSyncError, HopOutcome, SyncEventRecord, SyncReceiveOutcome, SyncRequestTarget,
+        SyncServeReceiveOutcome, execute_authenticated_sync_once,
+        serve_authenticated_sync_request_once,
     };
 
     #[tokio::test]
-    async fn exchanges_one_missing_sequence_over_bounded_tcp_adapters() {
-        let scope = ScopeId::new([0x11; 32]);
-        let author = lattice_sync::AuthorId::new([0x22; 32]);
-        let event_id = lattice_sync::EventId::new([0x33; 32]);
-        let event_bytes = b"opaque event bytes validated by the caller".to_vec();
+    #[allow(clippy::too_many_lines)] // Keeps the TCP exchange's security and data assertions together.
+    async fn authenticates_pinned_identities_before_one_sync_round_trip_over_tcp() {
+        let scope = ScopeId::new([0x31; 32]);
+        let author = lattice_sync::AuthorId::new([0x42; 32]);
+        let event_id = lattice_sync::EventId::new([0x53; 32]);
+        let event_bytes = b"event bytes behind the authenticated direct channel".to_vec();
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin exact responder bundle");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin exact initiator bundle");
+
         let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
             .await
             .expect("bind ephemeral local test listener");
@@ -961,38 +654,296 @@ mod tests {
         let client_cancellation = CancellationToken::new();
         let server_cancellation = CancellationToken::new();
         let (client, server) = tokio::join!(
-            execute_sync_once(
+            execute_authenticated_sync_once(
                 &client_adapter,
+                &alice,
+                alice_pins_bob,
                 &local,
                 &peer,
                 &mut deduplicator,
                 &mut validator,
+                |pinned, requested_scope| {
+                    pinned.fingerprint() == bob_fingerprint && requested_scope == scope
+                },
                 &client_cancellation,
             ),
-            serve_sync_request_once(&server_adapter, scope, &mut source, &server_cancellation,),
+            serve_authenticated_sync_request_once(
+                &server_adapter,
+                &bob,
+                bob_pins_alice,
+                &mut source,
+                |pinned, requested_scope| {
+                    pinned.fingerprint() == alice_fingerprint && requested_scope == scope
+                },
+                &server_cancellation,
+            ),
         );
-        let client = client.expect("plan and execute one sync exchange");
-        let server = server.expect("receive request and send one response");
+        let client = client.expect("complete authenticated sync request and response");
+        let server = server.expect("authorize and serve authenticated sync request");
 
-        assert_eq!(client.requested.len(), 1);
+        assert_eq!(client.authenticated_peer.fingerprint(), bob_fingerprint);
+        assert_eq!(server.authenticated_peer.fingerprint(), alice_fingerprint);
+        assert_eq!(client.exchange.requested.len(), 1);
+        assert_eq!(client.exchange.response, SyncReceiveOutcome::Received);
+        assert_eq!(client.exchange.events.len(), 1);
+        assert_eq!(client.exchange.events[0].event_id, event_id);
         assert_eq!(
-            client.requested[0],
-            SyncRequestTarget::Sequence {
+            client.exchange.events[0].bytes,
+            b"event bytes behind the authenticated direct channel"
+        );
+        assert_eq!(server.authorized_scope, scope);
+        assert_eq!(server.exchange.receive, SyncServeReceiveOutcome::Received);
+        assert_eq!(server.exchange.included_events, 1);
+        assert!(matches!(
+            client.exchange.request_hop,
+            HopOutcome::Accepted(_)
+        ));
+        assert!(matches!(
+            server.exchange.response_hop,
+            HopOutcome::Accepted(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn authenticated_empty_sync_still_completes_one_round_trip() {
+        let scope = ScopeId::new([0x59; 32]);
+        let author = lattice_sync::AuthorId::new([0x6a; 32]);
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+                .expect("pin exact responder bundle");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+                .expect("pin exact initiator bundle");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind ephemeral local test listener");
+        let endpoint = listener.local_addr().expect("read bound address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept(),);
+        let client_adapter = client_result.expect("connect direct TCP adapter");
+        let (server_adapter, _) = server_result.expect("accept direct TCP adapter");
+        let summary = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary::new(author, 0)],
+            missing_dependencies: Vec::new(),
+        };
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator =
+            |_: ScopeId,
+             _: lattice_sync::AuthorId,
+             _: u64,
+             _: Option<lattice_sync::EventId>,
+             _: &[u8]| Ok::<_, ()>(lattice_sync::EventId::new([0x7b; 32]));
+        let source_calls = Cell::new(0);
+        let mut source = |_: ScopeId, _: SyncRequestTarget| {
+            source_calls.set(source_calls.get() + 1);
+            None::<SyncEventRecord>
+        };
+
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let (client_result, server_result) = tokio::join!(
+            execute_authenticated_sync_once(
+                &client_adapter,
+                &alice,
+                alice_pins_bob,
+                &summary,
+                &summary,
+                &mut deduplicator,
+                &mut validator,
+                |_, requested_scope| requested_scope == scope,
+                &client_cancellation,
+            ),
+            serve_authenticated_sync_request_once(
+                &server_adapter,
+                &bob,
+                bob_pins_alice,
+                &mut source,
+                |_, requested_scope| requested_scope == scope,
+                &server_cancellation,
+            ),
+        );
+        let client = client_result.expect("complete empty authenticated request");
+        let server = server_result.expect("complete empty authenticated response");
+
+        assert!(client.exchange.requested.is_empty());
+        assert_eq!(client.exchange.response, SyncReceiveOutcome::Received);
+        assert!(client.exchange.events.is_empty());
+        assert_eq!(source_calls.get(), 0);
+        assert_eq!(server.exchange.included_events, 0);
+        assert!(matches!(
+            client.exchange.request_hop,
+            HopOutcome::Accepted(_)
+        ));
+        assert!(matches!(
+            server.exchange.response_hop,
+            HopOutcome::Accepted(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn denied_authenticated_scope_never_reaches_the_event_source() {
+        let scope = ScopeId::new([0x61; 32]);
+        let author = lattice_sync::AuthorId::new([0x72; 32]);
+        let event_id = lattice_sync::EventId::new([0x83; 32]);
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin exact responder bundle");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin exact initiator bundle");
+
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind ephemeral local test listener");
+        let endpoint = listener.local_addr().expect("read bound address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept(),);
+        let client_adapter = client_result.expect("connect direct TCP adapter");
+        let (server_adapter, _) = server_result.expect("accept direct TCP adapter");
+
+        let local = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary::new(author, 0)],
+            missing_dependencies: Vec::new(),
+        };
+        let peer = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary {
                 author,
-                sequence: 1
+                contiguous_sequence: 1,
+                known_events: vec![KnownEvent {
+                    sequence: 1,
+                    event_id,
+                }],
+                unavailable: Vec::new(),
+            }],
+            missing_dependencies: Vec::new(),
+        };
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator = |_: ScopeId,
+                             _: lattice_sync::AuthorId,
+                             _: u64,
+                             _: Option<lattice_sync::EventId>,
+                             _: &[u8]| Ok::<_, ()>(event_id);
+        let source_calls = Cell::new(0);
+        let mut source = |_: ScopeId, _: SyncRequestTarget| {
+            source_calls.set(source_calls.get() + 1);
+            None::<SyncEventRecord>
+        };
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let client_future = execute_authenticated_sync_once(
+            &client_adapter,
+            &alice,
+            alice_pins_bob,
+            &local,
+            &peer,
+            &mut deduplicator,
+            &mut validator,
+            |_, requested_scope| requested_scope == scope,
+            &client_cancellation,
+        );
+        let server_future = serve_authenticated_sync_request_once(
+            &server_adapter,
+            &bob,
+            bob_pins_alice,
+            &mut source,
+            |_, _| false,
+            &server_cancellation,
+        );
+        tokio::pin!(client_future);
+        tokio::pin!(server_future);
+        tokio::select! {
+            result = &mut server_future => {
+                assert!(matches!(result, Err(AuthenticatedSyncError::ScopeUnauthorized)));
+                assert_eq!(source_calls.get(), 0);
+                client_cancellation.cancel();
+                assert!(matches!(
+                    client_future.await,
+                    Err(AuthenticatedSyncError::Cancelled)
+                ));
             }
+            _ = &mut client_future => panic!("client should wait after server denies the scope"),
+        }
+    }
+    #[tokio::test]
+    async fn mismatched_peer_pin_fails_before_scope_data_is_sent_or_loaded() {
+        let scope = ScopeId::new([0x91; 32]);
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let mallory = DeviceIdentity::generate().expect("generate wrong pinned identity");
+        let alice_pins_mallory = PinnedIdentity::from_verified_fingerprint(
+            mallory.public_bundle(),
+            mallory.fingerprint(),
+        )
+        .expect("create internally consistent but incorrect pin");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+                .expect("pin exact initiator bundle");
+
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind ephemeral local test listener");
+        let endpoint = listener.local_addr().expect("read bound address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept(),);
+        let client_adapter = client_result.expect("connect direct TCP adapter");
+        let (server_adapter, _) = server_result.expect("accept direct TCP adapter");
+
+        let summary = ScopeSummary::new(scope);
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator =
+            |_: ScopeId,
+             _: lattice_sync::AuthorId,
+             _: u64,
+             _: Option<lattice_sync::EventId>,
+             _: &[u8]| { Ok::<_, ()>(lattice_sync::EventId::new([0xa2; 32])) };
+        let source_calls = Cell::new(0);
+        let mut source = |_: ScopeId, _: SyncRequestTarget| {
+            source_calls.set(source_calls.get() + 1);
+            None::<SyncEventRecord>
+        };
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let server_future = serve_authenticated_sync_request_once(
+            &server_adapter,
+            &bob,
+            bob_pins_alice,
+            &mut source,
+            |_, requested_scope| requested_scope == scope,
+            &server_cancellation,
         );
-        assert_eq!(client.response, SyncReceiveOutcome::Received);
-        assert_eq!(client.events.len(), 1);
-        assert_eq!(client.events[0].event_id, event_id);
-        assert_eq!(
-            client.events[0].bytes,
-            b"opaque event bytes validated by the caller"
-        );
-        assert!(client.unresolved_ranges.is_empty());
-        assert_eq!(server.receive, SyncServeReceiveOutcome::Received);
-        assert_eq!(server.included_events, 1);
-        assert!(matches!(client.request_hop, HopOutcome::Accepted(_)));
-        assert!(matches!(server.response_hop, HopOutcome::Accepted(_)));
+        tokio::pin!(server_future);
+
+        let server_result = {
+            let client_future = execute_authenticated_sync_once(
+                &client_adapter,
+                &alice,
+                alice_pins_mallory,
+                &summary,
+                &summary,
+                &mut deduplicator,
+                &mut validator,
+                |_, requested_scope| requested_scope == scope,
+                &client_cancellation,
+            );
+            tokio::pin!(client_future);
+            tokio::select! {
+                result = &mut server_future => result,
+                _ = &mut client_future => panic!("mismatched peer pin must not authenticate"),
+            }
+        };
+        assert!(matches!(
+            server_result,
+            Err(AuthenticatedSyncError::IdentityBinding)
+        ));
+        assert_eq!(source_calls.get(), 0);
     }
 }

@@ -17,7 +17,7 @@ Adversaries include passive local radio sniffer; active frame injector/replayer;
 ## Cryptographic layers
 
 1. Device identity: Ed25519 public verification and X25519 pairwise key; profile mutable separately. Platform-protected wrapping where supported. Never reveal private material to the WebView or diagnostics.
-2. Nearby session: reviewed Noise pattern, with version/keys/discovery-token/capability transcript binding and anti-replay. Link confidentiality does not authorize Space actions.
+2. Authenticated direct sync: one-shot Snow Noise XX with the fixed `lattice:direct-sync:noise-xx:v1\0` prologue. Each side signs the final handshake hash, signer role, and exact initiator/responder identity bundles; the peer signature must match the caller's pin. Sync frames use Noise's ordered transport state, and callers must authorize scope before planning or serving it. Discovery-token binding, capability negotiation, and other nearby adapters are not connected to this path. Link confidentiality and identity proof do not authorize Space actions.
 3. Space/DM: MLS 1.0 group membership/epochs. Removed member does not receive future valid epoch keys; confidentiality of prior plaintext is not retroactively restored.
 4. Local data: protected keys plus encrypted sensitive blobs, while documenting any plaintext indexing metadata. “Encrypted database” is not claimed unless measured true for the shipped schema.
 5. Voice: WebRTC media path with current Space/session authorization. TURN routes packets but is not Space authority.

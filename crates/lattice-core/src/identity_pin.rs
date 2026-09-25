@@ -1,4 +1,6 @@
-use lattice_identity::{IdentityPublicBundle, PinnedIdentity};
+use std::future::Future;
+
+use lattice_identity::{DeviceIdentity, IdentityPublicBundle, PinnedIdentity};
 use lattice_storage::{StoreError, TrustedIdentityRecord};
 
 use super::{Client, CoreError};
@@ -57,5 +59,32 @@ impl Client {
         let bundle = IdentityPublicBundle::from_bytes(&record.public_bundle)?;
         let pinned = PinnedIdentity::from_verified_fingerprint(bundle, record.fingerprint)?;
         Ok(Some(pinned))
+    }
+
+    /// Runs an asynchronous operation with the local identity borrowed and an
+    /// exact persisted peer pin loaded and revalidated first.
+    ///
+    /// The callback is not invoked when the fingerprint is not pinned. The
+    /// local private-key bytes are never exported; the callback receives only
+    /// a borrow of the live [`DeviceIdentity`] and the validated public pin.
+    /// The pin proves only key possession after a protocol verifies it; callers
+    /// remain responsible for scope and MLS authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if loading or validating the persisted pin fails.
+    pub async fn with_pinned_identity<'a, T, F, Fut>(
+        &'a self,
+        fingerprint: &[u8; 32],
+        operation: F,
+    ) -> Result<Option<T>, CoreError>
+    where
+        F: FnOnce(&'a DeviceIdentity, PinnedIdentity) -> Fut,
+        Fut: Future<Output = T> + 'a,
+    {
+        let Some(pinned) = self.pinned_identity(fingerprint)? else {
+            return Ok(None);
+        };
+        Ok(Some(operation(&self.identity, pinned).await))
     }
 }
