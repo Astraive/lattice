@@ -28,6 +28,8 @@ CLI output should support human and machine-readable modes with stable error cla
 
 The CLI implements `about`, `status`, identity initialization/CSR/pinning, local Space create/list/restore/recover/message/edit/history, `space join`, `sync status`, local relay settings/probes, and `doctor`. `space join --package <path> --inviter-fingerprint <hex> --credential <path>` imports a bounded signed Welcome bootstrap from an exact pre-pinned inviter into the protected local profile. It does not perform general event-history replay, send invitations, contact a relay, or establish ongoing synchronization; the full invite/leave lifecycle remains unavailable.
 
+`sync status` counts locally committed event records through bounded keyset pages and reports `committed_events` in JSON output. This is a local record count, not a per-Space completeness summary or evidence of peer synchronization.
+
 ## Command behavior and output
 
 `space_create` and each `space_list` row include `channels`, whose entries contain lowercase hexadecimal `id`, `name`, `type`, and `archived`. `space_message` and `space_edit` return `state: "queued"`, the lowercase hexadecimal `event_id`, and explicit `forwarded: false`, `delivered: false`, and `network_contacted: false` fields. `space_history` returns the requested IDs, `source: "encrypted_local_outgoing_cache"`, `network_contacted: false`, and a `messages` array containing event, channel, author, sequence, Lamport, content, and outbox-state fields.
