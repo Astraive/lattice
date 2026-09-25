@@ -460,6 +460,43 @@ mod tests {
     }
 
     #[test]
+    fn hostile_nostr_json_corpus_never_returns_an_unverified_event() {
+        let event = NostrEventV1::create(
+            &test_secret_key(),
+            42,
+            39_001,
+            vec![vec!["t".into(), "lattice1.test".into()]],
+            "opaque".into(),
+        )
+        .expect("valid signed seed");
+        let encoded = event.to_json().expect("serialize signed seed");
+        for index in 0..encoded.len() {
+            for mask in [0x01, 0x80] {
+                let mut mutated = encoded.clone();
+                mutated[index] ^= mask;
+                if let Ok(decoded) = NostrEventV1::parse_json(&mutated) {
+                    assert!(decoded.verify());
+                }
+            }
+        }
+
+        let mut state = 0x4528_21e6_38d0_1377_u64;
+        for _ in 0..1_024 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            let _ = NostrEventV1::parse_json(&input);
+        }
+    }
+    #[test]
     fn complete_json_size_limit_includes_exact_boundary() {
         let empty = NostrEventV1::create(&test_secret_key(), 1, 1, vec![], String::new()).unwrap();
         let empty_size = empty.to_json().unwrap().len();
