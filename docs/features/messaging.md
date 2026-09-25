@@ -16,6 +16,10 @@ The Rust reducer projects authorized messages and updates in memory. Core caches
 
 `Client::queue_text_message_with_mentions` places a sorted, unique list of full device fingerprints and Space role IDs in the encrypted message payload. Role targets must exist in the event policy and require the existing broad-mention permission; legacy v1 messages still decode with no targets. The reducer exposes validated targets through its message projection. `Client::set_mention_muted` stores per-device mute preferences as a protected local record; `should_notify_for_mentions` suppresses notifications when no locally resolved targets remain unmuted. Callers resolve recipient/role membership at the selected event policy context and still own notification dispatch.
 
+## Implemented volatile presence and typing projection
+
+`space::ephemeral::EphemeralStateTable` accepts only MLS-bound kind-10 events for the reducer's current, non-conflicted generation and active members. Canonical active/clear payloads have a 60-second presence limit and 10-second typing limit; receiver-side `Instant` expiry, author-sequence replay watermarks and an 8,192-entry cap are process-local. No event-log, outbox, or persistence path is involved. Callers must keep these envelopes on ephemeral-capable routes and invoke `apply` only after MLS authentication; the library does not implement network scheduling or notification dispatch.
+
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
 | MSG-001 | An authorized user shall compose and commit text while disconnected. | Restart after local send retains event with queued status. | M1 |

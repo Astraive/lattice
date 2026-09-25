@@ -14,6 +14,9 @@
 //! caller-supplied protected-body bytes; `10` 32-byte opaque MLS group
 //! reference; and `11` MLS epoch.
 //!
+//! Event kind `10` is reserved for encrypted ephemeral presence/typing hints;
+//! callers must keep those records out of durable history and store-forward.
+//!
 //! The outer canonical CBOR map uses exact ascending keys: `0` outer format
 //! version (`1`); `1` the exact encoded unsigned preimage as a byte string;
 //! `2` the exact versioned 65-byte `IdentityPublicBundle`; and `3` the
@@ -73,6 +76,8 @@ pub enum EventKind {
     FileManifest = 8,
     /// Encrypted voice-signaling content.
     VoiceSignal = 9,
+    /// Encrypted, non-persistent presence or typing state.
+    Ephemeral = 10,
 }
 
 impl TryFrom<u64> for EventKind {
@@ -89,6 +94,7 @@ impl TryFrom<u64> for EventKind {
             7 => Ok(Self::MlsControl),
             8 => Ok(Self::FileManifest),
             9 => Ok(Self::VoiceSignal),
+            10 => Ok(Self::Ephemeral),
             unknown => Err(EventError::UnknownMandatoryEventKind(unknown)),
         }
     }
@@ -712,6 +718,15 @@ mod tests {
                 digit(pair[0]) * 16 + digit(pair[1])
             })
             .collect()
+    }
+
+    #[test]
+    fn ephemeral_event_kind_is_recognized_as_mandatory() {
+        assert_eq!(EventKind::try_from(10), Ok(EventKind::Ephemeral));
+        assert_eq!(
+            EventKind::try_from(11),
+            Err(EventError::UnknownMandatoryEventKind(11))
+        );
     }
 
     #[test]

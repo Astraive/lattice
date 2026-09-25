@@ -3026,9 +3026,15 @@ fn unwrap_mls_storage_key<P: PrivateKeyProtector>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
 
-    use super::{Client, CoreError, InitialChannel, bind_mls_application};
+    use super::space::ephemeral::{
+        EphemeralApplyResult, EphemeralKind, EphemeralStateTable, EphemeralUpdate,
+    };
+    use super::{Client, CoreError, InitialChannel, MlsBoundEvent, bind_mls_application};
     use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
     use lattice_identity::{
         DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
@@ -3596,6 +3602,125 @@ mod tests {
             .set_mention_muted(target, false)
             .expect("remove local mute");
         assert!(reopened.should_notify_for_mentions(&[target]).unwrap());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Keep the expiry/replay lifecycle assertions together.
+    fn ephemeral_state_is_bounded_replay_safe_and_expires() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let reducer = created.reducer();
+        let now = Instant::now();
+        let make_event = |sequence, update: EphemeralUpdate| {
+            let event = VerifiedSignatureOnlyEvent::create(
+                &client.identity,
+                EventDraft {
+                    space_id: *created.space_id(),
+                    channel_id: None,
+                    author_sequence: sequence,
+                    lamport: sequence,
+                    wall_time_hint: 0,
+                    parents: Vec::new(),
+                    kind: EventKind::Ephemeral,
+                    protected_body: vec![1],
+                    mls_group_reference: *created.group_reference(),
+                    mls_epoch: 0,
+                },
+            )
+            .expect("sign ephemeral hint");
+            MlsBoundEvent {
+                event,
+                plaintext: update.encode().expect("encode ephemeral payload"),
+            }
+        };
+        let active = EphemeralUpdate {
+            kind: EphemeralKind::Presence,
+            active: true,
+            ttl: Duration::from_secs(5),
+        };
+        let first = make_event(1, active);
+        let mut table = EphemeralStateTable::new();
+        assert_eq!(
+            table.apply(reducer, &first, now).unwrap(),
+            EphemeralApplyResult::Applied
+        );
+        assert_eq!(
+            table.apply(reducer, &first, now).unwrap(),
+            EphemeralApplyResult::Duplicate
+        );
+        assert!(table.is_present(
+            reducer,
+            client.identity.fingerprint(),
+            now + Duration::from_secs(4)
+        ));
+        let typing = make_event(
+            1,
+            EphemeralUpdate {
+                kind: EphemeralKind::Typing,
+                active: true,
+                ttl: Duration::from_secs(5),
+            },
+        );
+        assert_eq!(
+            table.apply(reducer, &typing, now).unwrap(),
+            EphemeralApplyResult::Applied
+        );
+        assert!(table.is_typing(
+            reducer,
+            client.identity.fingerprint(),
+            now + Duration::from_secs(4),
+        ));
+        assert!(!table.is_typing(
+            reducer,
+            client.identity.fingerprint(),
+            now + Duration::from_secs(5),
+        ));
+        assert!(!table.is_present(
+            reducer,
+            client.identity.fingerprint(),
+            now + Duration::from_secs(5)
+        ));
+
+        let clear = make_event(
+            2,
+            EphemeralUpdate {
+                kind: EphemeralKind::Presence,
+                active: false,
+                ttl: Duration::ZERO,
+            },
+        );
+        assert_eq!(
+            table
+                .apply(reducer, &clear, now + Duration::from_secs(6))
+                .unwrap(),
+            EphemeralApplyResult::Applied
+        );
+        assert_eq!(
+            table
+                .apply(reducer, &first, now + Duration::from_secs(7))
+                .unwrap(),
+            EphemeralApplyResult::IgnoredStale
+        );
+        assert!(!table.is_present(
+            reducer,
+            client.identity.fingerprint(),
+            now + Duration::from_secs(7)
+        ));
     }
 
     #[test]

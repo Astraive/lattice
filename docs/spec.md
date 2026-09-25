@@ -611,6 +611,7 @@ For two events $a$ and $b$, the stable display order is computed from: $$O(e)=(e
 | `PIN` | Channel | Adds/removes pinned reference. |
 | `FILE_MANIFEST` | Channel/DM | Announces content-addressed attachment metadata. |
 | `VOICE_STATE` | Voice | Short-lived join/leave/mute/session signaling state. |
+| `EPHEMERAL_STATE` (kind 10) | Space | MLS-bound presence/typing hint; never durable history or courier content. |
 | `KEY_PACKAGE` | Security | Distributes MLS join material. |
 | `POLICY_RESOLVE` | Space | Resolves explicit authorization conflict. |
 
@@ -916,7 +917,7 @@ The UI distinguishes:
 
 ## Typing and presence
 
-Typing indicators and presence are lossy ephemeral events with very short expiry and no store-forward behavior. Presence means “observed recently” rather than “globally online.” A serverless partitioned system cannot know global presence with certainty.
+Ephemeral kind-10 payloads are canonical maps `{0: 1, 1: kind, 2: active, 3: ttl_ms}`, where kind `0` is presence and `1` is typing. Active updates require a positive lifetime no greater than 60 seconds for presence or 10 seconds for typing; a clear update uses `active = false` and `ttl_ms = 0`. Events have no channel or parents and are processed only after exact MLS binding and current active-member validation for the matching Space/group generation. Receivers start expiry from a local monotonic clock, not sender wall time. State is process-local, bounded to 8,192 keys by `(Space, MLS generation, author, kind)`, and is never persisted, backfilled, or routed through store-forward paths. Author sequence watermarks suppress duplicates and stale updates during their bounded in-memory lifetime. Expiry means only “not observed recently,” never a globally authoritative offline state.
 
 # Files and Attachments
 

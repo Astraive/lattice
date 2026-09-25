@@ -30,6 +30,7 @@ use lattice_files::AttachmentManifest;
 use lattice_protocol::{Value, decode_canonical};
 
 use crate::MlsBoundEvent;
+pub mod ephemeral;
 pub mod message_projection;
 
 pub const MAX_SPACE_PAYLOAD_BYTES: usize = 262_144;
@@ -2506,7 +2507,9 @@ fn parse_application_action(
         EventKind::FileManifest => parse_file_manifest_action(&payload)
             .map(|manifest| (ApplicationAction::FileManifest, Some(manifest))),
         EventKind::VoiceSignal => Err(RejectReason::UnsupportedAction),
-        EventKind::Membership | EventKind::MlsControl => Err(RejectReason::WrongEventKind),
+        EventKind::Membership | EventKind::MlsControl | EventKind::Ephemeral => {
+            Err(RejectReason::WrongEventKind)
+        }
     }
 }
 
