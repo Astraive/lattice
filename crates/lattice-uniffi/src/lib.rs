@@ -129,7 +129,7 @@ pub struct MobileQueuedMessage {
     /// Immutable identifier of the committed event.
     pub event_id: Vec<u8>,
 }
-/// One locally decrypted outgoing message from the bounded recent history.
+/// One locally retained authorized message from bounded history or search.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct MobileLocalTextMessage {
     /// Immutable signed message event identifier.
@@ -144,6 +144,17 @@ pub struct MobileLocalTextMessage {
     pub content: String,
     /// Local outbox state, when the envelope remains queued.
     pub outbox_state: Option<String>,
+}
+
+/// Bounded offline search result over locally retained message history.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileLocalTextMessageSearch {
+    /// Up to 100 newest matching messages in chronological order.
+    pub messages: Vec<MobileLocalTextMessage>,
+    /// Exact number of matches in the local channel cache.
+    pub total_matches: u64,
+    /// Number of local messages scanned.
+    pub scanned_messages: u64,
 }
 
 /// Bounded caller-selected policy inputs for one initial channel.
@@ -241,6 +252,9 @@ pub enum MobileError {
     /// Text exceeds the bounded Space application payload size.
     #[error("invalid text message size")]
     InvalidMessageInput,
+    /// The local message-search query is empty or exceeds its byte limit.
+    #[error("invalid local message search query")]
+    InvalidMessageSearch,
     /// The valid message was not authorized by the locally restored policy.
     #[error("local message rejected by Space policy")]
     MessageRejected,
@@ -590,6 +604,29 @@ mod tests {
         assert!(matches!(
             client.list_local_text_messages(vec![0; 16], vec![0; 32], vec![0; 16]),
             Err(MobileError::MessageHistoryUnavailable)
+        ));
+        assert!(matches!(
+            client.search_local_text_messages(
+                vec![0; 15],
+                vec![0; 32],
+                vec![0; 16],
+                "needle".to_owned(),
+            ),
+            Err(MobileError::InvalidSpaceMessageId)
+        ));
+        assert!(matches!(
+            client
+                .search_local_text_messages(vec![0; 16], vec![0; 32], vec![0; 16], String::new(),),
+            Err(MobileError::InvalidMessageSearch)
+        ));
+        assert!(matches!(
+            client.search_local_text_messages(
+                vec![0; 16],
+                vec![0; 32],
+                vec![0; 16],
+                "x".repeat(lattice_core::MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES + 1),
+            ),
+            Err(MobileError::InvalidMessageSearch)
         ));
     }
 

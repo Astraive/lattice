@@ -1,16 +1,17 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lattice_core::{
-    Client, CoreError, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
-    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState, SpaceGenesisCursor,
+    Client, CoreError, InitialChannel, LocalTextMessageRecord, MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES,
+    MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState, SpaceGenesisCursor,
     space::{Channel, ChannelType, MAX_SPACE_PAYLOAD_BYTES},
 };
 use lattice_identity::{IdentityError, PrivateKeyProtectionError, PrivateKeyProtector};
 
 use super::{
     MobileChannelSummary, MobileChannelType, MobileCreatedSpace, MobileError, MobileIdentityInfo,
-    MobileInitialChannel, MobileLocalTextMessage, MobilePinnedIdentity, MobileQueuedMessage,
-    MobileSpaceCursor, MobileSpacePage, MobileSpaceSummary, PlatformKeyProtector,
+    MobileInitialChannel, MobileLocalTextMessage, MobileLocalTextMessageSearch,
+    MobilePinnedIdentity, MobileQueuedMessage, MobileSpaceCursor, MobileSpacePage,
+    MobileSpaceSummary, PlatformKeyProtector,
 };
 
 struct ProfileProtector {
@@ -357,10 +358,11 @@ impl MobileClient {
             next_cursor: page.next_cursor().map(Into::into),
         })
     }
-    /// Returns the bounded recent, locally retained outgoing text history.
+    /// Returns the newest bounded history of locally retained authorized text messages.
     ///
-    /// This does not fetch incoming messages or messages outside the latest
-    /// local page; returned outbox states never imply remote delivery.
+    /// History includes messages accepted from peers as well as locally authored
+    /// messages. Rows beyond the newest local page are available through search;
+    /// outbox states never imply remote delivery.
     ///
     /// # Errors
     ///
@@ -386,25 +388,61 @@ impl MobileClient {
         let messages = client
             .local_text_message_history(&space_id, &group_reference, &channel_id)
             .map_err(|_| MobileError::MessageHistoryUnavailable)?;
-        Ok(messages
-            .into_iter()
-            .map(|message| MobileLocalTextMessage {
-                event_id: message.event_id.to_vec(),
-                author_id: message.author_id.to_vec(),
-                author_sequence: message.author_sequence,
-                lamport: message.lamport,
-                content: message.content,
-                outbox_state: message.outbox_state.map(|state| {
-                    match state {
-                        OutboxState::Queued => "queued",
-                        OutboxState::Forwarded => "forwarded",
-                        OutboxState::Delivered => "delivered",
-                        OutboxState::Failed => "failed",
-                    }
-                    .to_owned()
-                }),
-            })
-            .collect())
+        Ok(messages.into_iter().map(mobile_text_message).collect())
+    }
+    /// Searches all locally retained authorized messages in one channel offline.
+    ///
+    /// The Core query limit is measured in UTF-8 bytes. At most the 100 newest
+    /// matches are returned; the total match and scanned-message counts remain
+    /// bounded by the local cache quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed IDs, `InvalidMessageSearch`
+    /// for an empty or oversized query, and `MessageHistoryUnavailable` when
+    /// local recovery, decryption, or event validation fails.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn search_local_text_messages(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        channel_id: Vec<u8>,
+        query: String,
+    ) -> Result<MobileLocalTextMessageSearch, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if query.is_empty() || query.len() > MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES {
+            return Err(MobileError::InvalidMessageSearch);
+        }
+        let mut client = self.lock_client()?;
+        let result = client
+            .search_local_text_messages(&space_id, &group_reference, &channel_id, &query)
+            .map_err(|error| match error {
+                CoreError::InvalidLocalTextMessageSearch => MobileError::InvalidMessageSearch,
+                _ => MobileError::MessageHistoryUnavailable,
+            })?;
+        Ok(MobileLocalTextMessageSearch {
+            messages: result
+                .messages
+                .into_iter()
+                .map(mobile_text_message)
+                .collect(),
+            total_matches: result
+                .total_matches
+                .try_into()
+                .map_err(|_| MobileError::MessageHistoryUnavailable)?,
+            scanned_messages: result
+                .scanned_messages
+                .try_into()
+                .map_err(|_| MobileError::MessageHistoryUnavailable)?,
+        })
     }
     /// Validates and commits a text event to this device's local durable outbox.
     ///
@@ -511,6 +549,25 @@ impl MobileClient {
         Ok(MobileQueuedMessage {
             event_id: queued.event_id().to_vec(),
         })
+    }
+}
+
+fn mobile_text_message(message: LocalTextMessageRecord) -> MobileLocalTextMessage {
+    MobileLocalTextMessage {
+        event_id: message.event_id.to_vec(),
+        author_id: message.author_id.to_vec(),
+        author_sequence: message.author_sequence,
+        lamport: message.lamport,
+        content: message.content,
+        outbox_state: message.outbox_state.map(|state| {
+            match state {
+                OutboxState::Queued => "queued",
+                OutboxState::Forwarded => "forwarded",
+                OutboxState::Delivered => "delivered",
+                OutboxState::Failed => "failed",
+            }
+            .to_owned()
+        }),
     }
 }
 

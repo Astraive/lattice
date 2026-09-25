@@ -1270,6 +1270,7 @@ class MainActivity : ComponentActivity() {
         is MobileException.MessageRejected -> "Local MLS rejected the message."
         is MobileException.MessageQueueFailed -> "The local message could not be durably queued."
         is MobileException.MessageHistoryUnavailable -> "The locally retained message history is unavailable or failed authentication."
+        is MobileException.InvalidMessageSearch -> "Enter a non-empty search phrase of at most 256 UTF-8 bytes."
         is MobileException.SpaceRecoveryFailed -> "The prior local generation could not be restored or authorized for recovery."
         is MobileException.InvalidSpaceBootstrap -> "The Welcome bootstrap package is invalid or exceeds its size bound."
         is MobileException.UntrustedSpaceInviter -> "The inviter identity is not pinned to the exact expected bundle."

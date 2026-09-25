@@ -774,6 +774,8 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -812,6 +814,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
 ): Short
@@ -898,6 +902,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`:
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
@@ -1050,7 +1056,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces() != 30649.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages() != 36332.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages() != 10804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence() != 50784.toShort()) {
@@ -1069,6 +1075,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation() != 15281.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages() != 1752.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() != 64121.toShort()) {
@@ -1545,10 +1554,11 @@ public interface MobileClientInterface {
     fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage
     
     /**
-     * Returns the bounded recent, locally retained outgoing text history.
+     * Returns the newest bounded history of locally retained authorized text messages.
      *
-     * This does not fetch incoming messages or messages outside the latest
-     * local page; returned outbox states never imply remote delivery.
+     * History includes messages accepted from peers as well as locally authored
+     * messages. Rows beyond the newest local page are available through search;
+     * outbox states never imply remote delivery.
      *
      * # Errors
      *
@@ -1643,6 +1653,21 @@ public interface MobileClientInterface {
      */
     fun `recoverLocalSpaceGeneration`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace
     
+    /**
+     * Searches all locally retained authorized messages in one channel offline.
+     *
+     * The Core query limit is measured in UTF-8 bytes. At most the 100 newest
+     * matches are returned; the total match and scanned-message counts remain
+     * bounded by the local cache quota.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed IDs, `InvalidMessageSearch`
+     * for an empty or oversized query, and `MessageHistoryUnavailable` when
+     * local recovery, decryption, or event validation fails.
+     */
+    fun `searchLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `query`: kotlin.String): MobileLocalTextMessageSearch
+
     companion object
 }
 
@@ -1852,10 +1877,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Returns the bounded recent, locally retained outgoing text history.
+     * Returns the newest bounded history of locally retained authorized text messages.
      *
-     * This does not fetch incoming messages or messages outside the latest
-     * local page; returned outbox states never imply remote delivery.
+     * History includes messages accepted from peers as well as locally authored
+     * messages. Rows beyond the newest local page are available through search;
+     * outbox states never imply remote delivery.
      *
      * # Errors
      *
@@ -2027,8 +2053,34 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
 
     
+    /**
+     * Searches all locally retained authorized messages in one channel offline.
+     *
+     * The Core query limit is measured in UTF-8 bytes. At most the 100 newest
+     * matches are returned; the total match and scanned-message counts remain
+     * bounded by the local cache quota.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed IDs, `InvalidMessageSearch`
+     * for an empty or oversized query, and `MessageHistoryUnavailable` when
+     * local recovery, decryption, or event validation fails.
+     */
+    @Throws(MobileException::class)override fun `searchLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `query`: kotlin.String): MobileLocalTextMessageSearch {
+            return FfiConverterTypeMobileLocalTextMessageSearch.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`channelId`),FfiConverterString.lower(`query`),_status)
+}
+    }
+    )
+    }
 
-    
+
+
+
+
     companion object {
         
     /**
@@ -2637,7 +2689,7 @@ public object FfiConverterTypeMobileInitialChannel: FfiConverterRustBuffer<Mobil
 
 
 /**
- * One locally decrypted outgoing message from the bounded recent history.
+ * One locally retained authorized message from bounded history or search.
  */
 data class MobileLocalTextMessage (
     /**
@@ -2700,6 +2752,54 @@ public object FfiConverterTypeMobileLocalTextMessage: FfiConverterRustBuffer<Mob
             FfiConverterULong.write(value.`lamport`, buf)
             FfiConverterString.write(value.`content`, buf)
             FfiConverterOptionalString.write(value.`outboxState`, buf)
+    }
+}
+
+
+
+/**
+ * Bounded offline search result over locally retained message history.
+ */
+data class MobileLocalTextMessageSearch (
+    /**
+     * Up to 100 newest matching messages in chronological order.
+     */
+    var `messages`: List<MobileLocalTextMessage>,
+    /**
+     * Exact number of matches in the local channel cache.
+     */
+    var `totalMatches`: kotlin.ULong,
+    /**
+     * Number of local messages scanned.
+     */
+    var `scannedMessages`: kotlin.ULong
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileLocalTextMessageSearch: FfiConverterRustBuffer<MobileLocalTextMessageSearch> {
+    override fun read(buf: ByteBuffer): MobileLocalTextMessageSearch {
+        return MobileLocalTextMessageSearch(
+            FfiConverterSequenceTypeMobileLocalTextMessage.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileLocalTextMessageSearch) = (
+            FfiConverterSequenceTypeMobileLocalTextMessage.allocationSize(value.`messages`) +
+            FfiConverterULong.allocationSize(value.`totalMatches`) +
+            FfiConverterULong.allocationSize(value.`scannedMessages`)
+    )
+
+    override fun write(value: MobileLocalTextMessageSearch, buf: ByteBuffer) {
+            FfiConverterSequenceTypeMobileLocalTextMessage.write(value.`messages`, buf)
+            FfiConverterULong.write(value.`totalMatches`, buf)
+            FfiConverterULong.write(value.`scannedMessages`, buf)
     }
 }
 
@@ -3126,6 +3226,15 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
+     * The local message-search query is empty or exceeds its byte limit.
+     */
+    class InvalidMessageSearch(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+
+    /**
      * The valid message was not authorized by the locally restored policy.
      */
     class MessageRejected(
@@ -3187,9 +3296,10 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             17 -> MobileException.SpaceJoinFailed()
             18 -> MobileException.InvalidSpaceMessageId()
             19 -> MobileException.InvalidMessageInput()
-            20 -> MobileException.MessageRejected()
-            21 -> MobileException.MessageQueueFailed()
-            22 -> MobileException.MessageHistoryUnavailable()
+            20 -> MobileException.InvalidMessageSearch()
+            21 -> MobileException.MessageRejected()
+            22 -> MobileException.MessageQueueFailed()
+            23 -> MobileException.MessageHistoryUnavailable()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -3269,6 +3379,10 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.InvalidMessageInput -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidMessageSearch -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -3365,16 +3479,20 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(19)
                 Unit
             }
-            is MobileException.MessageRejected -> {
+            is MobileException.InvalidMessageSearch -> {
                 buf.putInt(20)
                 Unit
             }
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.MessageRejected -> {
                 buf.putInt(21)
                 Unit
             }
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.MessageQueueFailed -> {
                 buf.putInt(22)
+                Unit
+            }
+            is MobileException.MessageHistoryUnavailable -> {
+                buf.putInt(23)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
