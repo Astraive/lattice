@@ -2502,7 +2502,6 @@ fn encode_text_edit(target: [u8; 32], content: &str) -> Result<Vec<u8>, CoreErro
 }
 
 fn encode_file_manifest(manifest: &AttachmentManifest) -> Result<Vec<u8>, CoreError> {
-    manifest.validate()?;
     let chunk_hashes = manifest
         .chunk_hashes
         .iter()
