@@ -39,7 +39,7 @@
 
 ## Update rule
 
-When completing an item, link its code revision, device/test result, protocol vector or ADR in the issue tracker. Keep this backlog concise; detailed implementation subtasks belong in issues. Do not mark M3/M8 complete while ADR-001 or ADR-002 is open.
+When completing an item, link its code revision, device/test result, protocol vector or ADR in the issue tracker. Keep this backlog concise; detailed implementation subtasks belong in issues. ADR-001 and ADR-002 policies are accepted; keep M3/M8 open until required conflict, recovery, channel-capability, and release evidence passes.
 
 ## Subsystem completion checklists
 

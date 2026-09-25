@@ -14,7 +14,7 @@ A Space is a replicated membership and policy domain with authenticated genesis 
 | SPC-008 | Moderators shall tombstone content and record distinguishable moderation action. | Authorized moderation hides normal view; invalid moderator cannot. | M3 |
 | SPC-009 | Invite policy shall support expiry and optional use limits without relying on relay truth. | Expired/wrong-policy invitations fail on peer sync; offline simultaneous uses defined. | M3 |
 | SPC-010 | Member lists shall distinguish active member, pending join, removed, banned and unsynchronized state. | Two partitions show honest local status and resolve after synchronization. | M3 |
-| SPC-011 | Channels advertised as read-private shall have keys unavailable to other Space members. | Non-member Space device cannot derive channel content key; blocked until ADR-002. | M3; ADR-002 |
+| SPC-011 | Channels shall never claim read confidentiality from other Space members without separate cryptographic membership. | Read-private channel types and unknown required read-isolation capabilities fail closed; ordinary channel metadata makes no confidentiality claim. | M3; ADR-002 |
 
 Representative permissions: Space/channel/role manage; invite/remove/ban; message send/attach/moderate; thread create; mention everyone; pin; join/speak/moderate voice; retention; relay recommendation. Custom roles are bitsets over versioned permission identifiers, not arbitrary scripts. Space relay recommendations never override an installation’s network policy. See [architecture.md](../architecture.md#7-security-membership-and-authorization) and [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750) for application access-control responsibilities.
 
@@ -44,7 +44,7 @@ For each privileged event, load its declared causal dependencies and relevant ac
 - **Text:** durable events, replies and threads, ordered view over event IDs.
 - **Announcement:** ordinary members may read, selected roles may publish; this is an authorization rule, not necessarily separate encryption.
 - **Voice:** durable channel metadata with ephemeral call/session state and separate media path.
-- **Read-private (blocked):** requires ADR-002 to choose per-channel MLS group or another reviewed restricted-key profile. A visual lock icon must not imply cryptographic privacy while every Space member can derive its exporter key.
+- **Read-private:** unsupported by accepted ADR-002; the protocol rejects this channel type and required read-isolation capabilities until a separately reviewed cryptographic membership profile is adopted.
 
 ## Moderation and conflict examples
 

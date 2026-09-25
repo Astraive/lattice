@@ -48,7 +48,7 @@ See [TODO.md](TODO.md) for actionable items and [TEST_PLAN.md](quality/TEST_PLAN
 
 **M2** proves the protocol is implementable on iOS and compatible with Android in real radio conditions. SwiftUI/Core Bluetooth adapter performs same vector and local schema checks. Record which foreground/background states are viable; if discovery fails on a supported device, fix path assumptions before multiplying features.
 
-**M3** adds the authorization boundary: invites, credentials/KeyPackages, MLS group changes, roles, channel rules, DMs and messaging mutations. This phase is blocked by ADR-001/002 and their model tests. UI labels for private channels follow the actual keying decision. A failed partition membership experiment prevents progression to a “secure Spaces” claim even if happy-path chat works.
+**M3** adds the authorization boundary: invites, credentials/KeyPackages, MLS group changes, roles, channel rules, DMs and messaging mutations. ADR-001/002 policies are accepted; their implementation and security evidence remain exit gates. Channel UI and protocol metadata must reflect ADR-002's policy-only read semantics. A failed partition membership experiment prevents progression to a “secure Spaces” claim even if happy-path chat works.
 
 **M4/M5** independently add high-bandwidth direct paths/files and optional relays. Both reuse event IDs; neither introduces a second state authority. File manifests must be hash-checked and resumable. Relay profile is frozen under ADR-003 and tested against independently operated compatible services.
 
