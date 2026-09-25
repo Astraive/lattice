@@ -4,6 +4,11 @@ use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use sha2::{Digest as Sha2Digest, Sha256};
+mod staging;
+
+pub use staging::{
+    AttachmentStagingLimits, AttachmentStagingStore, ManagedAttachmentFile, StagingCleanupSummary,
+};
 
 /// SHA-256 digest bytes.
 pub type Sha256Hash = [u8; 32];
@@ -59,6 +64,24 @@ pub enum AttachmentError {
     StagingQuotaExceeded { file_size: u64, limit: u64 },
     /// A staging store contains bytes beyond the declared file size.
     StagingStoreTooLarge { actual: u64, maximum: u64 },
+    /// The requested transfer would exceed the persistent global byte quota.
+    GlobalStagingQuotaExceeded {
+        requested: u64,
+        reserved: u64,
+        limit: u64,
+    },
+    /// The requested transfer would exceed the retained transfer count.
+    StagingTransferLimitExceeded { limit: usize },
+    /// A requested staging operation conflicts with an active transfer or store lock.
+    StagingBusy,
+    /// The staging root contains unsafe or invalid transfer metadata.
+    StagingMetadataInvalid,
+    /// The staging directory contains more entries than the scanner permits.
+    StagingDirectoryTooLarge { limit: usize },
+    /// The requested staging root is not a private regular directory.
+    UnsafeStagingDirectory,
+    /// A staging policy contains a zero or out-of-range limit.
+    InvalidStagingLimits,
     /// The requested transfer has missing chunks.
     TransferIncomplete,
     /// This chunk was already received and verified.
@@ -118,6 +141,39 @@ impl fmt::Display for AttachmentError {
                     formatter,
                     "attachment size {file_size} exceeds staging quota {limit}"
                 )
+            }
+            Self::GlobalStagingQuotaExceeded {
+                requested,
+                reserved,
+                limit,
+            } => write!(
+                formatter,
+                "attachment reservation {requested} with {reserved} already reserved exceeds global quota {limit}"
+            ),
+            Self::StagingTransferLimitExceeded { limit } => {
+                write!(
+                    formatter,
+                    "attachment staging reached transfer limit {limit}"
+                )
+            }
+            Self::StagingBusy => write!(formatter, "attachment staging store is busy"),
+            Self::StagingMetadataInvalid => {
+                write!(formatter, "attachment staging metadata is invalid")
+            }
+            Self::StagingDirectoryTooLarge { limit } => {
+                write!(
+                    formatter,
+                    "attachment staging directory exceeds {limit} entries"
+                )
+            }
+            Self::UnsafeStagingDirectory => {
+                write!(
+                    formatter,
+                    "attachment staging root must be a non-symlink directory"
+                )
+            }
+            Self::InvalidStagingLimits => {
+                write!(formatter, "attachment staging limits are invalid")
             }
             Self::StagingAllocationFailed => {
                 write!(formatter, "attachment staging allocation failed")

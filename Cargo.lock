@@ -3116,6 +3116,7 @@ dependencies = [
 name = "lattice-files"
 version = "0.1.0"
 dependencies = [
+ "fs4",
  "sha2 0.10.9",
 ]
 
