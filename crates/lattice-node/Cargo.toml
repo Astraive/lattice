@@ -6,5 +6,13 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[dependencies]
+lattice-platform = { path = "../lattice-platform", version = "=0.1.0" }
+lattice-router = { path = "../lattice-router", version = "=0.1.0" }
+lattice-sync = { path = "../lattice-sync", version = "=0.1.0" }
+lattice-transport = { path = "../lattice-transport", version = "=0.1.0" }
+tokio = { version = "=1.53.1", features = ["macros", "rt"] }
+tokio-util = { version = "=0.7.19", features = ["rt"] }
+
 [lints]
 workspace = true

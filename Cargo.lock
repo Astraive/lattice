@@ -3155,6 +3155,14 @@ dependencies = [
 [[package]]
 name = "lattice-node"
 version = "0.1.0"
+dependencies = [
+ "lattice-platform",
+ "lattice-router",
+ "lattice-sync",
+ "lattice-transport",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "lattice-platform"
