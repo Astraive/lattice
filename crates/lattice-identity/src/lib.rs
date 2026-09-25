@@ -836,6 +836,40 @@ mod tests {
     }
 
     #[test]
+    fn hostile_public_bundle_corpus_is_bounded_and_round_trips() {
+        let valid = DeviceIdentity::generate()
+            .expect("generate identity fixture")
+            .public_bundle()
+            .to_bytes();
+        for index in 0..valid.len() {
+            for mask in [0x01, 0x80] {
+                let mut mutated = valid;
+                mutated[index] ^= mask;
+                if let Ok(bundle) = IdentityPublicBundle::from_bytes(&mutated) {
+                    assert_eq!(bundle.to_bytes(), mutated);
+                }
+            }
+        }
+
+        let mut state = 0xc0ac_29b7_c97c_50dd_u64;
+        for _ in 0..1_024 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 96).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            if let Ok(bundle) = IdentityPublicBundle::from_bytes(&input) {
+                assert_eq!(bundle.to_bytes().as_slice(), input.as_slice());
+            }
+        }
+    }
+    #[test]
     fn invalid_bundle_and_dh_inputs_are_rejected() {
         let identity = DeviceIdentity::generate().expect("OS CSPRNG should be available");
         assert!(matches!(
