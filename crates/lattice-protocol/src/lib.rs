@@ -555,6 +555,29 @@ mod tests {
     }
 
     #[test]
+    fn hostile_byte_corpus_is_panic_free_and_decodes_only_canonical_values() {
+        let mut state = 0x1f83_d9ab_fb41_bd6b_u64;
+        for _ in 0..4_096 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            if let Ok(value) = decode_canonical(&input) {
+                assert_eq!(
+                    encode_canonical(&value).expect("decoded values remain encodable"),
+                    input
+                );
+            }
+        }
+    }
+    #[test]
     fn encoder_rejects_invalid_map_order_and_over_limit_values() {
         assert_eq!(
             encode_canonical(&Value::Map(vec![(2, Value::Null), (1, Value::Null)])),
