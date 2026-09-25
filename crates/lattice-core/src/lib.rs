@@ -1783,6 +1783,8 @@ impl Client {
             if existing.canonical_bytes != canonical_bytes {
                 return Err(CoreError::Storage(StoreError::EventIdConflict));
             }
+            self.store.resolve_pending(event_id)?;
+            self.store.resolve_dependency(event_id)?;
             return Ok(SyncedApplicationOutcome::Duplicate { event_id });
         }
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
@@ -1838,7 +1840,64 @@ impl Client {
                 Ok(staged_reducer)
             })?;
         created.reducer = staged_reducer;
+        self.store.resolve_dependency(event_id)?;
         Ok(SyncedApplicationOutcome::Accepted { event_id })
+    }
+
+    /// Retries ready authenticated application events retained for this generation.
+    ///
+    /// Call after accepting a parent event. Returned outcomes include each
+    /// pending event accepted or recognized as an exact duplicate; unresolved
+    /// dependencies remain in the bounded pending store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a ready event fails signature, MLS, authorization, or
+    /// storage validation.
+    pub fn retry_ready_synced_application_events(
+        &mut self,
+        created: &mut CreatedSpace,
+    ) -> Result<Vec<SyncedApplicationOutcome>, CoreError> {
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        let mut outcomes = Vec::new();
+        loop {
+            let pending = self.store.list_pending()?;
+            let mut made_progress = false;
+            for item in pending {
+                if !item.missing_dependencies.is_empty() {
+                    continue;
+                }
+                let event = VerifiedSignatureOnlyEvent::decode_verify(&item.canonical_bytes)?;
+                if event.space_id() != &created.space_id
+                    || event.mls_group_reference() != &created.group_reference
+                    || !matches!(
+                        event.kind(),
+                        EventKind::Message
+                            | EventKind::Edit
+                            | EventKind::Tombstone
+                            | EventKind::Reaction
+                            | EventKind::Pin
+                            | EventKind::FileManifest
+                    )
+                {
+                    continue;
+                }
+                let outcome =
+                    self.accept_synced_application_event(created, &item.canonical_bytes)?;
+                if matches!(
+                    outcome,
+                    SyncedApplicationOutcome::Accepted { .. }
+                        | SyncedApplicationOutcome::Duplicate { .. }
+                ) {
+                    made_progress = true;
+                }
+                outcomes.push(outcome);
+            }
+            if !made_progress {
+                break;
+            }
+        }
+        Ok(outcomes)
     }
 
     /// Returns the newest bounded local text-message history for one channel.
@@ -3112,6 +3171,45 @@ mod tests {
             },
         )
         .expect("event signature created")
+    }
+
+    fn encrypted_application_event(
+        client: &mut Client,
+        group_id: &[u8],
+        credential: &DeviceCredentialInput,
+        mut draft: EventDraft,
+        plaintext: &[u8],
+    ) -> VerifiedSignatureOnlyEvent {
+        draft.protected_body = client
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, group_id)?;
+                let ciphertext =
+                    group.encrypt_application(provider, identity, credential, plaintext)?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt remote application event");
+        VerifiedSignatureOnlyEvent::create(&client.identity, draft)
+            .expect("sign remote application event")
+    }
+
+    fn deliver_remote_application(
+        sender: &mut Client,
+        receiver: &mut Client,
+        receiver_space: &mut super::CreatedSpace,
+        group_id: &[u8],
+        credential: &DeviceCredentialInput,
+        draft: EventDraft,
+        plaintext: &[u8],
+    ) -> [u8; 32] {
+        let event = encrypted_application_event(sender, group_id, credential, draft, plaintext);
+        let event_id = *event.event_id().as_bytes();
+        assert_eq!(
+            receiver
+                .accept_synced_application_event(receiver_space, event.encoded_bytes())
+                .expect("accept remote application event"),
+            super::SyncedApplicationOutcome::Accepted { event_id }
+        );
+        event_id
     }
 
     #[test]
@@ -5486,6 +5584,197 @@ mod tests {
         assert_eq!(edited_history.len(), 1);
         assert_eq!(edited_history[0].event_id, message_id);
         assert_eq!(edited_history[0].content, "edited over MLS");
+        let remote_draft = |sequence, kind, parents| EventDraft {
+            space_id,
+            channel_id: Some(channel_id),
+            author_sequence: sequence,
+            lamport: sequence,
+            wall_time_hint: 0,
+            parents,
+            kind,
+            protected_body: Vec::new(),
+            mls_group_reference: group_reference,
+            mls_epoch: 1,
+        };
+        let tombstone_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Bytes(message_id.to_vec())),
+            (2, Value::Unsigned(0)),
+            (3, Value::Null),
+        ]))
+        .expect("encode remote tombstone");
+        let tombstone_id = deliver_remote_application(
+            &mut alice,
+            &mut bob,
+            &mut joined,
+            &created.group_id,
+            &alice_credential,
+            remote_draft(
+                7,
+                EventKind::Tombstone,
+                vec![lattice_protocol::EventId::from_bytes(message_id)],
+            ),
+            &tombstone_plaintext,
+        );
+        let history = joined.reducer().message_history(&channel_id);
+        let projected = history
+            .messages()
+            .iter()
+            .find(|message| message.event_id == message_id)
+            .expect("remote tombstone target remains projected");
+        assert!(projected.is_deleted());
+        assert_eq!(projected.tombstones.len(), 1);
+        assert_eq!(projected.tombstones[0].event_id, tombstone_id);
+
+        let reaction_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Bytes(message_id.to_vec())),
+            (2, Value::Text("wave".into())),
+            (3, Value::Unsigned(0)),
+            (4, Value::Null),
+        ]))
+        .expect("encode remote reaction");
+        let reaction_event = encrypted_application_event(
+            &mut alice,
+            &created.group_id,
+            &alice_credential,
+            remote_draft(
+                8,
+                EventKind::Reaction,
+                vec![lattice_protocol::EventId::from_bytes(message_id)],
+            ),
+            &reaction_plaintext,
+        );
+        let reaction_id = *reaction_event.event_id().as_bytes();
+        let reaction_remove_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Bytes(message_id.to_vec())),
+            (2, Value::Text("wave".into())),
+            (3, Value::Unsigned(1)),
+            (4, Value::Bytes(reaction_id.to_vec())),
+        ]))
+        .expect("encode remote reaction removal");
+        let reaction_remove_event = encrypted_application_event(
+            &mut alice,
+            &created.group_id,
+            &alice_credential,
+            remote_draft(
+                9,
+                EventKind::Reaction,
+                vec![lattice_protocol::EventId::from_bytes(reaction_id)],
+            ),
+            &reaction_remove_plaintext,
+        );
+        let reaction_remove_id = *reaction_remove_event.event_id().as_bytes();
+        assert_eq!(
+            bob.accept_synced_application_event(
+                &mut joined,
+                reaction_remove_event.encoded_bytes(),
+            )
+            .expect("retain remove before its referenced add"),
+            super::SyncedApplicationOutcome::Pending {
+                event_id: reaction_remove_id,
+                missing_dependencies: vec![reaction_id],
+            }
+        );
+        assert_eq!(
+            bob.accept_synced_application_event(&mut joined, reaction_event.encoded_bytes())
+                .expect("accept remote reaction add"),
+            super::SyncedApplicationOutcome::Accepted {
+                event_id: reaction_id
+            }
+        );
+        let reaction_history = joined.reducer().message_history(&channel_id);
+        let projected = reaction_history
+            .messages()
+            .iter()
+            .find(|message| message.event_id == message_id)
+            .expect("remote reaction target remains projected");
+        assert_eq!(projected.reactions[0].active_tags, vec![reaction_id]);
+        assert_eq!(
+            bob.retry_ready_synced_application_events(&mut joined)
+                .expect("retry now-ready remote reaction removal"),
+            vec![super::SyncedApplicationOutcome::Accepted {
+                event_id: reaction_remove_id
+            }]
+        );
+
+        let pin_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Bytes(message_id.to_vec())),
+            (2, Value::Bool(true)),
+            (3, Value::Null),
+        ]))
+        .expect("encode remote pin");
+        let pin_event = encrypted_application_event(
+            &mut alice,
+            &created.group_id,
+            &alice_credential,
+            remote_draft(
+                10,
+                EventKind::Pin,
+                vec![lattice_protocol::EventId::from_bytes(message_id)],
+            ),
+            &pin_plaintext,
+        );
+        let pin_id = *pin_event.event_id().as_bytes();
+        let pin_remove_plaintext = encode_canonical(&Value::Map(vec![
+            (0, Value::Unsigned(1)),
+            (1, Value::Bytes(message_id.to_vec())),
+            (2, Value::Bool(false)),
+            (3, Value::Bytes(pin_id.to_vec())),
+        ]))
+        .expect("encode remote pin removal");
+        let pin_remove_event = encrypted_application_event(
+            &mut alice,
+            &created.group_id,
+            &alice_credential,
+            remote_draft(
+                11,
+                EventKind::Pin,
+                vec![lattice_protocol::EventId::from_bytes(pin_id)],
+            ),
+            &pin_remove_plaintext,
+        );
+        let pin_remove_id = *pin_remove_event.event_id().as_bytes();
+        assert_eq!(
+            bob.accept_synced_application_event(&mut joined, pin_remove_event.encoded_bytes())
+                .expect("retain pin remove before its referenced add"),
+            super::SyncedApplicationOutcome::Pending {
+                event_id: pin_remove_id,
+                missing_dependencies: vec![pin_id],
+            }
+        );
+        assert_eq!(
+            bob.accept_synced_application_event(&mut joined, pin_event.encoded_bytes())
+                .expect("accept remote pin add"),
+            super::SyncedApplicationOutcome::Accepted { event_id: pin_id }
+        );
+        let pin_history = joined.reducer().message_history(&channel_id);
+        let projected = pin_history
+            .messages()
+            .iter()
+            .find(|message| message.event_id == message_id)
+            .expect("remote pin target remains projected");
+        assert!(projected.is_pinned());
+        assert_eq!(projected.pin_tags, vec![pin_id]);
+        assert_eq!(
+            bob.retry_ready_synced_application_events(&mut joined)
+                .expect("retry now-ready remote pin removal"),
+            vec![super::SyncedApplicationOutcome::Accepted {
+                event_id: pin_remove_id
+            }]
+        );
+        let updated_history = joined.reducer().message_history(&channel_id);
+        let projected = updated_history
+            .messages()
+            .iter()
+            .find(|message| message.event_id == message_id)
+            .expect("remote update target remains projected");
+        assert!(projected.is_deleted());
+        assert!(projected.reactions.is_empty());
+        assert!(!projected.is_pinned());
+
         let (control, transition) = alice
             .with_mls_transaction(|identity, provider, _| {
                 let mut group = GroupState::load(provider, &created.group_id)?;
@@ -5501,8 +5790,8 @@ mod tests {
                     EventDraft {
                         space_id,
                         channel_id: None,
-                        author_sequence: 7,
-                        lamport: 7,
+                        author_sequence: 12,
+                        lamport: 12,
                         wall_time_hint: 0,
                         parents: vec![lattice_protocol::EventId::from_bytes(
                             charlie_invite_event_id,
@@ -5535,8 +5824,8 @@ mod tests {
                     EventDraft {
                         space_id,
                         channel_id: None,
-                        author_sequence: 8,
-                        lamport: 8,
+                        author_sequence: 13,
+                        lamport: 13,
                         wall_time_hint: 0,
                         parents: vec![lattice_protocol::EventId::from_bytes(control_id)],
                         kind: EventKind::Membership,
