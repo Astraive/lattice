@@ -1118,6 +1118,44 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn hostile_envelope_byte_corpus_is_panic_free_and_canonical() {
+        let envelope = EnvelopeV1::new(
+            verified_vector_event(),
+            DeliveryClass::InteractiveText,
+            1_700_000_000,
+            1_702_592_000,
+            2,
+            4,
+        )
+        .expect("valid envelope seed");
+        let valid = envelope.encode();
+        for index in 0..valid.len() {
+            for mask in [0x01, 0x80] {
+                let mut mutated = valid.to_vec();
+                mutated[index] ^= mask;
+                if let Ok(decoded) = EnvelopeV1::decode(&mutated) {
+                    assert_eq!(decoded.encode(), mutated);
+                }
+            }
+        }
+
+        let mut state = 0x082e_fa98_ec4e_6c89_u64;
+        for _ in 0..1_024 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            let _ = EnvelopeV1::decode(&input);
+        }
+    }
     fn encode_raw_envelope(envelope_id: EnvelopeId, fields: &EnvelopeData<'_>) -> Vec<u8> {
         encode_envelope(envelope_id, fields).unwrap()
     }
