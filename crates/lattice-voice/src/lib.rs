@@ -101,7 +101,8 @@ pub enum VoiceState {
 /// any particular way.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoiceFailure {
-    /// Current Space policy no longer permits joining the room.
+    /// The caller reported that current voice policy no longer permits the
+    /// indicated capability.
     PermissionRevoked(VoicePermission),
     /// No eligible direct or locally allowed relay path was reported.
     NoUsablePath,
