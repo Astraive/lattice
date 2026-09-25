@@ -11,7 +11,7 @@
 //! common policy; pinned Welcome imports restore their signed checkpoint and
 //! locally authenticated membership-transition history.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::Path;
 
 use rusqlite::Transaction;
@@ -54,6 +54,10 @@ pub struct DeviceIdentityInfo {
 
 /// Maximum RFC 9420 X.509 credential content accepted for local Space creation.
 pub const MAX_SPACE_CREDENTIAL_BYTES: usize = lattice_mls::api::MAX_CREDENTIAL_BYTES;
+/// Maximum UTF-8 query bytes accepted by local text-history search.
+pub const MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES: usize = 256;
+/// Maximum matching messages returned by one local search.
+pub const MAX_LOCAL_TEXT_SEARCH_RESULTS: usize = 100;
 const MAX_SPACE_RECOVERY_DEPTH: usize = 32;
 
 /// Caller-selected fields for one initial channel; its identifier is generated
@@ -104,6 +108,16 @@ pub struct LocalTextMessageRecord {
     pub lamport: u64,
     pub content: String,
     pub outbox_state: Option<OutboxState>,
+}
+/// Bounded offline search result over locally retained authorized text messages.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalTextMessageSearchResult {
+    /// Newest matching messages in chronological order.
+    pub messages: Vec<LocalTextMessageRecord>,
+    /// Exact number of matches in the locally retained channel cache.
+    pub total_matches: usize,
+    /// Number of locally retained channel messages searched.
+    pub scanned_messages: usize,
 }
 
 /// Result of accepting one signature-verified, MLS-protected application event.
@@ -377,6 +391,9 @@ pub enum CoreError {
     /// An encrypted local message cache row failed event binding or validation.
     #[error("local Space message cache entry is invalid")]
     LocalSpaceMessageCacheInvalid,
+    /// A local history search query is empty or exceeds its byte bound.
+    #[error("local text-message search query is invalid")]
+    InvalidLocalTextMessageSearch,
     /// A locally authored message failed the Space policy gate.
     #[error("Space message rejected: {0:?}")]
     SpaceMessageRejected(space::EventAuthorization),
@@ -1541,6 +1558,102 @@ impl Client {
                 });
             }
             Ok(history)
+        })
+    }
+
+    /// Searches all locally retained authorized text messages for a channel.
+    ///
+    /// Matching is a Unicode lowercase substring search over locally decrypted
+    /// cache contents. The store's row and encrypted-byte quotas bound scanning;
+    /// at most [`MAX_LOCAL_TEXT_SEARCH_RESULTS`] newest matches are returned.
+    /// Every returned row is rebound to its verified signed event. No network
+    /// path is contacted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or oversized query, an unavailable local
+    /// Space generation, corrupt cached metadata, failed content authentication,
+    /// invalid event bytes, or storage failure.
+    pub fn search_local_text_messages(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        channel_id: &space::EntityId,
+        query: &str,
+    ) -> Result<LocalTextMessageSearchResult, CoreError> {
+        if query.is_empty() || query.len() > MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES {
+            return Err(CoreError::InvalidLocalTextMessageSearch);
+        }
+        self.restore_space(space_id, group_reference)?;
+        let cached =
+            self.store
+                .list_all_cached_space_messages(space_id, group_reference, channel_id)?;
+        let scanned_messages = cached.len();
+        let search = query.to_lowercase();
+        let (matches, total_matches) =
+            self.with_mls_transaction(move |_identity, _provider, _transaction| {
+                let mut matches = VecDeque::with_capacity(MAX_LOCAL_TEXT_SEARCH_RESULTS);
+                let mut total_matches = 0_usize;
+                for message in cached {
+                    if message.space_id != *space_id
+                        || message.group_reference != *group_reference
+                        || message.channel_id != *channel_id
+                    {
+                        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+                    }
+                    let cache_aad = local_text_message_context(
+                        &message.space_id,
+                        &message.group_reference,
+                        &message.channel_id,
+                        &message.event_id,
+                    );
+                    let plaintext = lattice_mls::unprotect_local_record(
+                        &cache_aad,
+                        &message.encrypted_content,
+                    )?;
+                    let content = decode_text_message(&plaintext)?;
+                    if !content.to_lowercase().contains(&search) {
+                        continue;
+                    }
+                    total_matches = total_matches.saturating_add(1);
+                    if matches.len() == MAX_LOCAL_TEXT_SEARCH_RESULTS {
+                        matches.pop_front();
+                    }
+                    matches.push_back(LocalTextMessageRecord {
+                        event_id: message.event_id,
+                        channel_id: message.channel_id,
+                        author_id: message.author_id,
+                        author_sequence: message.author_seq,
+                        lamport: message.lamport,
+                        content,
+                        outbox_state: message.outbox_state,
+                    });
+                }
+                Ok((matches, total_matches))
+            })?;
+        let messages = matches.into_iter().collect::<Vec<_>>();
+        for message in &messages {
+            let record = self
+                .store
+                .load_event(&message.event_id)?
+                .ok_or(CoreError::LocalSpaceMessageCacheInvalid)?;
+            let event = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+            if event.event_id().as_bytes() != &message.event_id
+                || event.space_id() != space_id
+                || event.mls_group_reference() != group_reference
+                || event.channel_id() != Some(channel_id)
+                || event.kind() != EventKind::Message
+                || event.author_fingerprint() != &message.author_id
+                || event.author_sequence() != message.author_sequence
+                || event.lamport() != message.lamport
+            {
+                return Err(CoreError::LocalSpaceMessageCacheInvalid);
+            }
+        }
+        Ok(LocalTextMessageSearchResult {
+            messages,
+            total_matches,
+            scanned_messages,
         })
     }
 
@@ -2878,6 +2991,95 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, "queued offline");
         assert_eq!(history[0].event_id, event_id);
+    }
+
+    #[test]
+    fn local_text_search_scans_retained_history_and_bounds_matches() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+        client
+            .queue_text_message(
+                &mut created,
+                &credential,
+                channel_id,
+                "Needle and shared in the oldest retained message",
+            )
+            .expect("queue oldest searchable message");
+        for index in 0..100 {
+            client
+                .queue_text_message(
+                    &mut created,
+                    &credential,
+                    channel_id,
+                    &format!("Shared record {index}"),
+                )
+                .expect("queue bounded-cache search record");
+        }
+
+        assert!(matches!(
+            client.search_local_text_messages(
+                created.space_id(),
+                created.group_reference(),
+                &channel_id,
+                "",
+            ),
+            Err(CoreError::InvalidLocalTextMessageSearch)
+        ));
+        assert!(matches!(
+            client.search_local_text_messages(
+                created.space_id(),
+                created.group_reference(),
+                &channel_id,
+                &"x".repeat(super::MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES + 1),
+            ),
+            Err(CoreError::InvalidLocalTextMessageSearch)
+        ));
+
+        let oldest = client
+            .search_local_text_messages(
+                created.space_id(),
+                created.group_reference(),
+                &channel_id,
+                "NEEDLE",
+            )
+            .expect("search beyond the newest history page");
+        assert_eq!(oldest.scanned_messages, 101);
+        assert_eq!(oldest.total_matches, 1);
+        assert_eq!(oldest.messages.len(), 1);
+        assert_eq!(
+            oldest.messages[0].content,
+            "Needle and shared in the oldest retained message"
+        );
+
+        let shared = client
+            .search_local_text_messages(
+                created.space_id(),
+                created.group_reference(),
+                &channel_id,
+                "SHARED",
+            )
+            .expect("search all locally retained messages");
+        assert_eq!(shared.scanned_messages, 101);
+        assert_eq!(shared.total_matches, 101);
+        assert_eq!(shared.messages.len(), super::MAX_LOCAL_TEXT_SEARCH_RESULTS);
+        assert_eq!(shared.messages[0].content, "Shared record 0");
+        assert_eq!(shared.messages[99].content, "Shared record 99");
     }
 
     #[test]
@@ -4395,6 +4597,12 @@ mod tests {
         assert_eq!(history[0].event_id, message_id);
         assert_eq!(history[0].author_id, alice_fingerprint);
         assert_eq!(history[0].content, "received over MLS");
+        let received_search = bob
+            .search_local_text_messages(&space_id, &group_reference, &channel_id, "RECEIVED")
+            .expect("search authorized received message projection offline");
+        assert_eq!(received_search.total_matches, 1);
+        assert_eq!(received_search.messages[0].event_id, message_id);
+        assert_eq!(received_search.messages[0].content, "received over MLS");
         let edit_plaintext =
             super::encode_text_edit(message_id, "edited over MLS").expect("encode edit");
         let edit_ciphertext = alice

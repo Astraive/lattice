@@ -22,6 +22,7 @@ pub fn run() {
             spaces::queue_local_text_message,
             spaces::queue_local_text_message_edit,
             spaces::list_local_text_messages,
+            spaces::search_local_text_messages,
             identity::pin_peer_identity,
             identity::get_pinned_identity
         ])

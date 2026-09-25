@@ -1203,6 +1203,37 @@ impl Store {
         if limit == 0 || limit > MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE {
             return Err(StoreError::CachedSpaceMessagePageLimit);
         }
+        self.list_cached_space_messages_with_limit(space_id, group_reference, channel_id, limit)
+    }
+    /// Lists every cached message in one channel for bounded offline search.
+    ///
+    /// The result is capped by the store-wide [`MAX_LOCAL_SPACE_MESSAGES`] row
+    /// limit and encrypted-content byte quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails, stored metadata is malformed, or
+    /// `SQLite` cannot represent the bounded result limit.
+    pub fn list_all_cached_space_messages(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+    ) -> Result<Vec<CachedSpaceMessage>> {
+        self.list_cached_space_messages_with_limit(
+            space_id,
+            group_reference,
+            channel_id,
+            MAX_LOCAL_SPACE_MESSAGES,
+        )
+    }
+    fn list_cached_space_messages_with_limit(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+        limit: usize,
+    ) -> Result<Vec<CachedSpaceMessage>> {
         let limit = i64::try_from(limit).map_err(|_| StoreError::CachedSpaceMessagePageLimit)?;
         let mut statement = self.connection.prepare(
             "SELECT m.event_id, m.space_id, m.group_reference, m.channel_id,

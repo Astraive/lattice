@@ -1,6 +1,6 @@
 use lattice_core::{
-    Client, CoreError, CreatedSpace, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
-    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
+    Client, CoreError, CreatedSpace, InitialChannel, LocalTextMessageRecord,
+    MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
     space::{Channel, ChannelType},
 };
 use serde::Serialize;
@@ -73,6 +73,30 @@ pub(crate) struct LocalTextMessageSummary {
     lamport: u64,
     content: String,
     outbox_state: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalTextMessageSearch {
+    messages: Vec<LocalTextMessageSummary>,
+    total_matches: usize,
+    scanned_messages: usize,
+}
+
+fn project_local_text_message(message: LocalTextMessageRecord) -> LocalTextMessageSummary {
+    LocalTextMessageSummary {
+        event_id: encoding::hex(&message.event_id),
+        author_id: encoding::hex(&message.author_id),
+        author_sequence: message.author_sequence,
+        lamport: message.lamport,
+        content: message.content,
+        outbox_state: message.outbox_state.map(|state| match state {
+            OutboxState::Queued => "queued",
+            OutboxState::Forwarded => "forwarded",
+            OutboxState::Delivered => "delivered",
+            OutboxState::Failed => "failed",
+        }),
+    }
 }
 
 fn project_channel(channel: &Channel) -> LocalChannelSummary {
@@ -345,20 +369,38 @@ pub(crate) fn list_local_text_messages(
         .map_err(|_| "local message history is unavailable or failed authentication".to_owned())?;
     Ok(history
         .into_iter()
-        .map(|message| LocalTextMessageSummary {
-            event_id: encoding::hex(&message.event_id),
-            author_id: encoding::hex(&message.author_id),
-            author_sequence: message.author_sequence,
-            lamport: message.lamport,
-            content: message.content,
-            outbox_state: message.outbox_state.map(|state| match state {
-                OutboxState::Queued => "queued",
-                OutboxState::Forwarded => "forwarded",
-                OutboxState::Delivered => "delivered",
-                OutboxState::Failed => "failed",
-            }),
-        })
+        .map(project_local_text_message)
         .collect())
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn search_local_text_messages(
+    space_id_hex: String,
+    group_reference_hex: String,
+    channel_id_hex: String,
+    query: String,
+) -> Result<LocalTextMessageSearch, String> {
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let result = client
+        .search_local_text_messages(&space_id, &group_reference, &channel_id, &query)
+        .map_err(|_| "local message search is unavailable or the query is invalid".to_owned())?;
+    Ok(LocalTextMessageSearch {
+        messages: result
+            .messages
+            .into_iter()
+            .map(project_local_text_message)
+            .collect(),
+        total_matches: result.total_matches,
+        scanned_messages: result.scanned_messages,
+    })
 }
 
 // Tauri decodes command arguments into owned strings.

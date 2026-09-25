@@ -43,6 +43,12 @@ type LocalTextMessage = {
   outboxState: "queued" | "forwarded" | "delivered" | "failed" | null;
 };
 
+type LocalTextMessageSearch = {
+  messages: LocalTextMessage[];
+  totalMatches: number;
+  scannedMessages: number;
+};
+
 type LocalSpaceImport = {
   state: "local_welcome_checkpoint_imported";
   spaceId: string;
@@ -83,12 +89,11 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyQuery, setHistoryQuery] = useState("");
-  const visibleHistory =
-    historyChannelId === channelId
-      ? history.filter((message) =>
-          message.content.toLowerCase().includes(historyQuery.toLowerCase()),
-        )
-      : [];
+  const [historySearchSummary, setHistorySearchSummary] = useState<Pick<
+    LocalTextMessageSearch,
+    "totalMatches" | "scannedMessages"
+  > | null>(null);
+  const visibleHistory = historyChannelId === channelId ? history : [];
   async function loadHistory() {
     const requestedChannel = channelId;
     setHistoryBusy(true);
@@ -101,6 +106,34 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
       });
       setHistory(messages);
       setHistoryChannelId(requestedChannel);
+      setHistoryQuery("");
+      setHistorySearchSummary(null);
+    } catch (cause) {
+      setHistoryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+
+  async function searchHistory() {
+    const requestedChannel = channelId;
+    const query = historyQuery;
+    if (!query.trim()) return;
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      const result = await invoke<LocalTextMessageSearch>("search_local_text_messages", {
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        channelIdHex: requestedChannel,
+        query,
+      });
+      setHistory(result.messages);
+      setHistoryChannelId(requestedChannel);
+      setHistorySearchSummary({
+        totalMatches: result.totalMatches,
+        scannedMessages: result.scannedMessages,
+      });
     } catch (cause) {
       setHistoryError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -220,10 +253,10 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
           )}
           <section className="local-message-history" aria-label="Recent local message history">
             <div>
-              <h4>Recent outgoing messages</h4>
+              <h4>Recent local messages</h4>
               <p>
-                Newest 100 locally retained messages for this channel. Incoming messages are not
-                shown. Outbox markers describe local state only; this client has no network
+                Newest 100 locally retained messages for this channel, including authorized incoming
+                messages. Outbox markers describe local state only; this client has no network
                 forwarding or recipient-delivery engine.
               </p>
             </div>
@@ -231,28 +264,47 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               {historyBusy ? "Loading…" : "Load recent history"}
             </button>
             <label>
-              Search locally cached messages
+              Search all locally retained messages
               <input
                 type="search"
                 value={historyQuery}
-                onChange={(event) => setHistoryQuery(event.target.value)}
-                aria-label="Search locally cached messages"
+                onChange={(event) => {
+                  setHistoryQuery(event.target.value);
+                  setHistoryChannelId(null);
+                  setHistorySearchSummary(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void searchHistory();
+                  }
+                }}
+                aria-label="Search all locally retained messages"
+                disabled={historyBusy}
               />
             </label>
+            <button
+              type="button"
+              disabled={historyBusy || !historyQuery.trim()}
+              onClick={() => void searchHistory()}
+            >
+              {historyBusy ? "Searching…" : "Search history"}
+            </button>
             <p aria-live="polite">
               {historyChannelId === channelId
-                ? `${visibleHistory.length} of ${history.length} locally cached messages shown.`
-                : "Search covers only messages loaded into this device-local cache; remote or full history is not searched."}
+                ? historySearchSummary
+                  ? `${history.length} of ${historySearchSummary.totalMatches} matches across ${historySearchSummary.scannedMessages} locally retained messages.`
+                  : `${history.length} recent locally cached messages shown.`
+                : "Search scans all locally retained messages in the selected channel without contacting the network."}
             </p>
             {historyError && <p role="alert">History unavailable: {historyError}</p>}
             {historyChannelId === channelId && history.length === 0 && (
-              <p role="status">No locally retained outgoing messages.</p>
+              <p role="status">
+                {historySearchSummary
+                  ? "No locally retained messages match this search."
+                  : "No locally retained messages."}
+              </p>
             )}
-            {historyChannelId === channelId &&
-              history.length > 0 &&
-              visibleHistory.length === 0 && (
-                <p role="status">No cached messages match this search.</p>
-              )}
             {historyChannelId === channelId && visibleHistory.length > 0 && (
               <ol>
                 {visibleHistory.map((message) => (
@@ -261,9 +313,11 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                     <small>
                       {localOutboxLabel(message.outboxState)} · event {message.eventId}
                     </small>
-                    <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
-                      Edit locally
-                    </button>
+                    {message.outboxState !== null && (
+                      <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
+                        Edit locally
+                      </button>
+                    )}
                   </li>
                 ))}
               </ol>
