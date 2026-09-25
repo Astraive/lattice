@@ -1291,7 +1291,7 @@ impl Client {
             ))?;
         let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
         let plaintext = encode_text_message(content)?;
-        let message = LocalTextEvent {
+        let message = LocalApplicationEvent {
             group_id: created.group_id.clone(),
             credential,
             reducer: &created.reducer,
@@ -1301,16 +1301,15 @@ impl Client {
             parents,
             lamport,
             plaintext,
-            cached_message_target: None,
-            cached_content: content,
+            cached_text: Some((None, content)),
             event_kind: EventKind::Message,
         };
-        let (receipt, staged_reducer) =
+        let (event_id, staged_reducer) =
             self.with_mls_transaction(|identity, provider, transaction| {
-                queue_text_message_in_transaction(identity, provider, transaction, message)
+                queue_application_event_in_transaction(identity, provider, transaction, message)
             })?;
         created.reducer = staged_reducer;
-        Ok(receipt)
+        Ok(QueuedMessage { event_id })
     }
     /// Queues an authorized text edit of an immutable message event.
     ///
@@ -1343,7 +1342,7 @@ impl Client {
         parents.sort_unstable_by_key(|parent| *parent.as_bytes());
         parents.dedup_by_key(|parent| *parent.as_bytes());
         let plaintext = encode_text_edit(target, content)?;
-        let message = LocalTextEvent {
+        let message = LocalApplicationEvent {
             group_id: created.group_id.clone(),
             credential,
             reducer: &created.reducer,
@@ -1353,16 +1352,15 @@ impl Client {
             parents,
             lamport,
             plaintext,
-            cached_message_target: Some(target),
-            cached_content: content,
+            cached_text: Some((Some(target), content)),
             event_kind: EventKind::Edit,
         };
-        let (receipt, staged_reducer) =
+        let (event_id, staged_reducer) =
             self.with_mls_transaction(|identity, provider, transaction| {
-                queue_text_message_in_transaction(identity, provider, transaction, message)
+                queue_application_event_in_transaction(identity, provider, transaction, message)
             })?;
         created.reducer = staged_reducer;
-        Ok(receipt)
+        Ok(QueuedMessage { event_id })
     }
 
     /// Restores the local Genesis policy, validates an RFC 9420 X.509 credential,
@@ -1425,7 +1423,7 @@ impl Client {
             ))?;
         let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
         let plaintext = encode_file_manifest(manifest)?;
-        let message = LocalFileManifestEvent {
+        let message = LocalApplicationEvent {
             group_id: created.group_id.clone(),
             credential,
             reducer: &created.reducer,
@@ -1435,13 +1433,15 @@ impl Client {
             parents,
             lamport,
             plaintext,
+            cached_text: None,
+            event_kind: EventKind::FileManifest,
         };
-        let (receipt, staged_reducer) =
+        let (event_id, staged_reducer) =
             self.with_mls_transaction(|identity, provider, transaction| {
-                queue_file_manifest_in_transaction(identity, provider, transaction, message)
+                queue_application_event_in_transaction(identity, provider, transaction, message)
             })?;
         created.reducer = staged_reducer;
-        Ok(receipt)
+        Ok(QueuedFileManifest { event_id })
     }
 
     /// Restores a local Space and atomically queues an attachment manifest
@@ -2375,7 +2375,7 @@ impl Client {
     }
 }
 
-struct LocalTextEvent<'a> {
+struct LocalApplicationEvent<'a> {
     group_id: Vec<u8>,
     credential: &'a DeviceCredentialInput,
     reducer: &'a space::SpaceReducer,
@@ -2385,8 +2385,7 @@ struct LocalTextEvent<'a> {
     parents: Vec<lattice_protocol::EventId>,
     lamport: u64,
     plaintext: Vec<u8>,
-    cached_message_target: Option<[u8; 32]>,
-    cached_content: &'a str,
+    cached_text: Option<(Option<[u8; 32]>, &'a str)>,
     event_kind: EventKind,
 }
 
@@ -2529,94 +2528,12 @@ fn encode_file_manifest(manifest: &AttachmentManifest) -> Result<Vec<u8>, CoreEr
     Ok(plaintext)
 }
 
-struct LocalFileManifestEvent<'a> {
-    group_id: Vec<u8>,
-    credential: &'a DeviceCredentialInput,
-    reducer: &'a space::SpaceReducer,
-    space_id: space::SpaceId,
-    group_reference: space::GroupReference,
-    channel_id: space::EntityId,
-    parents: Vec<lattice_protocol::EventId>,
-    lamport: u64,
-    plaintext: Vec<u8>,
-}
-
-fn queue_file_manifest_in_transaction(
+fn queue_application_event_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
     transaction: &Transaction<'_>,
-    message: LocalFileManifestEvent<'_>,
-) -> Result<(QueuedFileManifest, space::SpaceReducer), CoreError> {
-    let mut group = GroupState::load(provider, &message.group_id)?;
-    if group.group_reference() != message.group_reference
-        || group.epoch() != 0
-        || group.member_count() != 1
-    {
-        return Err(CoreError::SpaceGenesisRejected(
-            space::RejectReason::WrongGeneration,
-        ));
-    }
-    let protected =
-        group.encrypt_application(provider, identity, message.credential, &message.plaintext)?;
-    let sequence =
-        Store::next_author_sequence_in_transaction(transaction, &identity.fingerprint())?;
-    let event = VerifiedSignatureOnlyEvent::create(
-        identity,
-        EventDraft {
-            space_id: message.space_id,
-            channel_id: Some(message.channel_id),
-            author_sequence: sequence,
-            lamport: message.lamport,
-            wall_time_hint: 0,
-            parents: message.parents,
-            kind: EventKind::FileManifest,
-            protected_body: protected.as_bytes().to_vec(),
-            mls_group_reference: message.group_reference,
-            mls_epoch: group.epoch(),
-        },
-    )?;
-    let bound = MlsBoundEvent {
-        event: event.clone(),
-        plaintext: message.plaintext,
-    };
-    let mut staged_reducer = message.reducer.clone();
-    let authorization = staged_reducer.authorize_application_event(&bound);
-    if !matches!(authorization, space::EventAuthorization::Authorized { .. }) {
-        return Err(CoreError::SpaceMessageRejected(authorization));
-    }
-    let parent_ids = event
-        .parents()
-        .iter()
-        .map(|parent| *parent.as_bytes())
-        .collect::<Vec<_>>();
-    if let CommitOutcome::Equivocation { existing_event_id } =
-        Store::commit_authored_with_outbox_in_transaction(
-            transaction,
-            *event.author_fingerprint(),
-            *event.event_id().as_bytes(),
-            sequence,
-            event.encoded_bytes(),
-            &parent_ids,
-            event.encoded_bytes(),
-            0,
-        )?
-    {
-        return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
-    }
-    Ok((
-        QueuedFileManifest {
-            event_id: *event.event_id().as_bytes(),
-        },
-        staged_reducer,
-    ))
-}
-
-fn queue_text_message_in_transaction(
-    identity: &DeviceIdentity,
-    provider: &ProtectedSqliteProvider<'_>,
-    transaction: &Transaction<'_>,
-    message: LocalTextEvent<'_>,
-) -> Result<(QueuedMessage, space::SpaceReducer), CoreError> {
+    message: LocalApplicationEvent<'_>,
+) -> Result<([u8; 32], space::SpaceReducer), CoreError> {
     let mut group = GroupState::load(provider, &message.group_id)?;
     if group.group_reference() != message.group_reference
         || group.epoch() != 0
@@ -2673,27 +2590,24 @@ fn queue_text_message_in_transaction(
     {
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
-    persist_cached_text_projection(
-        transaction,
-        &CachedTextProjection {
-            event_kind: message.event_kind,
-            target: message.cached_message_target,
-            content: message.cached_content,
-            source_event_id: *event.event_id().as_bytes(),
-            space_id: message.space_id,
-            group_reference: message.group_reference,
-            channel_id: message.channel_id,
-            author_id: *event.author_fingerprint(),
-            author_sequence: sequence,
-            lamport: event.lamport(),
-        },
-    )?;
-    Ok((
-        QueuedMessage {
-            event_id: *event.event_id().as_bytes(),
-        },
-        staged_reducer,
-    ))
+    if let Some((target, content)) = message.cached_text {
+        persist_cached_text_projection(
+            transaction,
+            &CachedTextProjection {
+                event_kind: message.event_kind,
+                target,
+                content,
+                source_event_id: *event.event_id().as_bytes(),
+                space_id: message.space_id,
+                group_reference: message.group_reference,
+                channel_id: message.channel_id,
+                author_id: *event.author_fingerprint(),
+                author_sequence: sequence,
+                lamport: event.lamport(),
+            },
+        )?;
+    }
+    Ok((*event.event_id().as_bytes(), staged_reducer))
 }
 
 fn persist_cached_text_projection(
