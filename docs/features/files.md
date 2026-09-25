@@ -14,7 +14,7 @@ The local transfer crate models attachments as bounded manifests and independent
 
 ## Implemented local behavior
 
-`lattice-files` streams a source reader through a fixed-size chunk buffer and produces a bounded manifest with ordered chunk hashes and a whole-file SHA-256 digest. Manifests enforce the crate file/chunk/metadata limits, and incoming filename hints must already be safe display names. MIME hints remain untrusted.
+`lattice-files` streams a source reader through a fixed-size chunk buffer and produces a bounded manifest with ordered chunk hashes and a whole-file SHA-256 digest. A seekable source can later serve individual chunks through `read_verified_chunk_into`, which checks the manifest-declared size and digest before exposing each chunk to a transport caller. Manifests enforce the crate file/chunk/metadata limits, and incoming filename hints must already be safe display names. MIME hints remain untrusted.
 
 Both receiver types require an explicit accept decision before chunk submission, validate each chunk before staging it, expose missing ranges, and gate completion on the whole-file digest. The seekable `StreamedAttachmentReceiver` uses a caller-owned store and rebuilds resume state by rechecking stored chunks; it holds only a chunk buffer and bitmap in memory. `copy_verified_to` rechecks the whole-file digest before streaming verified content to a caller-selected writer. The in-memory receiver provides the same acceptance and integrity gates but stages the entire file, bounded by the caller's quota.
 

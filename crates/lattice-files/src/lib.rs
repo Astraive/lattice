@@ -326,6 +326,38 @@ impl AttachmentManifest {
         Ok(())
     }
 
+    /// Read one manifest chunk from a seekable source and verify it before
+    /// returning it to a transport caller.
+    ///
+    /// The caller supplies the output buffer so repeated reads can reuse a
+    /// single chunk-sized allocation. The buffer must exactly match the
+    /// manifest-declared length for `index`; source contents are checked
+    /// against the chunk digest before success.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` for an invalid manifest, index, output
+    /// length, source read/seek failure, or changed source content.
+    pub fn read_verified_chunk_into<R: Read + Seek>(
+        &self,
+        source: &mut R,
+        index: usize,
+        output: &mut [u8],
+    ) -> Result<(), AttachmentError> {
+        self.validate()?;
+        let expected_length = self.expected_chunk_size(index)?;
+        if output.len() != expected_length {
+            return Err(AttachmentError::ChunkLengthMismatch {
+                expected: expected_length,
+                actual: output.len(),
+            });
+        }
+        let offset = chunk_offset(index)?;
+        source.seek(SeekFrom::Start(offset))?;
+        source.read_exact(output)?;
+        self.verify_chunk_validated(index, output)
+    }
+
     /// Verify a chunk's expected index, exact length, and SHA-256 digest.
     ///
     /// # Errors
@@ -1123,6 +1155,38 @@ mod tests {
 
         assert_eq!(manifest.file_size, content.len() as u64);
         assert_eq!(manifest.file_hash, super::sha256(content));
+    }
+
+    #[test]
+    fn source_chunks_are_seeked_and_checked_against_manifest() {
+        let mut content = vec![0x47; CHUNK_SIZE + 3];
+        let manifest =
+            AttachmentManifest::from_reader(&mut Cursor::new(&content), "source.bin", None)
+                .unwrap();
+        let mut source = Cursor::new(content.clone());
+        let mut last_chunk = [0; 3];
+
+        manifest
+            .read_verified_chunk_into(&mut source, 1, &mut last_chunk)
+            .unwrap();
+        assert_eq!(last_chunk, [0x47; 3]);
+
+        let mut wrong_size = [0; 2];
+        assert!(matches!(
+            manifest.read_verified_chunk_into(&mut source, 1, &mut wrong_size),
+            Err(AttachmentError::ChunkLengthMismatch {
+                expected: 3,
+                actual: 2
+            })
+        ));
+
+        content[0] ^= 0xff;
+        source = Cursor::new(content);
+        let mut first_chunk = vec![0; CHUNK_SIZE];
+        assert!(matches!(
+            manifest.read_verified_chunk_into(&mut source, 0, &mut first_chunk),
+            Err(AttachmentError::ChunkHashMismatch)
+        ));
     }
 
     #[test]
