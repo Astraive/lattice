@@ -117,6 +117,62 @@ pub struct PathCandidate {
     pub queued_bytes: u64,
 }
 
+/// First reason a candidate cannot carry one requested traffic class.
+///
+/// This is a route-policy result over caller-supplied local observations; it is
+/// not proof of peer presence, end-to-end reachability, or delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PathExclusionReason {
+    /// The caller currently reports the path as unreachable.
+    NotReachable,
+    /// The path does not advertise the requested traffic class.
+    UnsupportedTrafficClass,
+    /// Internet routing is disabled by policy.
+    InternetRoutesDisabled,
+    /// Presence cannot use persistent relay or courier paths.
+    PresenceRequiresEphemeralPath,
+    /// The route is metered while policy disallows metered traffic.
+    MeteredRouteDisallowed,
+    /// The path's energy cost exceeds policy.
+    EnergyLimitExceeded,
+    /// The observed packet loss exceeds policy.
+    LossLimitExceeded,
+    /// The observed queue depth exceeds policy.
+    QueueLimitExceeded,
+    /// RTT is not available although policy requires an RTT bound.
+    RttUnavailable,
+    /// The observed RTT exceeds policy.
+    RttLimitExceeded,
+    /// The envelope exceeds the path's frame or payload limit.
+    PayloadTooLarge,
+    /// Voice requires a direct realtime IP path.
+    VoiceRequiresRealtimeIp,
+    /// The path does not advertise bulk transfer.
+    BulkTransferUnsupported,
+    /// BLE bulk transfer is disabled by policy.
+    BleBulkDisabled,
+    /// The BLE payload exceeds the configured bulk-transfer cap.
+    BleBulkPayloadTooLarge,
+}
+
+/// Eligibility of one candidate for a specific routing request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PathEligibility {
+    /// The candidate satisfies the current route policy and payload bounds.
+    Eligible,
+    /// The candidate is excluded for this specific request.
+    Excluded(PathExclusionReason),
+}
+
+/// Per-candidate routing diagnostics based only on supplied local observations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PathAssessment {
+    /// Opaque local identifier of the assessed path.
+    pub path_id: PathId,
+    /// Eligibility and first blocking condition for this request.
+    pub eligibility: PathEligibility,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RoutingPolicy {
     pub allow_internet_routes: bool,
@@ -350,6 +406,33 @@ pub fn plan_forward(
     }))
 }
 
+/// Reports the first policy or capacity reason excluding each candidate.
+///
+/// Results follow input order and describe this local route attempt only. They
+/// do not infer physical distance, peer presence, or destination delivery.
+///
+/// # Errors
+///
+/// Returns [`RoutingError`] when the candidate list or policy inputs are invalid.
+pub fn assess_paths(
+    class: TrafficClass,
+    payload_bytes: u64,
+    candidates: &[PathCandidate],
+    policy: &RoutingPolicy,
+) -> Result<Vec<PathAssessment>, RoutingError> {
+    validate_inputs(candidates, policy)?;
+    Ok(candidates
+        .iter()
+        .map(|candidate| PathAssessment {
+            path_id: candidate.id,
+            eligibility: match path_exclusion_reason(class, payload_bytes, candidate, policy) {
+                Some(reason) => PathEligibility::Excluded(reason),
+                None => PathEligibility::Eligible,
+            },
+        })
+        .collect())
+}
+
 fn validate_inputs(
     candidates: &[PathCandidate],
     policy: &RoutingPolicy,
@@ -396,54 +479,75 @@ fn is_viable(
     candidate: &PathCandidate,
     policy: &RoutingPolicy,
 ) -> bool {
-    if !candidate.reachable || !candidate.capabilities.supports(class) {
-        return false;
+    path_exclusion_reason(class, payload_bytes, candidate, policy).is_none()
+}
+
+fn path_exclusion_reason(
+    class: TrafficClass,
+    payload_bytes: u64,
+    candidate: &PathCandidate,
+    policy: &RoutingPolicy,
+) -> Option<PathExclusionReason> {
+    if !candidate.reachable {
+        return Some(PathExclusionReason::NotReachable);
+    }
+    if !candidate.capabilities.supports(class) {
+        return Some(PathExclusionReason::UnsupportedTrafficClass);
     }
     if (candidate.network_scope == NetworkScope::Internet || candidate.kind.is_internet())
         && !policy.allow_internet_routes
     {
-        return false;
+        return Some(PathExclusionReason::InternetRoutesDisabled);
     }
     if class == TrafficClass::Presence
         && matches!(candidate.kind, PathKind::Courier | PathKind::InternetRelay)
     {
-        return false;
+        return Some(PathExclusionReason::PresenceRequiresEphemeralPath);
     }
     if candidate.metered && !policy.allow_metered {
-        return false;
+        return Some(PathExclusionReason::MeteredRouteDisallowed);
     }
-    if candidate.energy_cost > policy.max_energy_cost
-        || candidate.loss_per_mille > policy.max_loss_per_mille
-        || candidate.queued_bytes > policy.max_queue_bytes
-    {
-        return false;
+    if candidate.energy_cost > policy.max_energy_cost {
+        return Some(PathExclusionReason::EnergyLimitExceeded);
     }
-    if let Some(max_rtt_ms) = policy.max_rtt_ms
-        && candidate.rtt_ms.is_none_or(|rtt| rtt > max_rtt_ms)
-    {
-        return false;
+    if candidate.loss_per_mille > policy.max_loss_per_mille {
+        return Some(PathExclusionReason::LossLimitExceeded);
+    }
+    if candidate.queued_bytes > policy.max_queue_bytes {
+        return Some(PathExclusionReason::QueueLimitExceeded);
+    }
+    if let Some(max_rtt_ms) = policy.max_rtt_ms {
+        let Some(rtt_ms) = candidate.rtt_ms else {
+            return Some(PathExclusionReason::RttUnavailable);
+        };
+        if rtt_ms > max_rtt_ms {
+            return Some(PathExclusionReason::RttLimitExceeded);
+        }
     }
     if payload_bytes > candidate.mtu_bytes.min(candidate.max_payload_bytes) {
-        return false;
+        return Some(PathExclusionReason::PayloadTooLarge);
     }
     if class == TrafficClass::Voice
         && (!candidate.kind.is_ip()
             || matches!(candidate.kind, PathKind::Courier | PathKind::InternetRelay)
             || !candidate.capabilities.realtime_media)
     {
-        return false;
+        return Some(PathExclusionReason::VoiceRequiresRealtimeIp);
     }
     if matches!(class, TrafficClass::History | TrafficClass::Files) {
         if !candidate.capabilities.bulk_transfer {
-            return false;
+            return Some(PathExclusionReason::BulkTransferUnsupported);
         }
-        if candidate.kind == PathKind::Ble
-            && (!policy.allow_ble_bulk || payload_bytes > policy.max_ble_bulk_bytes)
-        {
-            return false;
+        if candidate.kind == PathKind::Ble {
+            if !policy.allow_ble_bulk {
+                return Some(PathExclusionReason::BleBulkDisabled);
+            }
+            if payload_bytes > policy.max_ble_bulk_bytes {
+                return Some(PathExclusionReason::BleBulkPayloadTooLarge);
+            }
         }
     }
-    true
+    None
 }
 
 fn compare_paths(
@@ -884,6 +988,48 @@ mod tests {
             )
             .unwrap(),
             RoutingOutcome::NoViablePath
+        );
+    }
+
+    #[test]
+    fn path_assessment_exposes_local_unreachable_and_unmeasured_states() {
+        let mut unreachable = path(
+            1,
+            PathKind::Lan,
+            NetworkScope::Local,
+            TrafficClass::InteractiveText,
+            8_192,
+            Some(10),
+        );
+        unreachable.reachable = false;
+        assert_eq!(
+            assess_paths(
+                TrafficClass::InteractiveText,
+                100,
+                &[unreachable],
+                &RoutingPolicy::default(),
+            )
+            .unwrap()[0]
+                .eligibility,
+            PathEligibility::Excluded(PathExclusionReason::NotReachable)
+        );
+
+        let unmeasured = path(
+            2,
+            PathKind::Lan,
+            NetworkScope::Local,
+            TrafficClass::InteractiveText,
+            8_192,
+            None,
+        );
+        let policy = RoutingPolicy {
+            max_rtt_ms: Some(30),
+            ..RoutingPolicy::default()
+        };
+        assert_eq!(
+            assess_paths(TrafficClass::InteractiveText, 100, &[unmeasured], &policy,).unwrap()[0]
+                .eligibility,
+            PathEligibility::Excluded(PathExclusionReason::RttUnavailable)
         );
     }
 
