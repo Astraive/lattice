@@ -17,6 +17,7 @@ use std::path::Path;
 use rusqlite::Transaction;
 
 use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
+use lattice_files::AttachmentManifest;
 use lattice_identity::{DeviceIdentity, IdentityError, IdentityPublicBundle, PrivateKeyProtector};
 use lattice_mls::{
     ProtectedCodecError, ProtectedSqliteProvider,
@@ -403,6 +404,9 @@ pub enum CoreError {
     /// The Lamport counter cannot advance beyond the parent events.
     #[error("Space message Lamport counter is exhausted")]
     SpaceLamportExhausted,
+    /// Attachment manifest validation failed or exceeded protocol limits.
+    #[error(transparent)]
+    Attachment(#[from] lattice_files::AttachmentError),
     /// A locally created Space Genesis or encrypted projection snapshot is absent.
     #[error("local Space Genesis snapshot was not found")]
     SpaceGenesisSnapshotNotFound,
@@ -1376,6 +1380,81 @@ impl Client {
             .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_text_message(&mut created, &credential, channel_id, content)
+    }
+
+    /// Encrypts, policy-checks, and atomically queues one attachment manifest.
+    ///
+    /// Attachment bytes remain in caller-owned staging storage; this signed
+    /// event contains only bounded metadata and integrity digests. The receipt
+    /// means `queued`, not transferred or delivered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manifest is invalid, the Space policy denies
+    /// attachments, the selected channel is unavailable, or MLS/signing/storage
+    /// operations fail. A rejected manifest leaves MLS sender state and outbox
+    /// unchanged.
+    pub fn queue_file_manifest(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        channel_id: space::EntityId,
+        manifest: &AttachmentManifest,
+    ) -> Result<QueuedMessage, CoreError> {
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        manifest.validate()?;
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
+        let plaintext = encode_file_manifest(manifest)?;
+        let message = LocalFileManifestEvent {
+            group_id: created.group_id.clone(),
+            credential,
+            reducer: &created.reducer,
+            space_id: created.space_id,
+            group_reference: created.group_reference,
+            channel_id,
+            parents,
+            lamport,
+            plaintext,
+        };
+        let (receipt, staged_reducer) =
+            self.with_mls_transaction(|identity, provider, transaction| {
+                queue_file_manifest_in_transaction(identity, provider, transaction, message)
+            })?;
+        created.reducer = staged_reducer;
+        Ok(receipt)
+    }
+
+    /// Restores a local Space and atomically queues an attachment manifest
+    /// using this device's validated RFC 9420 X.509 credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for malformed or untrusted credential
+    /// bytes; otherwise returns the same manifest, policy, MLS, signing, and
+    /// storage errors as [`Client::queue_file_manifest`], or a restore error
+    /// when no valid local Genesis snapshot is available.
+    pub fn queue_file_manifest_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        channel_id: space::EntityId,
+        manifest: &AttachmentManifest,
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
+            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_file_manifest(&mut created, &credential, channel_id, manifest)
     }
 
     /// Restores a local Space, validates its X.509 device credential, and
@@ -2408,6 +2487,117 @@ fn encode_text_edit(target: [u8; 32], content: &str) -> Result<Vec<u8>, CoreErro
     Ok(plaintext)
 }
 
+fn encode_file_manifest(manifest: &AttachmentManifest) -> Result<Vec<u8>, CoreError> {
+    manifest.validate()?;
+    let chunk_hashes = manifest
+        .chunk_hashes
+        .iter()
+        .map(|hash| Value::Bytes(hash.to_vec()))
+        .collect();
+    let plaintext = encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Text(manifest.filename.clone())),
+        (
+            2,
+            manifest
+                .mime_type
+                .as_ref()
+                .map_or(Value::Null, |mime| Value::Text(mime.clone())),
+        ),
+        (3, Value::Unsigned(manifest.file_size)),
+        (4, Value::Bytes(manifest.file_hash.to_vec())),
+        (5, Value::Array(chunk_hashes)),
+    ]))?;
+    if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    Ok(plaintext)
+}
+
+struct LocalFileManifestEvent<'a> {
+    group_id: Vec<u8>,
+    credential: &'a DeviceCredentialInput,
+    reducer: &'a space::SpaceReducer,
+    space_id: space::SpaceId,
+    group_reference: space::GroupReference,
+    channel_id: space::EntityId,
+    parents: Vec<lattice_protocol::EventId>,
+    lamport: u64,
+    plaintext: Vec<u8>,
+}
+
+fn queue_file_manifest_in_transaction(
+    identity: &DeviceIdentity,
+    provider: &ProtectedSqliteProvider<'_>,
+    transaction: &Transaction<'_>,
+    message: LocalFileManifestEvent<'_>,
+) -> Result<(QueuedMessage, space::SpaceReducer), CoreError> {
+    let mut group = GroupState::load(provider, &message.group_id)?;
+    if group.group_reference() != message.group_reference
+        || group.epoch() != 0
+        || group.member_count() != 1
+    {
+        return Err(CoreError::SpaceGenesisRejected(
+            space::RejectReason::WrongGeneration,
+        ));
+    }
+    let protected =
+        group.encrypt_application(provider, identity, message.credential, &message.plaintext)?;
+    let sequence =
+        Store::next_author_sequence_in_transaction(transaction, &identity.fingerprint())?;
+    let event = VerifiedSignatureOnlyEvent::create(
+        identity,
+        EventDraft {
+            space_id: message.space_id,
+            channel_id: Some(message.channel_id),
+            author_sequence: sequence,
+            lamport: message.lamport,
+            wall_time_hint: 0,
+            parents: message.parents,
+            kind: EventKind::FileManifest,
+            protected_body: protected.as_bytes().to_vec(),
+            mls_group_reference: message.group_reference,
+            mls_epoch: group.epoch(),
+        },
+    )?;
+    let bound = MlsBoundEvent {
+        event: event.clone(),
+        plaintext: message.plaintext,
+    };
+    let mut staged_reducer = message.reducer.clone();
+    let authorization = staged_reducer.authorize_application_event(&bound);
+    if !matches!(authorization, space::EventAuthorization::Authorized { .. }) {
+        return Err(CoreError::SpaceMessageRejected(authorization));
+    }
+    let parent_ids = event
+        .parents()
+        .iter()
+        .map(|parent| *parent.as_bytes())
+        .collect::<Vec<_>>();
+    if let CommitOutcome::Equivocation { existing_event_id } =
+        Store::commit_authored_with_outbox_in_transaction(
+            transaction,
+            *event.author_fingerprint(),
+            *event.event_id().as_bytes(),
+            sequence,
+            event.encoded_bytes(),
+            &parent_ids,
+            event.encoded_bytes(),
+            0,
+        )?
+    {
+        return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
+    }
+    Ok((
+        QueuedMessage {
+            event_id: *event.event_id().as_bytes(),
+        },
+        staged_reducer,
+    ))
+}
+
 fn queue_text_message_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
@@ -2893,6 +3083,62 @@ mod tests {
             bound.event().identity_bundle().ed25519_public_key(),
             alice_identity.public_key()
         );
+    }
+
+    #[test]
+    fn local_file_manifest_is_authorized_encrypted_and_queued() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+        let content = b"attachment bytes";
+        let mut reader = std::io::Cursor::new(content);
+        let manifest = lattice_files::AttachmentManifest::from_reader(
+            &mut reader,
+            "shared.txt",
+            Some("text/plain"),
+        )
+        .expect("build attachment manifest");
+
+        let receipt = client
+            .queue_file_manifest(&mut created, &credential, channel_id, &manifest)
+            .expect("queue authorized attachment manifest");
+        let event_id = *receipt.event_id();
+        let stored = client
+            .store
+            .load_event(&event_id)
+            .expect("load signed manifest event")
+            .expect("manifest event stored");
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)
+            .expect("verify signed event");
+        assert_eq!(event.kind(), EventKind::FileManifest);
+        let authorized = created
+            .reducer()
+            .authorized_attachment_manifest(&event_id)
+            .expect("manifest authorized by the local Space policy");
+        assert_eq!(authorized.manifest(), &manifest);
+        let outbox = client
+            .store
+            .list_outbox_page(None, 10)
+            .expect("read queued attachment event");
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].event_id, event_id);
+        assert_eq!(outbox[0].envelope_bytes, stored.canonical_bytes);
+        assert_ne!(outbox[0].envelope_bytes.as_slice(), content);
     }
     #[test]
     fn local_text_message_is_policy_checked_and_queued_atomically() {
