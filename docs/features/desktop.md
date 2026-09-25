@@ -5,7 +5,7 @@ Tauri v2 embeds the same Rust core; React/TypeScript/Vite present state through 
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
 | DSK-001 | Desktop shall create/import local identity and join Spaces using Rust core. | Desktop and mobile agree on fingerprint, wire vectors and Space state. | M7 |
-| DSK-002 | Desktop shall support text, threads, local search, files and voice per the same accepted requirements. | Feature interop scenarios with Android/iOS; unsupported path shown. | M7 |
+| DSK-002 | Desktop shall support text, threads, local search, files and voice per the same accepted requirements. | Desktop message search filters only the newest 100 locally retained outgoing messages loaded for the selected channel; incoming messages and remote/full history are not searched. | M7 |
 | DSK-003 | Desktop shall discover local peers and expose optional configured relays. | LAN path and two relay settings tested; no project service required. | M7 |
 | DSK-004 | Desktop shall keep secrets in Rust/platform storage with minimal Tauri commands and strict CSP. | XSS/command-ACL review shows UI cannot fetch raw secret or arbitrary file. | M7 |
 | DSK-005 | Desktop shall be able to opt into persistent courier/peer behavior with quotas. | On/off toggle, restart-safe queue and no Space privilege elevation. | M7 |
@@ -13,6 +13,7 @@ Tauri v2 embeds the same Rust core; React/TypeScript/Vite present state through 
 | DSK-007 | Desktop shall export an Ed25519 PKCS#10 request bound to the full identity fingerprint without exposing private material. | Generate and display/copy the CSR as PEM; its signature, SPKI and URI SAN verify, and an issued certificate must preserve the SAN. | M7 |
 
 The desktop prototype protects device identity, creates local one-member Genesis snapshots from a supplied RFC 9420 TLS X.509 credential vector, and browses verified local snapshots with channel IDs, names, types, and archived state. Its local composer revalidates the device certificate and queues authorized text to the durable outbox; immutable author edits update the encrypted cached body transactionally. The latest 100 cached outgoing messages are listed per channel. Recovery restores a named snapshot before creating a one-member root, preserves supported channels, drops custom-role definitions, and does not rejoin prior members. The encrypted outgoing cache is not a synchronized transcript; incoming messages and later policy changes are not replayed. Invite issuance/leave, general history synchronization, certificate issuance, and network delivery remain unavailable; pinned Welcome checkpoint import is described next.
+For MSG-011, desktop offline search is limited to the newest 100 locally retained outgoing messages returned by the selected-channel cache query. It performs case-insensitive content substring matching on that loaded cache only; it does not search incoming messages, contact the network, or establish that remote or full history is present.
 
 The Spaces browser also imports a versioned Welcome bootstrap through `import_local_space_welcome_bootstrap`. It accepts a bounded hexadecimal package, exact inviter fingerprint, and X.509 credential, and requires that inviter to be pinned in the protected profile. The result is local signed policy-checkpoint state; no relay is contacted, and general historical-event replay or delivery is not claimed.
 
@@ -29,5 +30,7 @@ The React WebView receives prepared view models, not raw keys, MLS states or unr
 With user opt-in, desktop can remain online for a Space it belongs to and hold authorized history under retention, or act as courier of opaque envelopes without membership. These are different modes: courier-only holds no Space keys; member mode can decrypt according to membership and local storage policy. The operator sees byte quota, queue depth, uptime, relay connections and power/network impact. If it disappears, other peers keep valid history and reconcile on another path when available.
 
 ## Desktop release matrix
+
+The current main-window CSP blocks inline styles, base-URL changes, object embeds, framing, and form submissions; its capability grants only `core:default`. This configuration is not a substitute for the DSK-004 XSS and command-ACL review.
 
 Test clean install, key locked, database migration, suspend/resume, network change, firewall restriction, local discovery and relay fallback on each supported desktop OS. Bundle pinning and Tauri command ACL/CSP review are separate release gates from protocol vector parity. An update must not silently run two incompatible versions against one writable SQLite database.

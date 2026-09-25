@@ -82,6 +82,13 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
   const [historyChannelId, setHistoryChannelId] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const visibleHistory =
+    historyChannelId === channelId
+      ? history.filter((message) =>
+          message.content.toLowerCase().includes(historyQuery.toLowerCase()),
+        )
+      : [];
   async function loadHistory() {
     const requestedChannel = channelId;
     setHistoryBusy(true);
@@ -223,13 +230,32 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
             <button type="button" disabled={historyBusy} onClick={() => void loadHistory()}>
               {historyBusy ? "Loading…" : "Load recent history"}
             </button>
+            <label>
+              Search locally cached messages
+              <input
+                type="search"
+                value={historyQuery}
+                onChange={(event) => setHistoryQuery(event.target.value)}
+                aria-label="Search locally cached messages"
+              />
+            </label>
+            <p aria-live="polite">
+              {historyChannelId === channelId
+                ? `${visibleHistory.length} of ${history.length} locally cached messages shown.`
+                : "Search covers only messages loaded into this device-local cache; remote or full history is not searched."}
+            </p>
             {historyError && <p role="alert">History unavailable: {historyError}</p>}
             {historyChannelId === channelId && history.length === 0 && (
               <p role="status">No locally retained outgoing messages.</p>
             )}
-            {historyChannelId === channelId && history.length > 0 && (
+            {historyChannelId === channelId &&
+              history.length > 0 &&
+              visibleHistory.length === 0 && (
+                <p role="status">No cached messages match this search.</p>
+              )}
+            {historyChannelId === channelId && visibleHistory.length > 0 && (
               <ol>
-                {history.map((message) => (
+                {visibleHistory.map((message) => (
                   <li key={message.eventId}>
                     <p>{message.content}</p>
                     <small>
