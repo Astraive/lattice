@@ -79,6 +79,18 @@ pub type EventReference = [u8; 32];
 pub type Fingerprint = [u8; 32];
 pub type EntityId = [u8; 16];
 
+/// Stable encrypted-payload target for a message mention.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum MentionTarget {
+    /// Full device identity fingerprint; display names are never resolved on wire.
+    Identity(Fingerprint),
+    /// Stable Space role identifier.
+    Role(EntityId),
+}
+
+/// Maximum distinct identity/role references on one message.
+pub const MAX_MESSAGE_MENTIONS: usize = 64;
+
 /// The fixed channel type registry in candidate protocol version 1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelType {
@@ -983,7 +995,7 @@ impl SpaceReducer {
             return EventAuthorization::Rejected(RejectReason::WrongChannelType);
         }
         let required_permissions =
-            match application_permissions(&action, &metadata, &self.graph, &ancestors) {
+            match application_permissions(&action, &metadata, &self.graph, &ancestors, policy) {
                 Ok(required) => required,
                 Err(reason) => return EventAuthorization::Rejected(reason),
             };
@@ -1765,6 +1777,7 @@ enum ApplicationAction {
         content: Arc<str>,
         thread_root: Option<EventReference>,
         mention_everyone: bool,
+        mentions: Vec<MentionTarget>,
         attachments: Vec<EventReference>,
     },
     Edit {
@@ -1791,7 +1804,12 @@ enum ApplicationAction {
 impl ApplicationAction {
     fn retained_bytes(&self) -> usize {
         match self {
-            Self::Message { content, .. } | Self::Edit { content, .. } => content.len(),
+            Self::Message {
+                content, mentions, ..
+            } => content
+                .len()
+                .saturating_add(mentions.len().saturating_mul(33)),
+            Self::Edit { content, .. } => content.len(),
             Self::Tombstone {
                 moderation_reason, ..
             } => moderation_reason.as_ref().map_or(0, String::len),
@@ -2493,10 +2511,17 @@ fn parse_application_action(
 }
 
 fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
-    let fields = exact_map(payload, &[0, 1, 2, 3, 4])?;
-    if unsigned(fields[0])? != 1 {
-        return Err(RejectReason::InvalidSchema);
-    }
+    let version = match payload {
+        Value::Map(fields) if fields.first().is_some_and(|(key, _)| *key == 0) => {
+            unsigned(&fields[0].1)?
+        }
+        _ => return Err(RejectReason::InvalidSchema),
+    };
+    let fields = match version {
+        1 => exact_map(payload, &[0, 1, 2, 3, 4])?,
+        2 => exact_map(payload, &[0, 1, 2, 3, 4, 5])?,
+        _ => return Err(RejectReason::InvalidSchema),
+    };
     let Value::Text(content) = fields[1] else {
         return Err(RejectReason::InvalidValue);
     };
@@ -2521,12 +2546,46 @@ fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReas
     if attachments.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(RejectReason::InvalidValue);
     }
+    let mentions = if version == 1 {
+        Vec::new()
+    } else {
+        parse_mentions(fields[5])?
+    };
     Ok(ApplicationAction::Message {
         content: Arc::from(content.as_str()),
         thread_root,
         mention_everyone,
+        mentions,
         attachments,
     })
+}
+
+fn parse_mentions(value: &Value) -> Result<Vec<MentionTarget>, RejectReason> {
+    let Value::Array(values) = value else {
+        return Err(RejectReason::InvalidValue);
+    };
+    if values.len() > MAX_MESSAGE_MENTIONS {
+        return Err(RejectReason::LimitExceeded);
+    }
+    let mut mentions = Vec::with_capacity(values.len());
+    for value in values {
+        let Value::Array(fields) = value else {
+            return Err(RejectReason::InvalidValue);
+        };
+        if fields.len() != 2 {
+            return Err(RejectReason::InvalidValue);
+        }
+        let target = match unsigned(&fields[0])? {
+            0 => MentionTarget::Identity(fixed_bytes(&fields[1])?),
+            1 => MentionTarget::Role(fixed_bytes(&fields[1])?),
+            _ => return Err(RejectReason::InvalidValue),
+        };
+        mentions.push(target);
+    }
+    if mentions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(RejectReason::InvalidValue);
+    }
+    Ok(mentions)
 }
 
 fn parse_edit_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
@@ -2657,6 +2716,7 @@ fn application_permissions(
     metadata: &EventMetadata,
     graph: &BTreeMap<EventReference, GraphNode>,
     ancestors: &std::collections::BTreeSet<EventReference>,
+    policy: &SpacePolicy,
 ) -> Result<u64, RejectReason> {
     let channel_id = graph
         .get(&metadata.event_id)
@@ -2686,22 +2746,17 @@ fn application_permissions(
             pin_permissions(*target, *add, *tag, metadata, channel_id, graph, ancestors)?
         }
     };
-    if let ApplicationAction::Message {
-        thread_root,
-        mention_everyone,
-        attachments,
-        ..
-    } = action
-    {
-        required |= message_extra_permissions(
-            *thread_root,
-            *mention_everyone,
-            attachments,
-            metadata,
-            channel_id,
-            graph,
-            ancestors,
-        )?;
+    if let ApplicationAction::Message { mentions, .. } = action {
+        if mentions.iter().any(|mention| match mention {
+            MentionTarget::Identity(_) => false,
+            MentionTarget::Role(role_id) => {
+                !is_builtin_role(role_id)
+                    && !policy.custom_roles.iter().any(|role| &role.id == role_id)
+            }
+        }) {
+            return Err(RejectReason::UnknownEntity);
+        }
+        required |= message_extra_permissions(action, metadata, channel_id, graph, ancestors)?;
     }
     Ok(required)
 }
@@ -2847,18 +2902,26 @@ fn pin_permissions(
 }
 
 fn message_extra_permissions(
-    thread_root: Option<EventReference>,
-    mention_everyone: bool,
-    attachments: &[EventReference],
+    action: &ApplicationAction,
     metadata: &EventMetadata,
     channel_id: EntityId,
     graph: &BTreeMap<EventReference, GraphNode>,
     ancestors: &std::collections::BTreeSet<EventReference>,
 ) -> Result<u64, RejectReason> {
+    let ApplicationAction::Message {
+        thread_root,
+        mention_everyone,
+        mentions,
+        attachments,
+        ..
+    } = action
+    else {
+        return Err(RejectReason::WrongEventKind);
+    };
     let mut required = 0;
     if let Some(thread_root) = thread_root {
         let _ = application_target(
-            thread_root,
+            *thread_root,
             EventKind::Message,
             metadata,
             channel_id,
@@ -2867,7 +2930,11 @@ fn message_extra_permissions(
         )?;
         required |= THREAD_CREATE;
     }
-    if mention_everyone {
+    if *mention_everyone
+        || mentions
+            .iter()
+            .any(|mention| matches!(mention, MentionTarget::Role(_)))
+    {
         required |= MENTION_EVERYONE;
     }
     for attachment in attachments {

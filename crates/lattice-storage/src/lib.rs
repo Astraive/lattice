@@ -49,7 +49,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -653,8 +653,73 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 13 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS local_mention_preferences (
+                    singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+                    encrypted_targets BLOB NOT NULL
+                        CHECK(typeof(encrypted_targets) = 'blob'
+                            AND length(encrypted_targets) BETWEEN 1 AND 262144)
+                );
+                PRAGMA user_version = 13;",
+            )?;
+            transaction.commit()?;
+        }
 
         Ok(Self { connection })
+    }
+
+    /// Reads the protected opaque local mention-preference record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored blob is oversized, malformed at the
+    /// storage boundary, or `SQLite` cannot read it.
+    pub fn load_local_mention_preferences(&self) -> Result<Option<Vec<u8>>> {
+        let encrypted = self
+            .connection
+            .query_row(
+                "SELECT encrypted_targets FROM local_mention_preferences WHERE singleton = 1",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(classify_database_error)?;
+        if encrypted
+            .as_ref()
+            .is_some_and(|blob| blob.is_empty() || blob.len() > 262_144)
+        {
+            return Err(StoreError::CorruptData(
+                "local mention preferences exceed storage bounds",
+            ));
+        }
+        Ok(encrypted)
+    }
+
+    /// Replaces the encrypted local mention-preference record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or oversized record or a `SQLite` write
+    /// failure.
+    pub fn save_local_mention_preferences(&mut self, encrypted_targets: &[u8]) -> Result<()> {
+        if encrypted_targets.is_empty() || encrypted_targets.len() > 262_144 {
+            return Err(StoreError::CorruptData(
+                "local mention preferences exceed storage bounds",
+            ));
+        }
+        self.connection
+            .execute(
+                "INSERT INTO local_mention_preferences (singleton, encrypted_targets)
+                 VALUES (1, ?1)
+                 ON CONFLICT(singleton) DO UPDATE
+                 SET encrypted_targets = excluded.encrypted_targets",
+                [encrypted_targets],
+            )
+            .map_err(classify_database_error)?;
+        Ok(())
     }
 
     /// Opens an existing database without applying migrations or changing
@@ -2825,7 +2890,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2873,7 +2938,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2998,7 +3063,7 @@ mod tests {
     fn welcome_bootstrap_snapshot_round_trips_transactionally_and_enforces_bounds() {
         let database = TempDatabase::new();
         let mut store = Store::open(database.path()).expect("open database");
-        assert_eq!(store.schema_version().expect("read schema version"), 12);
+        assert_eq!(store.schema_version().expect("read schema version"), 13);
         let snapshot = SpaceWelcomeBootstrapSnapshot {
             space_id: [0x11; 16],
             group_reference: [0x22; 32],

@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{ApplicationAction, EntityId, EventReference, Fingerprint, GraphNode};
+use super::{ApplicationAction, EntityId, EventReference, Fingerprint, GraphNode, MentionTarget};
 
 /// Authorized message history materialized from one reducer generation.
 ///
@@ -31,6 +31,8 @@ pub struct ProjectedMessage {
     pub author: Fingerprint,
     /// Optional immutable thread-root message ID.
     pub thread_root: Option<EventReference>,
+    /// Stable identity and role references carried by this immutable message.
+    pub mentions: Vec<MentionTarget>,
     versions: Vec<MessageVersion>,
     /// All authorized tombstones, including distinct moderation reasons.
     pub tombstones: Vec<MessageTombstone>,
@@ -147,6 +149,7 @@ fn project_messages(
         let Some(ApplicationAction::Message {
             content,
             thread_root,
+            mentions,
             ..
         }) = node.application_action.as_ref()
         else {
@@ -159,6 +162,7 @@ fn project_messages(
                 event_id: *event_id,
                 author: node.author,
                 thread_root: *thread_root,
+                mentions: mentions.clone(),
                 versions: vec![MessageVersion {
                     event_id: *event_id,
                     author: node.author,

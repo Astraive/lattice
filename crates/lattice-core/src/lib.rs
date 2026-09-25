@@ -67,6 +67,8 @@ pub const MAX_LOCAL_TEXT_SEARCH_RESULTS: usize = 100;
 /// Maximum number of locally available one-time `KeyPackages` maintained by
 /// [`Client::replenish_key_packages`].
 pub const MAX_LOCAL_KEY_PACKAGE_INVENTORY: usize = 32;
+/// Maximum distinct local identity/role mention targets retained in preferences.
+pub const MAX_LOCAL_MUTED_MENTION_TARGETS: usize = 4096;
 const MAX_SPACE_RECOVERY_DEPTH: usize = 32;
 
 /// Caller-selected fields for one initial channel; its identifier is generated
@@ -420,6 +422,9 @@ pub enum CoreError {
     /// An encrypted local message cache row failed event binding or validation.
     #[error("local Space message cache entry is invalid")]
     LocalSpaceMessageCacheInvalid,
+    /// A protected local mention-preference record failed canonical validation.
+    #[error("local mention preferences are invalid")]
+    InvalidLocalMentionPreferences,
     /// A local history search query is empty or exceeds its byte bound.
     #[error("local text-message search query is invalid")]
     InvalidLocalTextMessageSearch,
@@ -892,20 +897,98 @@ fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
     let mut fields = fields.into_iter();
-    if fields.next() != Some((0, Value::Unsigned(1))) {
+    let Some((0, Value::Unsigned(version @ (1 | 2)))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
-    }
+    };
     let Some((1, Value::Text(content))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
     if fields.next() != Some((2, Value::Null))
         || fields.next() != Some((3, Value::Bool(false)))
         || fields.next() != Some((4, Value::Array(Vec::new())))
-        || fields.next().is_some()
     {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     }
+    if version == 2 && !matches!(fields.next(), Some((5, Value::Array(_)))) {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
+    if fields.next().is_some() {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
     Ok(content)
+}
+
+fn mention_target_value(target: space::MentionTarget) -> Value {
+    match target {
+        space::MentionTarget::Identity(fingerprint) => {
+            Value::Array(vec![Value::Unsigned(0), Value::Bytes(fingerprint.to_vec())])
+        }
+        space::MentionTarget::Role(role_id) => {
+            Value::Array(vec![Value::Unsigned(1), Value::Bytes(role_id.to_vec())])
+        }
+    }
+}
+
+fn decode_mention_target(value: &Value) -> Result<space::MentionTarget, CoreError> {
+    let Value::Array(fields) = value else {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    };
+    if fields.len() != 2 {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    }
+    match (&fields[0], &fields[1]) {
+        (Value::Unsigned(0), Value::Bytes(bytes)) => Ok(space::MentionTarget::Identity(
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| CoreError::InvalidLocalMentionPreferences)?,
+        )),
+        (Value::Unsigned(1), Value::Bytes(bytes)) => Ok(space::MentionTarget::Role(
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| CoreError::InvalidLocalMentionPreferences)?,
+        )),
+        _ => Err(CoreError::InvalidLocalMentionPreferences),
+    }
+}
+
+fn encode_local_mention_mutes(
+    targets: &std::collections::BTreeSet<space::MentionTarget>,
+) -> Result<Vec<u8>, CoreError> {
+    if targets.len() > MAX_LOCAL_MUTED_MENTION_TARGETS {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    }
+    let values = targets.iter().copied().map(mention_target_value).collect();
+    Ok(encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Array(values)),
+    ]))?)
+}
+
+fn decode_local_mention_mutes(
+    plaintext: &[u8],
+) -> Result<std::collections::BTreeSet<space::MentionTarget>, CoreError> {
+    let Value::Map(fields) = decode_canonical(plaintext)? else {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    };
+    if fields.len() != 2 || fields[0] != (0, Value::Unsigned(1)) {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    }
+    let Value::Array(values) = &fields[1].1 else {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    };
+    if fields[1].0 != 1 || values.len() > MAX_LOCAL_MUTED_MENTION_TARGETS {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    }
+    let targets = values
+        .iter()
+        .map(decode_mention_target)
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    if targets.len() != values.len() {
+        return Err(CoreError::InvalidLocalMentionPreferences);
+    }
+    Ok(targets)
 }
 
 fn decode_text_edit(plaintext: &[u8]) -> Result<([u8; 32], String), CoreError> {
@@ -1339,6 +1422,77 @@ impl Client {
         self.create_space(&credential, channels)
     }
 
+    /// Mutes or unmutes one stable identity or role target on this device only.
+    ///
+    /// Preferences are encrypted with the local MLS storage key and never
+    /// synced. At most [`MAX_LOCAL_MUTED_MENTION_TARGETS`] targets are retained.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the protected settings record or `SQLite` write fails,
+    /// or the local mute-target bound is exceeded.
+    pub fn set_mention_muted(
+        &mut self,
+        target: space::MentionTarget,
+        muted: bool,
+    ) -> Result<(), CoreError> {
+        let mut targets = self.load_local_mention_mutes()?;
+        if muted && !targets.contains(&target) && targets.len() >= MAX_LOCAL_MUTED_MENTION_TARGETS {
+            return Err(CoreError::InvalidLocalMentionPreferences);
+        }
+        if muted {
+            targets.insert(target);
+        } else {
+            targets.remove(&target);
+        }
+        let plaintext = encode_local_mention_mutes(&targets)?;
+        let encrypted = with_mls_storage_key(&self.mls_storage_key[..], || {
+            lattice_mls::protect_local_record(b"lattice-local-mention-mutes-v1\0", &plaintext)
+        })??;
+        self.store.save_local_mention_preferences(&encrypted)?;
+        Ok(())
+    }
+
+    /// Decides whether locally resolved mention targets may notify this device.
+    ///
+    /// The caller supplies only targets resolved to the local device under the
+    /// event's chosen policy context. This returns false for no matching target
+    /// or when every matching target is muted; it never creates a notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target list is oversized, or the encrypted
+    /// local preference record is malformed or cannot be read/decrypted.
+    pub fn should_notify_for_mentions(
+        &self,
+        locally_resolved_mentions: &[space::MentionTarget],
+    ) -> Result<bool, CoreError> {
+        if locally_resolved_mentions.len() > space::MAX_MESSAGE_MENTIONS {
+            return Err(CoreError::SpaceMessageRejected(
+                space::EventAuthorization::Rejected(space::RejectReason::LimitExceeded),
+            ));
+        }
+        if locally_resolved_mentions.is_empty() {
+            return Ok(false);
+        }
+        let muted = self.load_local_mention_mutes()?;
+        Ok(locally_resolved_mentions
+            .iter()
+            .any(|target| !muted.contains(target)))
+    }
+
+    fn load_local_mention_mutes(
+        &self,
+    ) -> Result<std::collections::BTreeSet<space::MentionTarget>, CoreError> {
+        let Some(encrypted) = self.store.load_local_mention_preferences()? else {
+            return Ok(std::collections::BTreeSet::new());
+        };
+        let plaintext = with_mls_storage_key(&self.mls_storage_key[..], || {
+            lattice_mls::unprotect_local_record(b"lattice-local-mention-mutes-v1\0", &encrypted)
+        })??;
+        decode_local_mention_mutes(&plaintext)
+    }
+
     /// Encrypts, authorizes, and atomically queues one local text message.
     ///
     /// The exact signed event, outbox envelope, and MLS sender state are
@@ -1363,6 +1517,27 @@ impl Client {
         channel_id: space::EntityId,
         content: &str,
     ) -> Result<QueuedMessage, CoreError> {
+        self.queue_text_message_with_mentions(created, credential, channel_id, content, &[])
+    }
+
+    /// Queues a text message with stable encrypted identity/role references.
+    ///
+    /// Mention targets must be sorted and unique. Role references must exist
+    /// in the active policy; a role mention requires the existing broad-mention
+    /// permission. Identity references are full device fingerprints.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue errors from [`Client::queue_text_message`], plus
+    /// `SpaceMessageRejected` for invalid, excessive, or unknown mentions.
+    pub fn queue_text_message_with_mentions(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        channel_id: space::EntityId,
+        content: &str,
+        mentions: &[space::MentionTarget],
+    ) -> Result<QueuedMessage, CoreError> {
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
         let policy = created
             .reducer
@@ -1371,7 +1546,7 @@ impl Client {
                 space::RejectReason::MissingPolicy,
             ))?;
         let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
-        let plaintext = encode_text_message(content)?;
+        let plaintext = encode_text_message_with_mentions(content, mentions)?;
         let message = LocalApplicationEvent {
             group_id: created.group_id.clone(),
             credential,
@@ -2541,19 +2716,47 @@ fn resolve_edit_parents(
         .ok_or(CoreError::SpaceLamportExhausted)?;
     Ok((parents, lamport))
 }
-
 fn encode_text_message(content: &str) -> Result<Vec<u8>, CoreError> {
+    encode_text_message_with_mentions(content, &[])
+}
+
+fn encode_text_message_with_mentions(
+    content: &str,
+    mentions: &[space::MentionTarget],
+) -> Result<Vec<u8>, CoreError> {
     if content.len() > space::MAX_SPACE_PAYLOAD_BYTES {
         return Err(CoreError::SpaceMessageRejected(
             space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
         ));
     }
+    if mentions.len() > space::MAX_MESSAGE_MENTIONS {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::LimitExceeded),
+        ));
+    }
+    if mentions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::InvalidValue),
+        ));
+    }
+    let mention_values = mentions
+        .iter()
+        .map(|mention| match mention {
+            space::MentionTarget::Identity(fingerprint) => {
+                Value::Array(vec![Value::Unsigned(0), Value::Bytes(fingerprint.to_vec())])
+            }
+            space::MentionTarget::Role(role_id) => {
+                Value::Array(vec![Value::Unsigned(1), Value::Bytes(role_id.to_vec())])
+            }
+        })
+        .collect();
     let plaintext = encode_canonical(&Value::Map(vec![
-        (0, Value::Unsigned(1)),
+        (0, Value::Unsigned(2)),
         (1, Value::Text(content.to_owned())),
         (2, Value::Null),
         (3, Value::Bool(false)),
         (4, Value::Array(Vec::new())),
+        (5, Value::Array(mention_values)),
     ]))?;
     if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
         return Err(CoreError::SpaceMessageRejected(
@@ -3300,6 +3503,99 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, "queued offline");
         assert_eq!(history[0].event_id, event_id);
+    }
+
+    #[test]
+    fn stable_mentions_resolve_and_local_mutes_survive_restart() {
+        let database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut client =
+            Client::open_or_create(&database.0, &protector).expect("initialize local profile");
+        let credential = test_credential(&client.identity);
+        let mut created = client
+            .create_space(
+                &credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create local Space");
+        let channel_id = created.reducer().policy().expect("Genesis policy").channels[0].id;
+        let target = super::space::MentionTarget::Identity(client.identity.fingerprint());
+
+        assert!(matches!(
+            client.queue_text_message_with_mentions(
+                &mut created,
+                &credential,
+                channel_id,
+                "unknown role",
+                &[super::space::MentionTarget::Role([0xE1; 16])],
+            ),
+            Err(CoreError::SpaceMessageRejected(
+                super::space::EventAuthorization::Rejected(
+                    super::space::RejectReason::UnknownEntity
+                )
+            ))
+        ));
+
+        assert!(matches!(
+            client.queue_text_message_with_mentions(
+                &mut created,
+                &credential,
+                channel_id,
+                "unsorted mentions",
+                &[
+                    super::space::MentionTarget::Identity([0xFF; 32]),
+                    super::space::MentionTarget::Identity([0x00; 32]),
+                ],
+            ),
+            Err(CoreError::SpaceMessageRejected(
+                super::space::EventAuthorization::Rejected(
+                    super::space::RejectReason::InvalidValue
+                )
+            ))
+        ));
+        client
+            .queue_text_message_with_mentions(
+                &mut created,
+                &credential,
+                channel_id,
+                "stable target",
+                &[target],
+            )
+            .expect("queue stable identity mention");
+        assert_eq!(
+            created.reducer().message_history(&channel_id).messages()[0].mentions,
+            vec![target]
+        );
+        assert!(client.should_notify_for_mentions(&[target]).unwrap());
+
+        client
+            .set_mention_muted(target, true)
+            .expect("persist local mute");
+        let encrypted = client
+            .store
+            .load_local_mention_preferences()
+            .expect("read encrypted preferences")
+            .expect("preference row exists");
+        assert!(
+            !encrypted
+                .windows(32)
+                .any(|window| window == client.identity.fingerprint())
+        );
+        assert!(!client.should_notify_for_mentions(&[target]).unwrap());
+
+        drop(client);
+        let mut reopened = Client::open_existing(&database.0, &protector).expect("reopen profile");
+        assert!(!reopened.should_notify_for_mentions(&[target]).unwrap());
+        reopened
+            .set_mention_muted(target, false)
+            .expect("remove local mute");
+        assert!(reopened.should_notify_for_mentions(&[target]).unwrap());
     }
 
     #[test]

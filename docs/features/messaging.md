@@ -12,6 +12,10 @@ The Rust reducer projects authorized messages and updates in memory. Core caches
 
 `lattice_mls::api::DirectMessageGroup` creates an MLS group for one local device and one explicitly pinned peer fingerprint. It checks that the peer fingerprint matches the X.509 identity in the recipient KeyPackage before creating group state, and returns the Add Commit and Welcome for authenticated delivery. Welcome import and persisted-group load accept only the exact two-device membership; application encrypt/decrypt is limited to those fingerprints. Either device can issue a removal, which rekeys the group and permanently closes this pairwise context. The caller remains responsible for establishing trust in the peer fingerprint and routing the opaque MLS messages. Core event-log/outbox integration for DMs is not implemented by this MLS boundary.
 
+## Implemented stable mentions and local mute policy
+
+`Client::queue_text_message_with_mentions` places a sorted, unique list of full device fingerprints and Space role IDs in the encrypted message payload. Role targets must exist in the event policy and require the existing broad-mention permission; legacy v1 messages still decode with no targets. The reducer exposes validated targets through its message projection. `Client::set_mention_muted` stores per-device mute preferences as a protected local record; `should_notify_for_mentions` suppresses notifications when no locally resolved targets remain unmuted. Callers resolve recipient/role membership at the selected event policy context and still own notification dispatch.
+
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
 | MSG-001 | An authorized user shall compose and commit text while disconnected. | Restart after local send retains event with queued status. | M1 |
