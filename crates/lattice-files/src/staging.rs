@@ -95,9 +95,9 @@ impl AttachmentStagingStore {
         root: impl AsRef<Path>,
         limits: AttachmentStagingLimits,
     ) -> Result<Self, AttachmentError> {
-        let root = root.as_ref();
-        create_private_directory(root)?;
-        let metadata = fs::symlink_metadata(root)?;
+        let requested_root = root.as_ref();
+        create_private_directory(requested_root)?;
+        let metadata = fs::symlink_metadata(requested_root)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(AttachmentError::UnsafeStagingDirectory);
         }
@@ -108,10 +108,8 @@ impl AttachmentStagingStore {
                 return Err(AttachmentError::UnsafeStagingDirectory);
             }
         }
-        Ok(Self {
-            root: root.to_path_buf(),
-            limits,
-        })
+        let root = fs::canonicalize(requested_root)?;
+        Ok(Self { root, limits })
     }
 
     /// Reserve bounded disk space for this event-bound manifest and reopen its
@@ -593,6 +591,10 @@ mod tests {
         let root = TemporaryRoot(temporary_root());
         let policy = limits(32, 32, 2, Duration::from_mins(1));
         let store = AttachmentStagingStore::new(&root.0, policy).expect("create staging store");
+        assert_eq!(
+            store.root,
+            std::fs::canonicalize(&root.0).expect("resolve private staging root")
+        );
         let bytes = b"persistent partial data";
         let first = manifest(bytes);
         let event_one = [1; 32];
