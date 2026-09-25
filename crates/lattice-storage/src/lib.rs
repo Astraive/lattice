@@ -26,6 +26,8 @@ pub const MAX_OUTBOX_EVENTS: usize = 1024;
 pub const MAX_OUTBOX_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum entries returned by one outbox page.
 pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
+/// Maximum committed events returned by one sync-source page.
+pub const MAX_EVENT_PAGE_SIZE: usize = 16;
 /// Maximum locally created Space Genesis records returned by one page.
 pub const MAX_SPACE_GENESIS_PAGE_SIZE: usize = 32;
 /// Maximum locally retained text-message rows.
@@ -180,6 +182,7 @@ pub enum StoreError {
     OutboxEventLimit,
     OutboxByteLimit,
     OutboxPageLimit,
+    EventPageLimit,
     OutboxConflict,
     OutboxMissing,
     InvalidOutboxSchedule,
@@ -240,6 +243,7 @@ impl std::fmt::Display for StoreError {
             }
             Self::OutboxMissing => formatter.write_str("existing event has no outbox envelope"),
             Self::OutboxPageLimit => formatter.write_str("outbox page limit exceeded"),
+            Self::EventPageLimit => formatter.write_str("event page limit exceeded"),
             Self::InvalidOutboxSchedule => formatter.write_str("outbox schedule time is invalid"),
             Self::InvalidOutboxTransition => formatter.write_str("invalid outbox state transition"),
             Self::InvalidProtectedIdentity => {
@@ -1562,6 +1566,74 @@ impl Store {
     pub fn load_event(&self, id: &[u8; ID_BYTES]) -> Result<Option<EventRecord>> {
         load_event_with_connection(&self.connection, id)
     }
+    /// Loads the event occupying one author's exact one-based sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for sequence zero, malformed stored data, or database
+    /// failures.
+    pub fn load_event_by_author_sequence(
+        &self,
+        author_id: &[u8; ID_BYTES],
+        sequence: u64,
+    ) -> Result<Option<EventRecord>> {
+        let sequence = i64::try_from(sequence).map_err(|_| StoreError::InvalidSequence)?;
+        if sequence <= 0 {
+            return Err(StoreError::InvalidSequence);
+        }
+        let event_id: Option<Vec<u8>> = self
+            .connection
+            .query_row(
+                "SELECT event_id FROM events WHERE author_id = ?1 AND author_seq = ?2",
+                params![&author_id[..], sequence],
+                |row| row.get(0),
+            )
+            .optional()?;
+        event_id
+            .map(|event_id| {
+                let event_id = decode_id(event_id)?;
+                self.load_event(&event_id)?.ok_or(StoreError::CorruptData(
+                    "event disappeared during author-sequence lookup",
+                ))
+            })
+            .transpose()
+    }
+
+    /// Returns committed events in event-ID order using a bounded keyset page.
+    ///
+    /// This exposes accepted event bytes to sync callers without requiring an
+    /// unbounded full-store read. Pending records are not included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid page size, malformed stored event data,
+    /// or database failures.
+    pub fn list_event_page(
+        &self,
+        after_event_id: Option<[u8; ID_BYTES]>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>> {
+        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
+            return Err(StoreError::EventPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT event_id FROM events
+             WHERE (?1 IS NULL OR event_id > ?1)
+             ORDER BY event_id LIMIT ?2",
+        )?;
+        let after = after_event_id.map(|id| id.to_vec());
+        let rows = statement.query_map(
+            params![after, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        rows.map(|row| {
+            let event_id = decode_id(row?)?;
+            self.load_event(&event_id)?.ok_or(StoreError::CorruptData(
+                "event disappeared during page read",
+            ))
+        })
+        .collect()
+    }
 
     /// Returns the next sequence for a local author, starting at one.
     ///
@@ -2206,10 +2278,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
-        CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
-        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
-        SpaceMembershipTransitionSnapshot, SpaceWelcomeBootstrapSnapshot, Store, StoreError,
-        TrustedIdentityRecord,
+        CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_EVENT_PAGE_SIZE,
+        MAX_OUTBOX_EVENTS, MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot,
+        SpaceMembershipConflictSnapshot, SpaceMembershipTransitionSnapshot,
+        SpaceWelcomeBootstrapSnapshot, Store, StoreError, TrustedIdentityRecord,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -2308,6 +2380,61 @@ mod tests {
             .expect("event exists");
         assert_eq!(stored.canonical_bytes, bytes);
         assert_eq!(stored.parents, [parent]);
+    }
+
+    #[test]
+    fn committed_event_pages_are_ordered_and_bounded() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        for (event, sequence) in [(id(5), 1), (id(8), 2), (id(2), 3)] {
+            store
+                .commit_authored(id(1), event, sequence, &[0xA1, 0x01, 0x02], &[])
+                .expect("commit event");
+        }
+        assert_eq!(
+            store
+                .load_event_by_author_sequence(&id(1), 3)
+                .expect("load exact author sequence")
+                .expect("sequence is committed")
+                .event_id,
+            id(2)
+        );
+        assert!(
+            store
+                .load_event_by_author_sequence(&id(1), 4)
+                .expect("load absent author sequence")
+                .is_none()
+        );
+        assert!(matches!(
+            store.load_event_by_author_sequence(&id(1), 0),
+            Err(StoreError::InvalidSequence)
+        ));
+
+        let first = store
+            .list_event_page(None, 2)
+            .expect("load first event page");
+        assert_eq!(
+            first.iter().map(|event| event.event_id).collect::<Vec<_>>(),
+            [id(2), id(5)]
+        );
+        let second = store
+            .list_event_page(Some(id(5)), 2)
+            .expect("load second event page");
+        assert_eq!(
+            second
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            [id(8)]
+        );
+        assert!(matches!(
+            store.list_event_page(None, 0),
+            Err(StoreError::EventPageLimit)
+        ));
+        assert!(matches!(
+            store.list_event_page(None, MAX_EVENT_PAGE_SIZE + 1),
+            Err(StoreError::EventPageLimit)
+        ));
     }
 
     #[test]

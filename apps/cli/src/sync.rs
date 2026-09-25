@@ -3,7 +3,7 @@ use std::{error::Error, path::Path};
 use clap::Subcommand;
 use lattice_core::{Client, CoreError};
 use lattice_platform::OsKeyringProtector;
-use lattice_storage::{MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
+use lattice_storage::{MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
 
 #[derive(Debug, Subcommand)]
 pub(super) enum SyncCommand {
@@ -39,6 +39,16 @@ fn print_status(
 
     let store = Store::open(database_path)?;
     let pending_event_count = store.pending_count()?;
+    let mut committed_event_count = 0;
+    let mut event_after = None;
+    loop {
+        let page = store.list_event_page(event_after, MAX_EVENT_PAGE_SIZE)?;
+        committed_event_count += page.len();
+        event_after = page.last().map(|event| event.event_id);
+        if page.len() < MAX_EVENT_PAGE_SIZE {
+            break;
+        }
+    }
     let mut outbox = OutboxCounts::default();
     let mut after_event_id = None;
     loop {
@@ -69,6 +79,7 @@ fn print_status(
                 "command": "sync_status",
                 "identity": "initialized",
                 "next_local_event_sequence": next_local_event_sequence,
+                "committed_events": committed_event_count,
                 "pending_events": pending_event_count,
                 "outbox": {
                     "total": outbox.total,
@@ -88,6 +99,7 @@ fn print_status(
         );
     } else {
         println!("Local event sequence ready: {next_local_event_sequence}");
+        println!("Committed events: {committed_event_count}");
         println!("Pending dependency events: {pending_event_count}");
         println!(
             "Outbox: {} total ({} queued, {} forwarded, {} destination receipts recorded, {} failed).",
