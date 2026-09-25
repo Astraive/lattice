@@ -35,7 +35,7 @@ pub use direct_session::{
     serve_authenticated_sync_v2_once,
 };
 mod store_source;
-pub use store_source::StoreSyncEventSource;
+pub use store_source::{StoreSyncEventSource, StoreSyncSummarySource};
 
 /// Derives the opaque synchronization scope for one Space MLS generation.
 ///
