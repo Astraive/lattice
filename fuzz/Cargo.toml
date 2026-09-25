@@ -1,0 +1,62 @@
+[package]
+name = "lattice-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lattice-files = { path = "../crates/lattice-files" }
+lattice-events = { path = "../crates/lattice-events" }
+lattice-identity = { path = "../crates/lattice-identity" }
+lattice-protocol = { path = "../crates/lattice-protocol" }
+lattice-relay = { path = "../crates/lattice-relay" }
+
+# Use independent workspace for fuzzers
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "canonical"
+path = "fuzz_targets/canonical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity-bundle"
+path = "fuzz_targets/identity_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signed-event"
+path = "fuzz_targets/signed_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay-envelope"
+path = "fuzz_targets/relay_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nostr-event"
+path = "fuzz_targets/nostr_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attachment-manifest"
+path = "fuzz_targets/attachment_manifest.rs"
+test = false
+doc = false
+bench = false
