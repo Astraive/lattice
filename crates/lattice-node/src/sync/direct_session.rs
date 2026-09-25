@@ -13,17 +13,21 @@ use tokio_util::sync::CancellationToken;
 use super::{
     HopOutcome, REQUEST_KIND, SyncEventRejection, SyncEventSource, SyncEventValidator,
     SyncExchange, SyncProtocolError, SyncReceiveOutcome, SyncRequestTarget,
-    SyncServeReceiveOutcome, SyncServeResult, SyncSourceError, ValidatedSyncEvent,
-    WIRE_HEADER_BYTES, WIRE_MAGIC, WIRE_VERSION, bounded_targets, decode_request, decode_response,
-    encode_request, known_summary_event, normalize_ranges, record_matches_target, response_header,
-    sort_dedup,
+    SyncServeReceiveOutcome, SyncServeResult, SyncSourceError, SyncSummarySource,
+    V2_INITIATOR_SUMMARY_KIND, V2_RESPONDER_SUMMARY_KIND, ValidatedSyncEvent, WIRE_HEADER_BYTES,
+    WIRE_MAGIC, WIRE_VERSION, WIRE_VERSION_V2, bounded_targets, decode_request, decode_response,
+    decode_v2_request, decode_v2_response, decode_v2_summary, encode_request, encode_v2_request,
+    encode_v2_response_header, encode_v2_summary, known_summary_event, normalize_ranges,
+    record_matches_target, response_header, sort_dedup,
 };
 
 const DIRECT_SYNC_PROLOGUE: &[u8] = b"lattice:direct-sync:noise-xx:v1\0";
+const DIRECT_SYNC_V2_PROLOGUE: &[u8] = b"lattice:direct-sync:noise-xx:v2\0";
 const IDENTITY_PROOF_MAGIC: &[u8; 4] = b"LIDP";
 const IDENTITY_PROOF_VERSION: u8 = 1;
 const IDENTITY_PROOF_BYTES: usize = 4 + 1 + 1 + 64;
 const IDENTITY_PROOF_DOMAIN: &[u8] = b"lattice:direct-sync-identity-proof:v1\0";
+const IDENTITY_PROOF_V2_DOMAIN: &[u8] = b"lattice:direct-sync-identity-proof:v2\0";
 
 /// Failure while establishing or using one authenticated direct-sync session.
 #[derive(Debug, Error)]
@@ -84,6 +88,34 @@ pub struct AuthenticatedSyncServeResult {
     pub authenticated_peer: PinnedIdentity,
     /// Scope accepted by the caller's authorization callback.
     pub authorized_scope: ScopeId,
+    /// Exact-hop response result; it never means destination delivery.
+    pub exchange: SyncServeResult,
+}
+
+/// One authenticated v2 exchange with a summary received from the pinned peer.
+#[derive(Debug)]
+pub struct AuthenticatedSyncV2Exchange<E> {
+    /// Exact identity bundle/fingerprint verified over the v2 Noise transcript.
+    pub authenticated_peer: PinnedIdentity,
+    /// Exact-hop acceptance of the initiator's scoped summary frame.
+    pub summary_hop: HopOutcome,
+    /// The bounded summary advertised by the responder.
+    pub peer_summary: ScopeSummary,
+    /// Planned exact requests and their one-batch results.
+    pub exchange: SyncExchange<E>,
+}
+
+/// One authenticated v2 serving result after exchanging scoped summaries.
+#[derive(Debug)]
+pub struct AuthenticatedSyncV2ServeResult {
+    /// Exact identity bundle/fingerprint verified over the v2 Noise transcript.
+    pub authenticated_peer: PinnedIdentity,
+    /// Scope accepted by the caller's authorization callback.
+    pub authorized_scope: ScopeId,
+    /// Exact-hop acceptance of the responder's scoped summary frame.
+    pub summary_hop: HopOutcome,
+    /// The bounded summary advertised by the initiator.
+    pub peer_summary: ScopeSummary,
     /// Exact-hop response result; it never means destination delivery.
     pub exchange: SyncServeResult,
 }
@@ -234,6 +266,146 @@ where
     })
 }
 
+/// Exchanges bounded v2 summaries, plans exact repairs, and validates one batch.
+///
+/// The v2 Noise prologue/proof domain and application frame version are distinct
+/// from v1. Scope authorization precedes sending the caller's summary.
+///
+/// # Errors
+///
+/// Returns an error for cancellation, failed Noise or pinned-identity
+/// authentication, denied scope, malformed/oversize summaries or frames, or
+/// invalid/conflicting summaries.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub async fn execute_authenticated_sync_v2_once<A, V, Z>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    local: &ScopeSummary,
+    deduplicator: &mut EventDeduplicator,
+    validator: &mut V,
+    mut authorize_scope: Z,
+    cancellation: &CancellationToken,
+) -> Result<AuthenticatedSyncV2Exchange<V::Error>, AuthenticatedSyncError>
+where
+    A: TransportAdapter + ?Sized,
+    V: SyncEventValidator,
+    Z: FnMut(&PinnedIdentity, ScopeId) -> bool,
+{
+    let mut channel = establish_authenticated_channel_v2(
+        adapter,
+        local_identity,
+        pinned_peer,
+        NoiseRole::Initiator,
+        cancellation,
+    )
+    .await?;
+    if !authorize_scope(&pinned_peer, local.scope) {
+        return Err(AuthenticatedSyncError::ScopeUnauthorized);
+    }
+    plan_sync(local, local).map_err(AuthenticatedSyncError::Plan)?;
+
+    let max_plaintext = max_v2_plaintext_frame(adapter);
+    let local_summary = encode_v2_summary(local, V2_INITIATOR_SUMMARY_KIND, max_plaintext)
+        .map_err(AuthenticatedSyncError::Protocol)?;
+    let summary_hop = send_encrypted(adapter, &mut channel, &local_summary, cancellation).await?;
+    let peer_summary_bytes = receive_decrypted(adapter, &mut channel, cancellation).await?;
+    let peer_summary =
+        decode_v2_summary(&peer_summary_bytes, local.scope, V2_RESPONDER_SUMMARY_KIND)
+            .map_err(AuthenticatedSyncError::Protocol)?;
+    let plan = plan_sync(local, &peer_summary).map_err(AuthenticatedSyncError::Plan)?;
+    let (requested, mut unresolved_dependencies, mut unresolved_ranges) =
+        bounded_targets(&plan, max_plaintext);
+    let mut exchange = SyncExchange {
+        unresolved_history: plan.unresolved_history.clone(),
+        plan,
+        request_hop: HopOutcome::NotAttempted,
+        response: SyncReceiveOutcome::NotAttempted,
+        requested: requested.clone(),
+        events: Vec::with_capacity(requested.len()),
+        duplicates: Vec::new(),
+        rejected_events: Vec::new(),
+        unresolved_dependencies: Vec::new(),
+        unresolved_ranges: Vec::new(),
+    };
+    let request =
+        encode_v2_request(local.scope, &requested).map_err(AuthenticatedSyncError::Protocol)?;
+    let request_hop = send_encrypted(adapter, &mut channel, &request, cancellation).await?;
+    exchange.request_hop = HopOutcome::Accepted(request_hop);
+    let response = receive_decrypted(adapter, &mut channel, cancellation).await?;
+    let expected = requested
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let records = decode_v2_response(&response, local.scope, &expected)
+        .map_err(AuthenticatedSyncError::Protocol)?;
+    exchange.response = SyncReceiveOutcome::Received;
+
+    let mut pending = expected;
+    for record in records {
+        let expected_id = match record.target {
+            SyncRequestTarget::EventId(event_id) => Some(event_id),
+            SyncRequestTarget::Sequence { author, sequence } => {
+                known_summary_event(&peer_summary, author, sequence)
+            }
+        };
+        let validation = validator.validate(
+            local.scope,
+            record.author,
+            record.sequence,
+            expected_id,
+            record.bytes,
+        );
+        let validated_id = match validation {
+            Ok(event_id) => event_id,
+            Err(error) => {
+                exchange
+                    .rejected_events
+                    .push((record.target, SyncEventRejection::Validation(error)));
+                continue;
+            }
+        };
+        if validated_id != record.event_id {
+            exchange
+                .rejected_events
+                .push((record.target, SyncEventRejection::AdvertisedIdMismatch));
+            continue;
+        }
+        if expected_id.is_some_and(|expected_id| expected_id != validated_id) {
+            exchange
+                .rejected_events
+                .push((record.target, SyncEventRejection::SummaryIdMismatch));
+            continue;
+        }
+        match deduplicator.observe(RouterEventId(*validated_id.as_bytes())) {
+            DeduplicationOutcome::Duplicate => {
+                exchange.duplicates.push(validated_id);
+                pending.remove(&record.target);
+            }
+            DeduplicationOutcome::FirstSeen { .. } => {
+                exchange.events.push(ValidatedSyncEvent {
+                    author: record.author,
+                    sequence: record.sequence,
+                    event_id: validated_id,
+                    bytes: record.bytes.to_vec(),
+                });
+                pending.remove(&record.target);
+            }
+        }
+    }
+    for target in pending {
+        super::add_unresolved_target(target, &mut unresolved_dependencies, &mut unresolved_ranges);
+    }
+    exchange.unresolved_dependencies = sort_dedup(unresolved_dependencies);
+    exchange.unresolved_ranges = normalize_ranges(unresolved_ranges);
+    Ok(AuthenticatedSyncV2Exchange {
+        authenticated_peer: pinned_peer,
+        summary_hop: HopOutcome::Accepted(summary_hop),
+        peer_summary,
+        exchange,
+    })
+}
+
 /// Receives one encrypted sync request from an authenticated, pinned peer.
 ///
 /// The peer is transcript-bound to `pinned_peer` before any application frame is
@@ -345,6 +517,133 @@ where
     })
 }
 
+/// Serves one v2 summary exchange and one bounded event-request batch.
+///
+/// The request header is inspected only to identify the requested scope. The
+/// callback runs before the remote summary is decoded or either caller-owned
+/// summary/event source is accessed.
+///
+/// # Errors
+///
+/// Returns an error for cancellation, failed Noise or pinned-identity
+/// authentication, denied scope, invalid summaries/frames, or source failure.
+#[allow(clippy::too_many_lines)]
+pub async fn serve_authenticated_sync_v2_once<A, S, M, Z>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    summary_source: &mut M,
+    event_source: &mut S,
+    mut authorize_scope: Z,
+    cancellation: &CancellationToken,
+) -> Result<AuthenticatedSyncV2ServeResult, AuthenticatedSyncError>
+where
+    A: TransportAdapter + ?Sized,
+    S: SyncEventSource + ?Sized,
+    M: SyncSummarySource + ?Sized,
+    Z: FnMut(&PinnedIdentity, ScopeId) -> bool,
+{
+    let mut channel = establish_authenticated_channel_v2(
+        adapter,
+        local_identity,
+        pinned_peer,
+        NoiseRole::Responder,
+        cancellation,
+    )
+    .await?;
+    let initiator_summary_bytes = receive_decrypted(adapter, &mut channel, cancellation).await?;
+    let requested_scope =
+        request_scope_v2(&initiator_summary_bytes).map_err(AuthenticatedSyncError::Protocol)?;
+    if !authorize_scope(&pinned_peer, requested_scope) {
+        return Err(AuthenticatedSyncError::ScopeUnauthorized);
+    }
+    let peer_summary = decode_v2_summary(
+        &initiator_summary_bytes,
+        requested_scope,
+        V2_INITIATOR_SUMMARY_KIND,
+    )
+    .map_err(AuthenticatedSyncError::Protocol)?;
+    plan_sync(&peer_summary, &peer_summary).map_err(AuthenticatedSyncError::Plan)?;
+    let local_summary = summary_source
+        .load_summary(requested_scope)
+        .map_err(AuthenticatedSyncError::EventSource)?;
+    plan_sync(&peer_summary, &local_summary).map_err(AuthenticatedSyncError::Plan)?;
+    let max_plaintext = max_v2_plaintext_frame(adapter);
+    let summary_response =
+        encode_v2_summary(&local_summary, V2_RESPONDER_SUMMARY_KIND, max_plaintext)
+            .map_err(AuthenticatedSyncError::Protocol)?;
+    let summary_hop =
+        send_encrypted(adapter, &mut channel, &summary_response, cancellation).await?;
+
+    let request = receive_decrypted(adapter, &mut channel, cancellation).await?;
+    let targets =
+        decode_v2_request(&request, requested_scope).map_err(AuthenticatedSyncError::Protocol)?;
+    let mut response =
+        encode_v2_response_header(requested_scope).map_err(AuthenticatedSyncError::Protocol)?;
+    let mut omitted_targets = Vec::with_capacity(targets.len());
+    let mut included_events = 0_usize;
+    for target in targets {
+        let Some(record) = event_source
+            .load(requested_scope, target)
+            .map_err(AuthenticatedSyncError::EventSource)?
+        else {
+            omitted_targets.push(target);
+            continue;
+        };
+        if record.sequence == 0
+            || record.bytes.is_empty()
+            || record.bytes.len() > lattice_platform::MAX_EVENT_BYTES
+            || !record_matches_target(target, &record)
+        {
+            omitted_targets.push(target);
+            continue;
+        }
+        let Some(record_size) = super::target_wire_size(target)
+            .checked_add(32 + 8 + 32 + 4)
+            .and_then(|size| size.checked_add(record.bytes.len()))
+        else {
+            omitted_targets.push(target);
+            continue;
+        };
+        if response
+            .len()
+            .checked_add(record_size)
+            .is_none_or(|size| size > max_plaintext)
+        {
+            omitted_targets.push(target);
+            continue;
+        }
+        super::encode_target(&mut response, target);
+        response.extend_from_slice(record.author.as_bytes());
+        response.extend_from_slice(&record.sequence.to_be_bytes());
+        response.extend_from_slice(record.event_id.as_bytes());
+        let Ok(event_len) = u32::try_from(record.bytes.len()) else {
+            omitted_targets.push(target);
+            continue;
+        };
+        response.extend_from_slice(&event_len.to_be_bytes());
+        response.extend_from_slice(&record.bytes);
+        included_events += 1;
+    }
+    let count = u16::try_from(included_events)
+        .map_err(|_| AuthenticatedSyncError::Protocol(SyncProtocolError::InvalidCount))?;
+    response[38..40].copy_from_slice(&count.to_be_bytes());
+    let response_hop = send_encrypted(adapter, &mut channel, &response, cancellation).await?;
+
+    Ok(AuthenticatedSyncV2ServeResult {
+        authenticated_peer: pinned_peer,
+        authorized_scope: requested_scope,
+        summary_hop: HopOutcome::Accepted(summary_hop),
+        peer_summary,
+        exchange: SyncServeResult {
+            receive: SyncServeReceiveOutcome::Received,
+            response_hop: HopOutcome::Accepted(response_hop),
+            included_events,
+            omitted_targets,
+        },
+    })
+}
+
 async fn establish_authenticated_channel<A: TransportAdapter + ?Sized>(
     adapter: &A,
     local_identity: &DeviceIdentity,
@@ -352,7 +651,47 @@ async fn establish_authenticated_channel<A: TransportAdapter + ?Sized>(
     role: NoiseRole,
     cancellation: &CancellationToken,
 ) -> Result<EstablishedNoiseTransportSession, AuthenticatedSyncError> {
-    let mut handshake = NoiseSession::new(role, DIRECT_SYNC_PROLOGUE)?;
+    establish_authenticated_channel_with_protocol(
+        adapter,
+        local_identity,
+        pinned_peer,
+        role,
+        cancellation,
+        DIRECT_SYNC_PROLOGUE,
+        IDENTITY_PROOF_DOMAIN,
+    )
+    .await
+}
+
+async fn establish_authenticated_channel_v2<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    role: NoiseRole,
+    cancellation: &CancellationToken,
+) -> Result<EstablishedNoiseTransportSession, AuthenticatedSyncError> {
+    establish_authenticated_channel_with_protocol(
+        adapter,
+        local_identity,
+        pinned_peer,
+        role,
+        cancellation,
+        DIRECT_SYNC_V2_PROLOGUE,
+        IDENTITY_PROOF_V2_DOMAIN,
+    )
+    .await
+}
+
+async fn establish_authenticated_channel_with_protocol<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    role: NoiseRole,
+    cancellation: &CancellationToken,
+    prologue: &[u8],
+    proof_domain: &[u8],
+) -> Result<EstablishedNoiseTransportSession, AuthenticatedSyncError> {
+    let mut handshake = NoiseSession::new(role, prologue)?;
     match role {
         NoiseRole::Initiator => {
             let message1 = handshake.write_message(&[])?;
@@ -383,7 +722,14 @@ async fn establish_authenticated_channel<A: TransportAdapter + ?Sized>(
     let peer_bundle = pinned_peer.bundle().to_bytes();
     match role {
         NoiseRole::Initiator => {
-            let proof = identity_proof(local_identity, role, &channel, &local_bundle, &peer_bundle);
+            let proof = identity_proof(
+                local_identity,
+                role,
+                &channel,
+                &local_bundle,
+                &peer_bundle,
+                proof_domain,
+            );
             send_encrypted(adapter, &mut channel, &proof, cancellation).await?;
             let peer_proof = receive_decrypted(adapter, &mut channel, cancellation).await?;
             verify_identity_proof(
@@ -393,6 +739,7 @@ async fn establish_authenticated_channel<A: TransportAdapter + ?Sized>(
                 &local_bundle,
                 &peer_bundle,
                 pinned_peer,
+                proof_domain,
             )?;
         }
         NoiseRole::Responder => {
@@ -404,8 +751,16 @@ async fn establish_authenticated_channel<A: TransportAdapter + ?Sized>(
                 &peer_bundle,
                 &local_bundle,
                 pinned_peer,
+                proof_domain,
             )?;
-            let proof = identity_proof(local_identity, role, &channel, &local_bundle, &peer_bundle);
+            let proof = identity_proof(
+                local_identity,
+                role,
+                &channel,
+                &local_bundle,
+                &peer_bundle,
+                proof_domain,
+            );
             send_encrypted(adapter, &mut channel, &proof, cancellation).await?;
         }
     }
@@ -418,12 +773,14 @@ fn identity_proof(
     channel: &EstablishedNoiseTransportSession,
     local_bundle: &[u8; 65],
     peer_bundle: &[u8; 65],
+    proof_domain: &[u8],
 ) -> [u8; IDENTITY_PROOF_BYTES] {
     let (initiator_bundle, responder_bundle) = match role {
         NoiseRole::Initiator => (local_bundle, peer_bundle),
         NoiseRole::Responder => (peer_bundle, local_bundle),
     };
     let context = identity_proof_context(
+        proof_domain,
         channel.session_hash(),
         role,
         initiator_bundle,
@@ -445,6 +802,7 @@ fn verify_identity_proof(
     initiator_bundle: &[u8; 65],
     responder_bundle: &[u8; 65],
     pinned_peer: PinnedIdentity,
+    proof_domain: &[u8],
 ) -> Result<(), AuthenticatedSyncError> {
     if proof.len() != IDENTITY_PROOF_BYTES
         || &proof[..4] != IDENTITY_PROOF_MAGIC
@@ -454,6 +812,7 @@ fn verify_identity_proof(
         return Err(AuthenticatedSyncError::IdentityBinding);
     }
     let context = identity_proof_context(
+        proof_domain,
         channel.session_hash(),
         expected_role,
         initiator_bundle,
@@ -468,13 +827,14 @@ fn verify_identity_proof(
 }
 
 fn identity_proof_context(
+    proof_domain: &[u8],
     session_hash: &[u8; 32],
     role: NoiseRole,
     initiator_bundle: &[u8; 65],
     responder_bundle: &[u8; 65],
 ) -> Vec<u8> {
-    let mut context = Vec::with_capacity(IDENTITY_PROOF_DOMAIN.len() + 1 + 32 + 130);
-    context.extend_from_slice(IDENTITY_PROOF_DOMAIN);
+    let mut context = Vec::with_capacity(proof_domain.len() + 1 + 32 + 130);
+    context.extend_from_slice(proof_domain);
     context.push(role_byte(role));
     context.extend_from_slice(session_hash);
     context.extend_from_slice(initiator_bundle);
@@ -549,6 +909,14 @@ fn max_plaintext_frame<A: TransportAdapter + ?Sized>(adapter: &A) -> usize {
         .min(MAX_NOISE_TRANSPORT_MESSAGE_SIZE)
 }
 
+fn max_v2_plaintext_frame<A: TransportAdapter + ?Sized>(adapter: &A) -> usize {
+    adapter
+        .capabilities()
+        .max_envelope_bytes()
+        .saturating_sub(16)
+        .min(MAX_NOISE_TRANSPORT_MESSAGE_SIZE)
+}
+
 fn request_scope(bytes: &[u8]) -> Result<ScopeId, SyncProtocolError> {
     if bytes.len() < WIRE_HEADER_BYTES {
         return Err(SyncProtocolError::Truncated);
@@ -561,6 +929,23 @@ fn request_scope(bytes: &[u8]) -> Result<ScopeId, SyncProtocolError> {
         return Err(SyncProtocolError::UnsupportedVersion);
     }
     if reader.u8()? != REQUEST_KIND {
+        return Err(SyncProtocolError::UnexpectedMessage);
+    }
+    Ok(ScopeId::new(reader.array32()?))
+}
+
+fn request_scope_v2(bytes: &[u8]) -> Result<ScopeId, SyncProtocolError> {
+    if bytes.len() < WIRE_HEADER_BYTES {
+        return Err(SyncProtocolError::Truncated);
+    }
+    let mut reader = super::Reader::new(bytes);
+    if reader.take(4)? != &WIRE_MAGIC[..] {
+        return Err(SyncProtocolError::InvalidMagic);
+    }
+    if reader.u8()? != WIRE_VERSION_V2 {
+        return Err(SyncProtocolError::UnsupportedVersion);
+    }
+    if reader.u8()? != V2_INITIATOR_SUMMARY_KIND {
         return Err(SyncProtocolError::UnexpectedMessage);
     }
     Ok(ScopeId::new(reader.array32()?))

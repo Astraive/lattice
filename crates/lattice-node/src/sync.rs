@@ -8,15 +8,21 @@ use std::collections::BTreeSet;
 
 use lattice_platform::{MAX_EVENT_BYTES, TransportError, TransportReceipt};
 use lattice_sync::{
-    AuthorId, EventId, MAX_BATCH_EVENTS, ScopeId, ScopeSummary, SyncPlan, SyncRequestRange,
-    UnresolvedHistory,
+    AuthorId, AuthorSummary, EventId, GapReason, KnownEvent, MAX_AUTHORS, MAX_BATCH_EVENTS,
+    MAX_DEPENDENCY_REQUESTS, MAX_EXPLICIT_GAPS, MAX_KNOWN_EVENTS, ScopeId, ScopeSummary,
+    SequenceRange, SyncPlan, SyncRequestRange, UnavailableRange, UnresolvedHistory,
 };
 use sha2::{Digest, Sha256};
 
 const WIRE_MAGIC: &[u8; 4] = b"LSYN";
 const WIRE_VERSION: u8 = 1;
+const WIRE_VERSION_V2: u8 = 2;
 const REQUEST_KIND: u8 = 1;
 const RESPONSE_KIND: u8 = 2;
+const V2_INITIATOR_SUMMARY_KIND: u8 = 3;
+const V2_RESPONDER_SUMMARY_KIND: u8 = 4;
+const V2_REQUEST_KIND: u8 = 5;
+const V2_RESPONSE_KIND: u8 = 6;
 const WIRE_HEADER_BYTES: usize = 40;
 const TARGET_BY_ID: u8 = 0;
 const TARGET_BY_SEQUENCE: u8 = 1;
@@ -24,7 +30,9 @@ const TARGET_BY_SEQUENCE: u8 = 1;
 mod direct_session;
 pub use direct_session::{
     AuthenticatedSyncError, AuthenticatedSyncExchange, AuthenticatedSyncServeResult,
-    execute_authenticated_sync_once, serve_authenticated_sync_request_once,
+    AuthenticatedSyncV2Exchange, AuthenticatedSyncV2ServeResult, execute_authenticated_sync_once,
+    execute_authenticated_sync_v2_once, serve_authenticated_sync_request_once,
+    serve_authenticated_sync_v2_once,
 };
 mod store_source;
 pub use store_source::StoreSyncEventSource;
@@ -94,6 +102,25 @@ where
         target: SyncRequestTarget,
     ) -> Result<Option<SyncEventRecord>, SyncSourceError> {
         self(scope, target)
+    }
+}
+
+/// Supplies one bounded per-scope summary after peer and scope authorization.
+pub trait SyncSummarySource {
+    /// Returns the summary for exactly the requested scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SyncSourceError` if the summary cannot be read reliably.
+    fn load_summary(&mut self, scope: ScopeId) -> Result<ScopeSummary, SyncSourceError>;
+}
+
+impl<F> SyncSummarySource for F
+where
+    F: FnMut(ScopeId) -> Result<ScopeSummary, SyncSourceError>,
+{
+    fn load_summary(&mut self, scope: ScopeId) -> Result<ScopeSummary, SyncSourceError> {
+        self(scope)
     }
 }
 
@@ -429,6 +456,259 @@ fn decode_response<'a>(
     Ok(events)
 }
 
+fn v2_header(scope: ScopeId, kind: u8, count: usize) -> Result<Vec<u8>, SyncProtocolError> {
+    let count = u16::try_from(count).map_err(|_| SyncProtocolError::InvalidCount)?;
+    let mut bytes = Vec::with_capacity(WIRE_HEADER_BYTES);
+    bytes.extend_from_slice(WIRE_MAGIC);
+    bytes.push(WIRE_VERSION_V2);
+    bytes.push(kind);
+    bytes.extend_from_slice(scope.as_bytes());
+    bytes.extend_from_slice(&count.to_be_bytes());
+    Ok(bytes)
+}
+
+fn encode_v2_summary(
+    summary: &ScopeSummary,
+    kind: u8,
+    max_frame_bytes: usize,
+) -> Result<Vec<u8>, SyncProtocolError> {
+    let author_count = summary.authors.len();
+    let dependency_count = summary.missing_dependencies.len();
+    if author_count > MAX_AUTHORS || dependency_count > MAX_DEPENDENCY_REQUESTS {
+        return Err(SyncProtocolError::InvalidCount);
+    }
+    let mut known_count = 0_usize;
+    let mut gap_count = 0_usize;
+    let mut size = WIRE_HEADER_BYTES
+        .checked_add(2)
+        .and_then(|size| size.checked_add(dependency_count.checked_mul(32)?))
+        .ok_or(SyncProtocolError::InvalidLength)?;
+    for author in &summary.authors {
+        known_count = known_count
+            .checked_add(author.known_events.len())
+            .ok_or(SyncProtocolError::InvalidCount)?;
+        gap_count = gap_count
+            .checked_add(author.unavailable.len())
+            .ok_or(SyncProtocolError::InvalidCount)?;
+        if author.known_events.iter().any(|known| known.sequence == 0) {
+            return Err(SyncProtocolError::InvalidEvent);
+        }
+        let known_bytes = author
+            .known_events
+            .len()
+            .checked_mul(40)
+            .ok_or(SyncProtocolError::InvalidLength)?;
+        let gap_bytes = author
+            .unavailable
+            .len()
+            .checked_mul(17)
+            .ok_or(SyncProtocolError::InvalidLength)?;
+        size = size
+            .checked_add(44)
+            .and_then(|size| size.checked_add(known_bytes))
+            .and_then(|size| size.checked_add(gap_bytes))
+            .ok_or(SyncProtocolError::InvalidLength)?;
+    }
+    if known_count > MAX_KNOWN_EVENTS || gap_count > MAX_EXPLICIT_GAPS {
+        return Err(SyncProtocolError::InvalidCount);
+    }
+    if size > max_frame_bytes {
+        return Err(SyncProtocolError::InvalidLength);
+    }
+    let mut bytes = v2_header(summary.scope, kind, author_count)?;
+    bytes.reserve(size - WIRE_HEADER_BYTES);
+    let dependency_count =
+        u16::try_from(dependency_count).map_err(|_| SyncProtocolError::InvalidCount)?;
+    bytes.extend_from_slice(&dependency_count.to_be_bytes());
+    for author in &summary.authors {
+        bytes.extend_from_slice(author.author.as_bytes());
+        bytes.extend_from_slice(&author.contiguous_sequence.to_be_bytes());
+        let known_count = u16::try_from(author.known_events.len())
+            .map_err(|_| SyncProtocolError::InvalidCount)?;
+        bytes.extend_from_slice(&known_count.to_be_bytes());
+        let gap_count =
+            u16::try_from(author.unavailable.len()).map_err(|_| SyncProtocolError::InvalidCount)?;
+        bytes.extend_from_slice(&gap_count.to_be_bytes());
+        for known in &author.known_events {
+            bytes.extend_from_slice(&known.sequence.to_be_bytes());
+            bytes.extend_from_slice(known.event_id.as_bytes());
+        }
+        for unavailable in &author.unavailable {
+            bytes.extend_from_slice(&unavailable.range.start().to_be_bytes());
+            bytes.extend_from_slice(&unavailable.range.end().to_be_bytes());
+            bytes.push(match unavailable.reason {
+                GapReason::Unknown => 0,
+                GapReason::Retention => 1,
+            });
+        }
+    }
+    for dependency in &summary.missing_dependencies {
+        bytes.extend_from_slice(dependency.as_bytes());
+    }
+    Ok(bytes)
+}
+
+fn decode_v2_summary(
+    bytes: &[u8],
+    expected_scope: ScopeId,
+    expected_kind: u8,
+) -> Result<ScopeSummary, SyncProtocolError> {
+    let mut reader = Reader::new(bytes);
+    reader.header_version(WIRE_VERSION_V2, expected_kind, expected_scope)?;
+    let author_count = usize::from(reader.u16()?);
+    let dependency_count = usize::from(reader.u16()?);
+    if author_count > MAX_AUTHORS || dependency_count > MAX_DEPENDENCY_REQUESTS {
+        return Err(SyncProtocolError::InvalidCount);
+    }
+    let mut known_total = 0_usize;
+    let mut gap_total = 0_usize;
+    let mut authors = Vec::with_capacity(author_count);
+    for _ in 0..author_count {
+        let author = AuthorId::new(reader.array32()?);
+        let contiguous_sequence = reader.u64()?;
+        let known_count = usize::from(reader.u16()?);
+        let gap_count = usize::from(reader.u16()?);
+        known_total = known_total
+            .checked_add(known_count)
+            .ok_or(SyncProtocolError::InvalidCount)?;
+        gap_total = gap_total
+            .checked_add(gap_count)
+            .ok_or(SyncProtocolError::InvalidCount)?;
+        if known_total > MAX_KNOWN_EVENTS || gap_total > MAX_EXPLICIT_GAPS {
+            return Err(SyncProtocolError::InvalidCount);
+        }
+        let mut known_events = Vec::with_capacity(known_count);
+        for _ in 0..known_count {
+            let sequence = reader.u64()?;
+            if sequence == 0 {
+                return Err(SyncProtocolError::InvalidEvent);
+            }
+            known_events.push(KnownEvent {
+                sequence,
+                event_id: EventId::new(reader.array32()?),
+            });
+        }
+        let mut unavailable = Vec::with_capacity(gap_count);
+        for _ in 0..gap_count {
+            let start = reader.u64()?;
+            let end = reader.u64()?;
+            let range =
+                SequenceRange::new(start, end).map_err(|_| SyncProtocolError::InvalidEvent)?;
+            let reason = match reader.u8()? {
+                0 => GapReason::Unknown,
+                1 => GapReason::Retention,
+                _ => return Err(SyncProtocolError::InvalidEvent),
+            };
+            unavailable.push(UnavailableRange { range, reason });
+        }
+        authors.push(AuthorSummary {
+            author,
+            contiguous_sequence,
+            known_events,
+            unavailable,
+        });
+    }
+    let mut missing_dependencies = Vec::with_capacity(dependency_count);
+    for _ in 0..dependency_count {
+        missing_dependencies.push(EventId::new(reader.array32()?));
+    }
+    reader.finish()?;
+    Ok(ScopeSummary {
+        scope: expected_scope,
+        authors,
+        missing_dependencies,
+    })
+}
+
+fn encode_v2_request(
+    scope: ScopeId,
+    targets: &[SyncRequestTarget],
+) -> Result<Vec<u8>, SyncProtocolError> {
+    let target_bytes = targets.iter().copied().map(target_wire_size).sum::<usize>();
+    let mut bytes = v2_header(scope, V2_REQUEST_KIND, targets.len())?;
+    bytes.reserve(target_bytes);
+    for target in targets {
+        encode_target(&mut bytes, *target);
+    }
+    Ok(bytes)
+}
+
+fn encode_v2_response_header(scope: ScopeId) -> Result<Vec<u8>, SyncProtocolError> {
+    v2_header(scope, V2_RESPONSE_KIND, 0)
+}
+
+fn decode_v2_request(
+    bytes: &[u8],
+    expected_scope: ScopeId,
+) -> Result<Vec<SyncRequestTarget>, SyncProtocolError> {
+    let mut reader = Reader::new(bytes);
+    reader.header_version(WIRE_VERSION_V2, V2_REQUEST_KIND, expected_scope)?;
+    let count = usize::from(reader.u16()?);
+    if count > MAX_SYNC_EXCHANGE_EVENTS {
+        return Err(SyncProtocolError::InvalidCount);
+    }
+    let mut targets = Vec::with_capacity(count);
+    let mut unique = BTreeSet::new();
+    for _ in 0..count {
+        let target = reader.target()?;
+        if !unique.insert(target) {
+            return Err(SyncProtocolError::DuplicateTarget);
+        }
+        targets.push(target);
+    }
+    reader.finish()?;
+    Ok(targets)
+}
+
+fn decode_v2_response<'a>(
+    bytes: &'a [u8],
+    expected_scope: ScopeId,
+    requested: &BTreeSet<SyncRequestTarget>,
+) -> Result<Vec<WireEvent<'a>>, SyncProtocolError> {
+    let mut reader = Reader::new(bytes);
+    reader.header_version(WIRE_VERSION_V2, V2_RESPONSE_KIND, expected_scope)?;
+    let count = usize::from(reader.u16()?);
+    if count > MAX_SYNC_EXCHANGE_EVENTS {
+        return Err(SyncProtocolError::InvalidCount);
+    }
+    let mut events = Vec::with_capacity(count);
+    let mut unique = BTreeSet::new();
+    for _ in 0..count {
+        let target = reader.target()?;
+        if !requested.contains(&target) {
+            return Err(SyncProtocolError::UnrequestedTarget);
+        }
+        if !unique.insert(target) {
+            return Err(SyncProtocolError::DuplicateTarget);
+        }
+        let author = AuthorId::new(reader.array32()?);
+        let sequence = reader.u64()?;
+        let event_id = EventId::new(reader.array32()?);
+        let length =
+            usize::try_from(reader.u32()?).map_err(|_| SyncProtocolError::InvalidLength)?;
+        if sequence == 0 || length == 0 || length > MAX_EVENT_BYTES {
+            return Err(SyncProtocolError::InvalidEvent);
+        }
+        if let SyncRequestTarget::Sequence {
+            author: requested_author,
+            sequence: requested_sequence,
+        } = target
+            && (author != requested_author || sequence != requested_sequence)
+        {
+            return Err(SyncProtocolError::InvalidEvent);
+        }
+        events.push(WireEvent {
+            target,
+            author,
+            sequence,
+            event_id,
+            bytes: reader.take(length)?,
+        });
+    }
+    reader.finish()?;
+    Ok(events)
+}
+
 fn record_matches_target(target: SyncRequestTarget, record: &SyncEventRecord) -> bool {
     match target {
         SyncRequestTarget::EventId(event_id) => record.event_id == event_id,
@@ -522,10 +802,19 @@ impl<'a> Reader<'a> {
         expected_kind: u8,
         expected_scope: ScopeId,
     ) -> Result<(), SyncProtocolError> {
+        self.header_version(WIRE_VERSION, expected_kind, expected_scope)
+    }
+
+    fn header_version(
+        &mut self,
+        expected_version: u8,
+        expected_kind: u8,
+        expected_scope: ScopeId,
+    ) -> Result<(), SyncProtocolError> {
         if self.take(4)? != &WIRE_MAGIC[..] {
             return Err(SyncProtocolError::InvalidMagic);
         }
-        if self.u8()? != WIRE_VERSION {
+        if self.u8()? != expected_version {
             return Err(SyncProtocolError::UnsupportedVersion);
         }
         if self.u8()? != expected_kind {
@@ -617,9 +906,11 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        AuthenticatedSyncError, HopOutcome, SyncEventRecord, SyncReceiveOutcome, SyncRequestTarget,
+        AuthenticatedSyncError, AuthenticatedSyncV2Exchange, AuthenticatedSyncV2ServeResult,
+        HopOutcome, SyncEventRecord, SyncReceiveOutcome, SyncRequestTarget,
         SyncServeReceiveOutcome, SyncSourceError, execute_authenticated_sync_once,
-        serve_authenticated_sync_request_once, space_generation_scope_id,
+        execute_authenticated_sync_v2_once, serve_authenticated_sync_request_once,
+        serve_authenticated_sync_v2_once, space_generation_scope_id,
     };
 
     #[test]
@@ -1097,5 +1388,476 @@ mod tests {
             Err(AuthenticatedSyncError::IdentityBinding)
         ));
         assert_eq!(source_calls.get(), 0);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn authenticated_v2_pair(
+        local_summary: ScopeSummary,
+        remote_summary: ScopeSummary,
+        requested_target: SyncRequestTarget,
+        record: SyncEventRecord,
+    ) -> (
+        AuthenticatedSyncV2Exchange<&'static str>,
+        AuthenticatedSyncV2ServeResult,
+        Option<SyncRequestTarget>,
+        usize,
+        usize,
+    ) {
+        let scope = local_summary.scope;
+        let event_id = record.event_id;
+        let event_author = record.author;
+        let event_sequence = record.sequence;
+        let expected_bytes = record.bytes.clone();
+        let alice = DeviceIdentity::generate().expect("generate v2 initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate v2 responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin v2 responder");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin v2 initiator");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind v2 local test listener");
+        let endpoint = listener.local_addr().expect("read v2 listener address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_result.expect("connect v2 test adapter");
+        let (server_adapter, _) = server_result.expect("accept v2 test adapter");
+
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator = move |actual_scope: ScopeId,
+                                  actual_author: lattice_sync::AuthorId,
+                                  sequence: u64,
+                                  expected_event_id: Option<lattice_sync::EventId>,
+                                  bytes: &[u8]| {
+            if actual_scope == scope
+                && actual_author == event_author
+                && sequence == event_sequence
+                && expected_event_id == Some(event_id)
+                && bytes == expected_bytes.as_slice()
+            {
+                Ok(event_id)
+            } else {
+                Err("caller validation rejected v2 sync event")
+            }
+        };
+        let summary_calls = Cell::new(0);
+        let mut summary_source = {
+            let summary_calls = &summary_calls;
+            let remote_summary = remote_summary.clone();
+            move |actual_scope| {
+                summary_calls.set(summary_calls.get() + 1);
+                if actual_scope == remote_summary.scope {
+                    Ok(remote_summary.clone())
+                } else {
+                    Err(SyncSourceError::new("wrong v2 summary scope"))
+                }
+            }
+        };
+        let event_calls = Cell::new(0);
+        let last_target = Cell::new(None);
+        let mut event_source = {
+            let event_calls = &event_calls;
+            let last_target = &last_target;
+            let event_bytes = record.bytes;
+            move |actual_scope, actual_target| {
+                event_calls.set(event_calls.get() + 1);
+                last_target.set(Some(actual_target));
+                if actual_scope == scope && actual_target == requested_target {
+                    Ok(Some(SyncEventRecord {
+                        author: event_author,
+                        sequence: event_sequence,
+                        event_id,
+                        bytes: event_bytes.clone(),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+        };
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let (client_result, server_result) = tokio::join!(
+            execute_authenticated_sync_v2_once(
+                &client_adapter,
+                &alice,
+                alice_pins_bob,
+                &local_summary,
+                &mut deduplicator,
+                &mut validator,
+                |pinned, requested_scope| {
+                    pinned.fingerprint() == bob_fingerprint && requested_scope == scope
+                },
+                &client_cancellation,
+            ),
+            serve_authenticated_sync_v2_once(
+                &server_adapter,
+                &bob,
+                bob_pins_alice,
+                &mut summary_source,
+                &mut event_source,
+                |pinned, requested_scope| {
+                    pinned.fingerprint() == alice_fingerprint && requested_scope == scope
+                },
+                &server_cancellation,
+            ),
+        );
+        let client = client_result.expect("complete authenticated v2 sync exchange");
+        let server = server_result.expect("serve authenticated v2 sync exchange");
+        (
+            client,
+            server,
+            last_target.get(),
+            summary_calls.get(),
+            event_calls.get(),
+        )
+    }
+
+    #[tokio::test]
+    async fn authenticated_v2_sync_exchanges_summaries_and_repairs_missing_sequence() {
+        let scope = ScopeId::new([0xb1; 32]);
+        let author = lattice_sync::AuthorId::new([0xb2; 32]);
+        let event_id = lattice_sync::EventId::new([0xb3; 32]);
+        let event_bytes = b"validated v2 author sequence event".to_vec();
+        let local_summary = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary::new(author, 0)],
+            missing_dependencies: Vec::new(),
+        };
+        let remote_summary = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary {
+                author,
+                contiguous_sequence: 1,
+                known_events: vec![KnownEvent {
+                    sequence: 1,
+                    event_id,
+                }],
+                unavailable: Vec::new(),
+            }],
+            missing_dependencies: Vec::new(),
+        };
+        let target = SyncRequestTarget::Sequence {
+            author,
+            sequence: 1,
+        };
+        let (client, server, last_target, summary_calls, event_calls) = authenticated_v2_pair(
+            local_summary.clone(),
+            remote_summary.clone(),
+            target,
+            SyncEventRecord {
+                author,
+                sequence: 1,
+                event_id,
+                bytes: event_bytes.clone(),
+            },
+        )
+        .await;
+
+        assert_eq!(client.peer_summary, remote_summary);
+        assert_eq!(server.peer_summary, local_summary);
+        assert_eq!(client.exchange.requested, vec![target]);
+        assert_eq!(client.exchange.plan.request_ranges.len(), 1);
+        assert_eq!(client.exchange.plan.request_ranges[0].author, author);
+        assert_eq!(client.exchange.plan.request_ranges[0].range.start(), 1);
+        assert_eq!(client.exchange.plan.request_ranges[0].range.end(), 1);
+        assert_eq!(client.exchange.events.len(), 1);
+        assert_eq!(client.exchange.events[0].author, author);
+        assert_eq!(client.exchange.events[0].sequence, 1);
+        assert_eq!(client.exchange.events[0].event_id, event_id);
+        assert_eq!(client.exchange.events[0].bytes, event_bytes);
+        assert_eq!(last_target, Some(target));
+        assert_eq!(summary_calls, 1);
+        assert_eq!(event_calls, 1);
+        assert_eq!(server.exchange.included_events, 1);
+        assert!(matches!(client.summary_hop, HopOutcome::Accepted(_)));
+        assert!(matches!(server.summary_hop, HopOutcome::Accepted(_)));
+        assert!(matches!(
+            client.exchange.request_hop,
+            HopOutcome::Accepted(_)
+        ));
+        assert!(matches!(
+            server.exchange.response_hop,
+            HopOutcome::Accepted(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn authenticated_v2_sync_requests_and_validates_missing_dependency() {
+        let scope = ScopeId::new([0xc1; 32]);
+        let author = lattice_sync::AuthorId::new([0xc2; 32]);
+        let event_id = lattice_sync::EventId::new([0xc3; 32]);
+        let event_bytes = b"validated v2 dependency event".to_vec();
+        let local_summary = ScopeSummary {
+            scope,
+            authors: Vec::new(),
+            missing_dependencies: vec![event_id],
+        };
+        let remote_summary = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary {
+                author,
+                contiguous_sequence: 1,
+                known_events: vec![KnownEvent {
+                    sequence: 1,
+                    event_id,
+                }],
+                unavailable: Vec::new(),
+            }],
+            missing_dependencies: Vec::new(),
+        };
+        let target = SyncRequestTarget::EventId(event_id);
+        let (client, server, last_target, summary_calls, event_calls) = authenticated_v2_pair(
+            local_summary.clone(),
+            remote_summary.clone(),
+            target,
+            SyncEventRecord {
+                author,
+                sequence: 1,
+                event_id,
+                bytes: event_bytes.clone(),
+            },
+        )
+        .await;
+
+        assert_eq!(client.peer_summary, remote_summary);
+        assert_eq!(server.peer_summary, local_summary);
+        assert_eq!(client.exchange.plan.dependency_requests, vec![event_id]);
+        assert_eq!(client.exchange.requested, vec![target]);
+        assert_eq!(client.exchange.events.len(), 1);
+        assert_eq!(client.exchange.events[0].event_id, event_id);
+        assert_eq!(client.exchange.events[0].bytes, event_bytes);
+        assert_eq!(last_target, Some(target));
+        assert_eq!(summary_calls, 1);
+        assert_eq!(event_calls, 1);
+        assert_eq!(server.exchange.included_events, 1);
+        assert!(matches!(client.summary_hop, HopOutcome::Accepted(_)));
+        assert!(matches!(server.summary_hop, HopOutcome::Accepted(_)));
+    }
+
+    #[tokio::test]
+    async fn wrong_v2_scope_does_not_disclose_responder_summary_or_access_events() {
+        let scope = ScopeId::new([0xd1; 32]);
+        let allowed_scope = ScopeId::new([0xd5; 32]);
+        let local_summary = ScopeSummary::new(scope);
+        let alice = DeviceIdentity::generate().expect("generate v2 initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate v2 responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin v2 responder");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin v2 initiator");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind v2 local test listener");
+        let endpoint = listener.local_addr().expect("read v2 listener address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_result.expect("connect v2 test adapter");
+        let (server_adapter, _) = server_result.expect("accept v2 test adapter");
+        let summary_calls = Cell::new(0);
+        let event_calls = Cell::new(0);
+        let mut summary_source = |_: ScopeId| {
+            summary_calls.set(summary_calls.get() + 1);
+            Ok(ScopeSummary::new(scope))
+        };
+        let mut event_source = |_: ScopeId, _: SyncRequestTarget| {
+            event_calls.set(event_calls.get() + 1);
+            Ok(None::<SyncEventRecord>)
+        };
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator =
+            |_: ScopeId,
+             _: lattice_sync::AuthorId,
+             _: u64,
+             _: Option<lattice_sync::EventId>,
+             _: &[u8]| Ok::<_, ()>(lattice_sync::EventId::new([0xd2; 32]));
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let client_future = execute_authenticated_sync_v2_once(
+            &client_adapter,
+            &alice,
+            alice_pins_bob,
+            &local_summary,
+            &mut deduplicator,
+            &mut validator,
+            |_, requested_scope| requested_scope == scope,
+            &client_cancellation,
+        );
+        let server_future = serve_authenticated_sync_v2_once(
+            &server_adapter,
+            &bob,
+            bob_pins_alice,
+            &mut summary_source,
+            &mut event_source,
+            |pinned, requested_scope| {
+                pinned.fingerprint() == alice_fingerprint && requested_scope == allowed_scope
+            },
+            &server_cancellation,
+        );
+        tokio::pin!(client_future);
+        tokio::pin!(server_future);
+        tokio::select! {
+            result = &mut server_future => {
+                assert!(matches!(result, Err(AuthenticatedSyncError::ScopeUnauthorized)));
+                assert_eq!(summary_calls.get(), 0);
+                assert_eq!(event_calls.get(), 0);
+                client_cancellation.cancel();
+                assert!(matches!(client_future.await, Err(AuthenticatedSyncError::Cancelled)));
+            }
+            _ = &mut client_future => panic!("denied v2 scope must not receive a summary"),
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_v2_local_scope_sends_no_summary_to_peer() {
+        let scope = ScopeId::new([0xd3; 32]);
+        let local_summary = ScopeSummary::new(scope);
+        let alice = DeviceIdentity::generate().expect("generate v2 initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate v2 responder identity");
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+                .expect("pin v2 responder");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+                .expect("pin v2 initiator");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind v2 local test listener");
+        let endpoint = listener.local_addr().expect("read v2 listener address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_result.expect("connect v2 test adapter");
+        let (server_adapter, _) = server_result.expect("accept v2 test adapter");
+        let summary_calls = Cell::new(0);
+        let event_calls = Cell::new(0);
+        let mut summary_source = |_: ScopeId| {
+            summary_calls.set(summary_calls.get() + 1);
+            Ok::<_, SyncSourceError>(ScopeSummary::new(scope))
+        };
+        let mut event_source = |_: ScopeId, _: SyncRequestTarget| {
+            event_calls.set(event_calls.get() + 1);
+            Ok(None::<SyncEventRecord>)
+        };
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator =
+            |_: ScopeId,
+             _: lattice_sync::AuthorId,
+             _: u64,
+             _: Option<lattice_sync::EventId>,
+             _: &[u8]| Ok::<_, ()>(lattice_sync::EventId::new([0xd4; 32]));
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let client_future = execute_authenticated_sync_v2_once(
+            &client_adapter,
+            &alice,
+            alice_pins_bob,
+            &local_summary,
+            &mut deduplicator,
+            &mut validator,
+            |_, _| false,
+            &client_cancellation,
+        );
+        let server_future = serve_authenticated_sync_v2_once(
+            &server_adapter,
+            &bob,
+            bob_pins_alice,
+            &mut summary_source,
+            &mut event_source,
+            |_, requested_scope| requested_scope == scope,
+            &server_cancellation,
+        );
+        tokio::pin!(client_future);
+        tokio::pin!(server_future);
+        tokio::select! {
+            result = &mut client_future => {
+                assert!(matches!(result, Err(AuthenticatedSyncError::ScopeUnauthorized)));
+                assert_eq!(summary_calls.get(), 0);
+                assert_eq!(event_calls.get(), 0);
+                server_cancellation.cancel();
+                assert!(matches!(server_future.await, Err(AuthenticatedSyncError::Cancelled)));
+            }
+            _ = &mut server_future => panic!("server cannot receive a denied scope summary"),
+        }
+    }
+
+    #[test]
+    fn v2_summary_codec_bounds_oversize_and_malformed_frames_without_changing_v1() {
+        let scope = ScopeId::new([0xe1; 32]);
+        let empty = ScopeSummary::new(scope);
+        assert_eq!(
+            super::encode_v2_summary(&empty, super::V2_INITIATOR_SUMMARY_KIND, 41),
+            Err(super::SyncProtocolError::InvalidLength)
+        );
+
+        let summary_author = lattice_sync::AuthorId::new([0xe3; 32]);
+        let summary_event = lattice_sync::EventId::new([0xe4; 32]);
+        let rich_summary = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary {
+                author: summary_author,
+                contiguous_sequence: 3,
+                known_events: vec![KnownEvent {
+                    sequence: 4,
+                    event_id: summary_event,
+                }],
+                unavailable: vec![
+                    lattice_sync::UnavailableRange {
+                        range: lattice_sync::SequenceRange::new(1, 2).expect("valid retained gap"),
+                        reason: lattice_sync::GapReason::Retention,
+                    },
+                    lattice_sync::UnavailableRange {
+                        range: lattice_sync::SequenceRange::new(3, 3).expect("valid unknown gap"),
+                        reason: lattice_sync::GapReason::Unknown,
+                    },
+                ],
+            }],
+            missing_dependencies: vec![lattice_sync::EventId::new([0xe5; 32])],
+        };
+        let encoded =
+            super::encode_v2_summary(&rich_summary, super::V2_INITIATOR_SUMMARY_KIND, 4096)
+                .expect("encode bounded rich summary");
+        assert_eq!(
+            super::decode_v2_summary(&encoded, scope, super::V2_INITIATOR_SUMMARY_KIND,)
+                .expect("decode bounded rich summary"),
+            rich_summary
+        );
+
+        let mut too_many_authors = super::v2_header(
+            scope,
+            super::V2_INITIATOR_SUMMARY_KIND,
+            super::MAX_AUTHORS + 1,
+        )
+        .expect("encode bounded count field");
+        too_many_authors.extend_from_slice(&0_u16.to_be_bytes());
+        assert_eq!(
+            super::decode_v2_summary(&too_many_authors, scope, super::V2_INITIATOR_SUMMARY_KIND,),
+            Err(super::SyncProtocolError::InvalidCount)
+        );
+
+        let mut invalid_gap = super::v2_header(scope, super::V2_INITIATOR_SUMMARY_KIND, 1)
+            .expect("encode one-author count");
+        invalid_gap.extend_from_slice(&0_u16.to_be_bytes());
+        invalid_gap.extend_from_slice(lattice_sync::AuthorId::new([0xe2; 32]).as_bytes());
+        invalid_gap.extend_from_slice(&0_u64.to_be_bytes());
+        invalid_gap.extend_from_slice(&0_u16.to_be_bytes());
+        invalid_gap.extend_from_slice(&1_u16.to_be_bytes());
+        invalid_gap.extend_from_slice(&1_u64.to_be_bytes());
+        invalid_gap.extend_from_slice(&1_u64.to_be_bytes());
+        invalid_gap.push(2);
+        assert_eq!(
+            super::decode_v2_summary(&invalid_gap, scope, super::V2_INITIATOR_SUMMARY_KIND,),
+            Err(super::SyncProtocolError::InvalidEvent)
+        );
+
+        let v1_empty_request = super::encode_request(scope, &[]);
+        assert_eq!(v1_empty_request[4], super::WIRE_VERSION);
+        assert_eq!(v1_empty_request[5], super::REQUEST_KIND);
     }
 }
