@@ -519,8 +519,8 @@ fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, Cli
 }
 fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
     let credential = match command {
-        Command::Send { credential, .. } => Some(credential),
-        Command::Space {
+        Command::Send { credential, .. }
+        | Command::Space {
             command:
                 SpaceCommand::Create { credential, .. }
                 | SpaceCommand::Recover { credential, .. }
@@ -947,22 +947,23 @@ fn execute_space_restore(
     Ok(())
 }
 
+fn queued_event_json(command: &str, event_id: &[u8; 32]) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "command": command,
+        "state": "queued",
+        "event_id": hex(event_id),
+        "forwarded": false,
+        "delivered": false,
+        "network_contacted": false,
+    })
+}
+
 fn print_queued_event(json: bool, command: &str, label: &str, event_id: &[u8; 32]) {
-    let event_id = hex(event_id);
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "schema_version": 1,
-                "command": command,
-                "state": "queued",
-                "event_id": event_id,
-                "forwarded": false,
-                "delivered": false,
-                "network_contacted": false,
-            })
-        );
+        println!("{}", queued_event_json(command, event_id));
     } else {
+        let event_id = hex(event_id);
         println!("{label} locally: event {event_id}");
         println!("Not forwarded or delivered; no network contact was made.");
     }
@@ -1261,7 +1262,8 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex, parse_send_input,
-        parse_space_cursor, parse_space_edit_input, parse_space_history_input, space_cursor_hex,
+        parse_space_cursor, parse_space_edit_input, parse_space_history_input, queued_event_json,
+        space_cursor_hex,
     };
     use clap::Parser;
     use lattice_core::SpaceGenesisCursor;
@@ -1348,6 +1350,22 @@ mod tests {
         assert!(result.is_err());
         assert!(!data_dir.exists());
         std::fs::remove_file(credential_path).expect("remove credential fixture");
+    }
+
+    #[test]
+    fn queued_send_json_never_claims_forwarding_or_delivery() {
+        let output = queued_event_json("send", &[0xAB; 32]);
+        let encoded = output.to_string();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&encoded).expect("machine output is valid JSON");
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["command"], "send");
+        assert_eq!(parsed["state"], "queued");
+        assert_eq!(parsed["event_id"], "ab".repeat(32));
+        assert_eq!(parsed["forwarded"], false);
+        assert_eq!(parsed["delivered"], false);
+        assert_eq!(parsed["network_contacted"], false);
     }
     #[test]
     fn identity_pin_and_lookup_parse_exact_cli_arguments() {
