@@ -1725,30 +1725,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authenticated_v2_sync_requests_and_validates_missing_dependency() {
+    async fn authenticated_v2_sync_requests_commit_dependency_before_sequence_ranges() {
         let scope = ScopeId::new([0xc1; 32]);
         let author = lattice_sync::AuthorId::new([0xc2; 32]);
-        let event_id = lattice_sync::EventId::new([0xc3; 32]);
-        let event_bytes = b"validated v2 dependency event".to_vec();
+        let commit_event_id = lattice_sync::EventId::new([0xc3; 32]);
+        let dependent_message_id = lattice_sync::EventId::new([0xc4; 32]);
+        let event_bytes = b"validated MLS Commit dependency event".to_vec();
         let local_summary = ScopeSummary {
             scope,
-            authors: Vec::new(),
-            missing_dependencies: vec![event_id],
+            authors: vec![AuthorSummary::new(author, 0)],
+            missing_dependencies: vec![commit_event_id],
         };
         let remote_summary = ScopeSummary {
             scope,
             authors: vec![AuthorSummary {
                 author,
-                contiguous_sequence: 1,
-                known_events: vec![KnownEvent {
-                    sequence: 1,
-                    event_id,
-                }],
+                contiguous_sequence: 2,
+                known_events: vec![
+                    KnownEvent {
+                        sequence: 1,
+                        event_id: commit_event_id,
+                    },
+                    KnownEvent {
+                        sequence: 2,
+                        event_id: dependent_message_id,
+                    },
+                ],
                 unavailable: Vec::new(),
             }],
             missing_dependencies: Vec::new(),
         };
-        let target = SyncRequestTarget::EventId(event_id);
+        let target = SyncRequestTarget::EventId(commit_event_id);
         let (client, server, last_target, summary_calls, event_calls) = authenticated_v2_pair(
             local_summary.clone(),
             remote_summary.clone(),
@@ -1756,7 +1763,7 @@ mod tests {
             SyncEventRecord {
                 author,
                 sequence: 1,
-                event_id,
+                event_id: commit_event_id,
                 bytes: event_bytes.clone(),
             },
         )
@@ -1764,10 +1771,14 @@ mod tests {
 
         assert_eq!(client.peer_summary, remote_summary);
         assert_eq!(server.peer_summary, local_summary);
-        assert_eq!(client.exchange.plan.dependency_requests, vec![event_id]);
+        assert_eq!(
+            client.exchange.plan.dependency_requests,
+            vec![commit_event_id]
+        );
+        assert!(client.exchange.plan.request_ranges.is_empty());
         assert_eq!(client.exchange.requested, vec![target]);
         assert_eq!(client.exchange.events.len(), 1);
-        assert_eq!(client.exchange.events[0].event_id, event_id);
+        assert_eq!(client.exchange.events[0].event_id, commit_event_id);
         assert_eq!(client.exchange.events[0].bytes, event_bytes);
         assert_eq!(last_target, Some(target));
         assert_eq!(summary_calls, 1);

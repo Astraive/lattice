@@ -4123,6 +4123,62 @@ mod tests {
         );
 
         let control_event_id = *control_event.event_id().as_bytes();
+        let channel_id = reducer.policy().expect("Genesis policy").channels[0].id;
+        let post_commit_plaintext =
+            super::encode_text_message("received after the missing MLS Commit")
+                .expect("encode post-Commit message");
+        let post_commit_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                assert_eq!(group.epoch(), 2);
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &post_commit_plaintext,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt message at committed MLS epoch");
+        let mut post_commit_parents = vec![
+            lattice_protocol::EventId::from_bytes(control_event_id),
+            lattice_protocol::EventId::from_bytes(*transition_event.event_id().as_bytes()),
+        ];
+        post_commit_parents.sort_unstable_by_key(|parent| *parent.as_bytes());
+        let post_commit_message = signed_event(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 5,
+                lamport: 5,
+                wall_time_hint: 0,
+                parents: post_commit_parents,
+                kind: EventKind::Message,
+                protected_body: post_commit_ciphertext,
+                mls_group_reference: group_reference,
+                mls_epoch: 2,
+            },
+        );
+        let mut bob_joined = super::CreatedSpace {
+            space_id,
+            group_id: group_id.clone(),
+            group_reference,
+            genesis_event: created.genesis_event().clone(),
+            reducer: reducer.clone(),
+        };
+        assert!(matches!(
+            bob.accept_synced_application_event(
+                &mut bob_joined,
+                post_commit_message.encoded_bytes(),
+            )
+            .expect("hold post-Commit ciphertext behind missing control parent"),
+            super::SyncedApplicationOutcome::Pending {
+                missing_dependencies,
+                ..
+            } if missing_dependencies.len() == 2
+                && missing_dependencies.contains(&control_event_id)
+        ));
         let updated = bob
             .accept_space_membership_transition(
                 &group_id,
@@ -4131,6 +4187,17 @@ mod tests {
                 transition_event.clone(),
             )
             .expect("commit MLS merge and admitted policy transition atomically");
+        bob_joined.reducer = updated.clone();
+        assert_eq!(
+            bob.accept_synced_application_event(
+                &mut bob_joined,
+                post_commit_message.encoded_bytes(),
+            )
+            .expect("retry dependent ciphertext after MLS Commit"),
+            super::SyncedApplicationOutcome::Accepted {
+                event_id: *post_commit_message.event_id().as_bytes(),
+            }
+        );
         let policy = updated.policy().expect("active updated policy");
         assert_eq!(
             policy
