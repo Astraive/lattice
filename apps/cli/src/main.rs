@@ -329,6 +329,9 @@ fn parse_lookup_fingerprint(command: &Command) -> Result<Option<[u8; 32]>, CliEr
 
 fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
     match command {
+        Command::Sync { command } => {
+            sync::validate_command(command).map_err(CliError::invalid_input)?;
+        }
         Command::Relay { command } => match command {
             RelayCommand::Add { url }
             | RelayCommand::Remove { url }
@@ -1154,7 +1157,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], String> {
+pub(crate) fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], String> {
     let expected_hex_len = N * 2;
     if value.len() != expected_hex_len {
         return Err(format!(

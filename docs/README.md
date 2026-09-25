@@ -57,8 +57,10 @@ and exchanges NIP-01 events over secure HTTP/WebSocket, but independent-relay
 interoperability is unverified.
 
 The CLI exposes protected identity init/show, exact peer pins, CSR export,
-local Space Genesis create/list, queue-only sync status, local relay URL
-settings/NIP-11 tests, and a non-mutating storage doctor. Desktop can create
+local Space Genesis create/list, queue-only sync status, one-shot pinned TCP
+sync serving, local relay URL settings/NIP-11 tests, and a non-mutating storage
+doctor. The server is direct-only and does not apply remote events or claim
+recipient delivery. Desktop can create
 local one-member Genesis snapshots from a system-trusted X.509 credential
 vector, browse local snapshots, pin peers, and export a CSR. Android exposes a
 protected identity snapshot, exact peer pins, CSR export, permission-aware BLE

@@ -11,6 +11,7 @@ use lattice_sync::{
     AuthorId, EventId, MAX_BATCH_EVENTS, ScopeId, ScopeSummary, SyncPlan, SyncRequestRange,
     UnresolvedHistory,
 };
+use sha2::{Digest, Sha256};
 
 const WIRE_MAGIC: &[u8; 4] = b"LSYN";
 const WIRE_VERSION: u8 = 1;
@@ -27,6 +28,20 @@ pub use direct_session::{
 };
 mod store_source;
 pub use store_source::StoreSyncEventSource;
+
+/// Derives the opaque synchronization scope for one Space MLS generation.
+///
+/// Both direct peers must use this function for the same 16-byte Space ID and
+/// 32-byte MLS group reference. The group reference keeps recovered generations
+/// in separate sync scopes.
+#[must_use]
+pub fn space_generation_scope_id(space_id: &[u8; 16], group_reference: &[u8; 32]) -> ScopeId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"lattice:direct-sync-scope:v1\0");
+    hasher.update(space_id);
+    hasher.update(group_reference);
+    ScopeId::new(hasher.finalize().into())
+}
 
 /// Maximum requested event records in one exchange, inherited from sync's
 /// bounded batch contract.
@@ -604,8 +619,24 @@ mod tests {
     use super::{
         AuthenticatedSyncError, HopOutcome, SyncEventRecord, SyncReceiveOutcome, SyncRequestTarget,
         SyncServeReceiveOutcome, SyncSourceError, execute_authenticated_sync_once,
-        serve_authenticated_sync_request_once,
+        serve_authenticated_sync_request_once, space_generation_scope_id,
     };
+
+    #[test]
+    fn space_generation_scope_id_is_stable_and_separates_generations() {
+        let space_id = [0x11; 16];
+        let first_generation = [0x22; 32];
+        let next_generation = [0x23; 32];
+
+        assert_eq!(
+            space_generation_scope_id(&space_id, &first_generation),
+            space_generation_scope_id(&space_id, &first_generation)
+        );
+        assert_ne!(
+            space_generation_scope_id(&space_id, &first_generation),
+            space_generation_scope_id(&space_id, &next_generation)
+        );
+    }
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // Keeps the TCP exchange's security and data assertions together.

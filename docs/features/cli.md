@@ -26,9 +26,11 @@ CLI output should support human and machine-readable modes with stable error cla
 
 `lattice space recover --space-id <hex> --group-reference <hex> --credential <path>` restores that locally retained generation and creates a new one-member root after validating the RFC 9420 X.509 credential vector. It preserves supported channel descriptors, resets membership to the local administrator, and does not rejoin prior members or contact the network.
 
-The CLI implements `about`, `status`, identity initialization/CSR/pinning, local Space create/list/restore/recover/message/edit/history, `space join`, `sync status`, local relay settings/probes, and `doctor`. `space join --package <path> --inviter-fingerprint <hex> --credential <path>` imports a bounded signed Welcome bootstrap from an exact pre-pinned inviter into the protected local profile. It does not perform general event-history replay, send invitations, contact a relay, or establish ongoing synchronization; the full invite/leave lifecycle remains unavailable.
+The CLI implements `about`, `status`, identity initialization/CSR/pinning, local Space create/list/restore/recover/message/edit/history, `space join`, `sync status`, `sync serve-once`, local relay settings/probes, and `doctor`. `space join --package <path> --inviter-fingerprint <hex> --credential <path>` imports a bounded signed Welcome bootstrap from an exact pre-pinned inviter into the protected local profile. The CLI still does not perform general event-history replay, send invitations, contact a relay, or run ongoing synchronization; the full invite/leave lifecycle remains unavailable.
 
 `sync status` counts locally committed event records through bounded keyset pages and reports `committed_events` in JSON output. This is a local record count, not a per-Space completeness summary or evidence of peer synchronization.
+
+`sync serve-once --listen <addr> --space-id <hex> --group-reference <hex> --peer-fingerprint <hex>` accepts one TCP peer only when its exact fingerprint is pinned. It serves committed, signature-verified events for the selected Space generation after Noise transcript identity proof and scope authorization. `space_generation_scope_id` provides the generation-bound scope ID for a compatible initiator. The server does not apply received events, exchange summaries, select router paths, or claim recipient delivery.
 
 ## Command behavior and output
 

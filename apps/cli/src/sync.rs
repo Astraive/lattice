@@ -1,14 +1,53 @@
-use std::{error::Error, path::Path};
+use std::{error::Error, io, net::SocketAddr, path::Path};
 
 use clap::Subcommand;
 use lattice_core::{Client, CoreError};
-use lattice_platform::OsKeyringProtector;
+use lattice_node::sync::{
+    AuthenticatedSyncServeResult, StoreSyncEventSource, serve_authenticated_sync_request_once,
+    space_generation_scope_id,
+};
+use lattice_platform::{MAX_EVENT_BYTES, OsKeyringProtector};
 use lattice_storage::{MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
+use lattice_sync::ScopeId;
+use lattice_transport::TcpPeerListener;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Subcommand)]
 pub(super) enum SyncCommand {
     /// Inspect locally stored pending events and outbox state; does not run synchronization.
     Status,
+    /// Accept one pinned peer and serve one authenticated direct-sync request.
+    ServeOnce {
+        /// TCP endpoint to bind, for example `127.0.0.1:7000`.
+        #[arg(long)]
+        listen: SocketAddr,
+        /// Space ID as 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// MLS group reference as 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Previously pinned peer fingerprint as 64 hexadecimal characters.
+        #[arg(long)]
+        peer_fingerprint: String,
+    },
+}
+
+pub(super) fn validate_command(command: &SyncCommand) -> Result<(), String> {
+    match command {
+        SyncCommand::Status => Ok(()),
+        SyncCommand::ServeOnce {
+            space_id,
+            group_reference,
+            peer_fingerprint,
+            ..
+        } => {
+            super::parse_fixed_hex::<16>(space_id, "space ID")?;
+            super::parse_fixed_hex::<32>(group_reference, "group reference")?;
+            super::parse_fixed_hex::<32>(peer_fingerprint, "peer fingerprint")?;
+            Ok(())
+        }
+    }
 }
 
 pub(super) fn execute(
@@ -19,6 +58,138 @@ pub(super) fn execute(
 ) -> Result<(), Box<dyn Error>> {
     match command {
         SyncCommand::Status => print_status(database_path, protector, json),
+        SyncCommand::ServeOnce {
+            listen,
+            space_id,
+            group_reference,
+            peer_fingerprint,
+        } => serve_once(
+            *listen,
+            space_id,
+            group_reference,
+            peer_fingerprint,
+            database_path,
+            protector,
+            json,
+        ),
+    }
+}
+
+fn serve_once(
+    listen: SocketAddr,
+    space_id: &str,
+    group_reference: &str,
+    peer_fingerprint: &str,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
+    let space_id = super::parse_fixed_hex::<16>(space_id, "space ID")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let group_reference = super::parse_fixed_hex::<32>(group_reference, "group reference")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let peer_fingerprint = super::parse_fixed_hex::<32>(peer_fingerprint, "peer fingerprint")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let scope = space_generation_scope_id(&space_id, &group_reference);
+
+    let client = Client::open_existing(database_path, protector)?;
+    if client.pinned_identity(&peer_fingerprint)?.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "requested peer fingerprint is not pinned in this profile",
+        )
+        .into());
+    }
+    let store = Store::open(database_path)?;
+    let mut source = StoreSyncEventSource::new(&store, scope, space_id, group_reference);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let listener = runtime
+        .block_on(TcpPeerListener::bind(listen, MAX_EVENT_BYTES))
+        .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    let bound = listener
+        .local_addr()
+        .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    if !json {
+        println!(
+            "Waiting for one authenticated sync request on {bound} with scope {}",
+            super::hex(scope.as_bytes())
+        );
+    }
+    let (adapter, remote_address) = runtime
+        .block_on(listener.accept())
+        .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    let cancellation = CancellationToken::new();
+    let authenticated = runtime.block_on(client.with_pinned_identity(
+        &peer_fingerprint,
+        |identity, pinned_peer| async move {
+            serve_authenticated_sync_request_once(
+                &adapter,
+                identity,
+                pinned_peer,
+                &mut source,
+                |peer, requested_scope| {
+                    peer.fingerprint() == peer_fingerprint && requested_scope == scope
+                },
+                &cancellation,
+            )
+            .await
+        },
+    ))?;
+    let result = authenticated.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "requested peer fingerprint is no longer pinned",
+        )
+    })?;
+    let result = result.map_err(|error| io::Error::other(error.to_string()))?;
+    print_serve_result(
+        json,
+        bound,
+        remote_address,
+        &peer_fingerprint,
+        scope,
+        result,
+    );
+    Ok(())
+}
+
+fn print_serve_result(
+    json: bool,
+    bound: SocketAddr,
+    remote_address: SocketAddr,
+    peer_fingerprint: &[u8; 32],
+    scope: ScopeId,
+    result: AuthenticatedSyncServeResult,
+) {
+    let exchange = result.exchange;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "sync_serve_once",
+                "state": "authenticated_request_served",
+                "listen_address": bound.to_string(),
+                "remote_address": remote_address.to_string(),
+                "peer_fingerprint": super::hex(peer_fingerprint),
+                "scope_id": super::hex(scope.as_bytes()),
+                "included_events": exchange.included_events,
+                "omitted_requests": exchange.omitted_targets.len(),
+                "response_hop": format!("{:?}", exchange.response_hop),
+                "recipient_delivery_claimed": false,
+                "events_applied_locally": false,
+            })
+        );
+    } else {
+        println!(
+            "Authenticated direct-sync request from {remote_address}; served {} event(s), {} unresolved request(s), response {:?}.",
+            exchange.included_events,
+            exchange.omitted_targets.len(),
+            exchange.response_hop
+        );
+        println!("No recipient-delivery or local-application claim is made.");
     }
 }
 
