@@ -3166,6 +3166,7 @@ dependencies = [
  "lattice-events",
  "lattice-identity",
  "lattice-platform",
+ "lattice-protocol",
  "lattice-router",
  "lattice-storage",
  "lattice-sync",

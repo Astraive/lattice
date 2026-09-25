@@ -29,10 +29,11 @@ const TARGET_BY_SEQUENCE: u8 = 1;
 
 mod direct_session;
 pub use direct_session::{
-    AuthenticatedSyncError, AuthenticatedSyncExchange, AuthenticatedSyncServeResult,
-    AuthenticatedSyncV2Exchange, AuthenticatedSyncV2ServeResult, execute_authenticated_sync_once,
-    execute_authenticated_sync_v2_once, serve_authenticated_sync_request_once,
-    serve_authenticated_sync_v2_once,
+    AuthenticatedPathUpgradeError, AuthenticatedPathUpgradeNegotiation, AuthenticatedSyncError,
+    AuthenticatedSyncExchange, AuthenticatedSyncServeResult, AuthenticatedSyncV2Exchange,
+    AuthenticatedSyncV2ServeResult, execute_authenticated_sync_once,
+    execute_authenticated_sync_v2_once, negotiate_authenticated_path_upgrades_once,
+    serve_authenticated_sync_request_once, serve_authenticated_sync_v2_once,
 };
 mod store_source;
 pub use store_source::{StoreSyncEventSource, StoreSyncSummarySource};
@@ -903,7 +904,9 @@ impl<'a> Reader<'a> {
 mod tests {
     use std::cell::Cell;
 
+    use lattice_crypto::NoiseRole;
     use lattice_identity::{DeviceIdentity, PinnedIdentity};
+    use lattice_protocol::PathUpgradeCapabilities;
     use lattice_router::EventDeduplicator;
     use lattice_sync::{AuthorSummary, KnownEvent, ScopeId, ScopeSummary};
     use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
@@ -916,6 +919,111 @@ mod tests {
         execute_authenticated_sync_v2_once, serve_authenticated_sync_request_once,
         serve_authenticated_sync_v2_once, space_generation_scope_id,
     };
+
+    #[tokio::test]
+    async fn exchanges_path_upgrades_only_after_pinned_peer_authentication() {
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin responder");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin initiator");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind direct path");
+        let endpoint = listener.local_addr().expect("read bound address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_result.expect("connect direct TCP path");
+        let (server_adapter, _) = server_result.expect("accept direct TCP path");
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let local_client = PathUpgradeCapabilities::new(Some(8192), Some(4096), None)
+            .expect("valid initiator offer");
+        let local_server = PathUpgradeCapabilities::new(Some(2048), None, Some(4096))
+            .expect("valid responder offer");
+        let (client_result, server_result) = tokio::join!(
+            super::negotiate_authenticated_path_upgrades_once(
+                &client_adapter,
+                &alice,
+                alice_pins_bob,
+                NoiseRole::Initiator,
+                local_client,
+                |peer| peer.fingerprint() == bob_fingerprint,
+                &client_cancellation,
+            ),
+            super::negotiate_authenticated_path_upgrades_once(
+                &server_adapter,
+                &bob,
+                bob_pins_alice,
+                NoiseRole::Responder,
+                local_server,
+                |peer| peer.fingerprint() == alice_fingerprint,
+                &server_cancellation,
+            ),
+        );
+        let client = client_result.expect("authenticated initiator offer");
+        let server = server_result.expect("authenticated responder offer");
+        assert_eq!(client.negotiated, server.negotiated);
+        assert_eq!(client.negotiated.lan_max_frame_bytes(), Some(2048));
+        assert_eq!(client.negotiated.wifi_aware_max_frame_bytes(), None);
+        assert_eq!(client.negotiated.wifi_direct_max_frame_bytes(), None);
+        assert_eq!(client.authenticated_peer.fingerprint(), bob_fingerprint);
+        assert_eq!(server.authenticated_peer.fingerprint(), alice_fingerprint);
+    }
+
+    #[tokio::test]
+    async fn rejects_path_capability_exchange_when_local_peer_policy_denies() {
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin responder");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin initiator");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind direct path");
+        let endpoint = listener.local_addr().expect("read bound address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_result.expect("connect direct TCP path");
+        let (server_adapter, _) = server_result.expect("accept direct TCP path");
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let (client_result, server_result) = tokio::join!(
+            super::negotiate_authenticated_path_upgrades_once(
+                &client_adapter,
+                &alice,
+                alice_pins_bob,
+                NoiseRole::Initiator,
+                PathUpgradeCapabilities::default(),
+                |peer| peer.fingerprint() == bob_fingerprint,
+                &client_cancellation,
+            ),
+            super::negotiate_authenticated_path_upgrades_once(
+                &server_adapter,
+                &bob,
+                bob_pins_alice,
+                NoiseRole::Responder,
+                PathUpgradeCapabilities::default(),
+                |_| false,
+                &server_cancellation,
+            ),
+        );
+        assert!(client_result.is_err());
+        assert!(matches!(
+            server_result,
+            Err(super::AuthenticatedPathUpgradeError::PeerUnauthorized)
+        ));
+    }
 
     #[test]
     fn hostile_v2_frame_corpus_is_bounded_and_panic_free() {

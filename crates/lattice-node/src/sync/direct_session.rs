@@ -4,6 +4,7 @@ use lattice_crypto::{
 };
 use lattice_identity::{DeviceIdentity, PinnedIdentity, verify};
 use lattice_platform::{EnvelopeBytes, TransportAdapter, TransportError, TransportReceipt};
+use lattice_protocol::{NegotiatedPathUpgrades, PathUpgradeCapabilities, PathUpgradeError};
 use lattice_router::{DeduplicationOutcome, EventDeduplicator, EventId as RouterEventId};
 use lattice_sync::{PlanError, ScopeId, ScopeSummary, plan_sync};
 use lattice_transport::{receive_bounded, send_bounded};
@@ -28,6 +29,8 @@ const IDENTITY_PROOF_VERSION: u8 = 1;
 const IDENTITY_PROOF_BYTES: usize = 4 + 1 + 1 + 64;
 const IDENTITY_PROOF_DOMAIN: &[u8] = b"lattice:direct-sync-identity-proof:v1\0";
 const IDENTITY_PROOF_V2_DOMAIN: &[u8] = b"lattice:direct-sync-identity-proof:v2\0";
+const PATH_UPGRADE_PROLOGUE: &[u8] = b"lattice:path-upgrade:noise-xx:v1\0";
+const PATH_UPGRADE_PROOF_DOMAIN: &[u8] = b"lattice:path-upgrade-identity-proof:v1\0";
 
 /// Failure while establishing or using one authenticated direct-sync session.
 #[derive(Debug, Error)]
@@ -118,6 +121,86 @@ pub struct AuthenticatedSyncV2ServeResult {
     pub peer_summary: ScopeSummary,
     /// Exact-hop response result; it never means destination delivery.
     pub exchange: SyncServeResult,
+}
+
+/// Failure during pinned-peer path-capability negotiation.
+#[derive(Debug, Error)]
+pub enum AuthenticatedPathUpgradeError {
+    /// Authenticated transport setup or use failed.
+    #[error(transparent)]
+    Session(#[from] AuthenticatedSyncError),
+    /// The caller's local policy rejected the authenticated peer.
+    #[error("caller authorization denied path-capability exchange")]
+    PeerUnauthorized,
+    /// The peer's bounded versioned offer was malformed or unsupported.
+    #[error(transparent)]
+    Capability(#[from] PathUpgradeError),
+}
+
+/// Supported direct-path frame limits shared by one authenticated peer pair.
+#[derive(Debug)]
+pub struct AuthenticatedPathUpgradeNegotiation {
+    /// Exact identity pin used to verify the remote transcript proof.
+    pub authenticated_peer: PinnedIdentity,
+    /// Capability intersection. A limit is not evidence of current reachability.
+    pub negotiated: NegotiatedPathUpgrades,
+}
+
+/// Exchanges bounded path capability offers over an authenticated pinned-peer
+/// session. `role` must be initiator on one side and responder on the other.
+/// The caller's peer policy runs after identity proof and before any offer.
+///
+/// This function does not discover or open a path. Use live reachability,
+/// consent, routing class, and health before switching traffic from the
+/// currently authenticated adapter.
+///
+/// # Errors
+///
+/// Returns an error for transport/Noise/authentication failure, local peer
+/// policy rejection, or an invalid/unsupported capability offer.
+pub async fn negotiate_authenticated_path_upgrades_once<A, Z>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    role: NoiseRole,
+    local_capabilities: PathUpgradeCapabilities,
+    mut authorize_peer: Z,
+    cancellation: &CancellationToken,
+) -> Result<AuthenticatedPathUpgradeNegotiation, AuthenticatedPathUpgradeError>
+where
+    A: TransportAdapter + ?Sized,
+    Z: FnMut(&PinnedIdentity) -> bool,
+{
+    let mut channel = establish_authenticated_channel_with_protocol(
+        adapter,
+        local_identity,
+        pinned_peer,
+        role,
+        cancellation,
+        PATH_UPGRADE_PROLOGUE,
+        PATH_UPGRADE_PROOF_DOMAIN,
+    )
+    .await?;
+    if !authorize_peer(&pinned_peer) {
+        return Err(AuthenticatedPathUpgradeError::PeerUnauthorized);
+    }
+    let local_offer = local_capabilities.encode()?;
+    let peer_offer = match role {
+        NoiseRole::Initiator => {
+            send_encrypted(adapter, &mut channel, &local_offer, cancellation).await?;
+            receive_decrypted(adapter, &mut channel, cancellation).await?
+        }
+        NoiseRole::Responder => {
+            let peer_offer = receive_decrypted(adapter, &mut channel, cancellation).await?;
+            send_encrypted(adapter, &mut channel, &local_offer, cancellation).await?;
+            peer_offer
+        }
+    };
+    let peer_capabilities = PathUpgradeCapabilities::decode(&peer_offer)?;
+    Ok(AuthenticatedPathUpgradeNegotiation {
+        authenticated_peer: pinned_peer,
+        negotiated: local_capabilities.negotiate(peer_capabilities),
+    })
 }
 
 /// Plans and executes one encrypted, authenticated, scope-authorized sync request.
