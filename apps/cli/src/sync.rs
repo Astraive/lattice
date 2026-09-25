@@ -4,14 +4,14 @@ use clap::Subcommand;
 use lattice_core::{Client, CoreError};
 use lattice_events::VerifiedSignatureOnlyEvent;
 use lattice_node::sync::{
-    AuthenticatedSyncExchange, AuthenticatedSyncServeResult, StoreSyncEventSource,
-    execute_authenticated_sync_once, serve_authenticated_sync_request_once,
+    AuthenticatedSyncV2Exchange, StoreSyncEventSource, StoreSyncSummarySource, SyncServeResult,
+    SyncSummarySource, execute_authenticated_sync_v2_once, serve_authenticated_sync_v2_once,
     space_generation_scope_id,
 };
 use lattice_platform::{MAX_EVENT_BYTES, OsKeyringProtector};
 use lattice_router::EventDeduplicator;
 use lattice_storage::{MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
-use lattice_sync::{EventId, ScopeId, ScopeSummary};
+use lattice_sync::{EventId, ScopeId};
 use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
 use tokio_util::sync::CancellationToken;
 
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum SyncCommand {
     /// Inspect local event, dependency, and outbox state without networking.
     Status,
-    /// Fetch and apply one exact application event from a pinned direct peer.
+    /// Fetch one exact application event through a pinned v2 summary exchange.
     FetchOnce {
         /// TCP endpoint to connect, for example `127.0.0.1:7000`.
         #[arg(long)]
@@ -37,7 +37,7 @@ pub(super) enum SyncCommand {
         #[arg(long)]
         event_id: String,
     },
-    /// Accept one pinned peer and serve one authenticated direct-sync request.
+    /// Accept one pinned peer and serve a v2 summary-derived request batch.
     ServeOnce {
         /// TCP endpoint to bind, for example `127.0.0.1:7000`.
         #[arg(long)]
@@ -186,7 +186,14 @@ fn fetch_once(
         )
         .into());
     }
-    let authenticated = fetch_from_peer(&client, target)?;
+    let store = Store::open(database_path)?;
+    let mut summary_source = StoreSyncSummarySource::new(
+        &store,
+        target.scope,
+        target.space_id,
+        target.group_reference,
+    );
+    let authenticated = fetch_from_peer(&client, &mut summary_source, target)?;
     let counts = accept_fetched_events(&mut client, &mut created, &authenticated.exchange.events)?;
     print_fetch_result(
         target,
@@ -200,13 +207,16 @@ fn fetch_once(
 
 fn fetch_from_peer(
     client: &Client,
+    summary_source: &mut StoreSyncSummarySource<'_>,
     target: FetchOnceTarget,
-) -> Result<AuthenticatedSyncExchange<&'static str>, Box<dyn Error>> {
-    let mut local_summary = ScopeSummary::new(target.scope);
+) -> Result<AuthenticatedSyncV2Exchange<&'static str>, Box<dyn Error>> {
+    let mut local_summary = summary_source
+        .load_summary(target.scope)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    local_summary.missing_dependencies.clear();
     local_summary
         .missing_dependencies
         .push(EventId::new(target.event_id));
-    let peer_summary = ScopeSummary::new(target.scope);
     let mut deduplicator =
         EventDeduplicator::new(128).map_err(|error| io::Error::other(format!("{error:?}")))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -219,12 +229,11 @@ fn fetch_from_peer(
     let pinned = runtime.block_on(client.with_pinned_identity(
         &target.peer_fingerprint,
         |identity, pinned_peer| async move {
-            execute_authenticated_sync_once(
+            execute_authenticated_sync_v2_once(
                 &adapter,
                 identity,
                 pinned_peer,
                 &local_summary,
-                &peer_summary,
                 &mut deduplicator,
                 &mut |requested_scope: ScopeId,
                       author: lattice_sync::AuthorId,
@@ -253,7 +262,7 @@ fn fetch_from_peer(
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "requested peer fingerprint is not pinned in this profile",
+                "requested peer fingerprint is no longer pinned",
             )
         })?
         .map_err(|error| io::Error::other(error.to_string()).into())
@@ -382,6 +391,7 @@ fn serve_once(
     }
     let store = Store::open(database_path)?;
     let mut source = StoreSyncEventSource::new(&store, scope, space_id, group_reference);
+    let mut summary_source = StoreSyncSummarySource::new(&store, scope, space_id, group_reference);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -404,10 +414,11 @@ fn serve_once(
     let authenticated = runtime.block_on(client.with_pinned_identity(
         &peer_fingerprint,
         |identity, pinned_peer| async move {
-            serve_authenticated_sync_request_once(
+            serve_authenticated_sync_v2_once(
                 &adapter,
                 identity,
                 pinned_peer,
+                &mut summary_source,
                 &mut source,
                 |peer, requested_scope| {
                     peer.fingerprint() == peer_fingerprint && requested_scope == scope
@@ -430,7 +441,7 @@ fn serve_once(
         remote_address,
         &peer_fingerprint,
         scope,
-        result,
+        result.exchange,
     );
     Ok(())
 }
@@ -441,9 +452,9 @@ fn print_serve_result(
     remote_address: SocketAddr,
     peer_fingerprint: &[u8; 32],
     scope: ScopeId,
-    result: AuthenticatedSyncServeResult,
+    result: SyncServeResult,
 ) {
-    let exchange = result.exchange;
+    let exchange = result;
     if json {
         println!(
             "{}",
