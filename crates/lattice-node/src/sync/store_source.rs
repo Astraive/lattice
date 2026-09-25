@@ -445,6 +445,112 @@ mod tests {
         drop(store);
         let _ = std::fs::remove_file(path);
     }
+    #[tokio::test]
+    async fn store_summaries_drive_authenticated_v2_range_repair() {
+        let alice_path = database_path();
+        let bob_path = database_path();
+        let space_id = [0x71; 16];
+        let group_reference = [0x72; 32];
+        let scope = super::super::space_generation_scope_id(&space_id, &group_reference);
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let event = signed_event(&bob, space_id, group_reference, 1, None);
+        let event_id = EventId::new(*event.event_id().as_bytes());
+        let event_bytes = event.encoded_bytes().to_vec();
+        let alice_store = Store::open(&alice_path).expect("open initiator store");
+        let mut bob_store = Store::open(&bob_path).expect("open responder store");
+        commit(&mut bob_store, &bob, &event);
+
+        let mut alice_summary_source =
+            StoreSyncSummarySource::new(&alice_store, scope, space_id, group_reference);
+        let local_summary = alice_summary_source
+            .load_summary(scope)
+            .expect("load initiator summary");
+        let mut bob_summary_source =
+            StoreSyncSummarySource::new(&bob_store, scope, space_id, group_reference);
+        let mut bob_event_source =
+            StoreSyncEventSource::new(&bob_store, scope, space_id, group_reference);
+
+        let alice_pins_bob = lattice_identity::PinnedIdentity::from_verified_fingerprint(
+            bob.public_bundle(),
+            bob.fingerprint(),
+        )
+        .expect("pin responder identity");
+        let bob_pins_alice = lattice_identity::PinnedIdentity::from_verified_fingerprint(
+            alice.public_bundle(),
+            alice.fingerprint(),
+        )
+        .expect("pin initiator identity");
+        let listener = lattice_transport::TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind test listener");
+        let endpoint = listener.local_addr().expect("read test endpoint");
+        let (client_adapter, server_adapter) = tokio::join!(
+            lattice_transport::TcpPeerAdapter::connect(endpoint, 4096),
+            listener.accept()
+        );
+        let client_adapter = client_adapter.expect("connect test adapter");
+        let (server_adapter, _) = server_adapter.expect("accept test adapter");
+        let mut deduplicator =
+            lattice_router::EventDeduplicator::new(8).expect("create bounded deduplicator");
+        let mut validator = |requested_scope: ScopeId,
+                             event_author: AuthorId,
+                             sequence: u64,
+                             expected_id: Option<EventId>,
+                             bytes: &[u8]| {
+            let event = VerifiedSignatureOnlyEvent::decode_verify(bytes)
+                .map_err(|_| "invalid signed test event")?;
+            let actual_id = EventId::new(*event.event_id().as_bytes());
+            if requested_scope == scope
+                && event_author == AuthorId::new(bob.fingerprint())
+                && sequence == 1
+                && expected_id == Some(event_id)
+                && actual_id == event_id
+            {
+                Ok(actual_id)
+            } else {
+                Err("event does not match the scoped summary")
+            }
+        };
+        let client_cancellation = tokio_util::sync::CancellationToken::new();
+        let server_cancellation = tokio_util::sync::CancellationToken::new();
+        let (client_result, server_result) = tokio::join!(
+            super::super::execute_authenticated_sync_v2_once(
+                &client_adapter,
+                &alice,
+                alice_pins_bob,
+                &local_summary,
+                &mut deduplicator,
+                &mut validator,
+                |peer, requested_scope| {
+                    peer.fingerprint() == bob.fingerprint() && requested_scope == scope
+                },
+                &client_cancellation,
+            ),
+            super::super::serve_authenticated_sync_v2_once(
+                &server_adapter,
+                &bob,
+                bob_pins_alice,
+                &mut bob_summary_source,
+                &mut bob_event_source,
+                |peer, requested_scope| {
+                    peer.fingerprint() == alice.fingerprint() && requested_scope == scope
+                },
+                &server_cancellation,
+            ),
+        );
+        let client_result = client_result.expect("complete authenticated sync");
+        let server_result = server_result.expect("serve authenticated sync");
+        assert_eq!(client_result.exchange.events.len(), 1);
+        assert_eq!(client_result.exchange.events[0].event_id, event_id);
+        assert_eq!(client_result.exchange.events[0].bytes, event_bytes);
+        assert_eq!(server_result.exchange.included_events, 1);
+
+        drop(alice_store);
+        drop(bob_store);
+        let _ = std::fs::remove_file(alice_path);
+        let _ = std::fs::remove_file(bob_path);
+    }
 
     fn signed_event(
         identity: &DeviceIdentity,
