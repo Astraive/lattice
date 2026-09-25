@@ -956,3 +956,119 @@ fn request_scope_v2(bytes: &[u8]) -> Result<ScopeId, SyncProtocolError> {
     }
     Ok(ScopeId::new(reader.array32()?))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use lattice_crypto::NoiseRole;
+    use lattice_identity::{DeviceIdentity, PinnedIdentity};
+    use lattice_sync::{EventId, ScopeId, ScopeSummary};
+    use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{
+        AuthenticatedSyncError, SyncRequestTarget, SyncSourceError,
+        establish_authenticated_channel_v2, max_v2_plaintext_frame, receive_decrypted,
+        send_encrypted, serve_authenticated_sync_v2_once,
+    };
+    use crate::sync::{SyncEventRecord, SyncProtocolError};
+
+    #[tokio::test]
+    async fn responder_rejects_unplanned_v2_target_before_event_source_access() {
+        let scope = ScopeId::new([0x61; 32]);
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_pin =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+                .expect("pin initiator identity");
+        let bob_pin =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+                .expect("pin responder identity");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind test listener");
+        let endpoint = listener.local_addr().expect("read listener address");
+        let (client_adapter, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_adapter.expect("connect test initiator");
+        let (server_adapter, _) = server_result.expect("accept test responder");
+
+        let summary_calls = Cell::new(0);
+        let mut summary_source = |requested_scope| {
+            summary_calls.set(summary_calls.get() + 1);
+            if requested_scope == scope {
+                Ok(ScopeSummary::new(scope))
+            } else {
+                Err(SyncSourceError::new("unexpected scope"))
+            }
+        };
+        let event_calls = Cell::new(0);
+        let mut event_source = |_: ScopeId, _: SyncRequestTarget| {
+            event_calls.set(event_calls.get() + 1);
+            Ok::<_, SyncSourceError>(None::<SyncEventRecord>)
+        };
+        let server_cancellation = CancellationToken::new();
+        let server_future = serve_authenticated_sync_v2_once(
+            &server_adapter,
+            &bob,
+            alice_pin,
+            &mut summary_source,
+            &mut event_source,
+            |peer, requested_scope| {
+                peer.fingerprint() == alice.fingerprint() && requested_scope == scope
+            },
+            &server_cancellation,
+        );
+        let client_cancellation = CancellationToken::new();
+        let client_future = async {
+            let mut channel = establish_authenticated_channel_v2(
+                &client_adapter,
+                &alice,
+                bob_pin,
+                NoiseRole::Initiator,
+                &client_cancellation,
+            )
+            .await?;
+            let summary = ScopeSummary::new(scope);
+            let summary_frame = crate::sync::encode_v2_summary(
+                &summary,
+                crate::sync::V2_INITIATOR_SUMMARY_KIND,
+                max_v2_plaintext_frame(&client_adapter),
+            )
+            .expect("encode valid summary");
+            send_encrypted(
+                &client_adapter,
+                &mut channel,
+                &summary_frame,
+                &client_cancellation,
+            )
+            .await?;
+            let _ = receive_decrypted(&client_adapter, &mut channel, &client_cancellation).await?;
+            let request = crate::sync::encode_v2_request(
+                scope,
+                &[SyncRequestTarget::EventId(EventId::new([0x62; 32]))],
+            )
+            .expect("encode bounded request");
+            send_encrypted(
+                &client_adapter,
+                &mut channel,
+                &request,
+                &client_cancellation,
+            )
+            .await?;
+            Ok::<_, AuthenticatedSyncError>(())
+        };
+        let (server, client) = tokio::join!(server_future, client_future);
+
+        assert!(matches!(
+            server,
+            Err(AuthenticatedSyncError::Protocol(
+                SyncProtocolError::UnrequestedTarget
+            ))
+        ));
+        client.expect("send authenticated but unplanned request");
+        assert_eq!(summary_calls.get(), 1);
+        assert_eq!(event_calls.get(), 0);
+    }
+}
