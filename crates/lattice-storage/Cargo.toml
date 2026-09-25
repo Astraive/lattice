@@ -9,5 +9,6 @@ version.workspace = true
 
 [dependencies]
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
+lattice-mesh = { path = "../lattice-mesh" }
 [lints]
 workspace = true

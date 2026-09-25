@@ -46,7 +46,7 @@ On v2, the responder rejects any request target absent from the summary-derived 
 | Presence/typing | Volatile | Never persistent courier or backfilled after expiry. |
 | Voice media | Real-time only | WebRTC IP path; never stored/flooded as event traffic. |
 
-Sender outbox persists locally and retries on contact discovery with exponential/jittered backoff; a new viable path may wake it early. Courier cache accepts only opaque bounded envelopes, with expiry, per-depositor/global quotas and copy-budget accounting. “Spray and wait” cannot guarantee delivery when encounters do not occur, and a malicious courier may drop copies. Local broadcast uses hop limit, duplicate cache and controlled fanout, not unrestricted epidemic flooding.
+Sender outbox persists locally and retries on contact discovery with exponential/jittered backoff; a new viable path may wake it early. The storage crate now provides schema-v11 SQLite retention for opaque courier bytes, disabled by default, with persisted explicit quotas, expiry, deduplication, FIFO eviction, and transactional copy-budget consumption. Disabling the queue clears retained courier bytes. This storage API is not yet connected to the node or desktop forwarding services, so NET-008 remains incomplete. “Spray and wait” cannot guarantee delivery when encounters do not occur, and a malicious courier may drop copies. Local broadcast uses hop limit, duplicate cache and controlled fanout, not unrestricted epidemic flooding.
 
 ## Synchronization details
 

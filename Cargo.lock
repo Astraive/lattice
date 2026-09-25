@@ -3224,6 +3224,7 @@ version = "0.1.0"
 name = "lattice-storage"
 version = "0.1.0"
 dependencies = [
+ "lattice-mesh",
  "rusqlite",
 ]
 

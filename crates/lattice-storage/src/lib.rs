@@ -7,7 +7,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+mod courier_queue;
 mod trusted_identities;
+pub use courier_queue::{
+    CourierQueueEntry, CourierQueueError, CourierQueueReceipt, CourierQueueStatus,
+    DEFAULT_COURIER_LIMITS,
+};
+
 pub use trusted_identities::TrustedIdentityRecord;
 
 /// Largest canonical event byte string accepted by the local store.
@@ -43,7 +49,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 10;
+pub const CURRENT_SCHEMA_VERSION: i64 = 11;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -586,6 +592,48 @@ impl Store {
                     PRIMARY KEY(space_id, group_reference)
                 );
                 PRAGMA user_version = 10;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 11 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE courier_configuration (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                    max_object_bytes INTEGER NOT NULL CHECK(max_object_bytes BETWEEN 0 AND 16777216),
+                    max_peer_bytes INTEGER NOT NULL CHECK(max_peer_bytes BETWEEN 0 AND 16777216),
+                    max_peer_items INTEGER NOT NULL CHECK(max_peer_items BETWEEN 0 AND 4096),
+                    max_total_bytes INTEGER NOT NULL CHECK(max_total_bytes BETWEEN 0 AND 67108864),
+                    max_total_items INTEGER NOT NULL CHECK(max_total_items BETWEEN 0 AND 65536)
+                );
+                INSERT INTO courier_configuration
+                    (singleton, enabled, max_object_bytes, max_peer_bytes,
+                     max_peer_items, max_total_bytes, max_total_items)
+                    VALUES (1, 0, 1048576, 4194304, 256, 16777216, 4096);
+                CREATE TABLE courier_queue (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    peer_id BLOB NOT NULL
+                        CHECK(typeof(peer_id) = 'blob' AND length(peer_id) = 16),
+                    envelope_id BLOB NOT NULL UNIQUE
+                        CHECK(typeof(envelope_id) = 'blob' AND length(envelope_id) = 16),
+                    event_id BLOB NOT NULL UNIQUE
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32),
+                    expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms >= 0),
+                    hop_limit INTEGER NOT NULL CHECK(hop_limit BETWEEN 1 AND 65535),
+                    remaining_copy_budget INTEGER NOT NULL
+                        CHECK(remaining_copy_budget BETWEEN 0 AND hop_limit),
+                    traffic_class INTEGER NOT NULL CHECK(traffic_class BETWEEN 0 AND 2),
+                    encrypted_opaque_bytes BLOB NOT NULL
+                        CHECK(typeof(encrypted_opaque_bytes) = 'blob'
+                            AND length(encrypted_opaque_bytes) BETWEEN 1 AND 16777216)
+                );
+                CREATE INDEX courier_queue_peer_sequence
+                    ON courier_queue(peer_id, sequence);
+                CREATE INDEX courier_queue_expiry
+                    ON courier_queue(expires_at_ms);
+                PRAGMA user_version = 11;",
             )?;
             transaction.commit()?;
         }
@@ -2595,7 +2643,9 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_welcome_bootstrap_snapshots;
+                    "DROP TABLE courier_queue;
+                     DROP TABLE courier_configuration;
+                     DROP TABLE space_welcome_bootstrap_snapshots;
                      DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
@@ -2655,7 +2705,9 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_welcome_bootstrap_snapshots;
+                    "DROP TABLE courier_queue;
+                     DROP TABLE courier_configuration;
+                     DROP TABLE space_welcome_bootstrap_snapshots;
                      DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
@@ -2671,7 +2723,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2702,7 +2754,9 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_welcome_bootstrap_snapshots;
+                    "DROP TABLE courier_queue;
+                     DROP TABLE courier_configuration;
+                     DROP TABLE space_welcome_bootstrap_snapshots;
                      DROP TABLE space_membership_conflicts;
                      DROP TABLE space_membership_transition_snapshots;
                      DROP TABLE cached_space_messages;
@@ -2716,7 +2770,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2841,7 +2895,7 @@ mod tests {
     fn welcome_bootstrap_snapshot_round_trips_transactionally_and_enforces_bounds() {
         let database = TempDatabase::new();
         let mut store = Store::open(database.path()).expect("open database");
-        assert_eq!(store.schema_version().expect("read schema version"), 10);
+        assert_eq!(store.schema_version().expect("read schema version"), 11);
         let snapshot = SpaceWelcomeBootstrapSnapshot {
             space_id: [0x11; 16],
             group_reference: [0x22; 32],
