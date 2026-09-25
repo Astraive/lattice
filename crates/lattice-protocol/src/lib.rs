@@ -556,6 +556,30 @@ mod tests {
 
     #[test]
     fn hostile_byte_corpus_is_panic_free_and_decodes_only_canonical_values() {
+        let canonical_seeds: &[&[u8]] = &[
+            &[0xa1, 0x00, 0x01],
+            &[0x83, 0x01, 0x21, 0xf6],
+            &[0x65, b'h', b'e', b'l', b'l', b'o'],
+        ];
+        for seed in canonical_seeds {
+            let value = decode_canonical(seed).expect("seed is canonical CBOR");
+            assert_eq!(
+                encode_canonical(&value).expect("seed value re-encodes"),
+                *seed
+            );
+            for index in 0..seed.len() {
+                for mask in [0x01, 0x80] {
+                    let mut mutated = seed.to_vec();
+                    mutated[index] ^= mask;
+                    if let Ok(value) = decode_canonical(&mutated) {
+                        assert_eq!(
+                            encode_canonical(&value).expect("mutated value remains encodable"),
+                            mutated
+                        );
+                    }
+                }
+            }
+        }
         let mut state = 0x1f83_d9ab_fb41_bd6b_u64;
         for _ in 0..4_096 {
             state = state
