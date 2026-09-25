@@ -13,9 +13,10 @@ use tokio_util::sync::CancellationToken;
 use super::{
     HopOutcome, REQUEST_KIND, SyncEventRejection, SyncEventSource, SyncEventValidator,
     SyncExchange, SyncProtocolError, SyncReceiveOutcome, SyncRequestTarget,
-    SyncServeReceiveOutcome, SyncServeResult, ValidatedSyncEvent, WIRE_HEADER_BYTES, WIRE_MAGIC,
-    WIRE_VERSION, bounded_targets, decode_request, decode_response, encode_request,
-    known_summary_event, normalize_ranges, record_matches_target, response_header, sort_dedup,
+    SyncServeReceiveOutcome, SyncServeResult, SyncSourceError, ValidatedSyncEvent,
+    WIRE_HEADER_BYTES, WIRE_MAGIC, WIRE_VERSION, bounded_targets, decode_request, decode_response,
+    encode_request, known_summary_event, normalize_ranges, record_matches_target, response_header,
+    sort_dedup,
 };
 
 const DIRECT_SYNC_PROLOGUE: &[u8] = b"lattice:direct-sync:noise-xx:v1\0";
@@ -51,6 +52,10 @@ pub enum AuthenticatedSyncError {
     /// Sync request or response bytes failed strict protocol parsing.
     #[error("malformed direct-sync frame: {0:?}")]
     Protocol(SyncProtocolError),
+    /// The local event source failed while resolving an authenticated request.
+    #[error("sync event source failed: {0}")]
+    EventSource(#[from] SyncSourceError),
+
     /// The local and peer summaries cannot be planned together.
     #[error("sync planning failed: {0:?}")]
     Plan(PlanError),
@@ -281,7 +286,10 @@ where
     let mut omitted_targets = Vec::with_capacity(targets.len());
     let mut included_events = 0_usize;
     for target in targets {
-        let Some(record) = source.load(requested_scope, target) else {
+        let Some(record) = source
+            .load(requested_scope, target)
+            .map_err(AuthenticatedSyncError::EventSource)?
+        else {
             omitted_targets.push(target);
             continue;
         };

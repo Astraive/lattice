@@ -3157,9 +3157,11 @@ name = "lattice-node"
 version = "0.1.0"
 dependencies = [
  "lattice-crypto",
+ "lattice-events",
  "lattice-identity",
  "lattice-platform",
  "lattice-router",
+ "lattice-storage",
  "lattice-sync",
  "lattice-transport",
  "thiserror 2.0.20",

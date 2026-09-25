@@ -7,6 +7,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+lattice-events = { path = "../lattice-events", version = "=0.1.0" }
+lattice-storage = { path = "../lattice-storage", version = "=0.1.0" }
 lattice-crypto = { path = "../lattice-crypto", version = "=0.1.0" }
 lattice-identity = { path = "../lattice-identity", version = "=0.1.0" }
 lattice-platform = { path = "../lattice-platform", version = "=0.1.0" }

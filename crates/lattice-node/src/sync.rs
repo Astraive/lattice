@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 
 use lattice_platform::{MAX_EVENT_BYTES, TransportError, TransportReceipt};
 use lattice_sync::{
-    AuthorId, EventId, MAX_BATCH_EVENTS, ScopeId, ScopeSummary, SyncPlan,
-    SyncRequestRange, UnresolvedHistory,
+    AuthorId, EventId, MAX_BATCH_EVENTS, ScopeId, ScopeSummary, SyncPlan, SyncRequestRange,
+    UnresolvedHistory,
 };
 
 const WIRE_MAGIC: &[u8; 4] = b"LSYN";
@@ -25,6 +25,8 @@ pub use direct_session::{
     AuthenticatedSyncError, AuthenticatedSyncExchange, AuthenticatedSyncServeResult,
     execute_authenticated_sync_once, serve_authenticated_sync_request_once,
 };
+mod store_source;
+pub use store_source::StoreSyncEventSource;
 
 /// Maximum requested event records in one exchange, inherited from sync's
 /// bounded batch contract.
@@ -54,18 +56,51 @@ pub struct SyncEventRecord {
 
 /// Resolves exact bounded requests against a local repository.
 pub trait SyncEventSource {
-    /// Returns the exact requested event, or `None` if it is unavailable.
-    fn load(&mut self, scope: ScopeId, target: SyncRequestTarget) -> Option<SyncEventRecord>;
+    /// Returns the exact requested event, `None` if unavailable, or a source failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SyncSourceError` when the repository cannot reliably resolve the
+    /// target or its stored metadata is corrupt.
+    fn load(
+        &mut self,
+        scope: ScopeId,
+        target: SyncRequestTarget,
+    ) -> Result<Option<SyncEventRecord>, SyncSourceError>;
 }
 
 impl<F> SyncEventSource for F
 where
-    F: FnMut(ScopeId, SyncRequestTarget) -> Option<SyncEventRecord>,
+    F: FnMut(ScopeId, SyncRequestTarget) -> Result<Option<SyncEventRecord>, SyncSourceError>,
 {
-    fn load(&mut self, scope: ScopeId, target: SyncRequestTarget) -> Option<SyncEventRecord> {
+    fn load(
+        &mut self,
+        scope: ScopeId,
+        target: SyncRequestTarget,
+    ) -> Result<Option<SyncEventRecord>, SyncSourceError> {
         self(scope, target)
     }
 }
+
+/// A source-level storage or decoding failure, separate from an unavailable record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncSourceError(String);
+
+impl SyncSourceError {
+    /// Wraps a safe source diagnostic for propagation to the sync caller.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for SyncSourceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SyncSourceError {}
 
 /// Existing application validation boundary for opaque sync event bytes.
 pub trait SyncEventValidator {
@@ -568,7 +603,7 @@ mod tests {
 
     use super::{
         AuthenticatedSyncError, HopOutcome, SyncEventRecord, SyncReceiveOutcome, SyncRequestTarget,
-        SyncServeReceiveOutcome, execute_authenticated_sync_once,
+        SyncServeReceiveOutcome, SyncSourceError, execute_authenticated_sync_once,
         serve_authenticated_sync_request_once,
     };
 
@@ -640,7 +675,7 @@ mod tests {
             sequence: 1,
         };
         let mut source = move |requested_scope, target| {
-            if requested_scope == scope && target == requested_target {
+            Ok(if requested_scope == scope && target == requested_target {
                 Some(SyncEventRecord {
                     author,
                     sequence: 1,
@@ -649,7 +684,7 @@ mod tests {
                 })
             } else {
                 None
-            }
+            })
         };
         let client_cancellation = CancellationToken::new();
         let server_cancellation = CancellationToken::new();
@@ -739,7 +774,7 @@ mod tests {
         let source_calls = Cell::new(0);
         let mut source = |_: ScopeId, _: SyncRequestTarget| {
             source_calls.set(source_calls.get() + 1);
-            None::<SyncEventRecord>
+            Ok(None::<SyncEventRecord>)
         };
 
         let client_cancellation = CancellationToken::new();
@@ -781,6 +816,92 @@ mod tests {
             server.exchange.response_hop,
             HopOutcome::Accepted(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn authenticated_sync_propagates_event_source_failure() {
+        let scope = ScopeId::new([0x18; 32]);
+        let author = lattice_sync::AuthorId::new([0x29; 32]);
+        let event_id = lattice_sync::EventId::new([0x3a; 32]);
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_pins_bob =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+                .expect("pin responder");
+        let bob_pins_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+                .expect("pin initiator");
+
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind ephemeral test listener");
+        let endpoint = listener.local_addr().expect("read listener address");
+        let (client_result, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_result.expect("connect test adapter");
+        let (server_adapter, _) = server_result.expect("accept test adapter");
+
+        let local = ScopeSummary::new(scope);
+        let peer = ScopeSummary {
+            scope,
+            authors: vec![AuthorSummary {
+                author,
+                contiguous_sequence: 1,
+                known_events: vec![KnownEvent {
+                    sequence: 1,
+                    event_id,
+                }],
+                unavailable: Vec::new(),
+            }],
+            missing_dependencies: Vec::new(),
+        };
+        let mut deduplicator = EventDeduplicator::new(64).expect("bounded deduplicator");
+        let mut validator = |_: ScopeId,
+                             _: lattice_sync::AuthorId,
+                             _: u64,
+                             _: Option<lattice_sync::EventId>,
+                             _: &[u8]| Ok::<_, ()>(event_id);
+        let mut source = |_: ScopeId, _: SyncRequestTarget| {
+            Err(SyncSourceError::new("test storage read failure"))
+        };
+        let client_cancellation = CancellationToken::new();
+        let server_cancellation = CancellationToken::new();
+        let client_future = execute_authenticated_sync_once(
+            &client_adapter,
+            &alice,
+            alice_pins_bob,
+            &local,
+            &peer,
+            &mut deduplicator,
+            &mut validator,
+            |_, requested_scope| requested_scope == scope,
+            &client_cancellation,
+        );
+        let server_future = serve_authenticated_sync_request_once(
+            &server_adapter,
+            &bob,
+            bob_pins_alice,
+            &mut source,
+            |_, requested_scope| requested_scope == scope,
+            &server_cancellation,
+        );
+        tokio::pin!(client_future);
+        tokio::pin!(server_future);
+        tokio::select! {
+            result = &mut server_future => {
+                assert!(matches!(
+                    &result,
+                    Err(AuthenticatedSyncError::EventSource(error))
+                        if error.to_string() == "test storage read failure"
+                ));
+                client_cancellation.cancel();
+                assert!(matches!(
+                    client_future.await,
+                    Err(AuthenticatedSyncError::Cancelled)
+                ));
+            }
+            _ = &mut client_future => panic!("client must not receive a successful empty response"),
+        }
     }
 
     #[tokio::test]
@@ -835,7 +956,7 @@ mod tests {
         let source_calls = Cell::new(0);
         let mut source = |_: ScopeId, _: SyncRequestTarget| {
             source_calls.set(source_calls.get() + 1);
-            None::<SyncEventRecord>
+            Ok(None::<SyncEventRecord>)
         };
         let client_cancellation = CancellationToken::new();
         let server_cancellation = CancellationToken::new();
@@ -908,7 +1029,7 @@ mod tests {
         let source_calls = Cell::new(0);
         let mut source = |_: ScopeId, _: SyncRequestTarget| {
             source_calls.set(source_calls.get() + 1);
-            None::<SyncEventRecord>
+            Ok(None::<SyncEventRecord>)
         };
         let client_cancellation = CancellationToken::new();
         let server_cancellation = CancellationToken::new();
