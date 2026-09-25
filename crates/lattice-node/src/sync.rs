@@ -918,6 +918,29 @@ mod tests {
     };
 
     #[test]
+    fn hostile_v2_frame_corpus_is_bounded_and_panic_free() {
+        let scope = ScopeId::new([0x37; 32]);
+        let requested = std::collections::BTreeSet::new();
+        let mut state = 0xbe54_66cf_34e9_0c6c_u64;
+        for _ in 0..2_048 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            let _ = super::decode_v2_summary(&input, scope, super::V2_INITIATOR_SUMMARY_KIND);
+            let _ = super::decode_v2_request(&input, scope);
+            let _ = super::decode_v2_response(&input, scope, &requested);
+        }
+    }
+
+    #[test]
     fn space_generation_scope_id_is_stable_and_separates_generations() {
         let space_id = [0x11; 16];
         let first_generation = [0x22; 32];
