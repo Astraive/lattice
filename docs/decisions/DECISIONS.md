@@ -1,6 +1,6 @@
 # Architectural decisions and unresolved choices
 
-This index tracks decisions. Create one `ADR-xxx-title.md` per resolved item with **context → alternatives → decision → consequences → validation → date/status**; retain superseded ADRs. Until then, these entries are explicit open work, not hidden decisions.
+This index tracks accepted decisions and unresolved choices. Each accepted choice links to an ADR recording its context, alternatives, decision, consequences, validation, and status; entries without an accepted decision remain open work.
 
 | ADR | Issue | Current safe rule | Blocking IDs | Gate |
 | --- | --- | --- | --- | --- |
