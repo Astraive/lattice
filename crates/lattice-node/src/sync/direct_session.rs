@@ -771,7 +771,7 @@ async fn establish_authenticated_channel_v2<A: TransportAdapter + ?Sized>(
     .await
 }
 
-async fn establish_authenticated_channel_with_protocol<A: TransportAdapter + ?Sized>(
+pub(super) async fn establish_authenticated_channel_with_protocol<A: TransportAdapter + ?Sized>(
     adapter: &A,
     local_identity: &DeviceIdentity,
     pinned_peer: PinnedIdentity,
@@ -964,7 +964,7 @@ async fn receive_plain<A: TransportAdapter + ?Sized>(
     incoming.ok_or(AuthenticatedSyncError::PeerClosed)
 }
 
-async fn send_encrypted<A: TransportAdapter + ?Sized>(
+pub(super) async fn send_encrypted<A: TransportAdapter + ?Sized>(
     adapter: &A,
     channel: &mut EstablishedNoiseTransportSession,
     plaintext: &[u8],
@@ -980,7 +980,7 @@ async fn send_encrypted<A: TransportAdapter + ?Sized>(
     }
 }
 
-async fn receive_decrypted<A: TransportAdapter + ?Sized>(
+pub(super) async fn receive_decrypted<A: TransportAdapter + ?Sized>(
     adapter: &A,
     channel: &mut EstablishedNoiseTransportSession,
     cancellation: &CancellationToken,
@@ -998,7 +998,7 @@ fn max_plaintext_frame<A: TransportAdapter + ?Sized>(adapter: &A) -> usize {
         .min(MAX_NOISE_TRANSPORT_MESSAGE_SIZE)
 }
 
-fn max_v2_plaintext_frame<A: TransportAdapter + ?Sized>(adapter: &A) -> usize {
+pub(super) fn max_v2_plaintext_frame<A: TransportAdapter + ?Sized>(adapter: &A) -> usize {
     adapter
         .capabilities()
         .max_envelope_bytes()

@@ -3164,6 +3164,7 @@ version = "0.1.0"
 dependencies = [
  "lattice-crypto",
  "lattice-events",
+ "lattice-files",
  "lattice-identity",
  "lattice-platform",
  "lattice-protocol",

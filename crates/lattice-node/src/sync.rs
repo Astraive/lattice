@@ -27,6 +27,11 @@ const WIRE_HEADER_BYTES: usize = 40;
 const TARGET_BY_ID: u8 = 0;
 const TARGET_BY_SEQUENCE: u8 = 1;
 
+mod attachment_transfer;
+pub use attachment_transfer::{
+    AttachmentReceiveResult, AttachmentSendResult, AuthenticatedAttachmentError,
+    receive_authenticated_attachment_once, send_authenticated_attachment_once,
+};
 mod direct_session;
 pub use direct_session::{
     AuthenticatedPathUpgradeError, AuthenticatedPathUpgradeNegotiation, AuthenticatedSyncError,
