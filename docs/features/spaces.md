@@ -9,7 +9,7 @@ A Space is a replicated membership and policy domain with authenticated genesis 
 | SPC-003 | A joining device shall verify genesis/inviter and be explicitly added by authorized member. | Forged invite or unapproved KeyPackage cannot produce visible member. | M2/M3 |
 | SPC-004 | Roles shall include owner/admin/moderator/member plus custom permission masks. | Effective permission computed consistently on two replicas. | M3 |
 | SPC-005 | Channel overrides shall gate send/attach/voice actions without bypassing Space rules. | Denied author event is rejected after sync, including from a stale UI. | M3 |
-| SPC-006 | Add/remove/ban shall bind an authorized event to a valid MLS transition. | Removed device cannot decrypt later valid epoch messages; earlier data remains accessible. | M3 |
+| SPC-006 | Add/remove/ban shall bind an authorized event to a valid MLS transition. | Removal and ban require one exact MLS Remove Commit and an authenticated parent-epoch policy event; the accepted Commit rekeys remaining members and excludes the removed device from future epochs. | M3 |
 | SPC-007 | Concurrent privileged operations shall use agreed causal policy and explicit conflict state. | Partition permutation tests converge or show a defined conflict; no timestamp winner. | M3; ADR-001 |
 | SPC-008 | Moderators shall tombstone content and record distinguishable moderation action. | Authorized moderation hides normal view; invalid moderator cannot. | M3 |
 | SPC-009 | Invite policy shall support expiry and optional use limits without relying on relay truth. | Expired/wrong-policy invitations fail on peer sync; offline simultaneous uses defined. | M3 |
@@ -36,10 +36,13 @@ For each privileged event, load its declared causal dependencies and relevant ac
 | Define or edit role | `ROLE_MANAGE` | Prevent policy self-escalation under stale state; protect owner invariant. |
 | Invite/add member | `MEMBER_INVITE` | Validate invite/genesis/credential/KeyPackage and corresponding MLS Commit. |
 | Remove/ban member | `MEMBER_REMOVE`/`MEMBER_BAN` | MLS epoch transition and prospective-key exclusion. |
+
 | Publish message/attachment | `MESSAGE_SEND`/`MESSAGE_ATTACH` | Apply channel override, membership and retention bounds. |
 | Author delete | `MESSAGE_SEND` | Tombstone the author's own message. |
 | Moderator removal | `MESSAGE_MODERATE` | Preserve a reason-bearing moderator event and audit lineage. |
 | Join/speak in voice | `VOICE_JOIN`/`VOICE_SPEAK` | Evaluate current room incarnation and membership state. |
+
+Remove and ban use the same authenticated MLS Remove proof but distinct policy results: removal marks the member `removed` and permits a later authorized invitation; ban marks the fingerprint `banned` and rejects later invitations or admissions. The event-log transaction merges the exact Commit, stores its signed control and transition events, and persists protected replay evidence together.
 
 ## Channel types and privacy semantics
 

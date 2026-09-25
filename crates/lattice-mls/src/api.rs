@@ -103,6 +103,8 @@ pub enum MlsError {
     WrongGroup,
     /// No matching persisted `OpenMLS` group was found.
     GroupNotFound,
+    /// No member has the requested validated identity fingerprint.
+    GroupMemberNotFound,
     /// An MLS object depends on a future epoch not yet present locally.
     MissingDependency {
         /// Current locally available epoch.
@@ -173,6 +175,7 @@ impl fmt::Display for MlsError {
             }
             Self::WrongGroup => f.write_str("MLS object belongs to a different group"),
             Self::GroupNotFound => f.write_str("persisted OpenMLS group was not found"),
+            Self::GroupMemberNotFound => f.write_str("MLS member identity was not found"),
             Self::MissingDependency {
                 current_epoch,
                 received_epoch,
@@ -1227,6 +1230,36 @@ impl PreparedAdd {
     }
 }
 
+/// Prepared removal transition; the Commit remains pending until exact
+/// acceptance.
+pub struct PreparedRemoval {
+    group_id: Vec<u8>,
+    parent_epoch: GroupEpoch,
+    commit: MlsMessage,
+    removed_member_signature_key: [u8; 32],
+    removed_member_identity_fingerprint: [u8; 32],
+}
+
+impl PreparedRemoval {
+    /// Returns the exact Commit that must be accepted.
+    #[must_use]
+    pub fn commit(&self) -> &MlsMessage {
+        &self.commit
+    }
+
+    /// Returns the Commit's parent epoch.
+    #[must_use]
+    pub fn parent_epoch(&self) -> u64 {
+        self.parent_epoch.as_u64()
+    }
+
+    /// Returns the identity fingerprint removed by this Commit.
+    #[must_use]
+    pub const fn removed_member_identity_fingerprint(&self) -> &[u8; 32] {
+        &self.removed_member_identity_fingerprint
+    }
+}
+
 impl GroupState {
     /// Creates an `OpenMLS` group with the current candidate ciphersuite.
     ///
@@ -1543,6 +1576,10 @@ impl GroupState {
         if self
             .member_identity_fingerprints
             .contains_key(&signature_key)
+            || self
+                .member_identity_fingerprints
+                .values()
+                .any(|existing| existing == &identity_fingerprint)
         {
             return Err(MlsError::CredentialValidationFailed);
         }
@@ -1561,6 +1598,61 @@ impl GroupState {
             added_member_signature_key: signature_key,
             added_member_identity_fingerprint: identity_fingerprint,
             key_package_sha256,
+        })
+    }
+
+    /// Prepares an MLS Remove for one currently validated member identity.
+    ///
+    /// The exact Commit remains pending until the caller binds it to an
+    /// authorized policy transition and accepts it. A group containing more
+    /// than one leaf for the requested fingerprint is rejected rather than
+    /// partially removing that identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not uniquely present, is the local
+    /// signer, or the MLS group/provider rejects the operation.
+    pub fn prepare_remove<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+        target_fingerprint: &[u8; 32],
+    ) -> MlsResult<PreparedRemoval> {
+        self.ensure_operational()?;
+        credential.check_signer(identity)?;
+        if target_fingerprint == credential.identity_fingerprint() {
+            return Err(MlsError::InvalidInput);
+        }
+        let mut target = None;
+        for member in self.inner.members() {
+            let signature_key: [u8; 32] = member
+                .signature_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| MlsError::CredentialKeyMismatch)?;
+            if self.member_identity_fingerprints.get(&signature_key) == Some(target_fingerprint) {
+                if target.is_some() {
+                    return Err(MlsError::CredentialValidationFailed);
+                }
+                target = Some((signature_key, member.index));
+            }
+        }
+        let (removed_member_signature_key, leaf_index) =
+            target.ok_or(MlsError::GroupMemberNotFound)?;
+        let (commit, _, _) = self
+            .inner
+            .remove_members(provider, &DeviceSigner(identity), &[leaf_index])
+            .map_err(|_| MlsError::OpenMlsFailure)?;
+        if self.inner.pending_commit().is_none() {
+            return Err(MlsError::OpenMlsFailure);
+        }
+        Ok(PreparedRemoval {
+            group_id: self.group_id(),
+            parent_epoch: self.inner.epoch(),
+            commit: encode_message(&commit, MlsWireKind::Commit)?,
+            removed_member_signature_key,
+            removed_member_identity_fingerprint: *target_fingerprint,
         })
     }
 
@@ -1606,6 +1698,46 @@ impl GroupState {
         Ok(prepared.welcome.clone())
     }
 
+    /// Merges the exact prepared Remove Commit.
+    ///
+    /// This merges MLS state only; it does not authorize, persist, or replay a
+    /// Space removal/ban transition. The caller must bind the exact Commit to
+    /// the authorized parent-epoch policy event and persist both atomically
+    /// before exposing the resulting state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same exact-Commit and group-state errors as
+    /// [`GroupState::accept_prepared_add`].
+    pub fn accept_prepared_remove<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        prepared: &PreparedRemoval,
+        accepted_commit_wire: &[u8],
+    ) -> MlsResult<()> {
+        self.ensure_not_conflicted()?;
+        self.ensure_active()?;
+        check_wire_size(accepted_commit_wire)?;
+        if prepared.group_id != self.group_id() {
+            return Err(MlsError::WrongGroup);
+        }
+        if prepared.parent_epoch != self.inner.epoch() {
+            return Err(MlsError::ParentEpochChanged);
+        }
+        if prepared.commit.as_bytes() != accepted_commit_wire {
+            return Err(MlsError::AcceptanceMismatch);
+        }
+        if self.inner.pending_commit().is_none() {
+            return Err(MlsError::NoOwnCommitPending);
+        }
+        self.inner
+            .merge_pending_commit(provider)
+            .map_err(|_| MlsError::OpenMlsFailure)?;
+        self.member_identity_fingerprints
+            .remove(&prepared.removed_member_signature_key);
+        Ok(())
+    }
+
     /// Encrypts one application payload in the parent epoch while this exact
     /// prepared Add Commit remains pending.
     ///
@@ -1624,6 +1756,41 @@ impl GroupState {
         identity: &DeviceIdentity,
         credential: &DeviceCredentialInput,
         prepared: &PreparedAdd,
+        plaintext: &[u8],
+    ) -> MlsResult<MlsMessage> {
+        self.ensure_not_conflicted()?;
+        self.ensure_active()?;
+        credential.check_signer(identity)?;
+        if prepared.group_id != self.group_id() {
+            return Err(MlsError::WrongGroup);
+        }
+        if prepared.parent_epoch != self.inner.epoch() {
+            return Err(MlsError::ParentEpochChanged);
+        }
+        if self.inner.pending_commit().is_none() {
+            return Err(MlsError::NoOwnCommitPending);
+        }
+        check_application_size(plaintext)?;
+        let message = self
+            .inner
+            .create_message(provider, &DeviceSigner(identity), plaintext)
+            .map_err(|_| MlsError::OpenMlsFailure)?;
+        encode_message(&message, MlsWireKind::Application)
+    }
+
+    /// Encrypts a parent-epoch policy transition while this prepared Remove
+    /// Commit remains pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the prepared removal is stale, no local Commit is
+    /// pending, credential signing fails, or the payload is rejected.
+    pub fn encrypt_application_for_pending_removal<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+        prepared: &PreparedRemoval,
         plaintext: &[u8],
     ) -> MlsResult<MlsMessage> {
         self.ensure_not_conflicted()?;
@@ -2584,8 +2751,10 @@ mod membership_change_tests {
     }
 
     #[test]
-    fn staged_add_proof_binds_exact_commit_identity_and_key_package() {
+    #[allow(clippy::too_many_lines)] // One scenario covers add, exact removal proof, and rekey exclusion.
+    fn staged_add_and_remove_proofs_bind_exact_membership_changes() {
         let provider_alice = OpenMlsRustCrypto::default();
+        let provider_charlie = OpenMlsRustCrypto::default();
         let provider_bob = OpenMlsRustCrypto::default();
         let alice_identity = DeviceIdentity::generate().expect("Alice identity");
         let bob_identity = DeviceIdentity::generate().expect("Bob identity");
@@ -2620,7 +2789,7 @@ mod membership_change_tests {
         .expect("join Alice group");
 
         let charlie_key_package = GroupState::publish_key_package(
-            &provider_alice,
+            &provider_charlie,
             &charlie_identity,
             &charlie_credential,
         )
@@ -2661,6 +2830,106 @@ mod membership_change_tests {
         bob.accept_incoming_commit(&provider_bob, commit)
             .expect("merge exact staged Commit");
         assert!(bob.take_staged_membership_change().is_none());
+        let charlie_welcome = alice
+            .accept_prepared_add(
+                &provider_alice,
+                &charlie_add,
+                charlie_add.commit().as_bytes(),
+            )
+            .expect("accept exact Charlie add on Alice");
+        let mut charlie = GroupState::from_welcome(
+            &provider_charlie,
+            &group_id,
+            &charlie_credential,
+            charlie_welcome.as_bytes(),
+        )
+        .expect("Charlie joins before removal");
+        let duplicate_charlie_package = GroupState::publish_key_package(
+            &provider_alice,
+            &charlie_identity,
+            &charlie_credential,
+        )
+        .expect("publish second package for the same identity");
+        assert!(matches!(
+            alice.prepare_add(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                duplicate_charlie_package.as_bytes(),
+            ),
+            Err(super::MlsError::CredentialValidationFailed)
+        ));
+        let prepared_remove = alice
+            .prepare_remove(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                &charlie_identity.fingerprint(),
+            )
+            .expect("prepare authenticated Charlie removal");
+        assert_eq!(prepared_remove.parent_epoch(), 2);
+        assert_eq!(
+            prepared_remove.removed_member_identity_fingerprint(),
+            &charlie_identity.fingerprint()
+        );
+        let remove_commit = prepared_remove.commit().as_bytes().to_vec();
+        let parent_transition = alice
+            .encrypt_application_for_pending_removal(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                &prepared_remove,
+                b"ban policy transition",
+            )
+            .expect("authenticate parent-epoch policy transition");
+        assert!(matches!(
+            bob.process_incoming(&provider_bob, parent_transition.as_bytes()),
+            Ok(IncomingResult::Application(application))
+                if application.plaintext() == b"ban policy transition"
+        ));
+        alice
+            .accept_prepared_remove(&provider_alice, &prepared_remove, &remove_commit)
+            .expect("merge exact removal Commit");
+        assert_eq!(alice.epoch(), 3);
+        assert!(!alice.contains_member_identity(&charlie_identity.fingerprint()));
+        assert!(matches!(
+            bob.process_incoming(&provider_bob, &remove_commit),
+            Ok(IncomingResult::StagedCommit {
+                parent_epoch: 2,
+                ..
+            })
+        ));
+        let removal: ValidatedMlsMembershipChange = bob
+            .take_staged_membership_change()
+            .expect("Remove Commit produces a typed rekey proof");
+        assert_eq!(removal.action(), MlsMembershipAction::Remove);
+        assert_eq!(removal.parent_epoch(), 2);
+        assert_eq!(removal.author(), &alice_identity.fingerprint());
+        assert_eq!(removal.target(), &charlie_identity.fingerprint());
+        assert_eq!(removal.key_package_hash(), None);
+        assert!(removal.matches_commit_wire(&remove_commit));
+        bob.accept_incoming_commit(&provider_bob, &remove_commit)
+            .expect("merge exact removal Commit on remaining member");
+        assert_eq!(bob.epoch(), 3);
+        assert!(!bob.contains_member_identity(&charlie_identity.fingerprint()));
+        let future_epoch_message = alice
+            .encrypt_application(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                b"post-removal epoch data",
+            )
+            .expect("encrypt with fresh post-removal epoch");
+        assert!(matches!(
+            bob.process_incoming(&provider_bob, future_epoch_message.as_bytes()),
+            Ok(IncomingResult::Application(application))
+                if application.plaintext() == b"post-removal epoch data"
+        ));
+        assert!(
+            charlie
+                .process_incoming(&provider_charlie, future_epoch_message.as_bytes())
+                .is_err()
+        );
     }
     #[test]
     fn control_binding_consumes_only_exact_staged_context() {

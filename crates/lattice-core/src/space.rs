@@ -15,8 +15,10 @@
 //! [`SpaceReducer`] remains a candidate generation; callers keep generations
 //! separate by MLS group reference. Recovery authorization uses the prior
 //! reducer's retained common policy and binds one exact MLS-authenticated
-//! recovery Genesis. Accepted membership transitions replay their protected
-//! Welcome bootstrap import restores one pinned-inviter checkpoint; ongoing invitations, membership changes, and general history replay remain incomplete.
+//! recovery Genesis.
+//! Accepted membership transitions replay their protected policy history.
+//! Welcome bootstrap import restores one pinned-inviter checkpoint; general
+//! event-history replay and user-facing invitation delivery remain incomplete.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -3503,6 +3505,143 @@ mod tests {
             ApplyResult::Rejected(RejectReason::Unauthorized)
         );
         assert_eq!(reducer.policy().unwrap().revision, 0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Keep exact proof, ban, and re-invite checks together.
+    fn remove_and_ban_require_remove_proof_and_bans_block_reinvite() {
+        let owner_identity = DeviceIdentity::generate().expect("owner identity");
+        let owner = owner_identity.fingerprint();
+        let target = [0x37; 32];
+        let space_id = [0x38; 16];
+        let group_reference = [0x39; 32];
+        let genesis = make_bound_event(
+            &owner_identity,
+            space_id,
+            group_reference,
+            0,
+            Vec::new(),
+            genesis_payload(owner, [0x3A; 16]),
+        );
+        let mut reducer = SpaceReducer::new();
+        assert_eq!(
+            reducer.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+        let mut base_policy = reducer.policy().expect("Genesis policy").clone();
+        base_policy.members.push(Member {
+            fingerprint: target,
+            status: MemberStatus::Active,
+            assigned_roles: Vec::new(),
+        });
+
+        let control_event_id = [0x3B; 32];
+        let make_control = |mls_action, key_package_hash| GraphNode {
+            space_id,
+            group_reference,
+            author: owner,
+            kind: EventKind::MlsControl,
+            epoch: 0,
+            lamport: 1,
+            author_sequence: 2,
+            parents: vec![*genesis.event().event_id().as_bytes()],
+            channel_id: None,
+            control_relation: Some(ValidatedMlsControlRelation {
+                space_id,
+                group_reference,
+                control_event_id,
+                author: owner,
+                parent_epoch: 0,
+                mls_action,
+                target,
+                key_package_hash,
+            }),
+            mls_bound: true,
+            application_authorized: false,
+            application_action: None,
+            attachment_manifest: None,
+            reaction_tag: None,
+        };
+        let mut graph = BTreeMap::new();
+        graph.insert(
+            control_event_id,
+            make_control(lattice_mls::api::MlsMembershipAction::Remove, None),
+        );
+        let ancestors = BTreeSet::from([control_event_id]);
+        let transition = |action| Operation::MemberTransition {
+            action,
+            target,
+            invite_event_id: None,
+            control_event_id,
+        };
+        let mut removed = base_policy.clone();
+        assert_eq!(
+            apply_operation(
+                &mut removed,
+                owner,
+                [0x3C; 32],
+                &transition(MemberAction::Remove),
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            member_status(&removed, &target),
+            Some(MemberStatus::Removed)
+        );
+
+        let mut banned = base_policy.clone();
+        assert_eq!(
+            apply_operation(
+                &mut banned,
+                owner,
+                [0x3D; 32],
+                &transition(MemberAction::Ban),
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Ok(())
+        );
+        assert_eq!(member_status(&banned, &target), Some(MemberStatus::Banned));
+        let invite = Operation::Invite {
+            id: [0x3E; 16],
+            target,
+            key_package_hash: [0x3F; 32],
+            expires_at_revision: None,
+            max_uses: None,
+        };
+        assert_eq!(
+            apply_operation(
+                &mut banned,
+                owner,
+                [0x40; 32],
+                &invite,
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Err(RejectReason::InvalidTransition)
+        );
+
+        graph.insert(
+            control_event_id,
+            make_control(lattice_mls::api::MlsMembershipAction::Add, Some([0x3F; 32])),
+        );
+        assert_eq!(
+            apply_operation(
+                &mut base_policy,
+                owner,
+                [0x41; 32],
+                &transition(MemberAction::Ban),
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Err(RejectReason::InvalidControlRelation)
+        );
     }
 
     #[test]
