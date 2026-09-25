@@ -4,14 +4,16 @@ use clap::Subcommand;
 use lattice_core::{Client, CoreError};
 use lattice_events::VerifiedSignatureOnlyEvent;
 use lattice_node::sync::{
-    AuthenticatedSyncV2Exchange, StoreSyncEventSource, StoreSyncSummarySource, SyncServeResult,
-    SyncSummarySource, execute_authenticated_sync_v2_once, serve_authenticated_sync_v2_once,
-    space_generation_scope_id,
+    AuthenticatedSyncV2Exchange, StoreSyncEventSource, StoreSyncSummarySource, SyncExchange,
+    SyncServeResult, SyncSummarySource, execute_authenticated_sync_v2_once,
+    serve_authenticated_sync_v2_once, space_generation_scope_id,
 };
 use lattice_platform::{MAX_EVENT_BYTES, OsKeyringProtector};
 use lattice_router::EventDeduplicator;
 use lattice_storage::{MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
-use lattice_sync::{EventId, ScopeId};
+use lattice_sync::{
+    AuthorId, EventId, GapReason, ScopeId, SequenceRange, SyncStatus, UnresolvedHistory,
+};
 use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
 use tokio_util::sync::CancellationToken;
 
@@ -19,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum SyncCommand {
     /// Inspect local event, dependency, and outbox state without networking.
     Status,
-    /// Fetch one exact application event through a pinned v2 summary exchange.
+    /// Exchange scoped history with a pinned v2 peer and apply one bounded batch.
     FetchOnce {
         /// TCP endpoint to connect, for example `127.0.0.1:7000`.
         #[arg(long)]
@@ -33,9 +35,9 @@ pub(super) enum SyncCommand {
         /// Previously pinned peer fingerprint as 64 hexadecimal characters.
         #[arg(long)]
         peer_fingerprint: String,
-        /// Exact event ID as 64 hexadecimal characters.
+        /// Optional exact event ID; absent uses scoped summary repair planning.
         #[arg(long)]
-        event_id: String,
+        event_id: Option<String>,
     },
     /// Accept one pinned peer and serve a v2 summary-derived request batch.
     ServeOnce {
@@ -67,7 +69,9 @@ pub(super) fn validate_command(command: &SyncCommand) -> Result<(), String> {
             super::parse_fixed_hex::<16>(space_id, "space ID")?;
             super::parse_fixed_hex::<32>(group_reference, "group reference")?;
             super::parse_fixed_hex::<32>(peer_fingerprint, "peer fingerprint")?;
-            super::parse_fixed_hex::<32>(event_id, "event ID")?;
+            if let Some(event_id) = event_id {
+                super::parse_fixed_hex::<32>(event_id, "event ID")?;
+            }
             Ok(())
         }
         SyncCommand::ServeOnce {
@@ -103,7 +107,7 @@ pub(super) fn execute(
                 space_id,
                 group_reference,
                 peer_fingerprint,
-                event_id,
+                event_id: event_id.as_deref(),
             },
             database_path,
             protector,
@@ -132,7 +136,7 @@ struct FetchOnceRequest<'a> {
     space_id: &'a str,
     group_reference: &'a str,
     peer_fingerprint: &'a str,
-    event_id: &'a str,
+    event_id: Option<&'a str>,
 }
 
 #[derive(Clone, Copy)]
@@ -141,7 +145,7 @@ struct FetchOnceTarget {
     space_id: [u8; 16],
     group_reference: [u8; 32],
     peer_fingerprint: [u8; 32],
-    event_id: [u8; 32],
+    event_id: Option<[u8; 32]>,
     scope: ScopeId,
 }
 
@@ -167,7 +171,10 @@ fn fetch_once(
     let peer_fingerprint =
         super::parse_fixed_hex::<32>(request.peer_fingerprint, "peer fingerprint")
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let event_id = super::parse_fixed_hex::<32>(request.event_id, "event ID")
+    let event_id = request
+        .event_id
+        .map(|event_id| super::parse_fixed_hex::<32>(event_id, "event ID"))
+        .transpose()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let target = FetchOnceTarget {
         connect: request.connect,
@@ -195,13 +202,7 @@ fn fetch_once(
     );
     let authenticated = fetch_from_peer(&client, &mut summary_source, target)?;
     let counts = accept_fetched_events(&mut client, &mut created, &authenticated.exchange.events)?;
-    print_fetch_result(
-        target,
-        &counts,
-        authenticated.exchange.rejected_events.len(),
-        authenticated.exchange.unresolved_dependencies.len(),
-        json,
-    );
+    print_fetch_result(target, &counts, &authenticated.exchange, json);
     Ok(())
 }
 
@@ -213,10 +214,12 @@ fn fetch_from_peer(
     let mut local_summary = summary_source
         .load_summary(target.scope)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    local_summary.missing_dependencies.clear();
-    local_summary
-        .missing_dependencies
-        .push(EventId::new(target.event_id));
+    if let Some(event_id) = target.event_id {
+        local_summary.missing_dependencies.clear();
+        local_summary
+            .missing_dependencies
+            .push(EventId::new(event_id));
+    }
     let mut deduplicator =
         EventDeduplicator::new(128).map_err(|error| io::Error::other(format!("{error:?}")))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -322,10 +325,31 @@ fn accept_fetched_events(
 fn print_fetch_result(
     target: FetchOnceTarget,
     counts: &FetchEventCounts,
-    rejected_events: usize,
-    unresolved_dependencies: usize,
+    exchange: &SyncExchange<&'static str>,
     json: bool,
 ) {
+    let rejected_events = exchange.rejected_events.len();
+    let planned_ranges = exchange
+        .plan
+        .request_ranges
+        .iter()
+        .map(|requested| sequence_range_json(requested.author, requested.range))
+        .collect::<Vec<_>>();
+    let unresolved_ranges = exchange
+        .unresolved_ranges
+        .iter()
+        .map(|unresolved| sequence_range_json(unresolved.author, unresolved.range))
+        .collect::<Vec<_>>();
+    let unresolved_history = exchange
+        .unresolved_history
+        .iter()
+        .map(unresolved_history_json)
+        .collect::<Vec<_>>();
+    let unresolved_dependencies = exchange
+        .unresolved_dependencies
+        .iter()
+        .map(|dependency| super::hex(dependency.as_bytes()))
+        .collect::<Vec<_>>();
     if json {
         let state = if rejected_events > 0 {
             "event_rejected"
@@ -343,24 +367,99 @@ fn print_fetch_result(
                 "command": "sync_fetch_once",
                 "state": state,
                 "peer_fingerprint": super::hex(&target.peer_fingerprint),
+                "space_id": super::hex(&target.space_id),
+                "group_reference": super::hex(&target.group_reference),
                 "scope_id": super::hex(target.scope.as_bytes()),
-                "requested_event_id": super::hex(&target.event_id),
+                "requested_event_id": target.event_id.map(|id| super::hex(&id)),
+                "plan_status": sync_status_name(exchange.plan.status),
+                "planned_sequence_ranges": planned_ranges,
+                "unresolved_sequence_ranges": unresolved_ranges,
+                "unresolved_history_ranges": unresolved_history,
+                "unresolved_dependency_ids": unresolved_dependencies,
                 "accepted_events": counts.accepted,
                 "accepted_event_ids": counts.accepted_event_ids,
                 "pending_dependency_ids": counts.pending_dependency_ids,
                 "pending_events": counts.pending,
                 "duplicate_events": counts.duplicates,
                 "rejected_events": rejected_events,
-                "unresolved_dependencies": unresolved_dependencies,
                 "recipient_delivery_claimed": false,
             })
         );
     } else {
         println!(
-            "Authenticated direct sync received {} event(s), retained {} pending, recognized {} duplicates, and rejected {rejected_events}.",
-            counts.accepted, counts.pending, counts.duplicates
+            "Scoped sync plan for Space {} group {}: {}; received {} event(s), retained {} pending, recognized {} duplicates, rejected {rejected_events}.",
+            super::hex(&target.space_id),
+            super::hex(&target.group_reference),
+            sync_status_name(exchange.plan.status),
+            counts.accepted,
+            counts.pending,
+            counts.duplicates,
         );
+        for requested in &exchange.plan.request_ranges {
+            println!(
+                "Planned range for author {}: {}–{}.",
+                super::hex(requested.author.as_bytes()),
+                requested.range.start(),
+                requested.range.end(),
+            );
+        }
+        for unresolved in &exchange.unresolved_ranges {
+            println!(
+                "Unresolved range for author {}: {}–{}.",
+                super::hex(unresolved.author.as_bytes()),
+                unresolved.range.start(),
+                unresolved.range.end(),
+            );
+        }
+        for dependency in &exchange.unresolved_dependencies {
+            println!(
+                "Unresolved dependency event {}.",
+                super::hex(dependency.as_bytes()),
+            );
+        }
+        for unresolved in &exchange.unresolved_history {
+            println!(
+                "Unfillable history gap for author {}: {}–{} ({})",
+                super::hex(unresolved.author.as_bytes()),
+                unresolved.range.start(),
+                unresolved.range.end(),
+                gap_reason_name(unresolved.reason),
+            );
+        }
         println!("No recipient-delivery claim is made.");
+    }
+}
+
+fn sequence_range_json(author: AuthorId, range: SequenceRange) -> serde_json::Value {
+    serde_json::json!({
+        "author_id": super::hex(author.as_bytes()),
+        "start": range.start(),
+        "end": range.end(),
+    })
+}
+
+fn unresolved_history_json(unresolved: &UnresolvedHistory) -> serde_json::Value {
+    serde_json::json!({
+        "author_id": super::hex(unresolved.author.as_bytes()),
+        "start": unresolved.range.start(),
+        "end": unresolved.range.end(),
+        "reason": gap_reason_name(unresolved.reason),
+    })
+}
+
+fn sync_status_name(status: SyncStatus) -> &'static str {
+    match status {
+        SyncStatus::UpToDate => "up_to_date",
+        SyncStatus::RequestsPending => "requests_pending",
+        SyncStatus::HistoryIncomplete => "history_incomplete",
+        SyncStatus::RequestsPendingWithHistoryGaps => "requests_pending_with_history_gaps",
+    }
+}
+
+fn gap_reason_name(reason: GapReason) -> &'static str {
+    match reason {
+        GapReason::Unknown => "unknown",
+        GapReason::Retention => "retention",
     }
 }
 
@@ -734,5 +833,37 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn scoped_sync_range_report_preserves_author_endpoints_and_gap_reason() {
+        let author = lattice_sync::AuthorId::new([0x91; 32]);
+        let range = lattice_sync::SequenceRange::new(4, 9).expect("valid inclusive range");
+        assert_eq!(
+            super::sequence_range_json(author, range),
+            serde_json::json!({
+                "author_id": super::super::hex(author.as_bytes()),
+                "start": 4,
+                "end": 9,
+            })
+        );
+
+        let unresolved = lattice_sync::UnresolvedHistory {
+            author,
+            range,
+            reason: lattice_sync::GapReason::Retention,
+        };
+        assert_eq!(
+            super::unresolved_history_json(&unresolved),
+            serde_json::json!({
+                "author_id": super::super::hex(author.as_bytes()),
+                "start": 4,
+                "end": 9,
+                "reason": "retention",
+            })
+        );
+        assert_eq!(
+            super::sync_status_name(lattice_sync::SyncStatus::RequestsPendingWithHistoryGaps),
+            "requests_pending_with_history_gaps"
+        );
     }
 }
