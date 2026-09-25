@@ -489,38 +489,21 @@ fn print_status(
     drop(client);
 
     let store = Store::open(database_path)?;
-    let pending_event_count = store.pending_count()?;
-    let mut committed_event_count = 0;
-    let mut event_after = None;
-    loop {
-        let page = store.list_event_page(event_after, MAX_EVENT_PAGE_SIZE)?;
-        committed_event_count += page.len();
-        event_after = page.last().map(|event| event.event_id);
-        if page.len() < MAX_EVENT_PAGE_SIZE {
-            break;
-        }
-    }
-    let mut outbox = OutboxCounts::default();
-    let mut after_event_id = None;
-    loop {
-        let page = store.list_outbox_page(after_event_id, MAX_OUTBOX_PAGE_SIZE)?;
-        if page.is_empty() {
-            break;
-        }
-        for entry in &page {
-            outbox.total += 1;
-            match entry.state {
-                OutboxState::Queued => outbox.queued += 1,
-                OutboxState::Forwarded => outbox.forwarded += 1,
-                OutboxState::Delivered => outbox.destination_receipt_recorded += 1,
-                OutboxState::Failed => outbox.failed += 1,
-            }
-        }
-        after_event_id = page.last().map(|entry| entry.event_id);
-        if page.len() < MAX_OUTBOX_PAGE_SIZE {
-            break;
-        }
-    }
+    let pending_event_details = pending_event_summaries(&store)?;
+    let pending_event_count = pending_event_details.len();
+    let pending_mls_epochs = pending_event_details
+        .iter()
+        .map(|pending| {
+            serde_json::json!({
+                "space_id": pending["space_id"],
+                "group_reference": pending["group_reference"],
+                "event_id": pending["event_id"],
+                "epoch": pending["mls_epoch"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let committed_event_count = committed_event_count(&store)?;
+    let outbox = outbox_counts(&store)?;
 
     if json {
         println!(
@@ -541,8 +524,9 @@ fn print_status(
                 },
                 "missing_ranges": null,
                 "missing_ranges_available": false,
-                "pending_mls_epochs": null,
-                "pending_mls_epochs_available": false,
+                "pending_events_by_space": pending_event_details,
+                "pending_mls_epochs": pending_mls_epochs,
+                "pending_mls_epochs_available": true,
                 "destination_receipt_state_source": "local_outbox_record",
                 "network_exchange_available": false,
                 "recipient_delivery_claimed": false,
@@ -552,6 +536,17 @@ fn print_status(
         println!("Local event sequence ready: {next_local_event_sequence}");
         println!("Committed events: {committed_event_count}");
         println!("Pending dependency events: {pending_event_count}");
+        for pending in &pending_event_details {
+            println!(
+                "Pending event {} in Space {} group {}: author sequence {}, MLS epoch {}, missing dependencies {}.",
+                pending["event_id"].as_str().unwrap_or_default(),
+                pending["space_id"].as_str().unwrap_or_default(),
+                pending["group_reference"].as_str().unwrap_or_default(),
+                pending["author_sequence"],
+                pending["mls_epoch"],
+                pending["missing_dependencies"],
+            );
+        }
         println!(
             "Outbox: {} total ({} queued, {} forwarded, {} destination receipts recorded, {} failed).",
             outbox.total,
@@ -561,7 +556,7 @@ fn print_status(
             outbox.failed
         );
         println!(
-            "Missing history ranges and pending MLS epochs are unavailable from current storage APIs."
+            "Peer-relative history ranges remain unavailable until a scoped summary exchange."
         );
         println!("No synchronization scheduler or network exchange is running.");
         println!(
@@ -572,6 +567,70 @@ fn print_status(
     Ok(())
 }
 
+fn committed_event_count(store: &Store) -> Result<usize, Box<dyn Error>> {
+    let mut count = 0;
+    let mut after = None;
+    loop {
+        let page = store.list_event_page(after, MAX_EVENT_PAGE_SIZE)?;
+        count += page.len();
+        after = page.last().map(|event| event.event_id);
+        if page.len() < MAX_EVENT_PAGE_SIZE {
+            return Ok(count);
+        }
+    }
+}
+
+fn outbox_counts(store: &Store) -> Result<OutboxCounts, Box<dyn Error>> {
+    let mut counts = OutboxCounts::default();
+    let mut after = None;
+    loop {
+        let page = store.list_outbox_page(after, MAX_OUTBOX_PAGE_SIZE)?;
+        if page.is_empty() {
+            return Ok(counts);
+        }
+        for entry in &page {
+            counts.total += 1;
+            match entry.state {
+                OutboxState::Queued => counts.queued += 1,
+                OutboxState::Forwarded => counts.forwarded += 1,
+                OutboxState::Delivered => counts.destination_receipt_recorded += 1,
+                OutboxState::Failed => counts.failed += 1,
+            }
+        }
+        after = page.last().map(|entry| entry.event_id);
+        if page.len() < MAX_OUTBOX_PAGE_SIZE {
+            return Ok(counts);
+        }
+    }
+}
+
+fn pending_event_summaries(store: &Store) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    let mut summaries = Vec::new();
+    for pending in store.list_pending()? {
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&pending.canonical_bytes)?;
+        if event.event_id().as_bytes() != &pending.event_id {
+            return Err(Box::new(io::Error::other(
+                "pending event signed ID does not match its storage key",
+            )));
+        }
+        summaries.push(serde_json::json!({
+            "state": "pending_dependencies",
+            "space_id": super::hex(event.space_id()),
+            "group_reference": super::hex(event.mls_group_reference()),
+            "event_id": super::hex(&pending.event_id),
+            "author_id": super::hex(event.author_fingerprint()),
+            "author_sequence": event.author_sequence(),
+            "mls_epoch": event.mls_epoch(),
+            "missing_dependencies": pending
+                .missing_dependencies
+                .iter()
+                .map(|dependency| super::hex(dependency))
+                .collect::<Vec<_>>(),
+        }));
+    }
+    Ok(summaries)
+}
+
 #[derive(Default)]
 struct OutboxCounts {
     total: usize,
@@ -579,4 +638,90 @@ struct OutboxCounts {
     forwarded: usize,
     destination_receipt_recorded: usize,
     failed: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_event_summaries;
+    use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
+    use lattice_identity::DeviceIdentity;
+    use lattice_storage::Store;
+
+    #[test]
+    fn pending_status_reports_only_verified_space_epoch_and_dependency_metadata() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "lattice-cli-pending-status-{}-{nonce}.sqlite",
+            std::process::id(),
+        ));
+        let identity = DeviceIdentity::generate().expect("generate event signer");
+        let space_id = [0x31; 16];
+        let group_reference = [0x42; 32];
+        let channel_id = [0x53; 16];
+        let parent = VerifiedSignatureOnlyEvent::create(
+            &identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 1,
+                lamport: 1,
+                wall_time_hint: 0,
+                parents: Vec::new(),
+                kind: EventKind::Message,
+                protected_body: vec![0x80],
+                mls_group_reference: group_reference,
+                mls_epoch: 6,
+            },
+        )
+        .expect("create missing parent event");
+        let missing_dependency = *parent.event_id().as_bytes();
+        let pending = VerifiedSignatureOnlyEvent::create(
+            &identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 2,
+                lamport: 2,
+                wall_time_hint: 0,
+                parents: vec![parent.event_id()],
+                kind: EventKind::Message,
+                protected_body: vec![0x81],
+                mls_group_reference: group_reference,
+                mls_epoch: 7,
+            },
+        )
+        .expect("create event waiting on a parent");
+        let pending_id = *pending.event_id().as_bytes();
+        let mut store = Store::open(&path).expect("open temporary store");
+        store
+            .store_pending(pending_id, pending.encoded_bytes(), &[missing_dependency])
+            .expect("store pending event");
+
+        let summaries = pending_event_summaries(&store).expect("summarize pending status");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["state"], "pending_dependencies");
+        assert_eq!(summaries[0]["space_id"], super::super::hex(&space_id));
+        assert_eq!(
+            summaries[0]["group_reference"],
+            super::super::hex(&group_reference)
+        );
+        assert_eq!(summaries[0]["event_id"], super::super::hex(&pending_id));
+        assert_eq!(
+            summaries[0]["author_id"],
+            super::super::hex(&identity.fingerprint())
+        );
+        assert_eq!(summaries[0]["author_sequence"], 2);
+        assert_eq!(summaries[0]["mls_epoch"], 7);
+        assert_eq!(
+            summaries[0]["missing_dependencies"][0],
+            super::super::hex(&missing_dependency)
+        );
+        assert!(summaries[0].get("canonical_bytes").is_none());
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
 }
