@@ -2,20 +2,41 @@ use std::{error::Error, io, net::SocketAddr, path::Path};
 
 use clap::Subcommand;
 use lattice_core::{Client, CoreError};
+use lattice_events::VerifiedSignatureOnlyEvent;
 use lattice_node::sync::{
-    AuthenticatedSyncServeResult, StoreSyncEventSource, serve_authenticated_sync_request_once,
+    AuthenticatedSyncExchange, AuthenticatedSyncServeResult, StoreSyncEventSource,
+    execute_authenticated_sync_once, serve_authenticated_sync_request_once,
     space_generation_scope_id,
 };
 use lattice_platform::{MAX_EVENT_BYTES, OsKeyringProtector};
+use lattice_router::EventDeduplicator;
 use lattice_storage::{MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
-use lattice_sync::ScopeId;
-use lattice_transport::TcpPeerListener;
+use lattice_sync::{EventId, ScopeId, ScopeSummary};
+use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Subcommand)]
 pub(super) enum SyncCommand {
-    /// Inspect locally stored pending events and outbox state; does not run synchronization.
+    /// Inspect local event, dependency, and outbox state without networking.
     Status,
+    /// Fetch and apply one exact application event from a pinned direct peer.
+    FetchOnce {
+        /// TCP endpoint to connect, for example `127.0.0.1:7000`.
+        #[arg(long)]
+        connect: SocketAddr,
+        /// Space ID as 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// MLS group reference as 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Previously pinned peer fingerprint as 64 hexadecimal characters.
+        #[arg(long)]
+        peer_fingerprint: String,
+        /// Exact event ID as 64 hexadecimal characters.
+        #[arg(long)]
+        event_id: String,
+    },
     /// Accept one pinned peer and serve one authenticated direct-sync request.
     ServeOnce {
         /// TCP endpoint to bind, for example `127.0.0.1:7000`.
@@ -36,6 +57,19 @@ pub(super) enum SyncCommand {
 pub(super) fn validate_command(command: &SyncCommand) -> Result<(), String> {
     match command {
         SyncCommand::Status => Ok(()),
+        SyncCommand::FetchOnce {
+            space_id,
+            group_reference,
+            peer_fingerprint,
+            event_id,
+            ..
+        } => {
+            super::parse_fixed_hex::<16>(space_id, "space ID")?;
+            super::parse_fixed_hex::<32>(group_reference, "group reference")?;
+            super::parse_fixed_hex::<32>(peer_fingerprint, "peer fingerprint")?;
+            super::parse_fixed_hex::<32>(event_id, "event ID")?;
+            Ok(())
+        }
         SyncCommand::ServeOnce {
             space_id,
             group_reference,
@@ -49,7 +83,6 @@ pub(super) fn validate_command(command: &SyncCommand) -> Result<(), String> {
         }
     }
 }
-
 pub(super) fn execute(
     command: &SyncCommand,
     database_path: &Path,
@@ -58,6 +91,24 @@ pub(super) fn execute(
 ) -> Result<(), Box<dyn Error>> {
     match command {
         SyncCommand::Status => print_status(database_path, protector, json),
+        SyncCommand::FetchOnce {
+            connect,
+            space_id,
+            group_reference,
+            peer_fingerprint,
+            event_id,
+        } => fetch_once(
+            FetchOnceRequest {
+                connect: *connect,
+                space_id,
+                group_reference,
+                peer_fingerprint,
+                event_id,
+            },
+            database_path,
+            protector,
+            json,
+        ),
         SyncCommand::ServeOnce {
             listen,
             space_id,
@@ -72,6 +123,235 @@ pub(super) fn execute(
             protector,
             json,
         ),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FetchOnceRequest<'a> {
+    connect: SocketAddr,
+    space_id: &'a str,
+    group_reference: &'a str,
+    peer_fingerprint: &'a str,
+    event_id: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct FetchOnceTarget {
+    connect: SocketAddr,
+    space_id: [u8; 16],
+    group_reference: [u8; 32],
+    peer_fingerprint: [u8; 32],
+    event_id: [u8; 32],
+    scope: ScopeId,
+}
+
+#[derive(Default)]
+struct FetchEventCounts {
+    accepted: usize,
+    accepted_event_ids: Vec<String>,
+    pending: usize,
+    pending_dependency_ids: Vec<String>,
+    duplicates: usize,
+}
+
+fn fetch_once(
+    request: FetchOnceRequest<'_>,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
+    let space_id = super::parse_fixed_hex::<16>(request.space_id, "space ID")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let group_reference = super::parse_fixed_hex::<32>(request.group_reference, "group reference")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let peer_fingerprint =
+        super::parse_fixed_hex::<32>(request.peer_fingerprint, "peer fingerprint")
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let event_id = super::parse_fixed_hex::<32>(request.event_id, "event ID")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let target = FetchOnceTarget {
+        connect: request.connect,
+        space_id,
+        group_reference,
+        peer_fingerprint,
+        event_id,
+        scope: space_generation_scope_id(&space_id, &group_reference),
+    };
+    let mut client = Client::open_existing(database_path, protector)?;
+    let mut created = client.restore_space(&target.space_id, &target.group_reference)?;
+    if client.pinned_identity(&target.peer_fingerprint)?.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "requested peer fingerprint is not pinned in this profile",
+        )
+        .into());
+    }
+    let authenticated = fetch_from_peer(&client, target)?;
+    let counts = accept_fetched_events(&mut client, &mut created, &authenticated.exchange.events)?;
+    print_fetch_result(
+        target,
+        &counts,
+        authenticated.exchange.rejected_events.len(),
+        authenticated.exchange.unresolved_dependencies.len(),
+        json,
+    );
+    Ok(())
+}
+
+fn fetch_from_peer(
+    client: &Client,
+    target: FetchOnceTarget,
+) -> Result<AuthenticatedSyncExchange<&'static str>, Box<dyn Error>> {
+    let mut local_summary = ScopeSummary::new(target.scope);
+    local_summary
+        .missing_dependencies
+        .push(EventId::new(target.event_id));
+    let peer_summary = ScopeSummary::new(target.scope);
+    let mut deduplicator =
+        EventDeduplicator::new(128).map_err(|error| io::Error::other(format!("{error:?}")))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let adapter = runtime
+        .block_on(TcpPeerAdapter::connect(target.connect, MAX_EVENT_BYTES))
+        .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    let cancellation = CancellationToken::new();
+    let pinned = runtime.block_on(client.with_pinned_identity(
+        &target.peer_fingerprint,
+        |identity, pinned_peer| async move {
+            execute_authenticated_sync_once(
+                &adapter,
+                identity,
+                pinned_peer,
+                &local_summary,
+                &peer_summary,
+                &mut deduplicator,
+                &mut |requested_scope: ScopeId,
+                      author: lattice_sync::AuthorId,
+                      sequence: u64,
+                      expected_id: Option<EventId>,
+                      bytes: &[u8]|
+                 -> Result<EventId, &'static str> {
+                    validate_fetch_event(
+                        target,
+                        requested_scope,
+                        author,
+                        sequence,
+                        expected_id,
+                        bytes,
+                    )
+                },
+                |peer, requested_scope| {
+                    peer.fingerprint() == target.peer_fingerprint && requested_scope == target.scope
+                },
+                &cancellation,
+            )
+            .await
+        },
+    ))?;
+    pinned
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "requested peer fingerprint is not pinned in this profile",
+            )
+        })?
+        .map_err(|error| io::Error::other(error.to_string()).into())
+}
+
+fn validate_fetch_event(
+    target: FetchOnceTarget,
+    requested_scope: ScopeId,
+    author: lattice_sync::AuthorId,
+    sequence: u64,
+    expected_id: Option<EventId>,
+    bytes: &[u8],
+) -> Result<EventId, &'static str> {
+    let event = VerifiedSignatureOnlyEvent::decode_verify(bytes)
+        .map_err(|_| "invalid signed event bytes")?;
+    if requested_scope != target.scope
+        || event.space_id() != &target.space_id
+        || event.mls_group_reference() != &target.group_reference
+        || event.author_fingerprint() != author.as_bytes()
+        || event.author_sequence() != sequence
+        || expected_id.is_some_and(|expected| event.event_id().as_bytes() != expected.as_bytes())
+    {
+        return Err("event identity, sequence, or generation mismatch");
+    }
+    Ok(EventId::new(*event.event_id().as_bytes()))
+}
+
+fn accept_fetched_events(
+    client: &mut Client,
+    created: &mut lattice_core::CreatedSpace,
+    events: &[lattice_node::sync::ValidatedSyncEvent],
+) -> Result<FetchEventCounts, CoreError> {
+    let mut counts = FetchEventCounts::default();
+    for event in events {
+        match client.accept_synced_application_event(created, &event.bytes)? {
+            lattice_core::SyncedApplicationOutcome::Accepted { event_id } => {
+                counts.accepted += 1;
+                counts.accepted_event_ids.push(super::hex(&event_id));
+            }
+            lattice_core::SyncedApplicationOutcome::Pending {
+                missing_dependencies,
+                ..
+            } => {
+                counts.pending += 1;
+                counts.pending_dependency_ids.extend(
+                    missing_dependencies
+                        .iter()
+                        .map(|dependency| super::hex(dependency)),
+                );
+            }
+            lattice_core::SyncedApplicationOutcome::Duplicate { .. } => counts.duplicates += 1,
+        }
+    }
+    Ok(counts)
+}
+
+fn print_fetch_result(
+    target: FetchOnceTarget,
+    counts: &FetchEventCounts,
+    rejected_events: usize,
+    unresolved_dependencies: usize,
+    json: bool,
+) {
+    if json {
+        let state = if rejected_events > 0 {
+            "event_rejected"
+        } else if counts.pending > 0 {
+            "pending_dependencies"
+        } else if counts.accepted + counts.duplicates > 0 {
+            "event_received"
+        } else {
+            "unresolved"
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "sync_fetch_once",
+                "state": state,
+                "peer_fingerprint": super::hex(&target.peer_fingerprint),
+                "scope_id": super::hex(target.scope.as_bytes()),
+                "requested_event_id": super::hex(&target.event_id),
+                "accepted_events": counts.accepted,
+                "accepted_event_ids": counts.accepted_event_ids,
+                "pending_dependency_ids": counts.pending_dependency_ids,
+                "pending_events": counts.pending,
+                "duplicate_events": counts.duplicates,
+                "rejected_events": rejected_events,
+                "unresolved_dependencies": unresolved_dependencies,
+                "recipient_delivery_claimed": false,
+            })
+        );
+    } else {
+        println!(
+            "Authenticated direct sync received {} event(s), retained {} pending, recognized {} duplicates, and rejected {rejected_events}.",
+            counts.accepted, counts.pending, counts.duplicates
+        );
+        println!("No recipient-delivery claim is made.");
     }
 }
 

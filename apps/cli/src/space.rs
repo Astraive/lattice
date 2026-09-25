@@ -65,11 +65,11 @@ pub(super) enum SpaceCommand {
         #[arg(long)]
         after: Option<String>,
     },
-    /// Read the bounded encrypted local outgoing-message cache.
+    /// Read one bounded page of the encrypted local text-message cache.
     ///
-    /// The cache is device-local and does not include incoming or synchronized
-    /// history. Any outbox state is a local record, not proof of recipient
-    /// delivery.
+    /// The device-local cache may include messages accepted through `sync
+    /// fetch-once`; it is not a complete transcript. Outbox state is local
+    /// and does not prove recipient delivery.
     History {
         /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
         #[arg(long)]
@@ -242,7 +242,7 @@ pub(super) fn print_space_history(
                 "space_id": hex(space_id),
                 "group_reference": hex(group_reference),
                 "channel_id": hex(channel_id),
-                "source": "encrypted_local_outgoing_cache",
+                "source": "encrypted_local_text_cache",
                 "outbox_state_source": "local_outbox_record",
                 "recipient_delivery_claimed": false,
                 "network_contacted": false,
@@ -251,12 +251,12 @@ pub(super) fn print_space_history(
         );
     } else if messages.is_empty() {
         println!(
-            "No locally retained outgoing messages for channel {}.",
+            "No locally retained text messages for channel {}.",
             hex(channel_id)
         );
     } else {
         println!(
-            "Recent locally retained outgoing messages for channel {}:",
+            "Recent locally retained text messages for channel {}:",
             hex(channel_id)
         );
         for message in messages {

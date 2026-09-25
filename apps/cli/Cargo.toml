@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 lattice-core = { path = "../../crates/lattice-core" }
+lattice-events = { path = "../../crates/lattice-events" }
 lattice-platform = { path = "../../crates/lattice-platform" }
 directories = "=6.0.0"
 base64 = "=0.22.1"
@@ -23,6 +24,7 @@ lattice-relay = { path = "../../crates/lattice-relay" }
 lattice-storage = { path = "../../crates/lattice-storage" }
 lattice-node = { path = "../../crates/lattice-node" }
 lattice-transport = { path = "../../crates/lattice-transport" }
+lattice-router = { path = "../../crates/lattice-router" }
 lattice-sync = { path = "../../crates/lattice-sync" }
 openmls = "=0.9.0"
 sha2 = "=0.10.9"

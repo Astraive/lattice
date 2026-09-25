@@ -94,7 +94,7 @@ impl QueuedMessage {
         &self.event_id
     }
 }
-/// One locally retained, authorized outgoing text message.
+/// One locally retained, authorized text message; authored or received.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalTextMessageRecord {
     pub event_id: [u8; 32],
@@ -104,6 +104,20 @@ pub struct LocalTextMessageRecord {
     pub lamport: u64,
     pub content: String,
     pub outbox_state: Option<OutboxState>,
+}
+
+/// Result of accepting one signature-verified, MLS-protected application event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SyncedApplicationOutcome {
+    /// The event passed MLS binding and Space authorization and was committed.
+    Accepted { event_id: [u8; 32] },
+    /// The event is already committed with identical exact bytes.
+    Duplicate { event_id: [u8; 32] },
+    /// The bounded pending store retained this event until listed parents arrive.
+    Pending {
+        event_id: [u8; 32],
+        missing_dependencies: Vec<[u8; 32]>,
+    },
 }
 
 impl CreatedSpace {
@@ -845,6 +859,29 @@ fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
     Ok(content)
 }
 
+fn decode_text_edit(plaintext: &[u8]) -> Result<([u8; 32], String), CoreError> {
+    let Value::Map(fields) = decode_canonical(plaintext)? else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    let mut fields = fields.into_iter();
+    if fields.next() != Some((0, Value::Unsigned(1))) {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
+    let Some((1, Value::Bytes(target))) = fields.next() else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    let target = target
+        .try_into()
+        .map_err(|_| CoreError::LocalSpaceMessageCacheInvalid)?;
+    let Some((2, Value::Text(content))) = fields.next() else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    if fields.next().is_some() {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
+    Ok((target, content))
+}
+
 fn create_space_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
@@ -1354,14 +1391,99 @@ impl Client {
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_text_message_edit(&mut created, &credential, channel_id, target, content)
     }
-    /// Returns the newest bounded local outgoing-message history for one channel.
+    /// Authenticates and commits one received application event for this Space generation.
     ///
-    /// encrypted cache entries. Incoming messages and rows beyond the latest
+    /// Missing signed parents are retained in the bounded pending store without
+    /// advancing MLS state. Accepted events update the MLS state, reducer, exact
+    /// signed event row, and any message-text cache projection atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mismatched generation, invalid signature or MLS
+    /// binding, rejected Space policy, event equivocation, or MLS/storage failure.
+    pub fn accept_synced_application_event(
+        &mut self,
+        created: &mut CreatedSpace,
+        canonical_bytes: &[u8],
+    ) -> Result<SyncedApplicationOutcome, CoreError> {
+        let event = VerifiedSignatureOnlyEvent::decode_verify(canonical_bytes)?;
+        if event.space_id() != &created.space_id
+            || event.mls_group_reference() != &created.group_reference
+        {
+            return Err(CoreError::MlsEventBindingFailed);
+        }
+        let event_id = *event.event_id().as_bytes();
+        if let Some(existing) = self.store.load_event(&event_id)? {
+            if existing.canonical_bytes != canonical_bytes {
+                return Err(CoreError::Storage(StoreError::EventIdConflict));
+            }
+            return Ok(SyncedApplicationOutcome::Duplicate { event_id });
+        }
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        let mut missing_dependencies = Vec::new();
+        for parent in event.parents() {
+            let parent_id = *parent.as_bytes();
+            match self.store.load_event(&parent_id)? {
+                None => missing_dependencies.push(parent_id),
+                Some(record) => {
+                    let parent_event =
+                        VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+                    if parent_event.event_id().as_bytes() != &parent_id
+                        || parent_event.space_id() != &created.space_id
+                        || parent_event.mls_group_reference() != &created.group_reference
+                    {
+                        return Err(CoreError::SpaceParentEventMissing);
+                    }
+                }
+            }
+        }
+        if !missing_dependencies.is_empty() {
+            self.store
+                .store_pending(event_id, canonical_bytes, &missing_dependencies)?;
+            return Ok(SyncedApplicationOutcome::Pending {
+                event_id,
+                missing_dependencies,
+            });
+        }
+
+        let group_id = created.group_id.clone();
+        let space_id = created.space_id;
+        let group_reference = created.group_reference;
+        let reducer = created.reducer.clone();
+        let staged_reducer =
+            self.with_mls_transaction(move |_identity, provider, transaction| {
+                let mut group = GroupState::load(provider, &group_id)?;
+                if group.group_reference() != group_reference {
+                    return Err(CoreError::MlsEventBindingFailed);
+                }
+                let IncomingResult::Application(application) =
+                    group.process_incoming(provider, event.protected_body())?
+                else {
+                    return Err(CoreError::MlsEventBindingFailed);
+                };
+                let bound = bind_mls_application(event, application)?;
+                let (staged_reducer, authorization) =
+                    authorize_and_store_application_event(transaction, &reducer, &bound)?;
+                if !matches!(authorization, space::EventAuthorization::Authorized { .. }) {
+                    return Err(CoreError::SpaceMessageRejected(authorization));
+                }
+                persist_received_text_projection(transaction, &bound, space_id, group_reference)?;
+                Store::resolve_pending_in_transaction(transaction, event_id)?;
+                Ok(staged_reducer)
+            })?;
+        created.reducer = staged_reducer;
+        Ok(SyncedApplicationOutcome::Accepted { event_id })
+    }
+
+    /// Returns the newest bounded local text-message history for one channel.
+    ///
+    /// History combines locally authored and received messages from encrypted
+    /// cache entries. Rows beyond the latest
     /// [`MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE`] are not included.
     ///
     /// # Errors
     ///
-    /// Returns an error if the local Genesis generation cannot be restored,
+    /// Returns an error if the local Space generation cannot be restored,
     /// cached event metadata or authentication fails, or storage is unavailable.
     pub fn local_text_message_history(
         &mut self,
@@ -1396,7 +1518,6 @@ impl Client {
                     || event.author_fingerprint() != &message.author_id
                     || event.author_sequence() != message.author_seq
                     || event.lamport() != message.lamport
-                    || event.mls_epoch() != 0
                 {
                     return Err(CoreError::LocalSpaceMessageCacheInvalid);
                 }
@@ -1465,7 +1586,6 @@ impl Client {
                     || cached.channel_id != channel_id
                     || event.author_sequence() != cached.author_seq
                     || event.lamport() != cached.lamport
-                    || event.mls_epoch() != 0
                 {
                     return Err(CoreError::LocalSpaceMessageCacheInvalid);
                 }
@@ -2303,6 +2423,58 @@ fn persist_cached_text_projection(
         )?;
     }
     Ok(())
+}
+
+fn persist_received_text_projection(
+    transaction: &Transaction<'_>,
+    bound: &MlsBoundEvent,
+    space_id: space::SpaceId,
+    group_reference: space::GroupReference,
+) -> Result<(), CoreError> {
+    let event = bound.event();
+    let Some(channel_id) = event.channel_id().copied() else {
+        return if matches!(event.kind(), EventKind::Message | EventKind::Edit) {
+            Err(CoreError::LocalSpaceMessageCacheInvalid)
+        } else {
+            Ok(())
+        };
+    };
+    let (event_kind, target, content) = match event.kind() {
+        EventKind::Message => (
+            EventKind::Message,
+            None,
+            decode_text_message(bound.plaintext())?,
+        ),
+        EventKind::Edit => {
+            let (target, content) = decode_text_edit(bound.plaintext())?;
+            if !Store::has_cached_space_message_in_transaction(
+                transaction,
+                &target,
+                &space_id,
+                &group_reference,
+                &channel_id,
+            )? {
+                return Ok(());
+            }
+            (EventKind::Edit, Some(target), content)
+        }
+        _ => return Ok(()),
+    };
+    persist_cached_text_projection(
+        transaction,
+        &CachedTextProjection {
+            event_kind,
+            target,
+            content: &content,
+            source_event_id: *event.event_id().as_bytes(),
+            space_id,
+            group_reference,
+            channel_id,
+            author_id: *event.author_fingerprint(),
+            author_sequence: event.author_sequence(),
+            lamport: event.lamport(),
+        },
+    )
 }
 fn load_or_create_mls_storage_key<P: PrivateKeyProtector>(
     store: &mut Store,
@@ -4056,7 +4228,7 @@ mod tests {
             alice_fingerprint,
         )
         .expect("pin inviter full fingerprint");
-        let joined = bob
+        let mut joined = bob
             .join_space_from_welcome_bootstrap(&package, alice_fingerprint, &bob_credential)
             .expect("validate pinned inviter package and import Welcome");
         assert_eq!(joined.reducer().policy().expect("joined policy"), &policy);
@@ -4126,11 +4298,144 @@ mod tests {
             .expect("authenticate invite at joined epoch");
         let bound_charlie_invite = bind_mls_application(charlie_invite, charlie_invite_application)
             .expect("bind authenticated invite");
+        bob.with_mls_transaction(|_, _, transaction| {
+            super::store_received_event(transaction, bound_charlie_invite.event())
+        })
+        .expect("store authenticated policy invite");
         let mut policy_before_add = joined.reducer().clone();
         assert_eq!(
             policy_before_add.apply(&bound_charlie_invite, None),
             super::space::ApplyResult::Applied { revision: 2 }
         );
+        joined.reducer = policy_before_add.clone();
+
+        let channel_id = created.reducer().policy().expect("Space policy").channels[0].id;
+        let message_plaintext =
+            super::encode_text_message("received over MLS").expect("encode message");
+        let message_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &message_plaintext,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt incoming application message");
+        let message_event = VerifiedSignatureOnlyEvent::create(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 5,
+                lamport: 5,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(
+                    charlie_invite_event_id,
+                )],
+                kind: EventKind::Message,
+                protected_body: message_ciphertext,
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        )
+        .expect("sign incoming message event");
+        let message_id = *message_event.event_id().as_bytes();
+        assert_eq!(
+            bob.accept_synced_application_event(&mut joined, message_event.encoded_bytes())
+                .expect("accept synced application event"),
+            super::SyncedApplicationOutcome::Accepted {
+                event_id: message_id
+            }
+        );
+        assert_eq!(
+            bob.accept_synced_application_event(&mut joined, message_event.encoded_bytes())
+                .expect("recognize exact duplicate"),
+            super::SyncedApplicationOutcome::Duplicate {
+                event_id: message_id
+            }
+        );
+        let missing_parent = [0x99; 32];
+        let pending_event = VerifiedSignatureOnlyEvent::create(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 6,
+                lamport: 6,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(missing_parent)],
+                kind: EventKind::Message,
+                protected_body: message_event.protected_body().to_vec(),
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        )
+        .expect("sign event with an unavailable parent");
+        let pending_id = *pending_event.event_id().as_bytes();
+        assert_eq!(
+            bob.accept_synced_application_event(&mut joined, pending_event.encoded_bytes())
+                .expect("retain event until its parent arrives"),
+            super::SyncedApplicationOutcome::Pending {
+                event_id: pending_id,
+                missing_dependencies: vec![missing_parent],
+            }
+        );
+        assert!(
+            bob.store
+                .resolve_pending(pending_id)
+                .expect("remove test-only pending event")
+        );
+        let history = bob
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("read received message history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].event_id, message_id);
+        assert_eq!(history[0].author_id, alice_fingerprint);
+        assert_eq!(history[0].content, "received over MLS");
+        let edit_plaintext =
+            super::encode_text_edit(message_id, "edited over MLS").expect("encode edit");
+        let edit_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &edit_plaintext,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt incoming edit");
+        let edit_event = VerifiedSignatureOnlyEvent::create(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 6,
+                lamport: 6,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(message_id)],
+                kind: EventKind::Edit,
+                protected_body: edit_ciphertext,
+                mls_group_reference: group_reference,
+                mls_epoch: 1,
+            },
+        )
+        .expect("sign incoming edit");
+        assert!(matches!(
+            bob.accept_synced_application_event(&mut joined, edit_event.encoded_bytes())
+                .expect("accept synced edit"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let edited_history = bob
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("read edited incoming history");
+        assert_eq!(edited_history.len(), 1);
+        assert_eq!(edited_history[0].event_id, message_id);
+        assert_eq!(edited_history[0].content, "edited over MLS");
         let (control, transition) = alice
             .with_mls_transaction(|identity, provider, _| {
                 let mut group = GroupState::load(provider, &created.group_id)?;
@@ -4146,8 +4451,8 @@ mod tests {
                     EventDraft {
                         space_id,
                         channel_id: None,
-                        author_sequence: 5,
-                        lamport: 5,
+                        author_sequence: 7,
+                        lamport: 7,
                         wall_time_hint: 0,
                         parents: vec![lattice_protocol::EventId::from_bytes(
                             charlie_invite_event_id,
@@ -4180,8 +4485,8 @@ mod tests {
                     EventDraft {
                         space_id,
                         channel_id: None,
-                        author_sequence: 6,
-                        lamport: 6,
+                        author_sequence: 8,
+                        lamport: 8,
                         wall_time_hint: 0,
                         parents: vec![lattice_protocol::EventId::from_bytes(control_id)],
                         kind: EventKind::Membership,

@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 mod trusted_identities;
 pub use trusted_identities::TrustedIdentityRecord;
 
@@ -1153,10 +1153,41 @@ impl Store {
         Ok(())
     }
 
-    /// Returns the newest bounded local history for one channel, oldest first.
+    /// Checks whether one generation/channel retains a text projection.
     ///
-    /// This is a local outgoing-message cache, not a synced transcript. It does
-    /// not include incoming events or messages beyond the latest bounded page.
+    /// # Errors
+    ///
+    /// Returns an error if the lookup fails.
+    pub fn has_cached_space_message_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        event_id: &[u8; ID_BYTES],
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+    ) -> Result<bool> {
+        transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM cached_space_messages
+                    WHERE event_id = ?1 AND space_id = ?2
+                      AND group_reference = ?3 AND channel_id = ?4
+                )",
+                params![
+                    &event_id[..],
+                    &space_id[..],
+                    &group_reference[..],
+                    &channel_id[..],
+                ],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
+    /// Returns the newest bounded local message cache for one channel, oldest first.
+    ///
+    /// This is a local text projection, not a synchronized transcript. It may
+    /// contain locally authored and received messages, and is limited to the
+    /// latest bounded page.
     ///
     /// # Errors
     ///
@@ -2034,12 +2065,24 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let removed = transaction.execute(
-            "DELETE FROM pending_events WHERE event_id = ?1",
-            params![&id[..]],
-        )? > 0;
+        let removed = Self::resolve_pending_in_transaction(&transaction, id)?;
         transaction.commit()?;
         Ok(removed)
+    }
+
+    /// Removes one retained event from a caller-owned transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database update fails.
+    pub fn resolve_pending_in_transaction(
+        transaction: &Transaction<'_>,
+        id: [u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.execute(
+            "DELETE FROM pending_events WHERE event_id = ?1",
+            params![&id[..]],
+        )? > 0)
     }
 }
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
