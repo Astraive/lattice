@@ -19,6 +19,7 @@ use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
 use tokio_util::sync::CancellationToken;
 
 const MAX_RECONCILIATION_ROUNDS: usize = 8;
+const MAX_RECONCILIATION_CONNECTION_ATTEMPTS: usize = 4;
 const RECONCILIATION_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Subcommand)]
@@ -810,7 +811,59 @@ fn run_reconciliation_round(
     summary_source: &mut StoreSyncSummarySource<'_>,
     event_source: &mut StoreSyncEventSource<'_>,
     target: FetchOnceTarget,
-    local_summary: lattice_sync::ScopeSummary,
+    local_summary: &lattice_sync::ScopeSummary,
+) -> Result<
+    (
+        AuthenticatedSyncV2Exchange<&'static str>,
+        AuthenticatedSyncV2ServeResult,
+    ),
+    ReconciliationRoundFailure,
+> {
+    retry_reconciliation_attempts(|| {
+        run_reconciliation_round_attempt(
+            runtime,
+            listener,
+            client,
+            summary_source,
+            event_source,
+            target,
+            local_summary,
+        )
+    })
+}
+
+fn retry_reconciliation_attempts<T>(
+    mut run_attempt: impl FnMut() -> Result<T, ReconciliationRoundFailure>,
+) -> Result<T, ReconciliationRoundFailure> {
+    let mut last_transport_error = None;
+    for attempt in 0..MAX_RECONCILIATION_CONNECTION_ATTEMPTS {
+        match run_attempt() {
+            Ok(result) => return Ok(result),
+            Err(ReconciliationRoundFailure::Local(error)) => {
+                return Err(ReconciliationRoundFailure::Local(error));
+            }
+            Err(ReconciliationRoundFailure::Transport(error)) => {
+                last_transport_error = Some(error);
+                if attempt + 1 == MAX_RECONCILIATION_CONNECTION_ATTEMPTS {
+                    break;
+                }
+            }
+        }
+    }
+    Err(ReconciliationRoundFailure::Transport(
+        last_transport_error
+            .unwrap_or_else(|| "sync retry loop exhausted without a result".to_owned()),
+    ))
+}
+
+fn run_reconciliation_round_attempt(
+    runtime: &tokio::runtime::Runtime,
+    listener: &TcpPeerListener,
+    client: &Client,
+    summary_source: &mut StoreSyncSummarySource<'_>,
+    event_source: &mut StoreSyncEventSource<'_>,
+    target: FetchOnceTarget,
+    local_summary: &lattice_sync::ScopeSummary,
 ) -> Result<
     (
         AuthenticatedSyncV2Exchange<&'static str>,
@@ -861,7 +914,7 @@ fn run_reconciliation_round(
                         &outbound_adapter,
                         identity,
                         pinned_peer,
-                        &local_summary,
+                        local_summary,
                         &mut deduplicator,
                         &mut validator,
                         |peer, requested_scope| {
@@ -1020,7 +1073,7 @@ fn run_reconciliation_rounds(
             summary_source,
             event_source,
             target,
-            before_summary.clone(),
+            &before_summary,
         ) {
             Ok(round) => round,
             Err(ReconciliationRoundFailure::Transport(error)) => {
@@ -1485,12 +1538,66 @@ struct OutboxCounts {
 
 #[cfg(test)]
 mod tests {
-    use super::pending_event_summaries;
+    use super::{
+        ReconciliationRoundFailure, pending_event_summaries, retry_reconciliation_attempts,
+    };
     use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
     use lattice_identity::DeviceIdentity;
     use lattice_storage::Store;
     use lattice_sync::SyncStatus;
 
+    #[test]
+    fn reconciliation_retries_transport_failure_before_success() {
+        let attempts = std::cell::Cell::new(0);
+        let result = retry_reconciliation_attempts(|| {
+            let attempt = attempts.get() + 1;
+            attempts.set(attempt);
+            if attempt == 1 {
+                Err(ReconciliationRoundFailure::Transport(
+                    "unauthenticated peer disconnected".to_owned(),
+                ))
+            } else {
+                Ok("authenticated round")
+            }
+        });
+
+        assert!(matches!(result, Ok("authenticated round")));
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn reconciliation_does_not_retry_local_failures() {
+        let attempts = std::cell::Cell::new(0);
+        let result: Result<(), _> = retry_reconciliation_attempts(|| {
+            attempts.set(attempts.get() + 1);
+            Err(ReconciliationRoundFailure::Local(Box::new(
+                std::io::Error::other("local event source failed"),
+            )))
+        });
+
+        assert!(matches!(result, Err(ReconciliationRoundFailure::Local(_))));
+        assert_eq!(attempts.get(), 1);
+    }
+
+    #[test]
+    fn reconciliation_bounds_transport_retries() {
+        let attempts = std::cell::Cell::new(0);
+        let result: Result<(), _> = retry_reconciliation_attempts(|| {
+            attempts.set(attempts.get() + 1);
+            Err(ReconciliationRoundFailure::Transport(
+                "peer disconnected".to_owned(),
+            ))
+        });
+
+        assert!(matches!(
+            result,
+            Err(ReconciliationRoundFailure::Transport(_))
+        ));
+        assert_eq!(
+            attempts.get(),
+            super::MAX_RECONCILIATION_CONNECTION_ATTEMPTS
+        );
+    }
     #[test]
     fn pending_status_reports_only_verified_space_epoch_and_dependency_metadata() {
         let nonce = std::time::SystemTime::now()
