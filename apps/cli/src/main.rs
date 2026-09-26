@@ -1,5 +1,6 @@
 mod doctor;
 mod identity;
+mod peer;
 mod relay;
 mod space;
 mod sync;
@@ -86,6 +87,11 @@ enum Command {
     Status,
     /// Inspect local profile, protected keys, storage schema, and unavailable transport/wire checks without applying migrations.
     Doctor,
+    /// Inspect this host's current path capabilities without discovering peers.
+    Peer {
+        #[command(subcommand)]
+        command: peer::PeerCommand,
+    },
     /// Manage this profile's relay URLs and probe relay NIP-11 metadata.
     Relay {
         #[command(subcommand)]
@@ -286,6 +292,7 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
             doctor::execute_doctor(&database_path, json);
             Ok(())
         }
+        Command::Peer { command } => peer::execute(command, json),
         Command::Relay { command } => relay::execute(command, &data_dir, json),
         Command::Identity { command } => {
             let (database_path, protector) = open_profile(&data_dir)?;
