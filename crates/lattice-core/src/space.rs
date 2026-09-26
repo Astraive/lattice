@@ -32,6 +32,7 @@ use lattice_protocol::{Value, decode_canonical};
 use crate::MlsBoundEvent;
 pub mod ephemeral;
 pub mod message_projection;
+pub mod rich_text;
 
 pub const MAX_SPACE_PAYLOAD_BYTES: usize = 262_144;
 pub const MAX_CHANNELS: usize = 256;
@@ -1776,6 +1777,7 @@ enum Operation {
 enum ApplicationAction {
     Message {
         content: Arc<str>,
+        rich_text: rich_text::RichText,
         thread_root: Option<EventReference>,
         mention_everyone: bool,
         mentions: Vec<MentionTarget>,
@@ -1784,6 +1786,7 @@ enum ApplicationAction {
     Edit {
         target: EventReference,
         content: Arc<str>,
+        rich_text: rich_text::RichText,
     },
     Tombstone {
         target: EventReference,
@@ -1806,11 +1809,17 @@ impl ApplicationAction {
     fn retained_bytes(&self) -> usize {
         match self {
             Self::Message {
-                content, mentions, ..
+                content,
+                rich_text,
+                mentions,
+                ..
             } => content
                 .len()
+                .saturating_add(rich_text.retained_bytes())
                 .saturating_add(mentions.len().saturating_mul(33)),
-            Self::Edit { content, .. } => content.len(),
+            Self::Edit {
+                content, rich_text, ..
+            } => content.len().saturating_add(rich_text.retained_bytes()),
             Self::Tombstone {
                 moderation_reason, ..
             } => moderation_reason.as_ref().map_or(0, String::len),
@@ -2523,6 +2532,7 @@ fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReas
     let fields = match version {
         1 => exact_map(payload, &[0, 1, 2, 3, 4])?,
         2 => exact_map(payload, &[0, 1, 2, 3, 4, 5])?,
+        3 => exact_map(payload, &[0, 1, 2, 3, 4, 5, 6])?,
         _ => return Err(RejectReason::InvalidSchema),
     };
     let Value::Text(content) = fields[1] else {
@@ -2554,8 +2564,10 @@ fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReas
     } else {
         parse_mentions(fields[5])?
     };
+    let rich_text = parse_rich_text(content, if version == 3 { Some(fields[6]) } else { None })?;
     Ok(ApplicationAction::Message {
         content: Arc::from(content.as_str()),
+        rich_text,
         thread_root,
         mention_everyone,
         mentions,
@@ -2590,21 +2602,44 @@ fn parse_mentions(value: &Value) -> Result<Vec<MentionTarget>, RejectReason> {
     }
     Ok(mentions)
 }
+fn parse_rich_text(
+    source: &str,
+    encoded_spans: Option<&Value>,
+) -> Result<rich_text::RichText, RejectReason> {
+    let result = match encoded_spans {
+        Some(spans) => rich_text::RichText::parse_with_spans(source, spans),
+        None => rich_text::RichText::parse(source),
+    };
+    result.map_err(|error| match error {
+        rich_text::RichTextError::InputTooLarge => RejectReason::PayloadTooLarge,
+        rich_text::RichTextError::TooManySpans => RejectReason::LimitExceeded,
+        rich_text::RichTextError::InvalidWireSpans => RejectReason::InvalidValue,
+    })
+}
 
 fn parse_edit_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
-    let fields = exact_map(payload, &[0, 1, 2])?;
-    if unsigned(fields[0])? != 1 {
-        return Err(RejectReason::InvalidSchema);
-    }
+    let version = match payload {
+        Value::Map(fields) if fields.first().is_some_and(|(key, _)| *key == 0) => {
+            unsigned(&fields[0].1)?
+        }
+        _ => return Err(RejectReason::InvalidSchema),
+    };
+    let fields = match version {
+        1 => exact_map(payload, &[0, 1, 2])?,
+        2 => exact_map(payload, &[0, 1, 2, 3])?,
+        _ => return Err(RejectReason::InvalidSchema),
+    };
     let Value::Text(content) = fields[2] else {
         return Err(RejectReason::InvalidValue);
     };
     if content.len() > MAX_SPACE_PAYLOAD_BYTES {
         return Err(RejectReason::PayloadTooLarge);
     }
+    let rich_text = parse_rich_text(content, if version == 2 { Some(fields[3]) } else { None })?;
     Ok(ApplicationAction::Edit {
         target: fixed_bytes(fields[1])?,
         content: Arc::from(content.as_str()),
+        rich_text,
     })
 }
 

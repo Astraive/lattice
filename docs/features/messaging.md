@@ -20,6 +20,10 @@ The Rust reducer projects authorized messages and updates in memory. Core caches
 
 `space::ephemeral::EphemeralStateTable` accepts only MLS-bound kind-10 events for the reducer's current, non-conflicted generation and active members. Canonical active/clear payloads have a 60-second presence limit and 10-second typing limit; receiver-side `Instant` expiry, author-sequence replay watermarks and an 8,192-entry cap are process-local. No event-log, outbox, or persistence path is involved. Callers must keep these envelopes on ephemeral-capable routes and invoke `apply` only after MLS authentication; the library does not implement network scheduling or notification dispatch.
 
+## Implemented constrained rich text
+
+Core accepts only `**strong**`, `*emphasis*`, and `` `code` `` inline markers. New message payload v3 and edit payload v2 carry canonical semantic style spans with half-open UTF-8 byte offsets, verified against a local parse; legacy message v1/v2 and edit v1 remain readable. `MessageVersion` exposes safe plain display text and its semantic spans. Unsupported or unmatched syntax and HTML remain literal text; UI renderers must use text nodes, never HTML interpretation.
+
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
 | MSG-001 | An authorized user shall compose and commit text while disconnected. | Restart after local send retains event with queued status. | M1 |

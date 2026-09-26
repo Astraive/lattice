@@ -3,7 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use super::{ApplicationAction, EntityId, EventReference, Fingerprint, GraphNode, MentionTarget};
+use super::{
+    ApplicationAction, EntityId, EventReference, Fingerprint, GraphNode, MentionTarget,
+    rich_text::RichText,
+};
 
 /// Authorized message history materialized from one reducer generation.
 ///
@@ -82,8 +85,10 @@ pub struct MessageVersion {
     pub event_id: EventReference,
     /// Author of this version.
     pub author: Fingerprint,
-    /// Plaintext body from the MLS-bound and authorized event.
+    /// Plain display text with supported source markup removed.
     pub content: Arc<str>,
+    /// UTF-8 byte ranges carrying semantic formatting.
+    pub rich_text: RichText,
     order: MessageOrder,
 }
 
@@ -147,7 +152,7 @@ fn project_messages(
             continue;
         }
         let Some(ApplicationAction::Message {
-            content,
+            rich_text,
             thread_root,
             mentions,
             ..
@@ -166,7 +171,8 @@ fn project_messages(
                 versions: vec![MessageVersion {
                     event_id: *event_id,
                     author: node.author,
-                    content: content.clone(),
+                    content: Arc::from(rich_text.render_plain_text()),
+                    rich_text: rich_text.clone(),
                     order,
                 }],
                 tombstones: Vec::new(),
@@ -193,12 +199,15 @@ fn project_updates(
         };
         let order = message_order(node, *event_id);
         match action {
-            ApplicationAction::Edit { target, content } => {
+            ApplicationAction::Edit {
+                target, rich_text, ..
+            } => {
                 if let Some(message) = messages.get_mut(target) {
                     message.versions.push(MessageVersion {
                         event_id: *event_id,
                         author: node.author,
-                        content: content.clone(),
+                        content: Arc::from(rich_text.render_plain_text()),
+                        rich_text: rich_text.clone(),
                         order,
                     });
                 }

@@ -897,7 +897,7 @@ fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
     let mut fields = fields.into_iter();
-    let Some((0, Value::Unsigned(version @ (1 | 2)))) = fields.next() else {
+    let Some((0, Value::Unsigned(version @ 1..=3))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
     let Some((1, Value::Text(content))) = fields.next() else {
@@ -909,9 +909,18 @@ fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
     {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     }
-    if version == 2 && !matches!(fields.next(), Some((5, Value::Array(_)))) {
+    if version >= 2 && !matches!(fields.next(), Some((5, Value::Array(_)))) {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     }
+    let _rich_text = if version == 3 {
+        let Some((6, spans)) = fields.next() else {
+            return Err(CoreError::LocalSpaceMessageCacheInvalid);
+        };
+        space::rich_text::RichText::parse_with_spans(&content, &spans)
+    } else {
+        space::rich_text::RichText::parse(&content)
+    }
+    .map_err(|_| CoreError::LocalSpaceMessageCacheInvalid)?;
     if fields.next().is_some() {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     }
@@ -996,9 +1005,9 @@ fn decode_text_edit(plaintext: &[u8]) -> Result<([u8; 32], String), CoreError> {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
     let mut fields = fields.into_iter();
-    if fields.next() != Some((0, Value::Unsigned(1))) {
+    let Some((0, Value::Unsigned(version @ (1 | 2)))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
-    }
+    };
     let Some((1, Value::Bytes(target))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
@@ -1008,6 +1017,15 @@ fn decode_text_edit(plaintext: &[u8]) -> Result<([u8; 32], String), CoreError> {
     let Some((2, Value::Text(content))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
+    let _rich_text = if version == 2 {
+        let Some((3, spans)) = fields.next() else {
+            return Err(CoreError::LocalSpaceMessageCacheInvalid);
+        };
+        space::rich_text::RichText::parse_with_spans(&content, &spans)
+    } else {
+        space::rich_text::RichText::parse(&content)
+    }
+    .map_err(|_| CoreError::LocalSpaceMessageCacheInvalid)?;
     if fields.next().is_some() {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     }
@@ -1954,7 +1972,11 @@ impl Client {
                 );
                 let plaintext =
                     lattice_mls::unprotect_local_record(&cache_aad, &message.encrypted_content)?;
-                let content = decode_text_message(&plaintext)?;
+                let source = decode_text_message(&plaintext)?;
+                let content = space::rich_text::RichText::parse(&source)
+                    .map_err(|_| CoreError::LocalSpaceMessageCacheInvalid)?
+                    .render_plain_text()
+                    .to_owned();
                 history.push(LocalTextMessageRecord {
                     event_id: message.event_id,
                     channel_id: message.channel_id,
@@ -2019,7 +2041,11 @@ impl Client {
                         &cache_aad,
                         &message.encrypted_content,
                     )?;
-                    let content = decode_text_message(&plaintext)?;
+                    let source = decode_text_message(&plaintext)?;
+                    let content = space::rich_text::RichText::parse(&source)
+                        .map_err(|_| CoreError::LocalSpaceMessageCacheInvalid)?
+                        .render_plain_text()
+                        .to_owned();
                     if !content.to_lowercase().contains(&search) {
                         continue;
                     }
@@ -2809,13 +2835,15 @@ fn encode_text_message_with_mentions(
             }
         })
         .collect();
+    let rich_text = space::rich_text::RichText::parse(content).map_err(rich_text_send_error)?;
     let plaintext = encode_canonical(&Value::Map(vec![
-        (0, Value::Unsigned(2)),
+        (0, Value::Unsigned(3)),
         (1, Value::Text(content.to_owned())),
         (2, Value::Null),
         (3, Value::Bool(false)),
         (4, Value::Array(Vec::new())),
         (5, Value::Array(mention_values)),
+        (6, rich_text.spans_value()),
     ]))?;
     if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
         return Err(CoreError::SpaceMessageRejected(
@@ -2830,10 +2858,12 @@ fn encode_text_edit(target: [u8; 32], content: &str) -> Result<Vec<u8>, CoreErro
             space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
         ));
     }
+    let rich_text = space::rich_text::RichText::parse(content).map_err(rich_text_send_error)?;
     let plaintext = encode_canonical(&Value::Map(vec![
-        (0, Value::Unsigned(1)),
+        (0, Value::Unsigned(2)),
         (1, Value::Bytes(target.to_vec())),
         (2, Value::Text(content.to_owned())),
+        (3, rich_text.spans_value()),
     ]))?;
     if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
         return Err(CoreError::SpaceMessageRejected(
@@ -2841,6 +2871,14 @@ fn encode_text_edit(target: [u8; 32], content: &str) -> Result<Vec<u8>, CoreErro
         ));
     }
     Ok(plaintext)
+}
+fn rich_text_send_error(error: space::rich_text::RichTextError) -> CoreError {
+    let reason = match error {
+        space::rich_text::RichTextError::InputTooLarge => space::RejectReason::PayloadTooLarge,
+        space::rich_text::RichTextError::TooManySpans => space::RejectReason::LimitExceeded,
+        space::rich_text::RichTextError::InvalidWireSpans => space::RejectReason::InvalidValue,
+    };
+    CoreError::SpaceMessageRejected(space::EventAuthorization::Rejected(reason))
 }
 
 fn encode_file_manifest(manifest: &AttachmentManifest) -> Result<Vec<u8>, CoreError> {
@@ -3213,6 +3251,47 @@ mod tests {
     }
 
     #[test]
+    fn message_and_edit_wire_spans_round_trip_and_reject_mismatches() {
+        use lattice_protocol::Value;
+
+        let source = "**safe**";
+        let message = super::encode_text_message(source).expect("encode message v3");
+        assert_eq!(super::decode_text_message(&message).unwrap(), source);
+        let Value::Map(message_fields) =
+            super::decode_canonical(&message).expect("decode canonical message")
+        else {
+            panic!("encoded message is a map");
+        };
+        assert_eq!(message_fields[0], (0, Value::Unsigned(3)));
+        assert_eq!(
+            message_fields[6].1,
+            Value::Array(vec![Value::Array(vec![
+                Value::Unsigned(0),
+                Value::Unsigned(0),
+                Value::Unsigned(4),
+            ])])
+        );
+
+        let edit = super::encode_text_edit([7; 32], "edit *it*").expect("encode edit v2");
+        let (target, content) = super::decode_text_edit(&edit).expect("decode edit");
+        assert_eq!(target, [7; 32]);
+        assert_eq!(content, "edit *it*");
+        let Value::Map(mut edit_fields) =
+            super::decode_canonical(&edit).expect("decode canonical edit")
+        else {
+            panic!("encoded edit is a map");
+        };
+        assert_eq!(edit_fields[0], (0, Value::Unsigned(2)));
+        edit_fields[3].1 = Value::Array(Vec::new());
+        let mismatched = super::encode_canonical(&Value::Map(edit_fields))
+            .expect("encode mismatched span value");
+        assert!(matches!(
+            super::decode_text_edit(&mismatched),
+            Err(CoreError::LocalSpaceMessageCacheInvalid)
+        ));
+    }
+
+    #[test]
     fn peer_pin_requires_full_fingerprint_and_survives_restart() {
         let database = TestDatabase::new();
         let protector = TestProtector;
@@ -3558,7 +3637,7 @@ mod tests {
         );
 
         let receipt = client
-            .queue_text_message(&mut created, &credential, channel_id, "queued offline")
+            .queue_text_message(&mut created, &credential, channel_id, "**queued offline**")
             .expect("queue authorized local message");
         let event_id = *receipt.event_id();
         let event = client
@@ -3569,12 +3648,16 @@ mod tests {
         let verified_event = VerifiedSignatureOnlyEvent::decode_verify(&event.canonical_bytes)
             .expect("verify stored event signature");
         assert_eq!(verified_event.kind(), EventKind::Message);
+        let message_history = created.reducer().message_history(&channel_id);
+        let current_version = message_history.messages()[0].current_version();
+        assert_eq!(current_version.content.as_ref(), "queued offline");
         assert_eq!(
-            created.reducer().message_history(&channel_id).messages()[0]
-                .current_version()
-                .content
-                .as_ref(),
-            "queued offline"
+            current_version.rich_text.spans(),
+            &[super::space::rich_text::RichTextSpan {
+                start: 0,
+                end: 14,
+                style: super::space::rich_text::RichTextStyle::Strong,
+            }]
         );
         let history = client
             .local_text_message_history(created.space_id(), created.group_reference(), &channel_id)

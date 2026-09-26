@@ -877,13 +877,13 @@ Retention policies can be `ephemeral`, `7d`, `30d`, `90d`, or `forever`, with a 
 
 ## Text messages
 
-A text message body supports UTF-8 text, mentions, reply reference, optional thread root, attachment references, and a constrained rich-text representation. Markdown-like presentation is allowed, but the wire format should represent semantic spans rather than store raw HTML.
+A text message body supports UTF-8 text, mentions, reply reference, optional thread root, attachment references, and constrained rich text. Supported inline source markers are `**strong**`, `*emphasis*`, and `` `code` ``. The authenticated wire payload carries canonical semantic spans, never HTML. Renderers consume plain text and half-open UTF-8 byte ranges; they MUST NOT interpret raw HTML. Unmatched or unsupported markup remains literal text.
 
-Candidate encrypted message payload version 2 appends field `5`, an array of unique targets sorted by `(kind, identifier)`. Each target is `[0, fingerprint]` for a full 32-byte device identity or `[1, role_id]` for a 16-byte Space role ID. Version 1 payloads remain accepted and imply an empty mention list. Role targets must exist in the event policy and require the broad-mention permission. Display names are never encoded as mention targets. Local mute preferences are device-only protected storage, not synchronized policy; notification callers resolve role membership at the selected event context before applying mutes.
+Message payload version 3 preserves fields `1..5` from version 2, sets field `0` to version `3`, and appends field `6`, an array of spans `[style, start, end]`. Style values are `0` strong, `1` emphasis, and `2` code. Offsets address rendered plain-text UTF-8 bytes, are half-open, and MUST exactly match a local parse of the source. At most 1,024 spans are accepted. Version 2 appends field `5`, an array of unique mention targets sorted by `(kind, identifier)`; version 1 remains accepted and implies no mentions. Each target is `[0, fingerprint]` for a full 32-byte device identity or `[1, role_id]` for a 16-byte Space role ID. Role targets must exist in the event policy and require the broad-mention permission. Display names are never encoded as mention targets. Local mute preferences are device-only protected storage, not synchronized policy; notification callers resolve role membership at the selected event context before applying mutes.
 
 ## Edits
 
-An edit references a prior message event and carries a replacement body. Only the original author, or a moderator exercising an explicit moderation capability, may create an effective edit. Moderator edits are visually distinguishable from author edits. All previous versions remain in the immutable log until retention/compaction permits removal.
+An edit references a prior message event and carries a replacement body. Edit payload version 2 appends field `3`, using the message semantic span representation; version 1 remains accepted and is parsed locally. Only the original author, or a moderator exercising an explicit moderation capability, may create an effective edit. Moderator edits are visually distinguishable from author edits. All previous versions remain in the immutable log until retention/compaction permits removal.
 
 ## Deletes
 
