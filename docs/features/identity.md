@@ -16,6 +16,8 @@ One installation equals one v1 cryptographic device identity. Multi-device user 
 
 Onboarding screens: introduction → create/import device identity → profile → nearby permissions → optional relay choice → create/join Space. Never force relay consent. Backup/export is a future separate profile; no password-reset claim in v1. [MLS architecture](https://www.rfc-editor.org/rfc/rfc9750) describes authentication and KeyPackage delivery responsibilities.
 
+Android Diagnostics classifies the profile's AES wrapping key with `KeyInfo.securityLevel` on API 31 and newer and `KeyInfo.isInsideSecureHardware` on older supported releases. It reports hardware-backed, software-backed, or unavailable. This describes the wrapping key only; it does not identify StrongBox or claim the identity signing keys are hardware-resident.
+
 ## Complete identity lifecycle
 
 1. **Provision:** Generate random secrets on the device; produce a signed public identity bundle with explicit version and key types. Store secret material behind platform protection before reporting successful onboarding. If persistence fails, discard the provisional identity and show a retry state.

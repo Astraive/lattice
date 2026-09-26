@@ -18,6 +18,8 @@ import uniffi.lattice_uniffi.MobileLocalTextMessage
 internal class AndroidPlatformKeyProtector : PlatformKeyProtector {
     private val delegate = AndroidPrivateKeyProtector()
 
+    fun protectionLevel(profileId: String): AndroidKeyProtectionLevel = delegate.protectionLevel(profileId)
+
     override fun wrap(profileId: String, clearMaterial: ByteArray): ByteArray = try {
         delegate.wrap(profileId, clearMaterial)
     } catch (_: Exception) {
@@ -36,8 +38,10 @@ internal class AndroidPlatformKeyProtector : PlatformKeyProtector {
 /** Owns a Rust profile and the callback that bridges to AndroidKeyStore. */
 internal class AndroidMobileProfile private constructor(
     private val client: MobileClient,
-    @Suppress("unused") private val keyProtector: AndroidPlatformKeyProtector,
+    private val keyProtector: AndroidPlatformKeyProtector,
+    private val profileId: String,
 ) : AutoCloseable {
+    fun keyProtectionLevel(): AndroidKeyProtectionLevel = keyProtector.protectionLevel(profileId)
     fun identityInfo(): MobileIdentityInfo = client.identityInfo()
 
     fun certificateSigningRequest(): ByteArray = client.certificateSigningRequest()
@@ -134,7 +138,7 @@ internal class AndroidMobileProfile private constructor(
                 context.packageName,
                 keyProtector,
             )
-            return AndroidMobileProfile(client, keyProtector)
+            return AndroidMobileProfile(client, keyProtector, context.packageName)
         }
     }
 }

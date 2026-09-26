@@ -3,6 +3,8 @@ package com.astraive.lattice
 import java.security.SecureRandom
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AndroidPrivateKeyProtectorTest {
@@ -65,11 +67,26 @@ class AndroidPrivateKeyProtectorTest {
         }
     }
 
-    private fun testProtector(): AndroidPrivateKeyProtector = AndroidPrivateKeyProtector(
+    @Test
+    fun reportsKeyProtectionLevelWithoutAssumingHardware() {
+        val hardwareBacked = testProtector(AndroidKeyProtectionLevel.HARDWARE_BACKED)
+        val softwareBacked = testProtector(AndroidKeyProtectionLevel.SOFTWARE_BACKED)
+        val unknown = testProtector()
+
+        assertEquals(AndroidKeyProtectionLevel.HARDWARE_BACKED, hardwareBacked.protectionLevel("profile-alpha"))
+        assertEquals(AndroidKeyProtectionLevel.SOFTWARE_BACKED, softwareBacked.protectionLevel("profile-alpha"))
+        assertEquals(AndroidKeyProtectionLevel.UNKNOWN, unknown.protectionLevel("profile-alpha"))
+    }
+
+    private fun testProtector(
+        reportedProtectionLevel: AndroidKeyProtectionLevel = AndroidKeyProtectionLevel.UNKNOWN,
+    ): AndroidPrivateKeyProtector = AndroidPrivateKeyProtector(
         object : AndroidPrivateKeyProtector.KeyProvider {
             private val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(256, SecureRandom()) }.generateKey()
 
             override fun keyFor(profileIdUtf8: ByteArray): SecretKey = key
+
+            override fun protectionLevel(profileIdUtf8: ByteArray): AndroidKeyProtectionLevel = reportedProtectionLevel
         },
     )
 

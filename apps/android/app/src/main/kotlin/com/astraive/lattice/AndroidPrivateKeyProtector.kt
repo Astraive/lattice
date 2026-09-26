@@ -1,6 +1,8 @@
 package com.astraive.lattice
 
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import java.nio.CharBuffer
 import java.nio.charset.CharacterCodingException
@@ -11,7 +13,14 @@ import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+
+internal enum class AndroidKeyProtectionLevel(val diagnosticLabel: String) {
+    HARDWARE_BACKED("hardware-backed"),
+    SOFTWARE_BACKED("software-backed"),
+    UNKNOWN("unavailable; Android Keystore did not report hardware backing"),
+}
 
 /**
  * Wraps private material in an authenticated, profile-bound envelope.
@@ -80,8 +89,16 @@ class AndroidPrivateKeyProtector {
         return clear
     }
 
+    internal fun protectionLevel(profileId: String): AndroidKeyProtectionLevel = try {
+        keyProvider.protectionLevel(encodeProfileId(profileId))
+    } catch (_: Exception) {
+        AndroidKeyProtectionLevel.UNKNOWN
+    }
+
     internal interface KeyProvider {
         fun keyFor(profileIdUtf8: ByteArray): SecretKey
+        fun protectionLevel(profileIdUtf8: ByteArray): AndroidKeyProtectionLevel =
+            AndroidKeyProtectionLevel.UNKNOWN
     }
 
     private class AndroidKeyStoreKeyProvider : KeyProvider {
@@ -107,6 +124,31 @@ class AndroidPrivateKeyProtector {
                     .build(),
             )
             generator.generateKey()
+        }
+        override fun protectionLevel(profileIdUtf8: ByteArray): AndroidKeyProtectionLevel =
+            synchronized(KEY_STORE_LOCK) {
+                val key = keyFor(profileIdUtf8)
+                val keyInfo = SecretKeyFactory.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEY_STORE)
+                    .getKeySpec(key, KeyInfo::class.java) as KeyInfo
+                classifyKeyInfo(keyInfo)
+            }
+        @Suppress("DEPRECATION")
+        private fun classifyKeyInfo(keyInfo: KeyInfo): AndroidKeyProtectionLevel {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                return when (keyInfo.securityLevel) {
+                    KeyProperties.SECURITY_LEVEL_SOFTWARE -> AndroidKeyProtectionLevel.SOFTWARE_BACKED
+                    KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT,
+                    KeyProperties.SECURITY_LEVEL_STRONGBOX,
+                    KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE,
+                    -> AndroidKeyProtectionLevel.HARDWARE_BACKED
+                    else -> AndroidKeyProtectionLevel.UNKNOWN
+                }
+            }
+            return if (keyInfo.isInsideSecureHardware) {
+                AndroidKeyProtectionLevel.HARDWARE_BACKED
+            } else {
+                AndroidKeyProtectionLevel.SOFTWARE_BACKED
+            }
         }
     }
 

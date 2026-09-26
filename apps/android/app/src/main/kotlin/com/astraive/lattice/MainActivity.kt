@@ -29,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -90,6 +91,7 @@ internal data class NearbyScreenState(
     val message: String = "Bluetooth permission has not been requested. Nearby discovery has not started.",
     val showPermissionRationale: Boolean = false,
     val profileStatus: String = "Preparing protected device profile.",
+    val keystoreProtectionLevel: AndroidKeyProtectionLevel? = null,
     val identityFingerprint: String? = null,
     val identityBundleHex: String? = null,
     val identityPin: IdentityPinUiState = IdentityPinUiState(),
@@ -296,6 +298,9 @@ class MainActivity : ComponentActivity() {
                     profile.close()
                     throw error
                 }
+                val keyProtectionLevel = withContext(Dispatchers.IO) {
+                    profile.keyProtectionLevel()
+                }
                 if (isFinishing || isDestroyed) {
                     profile.close()
                     return@launch
@@ -303,6 +308,7 @@ class MainActivity : ComponentActivity() {
                 mobileProfile = profile
                 screenState = screenState.copy(
                     profileStatus = "Protected local identity is available on this device.",
+                    keystoreProtectionLevel = keyProtectionLevel,
                     identityFingerprint = identity.fingerprint.toLowerHex(),
                     identityBundleHex = identity.publicBundle.toLowerHex(),
                     localSpaces = firstSpacePage.spaces,
@@ -1932,7 +1938,7 @@ private fun NearbyReadinessScreen(
     onCancelMessageEdit: (String) -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
             PrimaryTabRow(selectedTabIndex = destination.ordinal) {
                 NearbyDestination.entries.forEach { page ->
                     Tab(
@@ -2197,6 +2203,15 @@ private fun NearbyReadinessScreen(
                         "Readiness",
                         modifier = Modifier.semantics { heading() },
                         style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        "Android Keystore wrapping key: ${state.keystoreProtectionLevel?.diagnosticLabel ?: "not checked"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "Hardware backing describes the wrapping key only; this status does not identify StrongBox or claim the identity signing keys are hardware-resident.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text("Bluetooth permission: ${state.permission.label()}", style = MaterialTheme.typography.bodyMedium)
                     Text("Bluetooth: ${state.bluetooth.label()}", style = MaterialTheme.typography.bodyMedium)
