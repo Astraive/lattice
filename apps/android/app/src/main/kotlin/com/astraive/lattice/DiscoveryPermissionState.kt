@@ -1,5 +1,11 @@
 package com.astraive.lattice
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+
 /** Permission states shown to the user before any nearby scan is started. */
 enum class DiscoveryPermissionState {
     NOT_REQUESTED,
@@ -38,4 +44,24 @@ object DiscoveryPermissionClassifier {
         }
         return DiscoveryPermissionState.NOT_REQUESTED
     }
+}
+
+/** Runtime permissions required for exp0 scanning, advertising, and later GATT setup. */
+internal object BleDiscoveryPermissionPolicy {
+    @SuppressLint("InlinedApi")
+    fun requiredRuntimePermissions(apiLevel: Int): Set<String> =
+        if (apiLevel >= Build.VERSION_CODES.S) {
+            setOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+            )
+        } else {
+            setOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+    fun hasRequiredPermissions(context: Context): Boolean =
+        requiredRuntimePermissions(Build.VERSION.SDK_INT).all {
+            context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+        }
 }

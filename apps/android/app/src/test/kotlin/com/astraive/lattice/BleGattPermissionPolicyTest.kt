@@ -17,4 +17,25 @@ class BleGattPermissionPolicyTest {
             BleGattPermissionPolicy.requiredRuntimePermissions(Build.VERSION_CODES.S),
         )
     }
+
+    @Test
+    fun exp0RequiresScanConnectAndAdvertisePermissionsOnAndroidS() {
+        assertEquals(
+            setOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+            ),
+            BleDiscoveryPermissionPolicy.requiredRuntimePermissions(Build.VERSION_CODES.S),
+        )
+    }
+
+    @Test
+    fun preSDiscoveryRequiresLocationPermissionForBleScanning() {
+        assertEquals(
+            setOf(Manifest.permission.ACCESS_FINE_LOCATION),
+            BleDiscoveryPermissionPolicy.requiredRuntimePermissions(Build.VERSION_CODES.R),
+        )
+    }
+
 }
