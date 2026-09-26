@@ -2,9 +2,9 @@
 
 **Profile label:** `lattice-ble-exp0`  
 **Status:** experimental candidate; not an interoperable release.  
-**Scope:** BLE discovery and link-layer framing only. Event identity, authorization, MLS state, and envelope semantics remain transport-independent.
+**Scope:** BLE discovery, authenticated link establishment, and link-layer envelope framing only. Event identity, authorization, MLS state, and envelope semantics remain transport-independent.
 
-This document assigns the first migration label and defines candidate service, discovery, and first-contact identity-binding values for BLE. These values are suitable for isolated development/test builds only; ADR-005 review, byte vectors, independent implementation checks, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
+This document assigns the first migration label and defines candidate service, discovery, first-contact identity-binding, and bounded-framing values for BLE. [`ADR-005`](../../docs/decisions/ADR-005-ble-exp0-profile.md) records their experimental status, and [`ble-exp0.json`](../vectors/ble-exp0.json) supplies candidate byte vectors. These are development/test values only; negative/replay coverage, a reproducible Noise transport vector, independent implementation checks, security/privacy review, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
 
 ## Version domains and migration labels
 
@@ -57,7 +57,6 @@ Rotation replaces the old token atomically; the advertiser MUST NOT emit both ge
 
 Rotation limits the lifetime of this application-layer handle; it does not guarantee unlinkability or anonymity. A nearby observer may correlate transmissions across a token change using timing, radio address behavior, signal strength, hardware/OS behavior, or physical observation. Android controls address privacy and background execution; the application MUST NOT claim a guaranteed address-rotation schedule or continuous discovery.
 
-
 ## Noise XX and first-contact identity binding
 
 For each GATT connection, the central is the Noise initiator and the service host is the responder. Exp0 uses `Noise_XX_25519_ChaChaPoly_SHA256`; the Noise-generated static keys are session-only and MUST NOT be treated as Lattice identity keys. The initiator and responder exchange the three Noise XX handshake messages on `control`, each with an empty Noise payload. A completed Noise handshake alone is unauthenticated and MUST NOT expose Space identifiers, membership, invitations, or application envelopes.
@@ -77,12 +76,10 @@ The service UUID bytes in this prologue use the canonical byte order shown by th
 
 After Noise enters transport mode, the peers exchange these strictly sized, Noise-encrypted records. All multi-byte lengths and integers are unsigned big-endian; the existing 65-byte version-1 identity bundle is used unchanged.
 
-| Direction | Record | Exact layout | Bytes |
-| --- | --- | --- | ---: |
-| Initiator → responder | Initiator identity proof | `LBEI || 00 || 01 || initiator_bundle[65] || signature[64]` | 135 |
-| Responder → initiator | Responder identity proof | `LBER || 00 || 02 || responder_bundle[65] || signature[64]` | 135 |
-| Initiator → responder | Initiator confirmation | `LBEC || 00 || 01 || signature[64]` | 70 |
-| Responder → initiator | Responder confirmation | `LBEC || 00 || 02 || signature[64]` | 70 |
+- Initiator → responder, identity proof (135 bytes): `LBEI || 00 || 01 || initiator_bundle[65] || signature[64]`.
+- Responder → initiator, identity proof (135 bytes): `LBER || 00 || 02 || responder_bundle[65] || signature[64]`.
+- Initiator → responder, confirmation (70 bytes): `LBEC || 00 || 01 || signature[64]`.
+- Responder → initiator, confirmation (70 bytes): `LBEC || 00 || 02 || signature[64]`.
 
 The four-byte magic values are the ASCII octets shown. Version and role are one byte each; no length field or optional extension is permitted in these exp0 records.
 
@@ -112,6 +109,22 @@ Render those bytes as twelve lowercase hexadecimal digits grouped into six two-d
 
 The initiator sends its confirmation only after verifying the responder proof and local first-contact policy. The responder becomes peer-authenticated only after verifying that confirmation and its own local first-contact policy; it then sends the responder confirmation. The initiator becomes peer-authenticated only after verifying the responder confirmation. Neither side may send sensitive scope data before reaching that state. Any malformed proof, fingerprint mismatch, failed signature, token mismatch, declined comparison, cancellation, or transport error closes the GATT session and discards the Noise state, proofs, and connection-local token copy.
 
+## Envelope framing, credits, pacing, and reconnect
+
+All values below are `lattice-ble-exp0` candidate rules, not a stable interoperability contract. Every authenticated control record is one complete Noise transport message on `control`; Noise adds its 16-byte ChaChaPoly tag. No GATT long writes, prepare writes, or implicit record concatenation are used. The largest identity-proof record is 135 bytes before Noise encryption, so the negotiated ATT MTU MUST be at least 154 octets: `135 + 16 + 3` for the GATT value and ATT opcode/handle. The central SHOULD request MTU 247 before starting Noise; if the negotiated MTU is below 154, the connection closes before sending identity or application data. A failed MTU request is not permission to fall back.
+
+Let `V = min(512, ATT_MTU - 3)` be the maximum value accepted for a write, notification, or indication. Exp0 envelope frames have a 24-byte header: ASCII `LF`, version `01`, reserved `00`, `transfer_id[8]`, `sequence[2]`, `fragment_index[2]`, `frame_count[2]`, `envelope_length[4]`, and `payload_length[2]`; all integers are unsigned big-endian. `sequence` MUST equal `fragment_index`. Each frame carries a non-empty contiguous slice of one already-protected envelope, and its complete value MUST fit `V`. The payload capacity is `V - 24`; the negotiated minimum therefore permits at least 127 payload bytes per frame. Exp0 caps one envelope at 112,640 bytes (110 KiB), one transfer at 1,024 frames, one incomplete inbound assembly per direction, 112,640 buffered bytes per direction, and a fixed 30,000 ms assembly lifetime measured on a monotonic clock. Implementations MUST configure stricter exp0 limits than the standalone codec defaults where necessary. Frame count MUST equal `ceil(envelope_length / payload_capacity)`, and all non-final fragments MUST fill the capacity exactly.
+
+An authenticated sender begins each envelope with one `LBTS` transfer-start record: `ASCII("LBTS") || 00 || sender_role[1] || transfer_id[8] || envelope_length[4] || frame_count[2]`, exactly 20 bytes before Noise encryption. The sender chooses one cryptographically random non-zero `u64` transfer ID per direction and authenticated session, increments it by one for each later transfer, and closes the session before wrap; the receiver requires this sequence after accepting its first start. The role is `01` for initiator or `02` for responder. A receiver accepts a start only when no transfer in that direction is active and the length, count, role, ID sequence, and negotiated-MTU arithmetic are exact.
+
+The receiver grants a sliding window with one 16-byte pre-encryption `LBWC` record: `ASCII("LBWC") || 00 || sender_role[1] || transfer_id[8] || grant_limit[2]`. `grant_limit` is the exclusive upper bound: the sender may transmit only fragment indices smaller than it. The first grant is `min(4, frame_count)`; after each newly accepted unique fragment, the receiver raises it to `min(accepted_unique_fragment_count + 4, frame_count)`. Identical duplicate fragments are idempotent and do not create credit; conflicting duplicates abort the transfer and close the link. Grants MUST be monotonic, match the active transfer and sender role, and never exceed `frame_count`. A sender MUST send fragments in increasing index order and keep no more than four uncredited fragments in flight. Each GATT connection serializes characteristic operations: at most one client write request is outstanding, and server notifications are emitted one at a time. GATT callback success or local queue acceptance is not remote application receipt.
+
+After complete reassembly, the receiver hands the opaque envelope to its bounded ingress owner. Only after that bounded handoff succeeds does it send a 14-byte pre-encryption completion record `ASCII("LBFA") || 00 || sender_role[1] || transfer_id[8]`. `LBFA` means the receiving transport accepted one complete envelope into bounded ingress; it does not mean Core validation, durable storage, Space authorization, destination delivery, or reading. If ingress cannot accept it, the receiver closes without `LBFA`. A missing credit/completion or incomplete assembly that reaches the 30,000 ms deadline closes the connection; exp0 does not resume fragment state. The sender retains the original durable outbox object and retries that complete envelope after a fresh authenticated session. The signed event and event ID are unchanged; receiver deduplication handles a whole-envelope retry. Transfer IDs and partial assemblies are connection-local and are discarded on every close.
+
+Ownership is explicit: Core/storage owns authored events and durable outbox state; the router owns path choice and retry/backoff, including waking a pending send after fresh discovery; the Android lifecycle owner decides whether permissions, foreground policy, and Bluetooth state permit scanning or reconnect; the GATT adapter owns platform handles, MTU reporting, serialized operations, and typed local results; the authenticated BLE session owns Noise state, transfer/credit validation, and the bounded per-connection assembler. The adapter MUST NOT invent an event, mark a GATT write as delivery, reconnect on its own, or persist a partial transfer. Permission loss, Bluetooth shutdown, process/lifecycle stop, malformed control/frame data, MTU failure, or link loss closes the session and clears ephemeral token, Noise, credit, and assembly state. A subsequent connection rediscovers a current token and repeats the complete identity-binding handshake; no weaker-profile fallback or cross-session fragment resume is allowed.
+
+These ceilings bound one BLE session, not a measured throughput or battery promise. NET-001/002 and the chosen MTU/window behavior remain unverified until exercised on named Android devices under loss, disconnection, permission changes, and process restart.
+
 ## Security and release boundary
 
-No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Byte-exact positive/negative handshake and advertisement vectors, replay tests, frame layout, aggregate reassembly limits, pacing/credit windows, reconnect ownership, independent implementation checks, and physical two-/three-device acceptance remain release gates.
+No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Candidate positive advertisement, prologue, identity-proof, frame, and credit vectors are in [`ble-exp0.json`](../vectors/ble-exp0.json); malformed/negative and replay coverage, a reproducible Noise XX transport vector, independent implementation checks, and physical two-/three-device acceptance remain release gates.

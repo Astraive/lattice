@@ -70,6 +70,7 @@ internal enum class BluetoothReadiness {
     BLUETOOTH_OFF,
     ADAPTER_UNAVAILABLE,
     SCANNER_UNAVAILABLE,
+    ADVERTISER_UNAVAILABLE,
     ACCESS_UNAVAILABLE,
 }
 internal enum class NearbyDestination {
@@ -117,6 +118,7 @@ class MainActivity : ComponentActivity() {
     private var screenState by mutableStateOf(NearbyScreenState())
     private var mobileProfile: AndroidMobileProfile? = null
     private lateinit var nearbyScanner: NearbyServiceScanner
+    private lateinit var nearbyAdvertiser: NearbyBleAdvertiser
     private var receiverRegistered = false
     private var persistentReceiverRegistered = false
     private var permissionHistoryBeforePrompt = false
@@ -175,7 +177,7 @@ class MainActivity : ComponentActivity() {
         screenState = screenState.copy(
             message = when (permission) {
                 DiscoveryPermissionState.GRANTED -> if (screenState.bluetooth == BluetoothReadiness.READY) {
-                    "Bluetooth access is granted. Tap Find nearby service to start a scan."
+                    "Bluetooth access is granted. Tap Find nearby service to scan and advertise."
                 } else {
                     bluetoothMessage(screenState.bluetooth)
                 }
@@ -210,7 +212,7 @@ class MainActivity : ComponentActivity() {
                     if (!isFinishing && !isDestroyed && screenState.scanning) {
                         screenState = screenState.copy(
                             sightings = count,
-                            message = "Scanning for the generic Lattice service. $count unverified service sighting${if (count == 1) "" else "s"} found.",
+                            message = "Scanning for exp0 discovery tokens. $count unverified token sighting${if (count == 1) "" else "s"} found.",
                         )
                     }
                 }
@@ -218,6 +220,18 @@ class MainActivity : ComponentActivity() {
             onFailure = { failure ->
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
+                        if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
+                        screenState = screenState.copy(scanning = false, sightings = 0, message = failure)
+                    }
+                }
+            },
+        )
+        nearbyAdvertiser = NearbyBleAdvertiser(
+            context = this,
+            onFailure = { failure ->
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        nearbyScanner.stop()
                         screenState = screenState.copy(scanning = false, sightings = 0, message = failure)
                     }
                 }
@@ -1668,7 +1682,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        stopScanning("Nearby scan stopped because the app left the foreground. No sightings are retained.")
+        stopScanning("BLE discovery stopped because the app left the foreground. No sightings are retained.")
         if (receiverRegistered) {
             unregisterReceiver(bluetoothReceiver)
             receiverRegistered = false
@@ -1683,6 +1697,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (::nearbyScanner.isInitialized) nearbyScanner.stop()
+        if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
         mobileProfile?.close()
         mobileProfile = null
         super.onDestroy()
@@ -1690,7 +1705,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onPrimaryAction() {
         if (screenState.scanning) {
-            stopScanning("Nearby scan stopped. Temporary sightings were cleared.")
+            stopScanning("BLE discovery stopped. Temporary token sightings were cleared.")
             return
         }
 
@@ -1705,6 +1720,7 @@ class MainActivity : ComponentActivity() {
             BluetoothReadiness.PERMISSION_REQUIRED -> screenState = screenState.copy(showPermissionRationale = true)
             BluetoothReadiness.ADAPTER_UNAVAILABLE,
             BluetoothReadiness.SCANNER_UNAVAILABLE,
+            BluetoothReadiness.ADVERTISER_UNAVAILABLE,
             BluetoothReadiness.ACCESS_UNAVAILABLE -> refreshReadiness()
         }
     }
@@ -1729,17 +1745,21 @@ class MainActivity : ComponentActivity() {
     private fun startScanning() {
         when (nearbyScanner.start()) {
             NearbyServiceScanner.StartResult.STARTED -> {
+                if (!startAdvertising()) {
+                    nearbyScanner.stop()
+                    return
+                }
                 screenState = screenState.copy(
                     scanning = true,
                     sightings = 0,
-                    message = "Scanning for the generic Lattice service. A found service is not an authenticated Lattice peer.",
+                    message = "Scanning for and advertising exp0 discovery tokens. Sightings are unauthenticated; no GATT connection or message exchange is available.",
                 )
             }
             NearbyServiceScanner.StartResult.PERMISSION_MISSING -> {
                 if (refreshReadiness() == DiscoveryPermissionState.GRANTED) {
                     setBluetoothFailure(
                         BluetoothReadiness.ACCESS_UNAVAILABLE,
-                        "Android refused to start the Bluetooth scan. Check app permissions and Bluetooth settings.",
+                        "Android refused to start BLE discovery. Check app permissions and Bluetooth settings.",
                     )
                 } else {
                     screenState = screenState.copy(showPermissionRationale = true)
@@ -1751,7 +1771,7 @@ class MainActivity : ComponentActivity() {
             )
             NearbyServiceScanner.StartResult.BLUETOOTH_OFF -> setBluetoothFailure(
                 BluetoothReadiness.BLUETOOTH_OFF,
-                "Bluetooth is off. Turn it on to discover the generic Lattice service.",
+                "Bluetooth is off. Turn it on to discover nearby exp0 peers.",
             )
             NearbyServiceScanner.StartResult.SCANNER_UNAVAILABLE -> setBluetoothFailure(
                 BluetoothReadiness.SCANNER_UNAVAILABLE,
@@ -1759,13 +1779,51 @@ class MainActivity : ComponentActivity() {
             )
             NearbyServiceScanner.StartResult.FAILED -> setBluetoothFailure(
                 BluetoothReadiness.ACCESS_UNAVAILABLE,
-                "Android could not start Bluetooth scanning. Check Bluetooth availability and try again.",
+                "Android could not start BLE scanning. Check Bluetooth availability and try again.",
             )
+        }
+    }
+
+    private fun startAdvertising(): Boolean = when (nearbyAdvertiser.start()) {
+        NearbyBleAdvertiser.StartResult.STARTED -> true
+        NearbyBleAdvertiser.StartResult.PERMISSION_MISSING -> {
+            if (refreshReadiness() == DiscoveryPermissionState.GRANTED) {
+                setBluetoothFailure(
+                    BluetoothReadiness.ACCESS_UNAVAILABLE,
+                    "Android refused to start BLE advertising. Check app permissions and Bluetooth settings.",
+                )
+            } else {
+                screenState = screenState.copy(showPermissionRationale = true)
+            }
+            false
+        }
+        NearbyBleAdvertiser.StartResult.ADAPTER_UNAVAILABLE -> {
+            setBluetoothFailure(BluetoothReadiness.ADAPTER_UNAVAILABLE, "No Bluetooth adapter is available on this device.")
+            false
+        }
+        NearbyBleAdvertiser.StartResult.BLUETOOTH_OFF -> {
+            setBluetoothFailure(BluetoothReadiness.BLUETOOTH_OFF, "Bluetooth is off. Turn it on to discover nearby exp0 peers.")
+            false
+        }
+        NearbyBleAdvertiser.StartResult.ADVERTISER_UNAVAILABLE -> {
+            setBluetoothFailure(
+                BluetoothReadiness.ADVERTISER_UNAVAILABLE,
+                "This device does not currently provide a Bluetooth LE advertiser.",
+            )
+            false
+        }
+        NearbyBleAdvertiser.StartResult.FAILED -> {
+            setBluetoothFailure(
+                BluetoothReadiness.ACCESS_UNAVAILABLE,
+                "Android could not start BLE advertising. Check Bluetooth availability and try again.",
+            )
+            false
         }
     }
 
     private fun setBluetoothFailure(readiness: BluetoothReadiness, message: String) {
         nearbyScanner.stop()
+        nearbyAdvertiser.stop()
         screenState = screenState.copy(
             bluetooth = readiness,
             scanning = false,
@@ -1776,6 +1834,7 @@ class MainActivity : ComponentActivity() {
 
     private fun stopScanning(message: String) {
         if (::nearbyScanner.isInitialized) nearbyScanner.stop()
+        if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
         screenState = screenState.copy(scanning = false, sightings = 0, message = message)
     }
 
@@ -1788,7 +1847,10 @@ class MainActivity : ComponentActivity() {
         }
 
         if (permission != DiscoveryPermissionState.GRANTED) {
-            if (screenState.scanning) nearbyScanner.stop()
+            if (screenState.scanning) {
+                nearbyScanner.stop()
+                nearbyAdvertiser.stop()
+            }
             screenState = screenState.copy(
                 permission = permission,
                 bluetooth = BluetoothReadiness.PERMISSION_REQUIRED,
@@ -1805,12 +1867,16 @@ class MainActivity : ComponentActivity() {
                 adapter == null -> BluetoothReadiness.ADAPTER_UNAVAILABLE
                 !adapter.isEnabled -> BluetoothReadiness.BLUETOOTH_OFF
                 adapter.bluetoothLeScanner == null -> BluetoothReadiness.SCANNER_UNAVAILABLE
+                adapter.bluetoothLeAdvertiser == null -> BluetoothReadiness.ADVERTISER_UNAVAILABLE
                 else -> BluetoothReadiness.READY
             }
         } catch (_: SecurityException) {
             BluetoothReadiness.ACCESS_UNAVAILABLE
         }
-        if (screenState.scanning && bluetooth != BluetoothReadiness.READY) nearbyScanner.stop()
+        if (screenState.scanning && bluetooth != BluetoothReadiness.READY) {
+            nearbyScanner.stop()
+            nearbyAdvertiser.stop()
+        }
         val stillScanning = screenState.scanning && bluetooth == BluetoothReadiness.READY
         screenState = screenState.copy(
             permission = permission,
@@ -1834,11 +1900,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun runtimePermissions(): Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-    } else {
-        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-    }
+    private fun runtimePermissions(): Array<String> =
+        BleDiscoveryPermissionPolicy.requiredRuntimePermissions(Build.VERSION.SDK_INT).toTypedArray()
 
     private fun permissionMessage(permission: DiscoveryPermissionState): String = when (permission) {
         DiscoveryPermissionState.NOT_REQUESTED -> "Bluetooth permission has not been requested. Nearby discovery has not started."
@@ -1849,18 +1912,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun bluetoothMessage(readiness: BluetoothReadiness): String = when (readiness) {
-        BluetoothReadiness.PERMISSION_REQUIRED -> "Bluetooth status is not checked until the required permission is granted."
-        BluetoothReadiness.READY -> "Bluetooth is on and a Bluetooth LE scanner is available. Discovery has not started."
+        BluetoothReadiness.PERMISSION_REQUIRED -> "Bluetooth status is not checked until the required permissions are granted."
+        BluetoothReadiness.READY -> "Bluetooth scanner and advertiser are available. Discovery has not started."
         BluetoothReadiness.BLUETOOTH_OFF -> "Bluetooth is off. Turn it on, then tap Find nearby service."
         BluetoothReadiness.ADAPTER_UNAVAILABLE -> "No Bluetooth adapter is available on this device."
         BluetoothReadiness.SCANNER_UNAVAILABLE -> "This device does not currently provide a Bluetooth LE scanner."
+        BluetoothReadiness.ADVERTISER_UNAVAILABLE -> "This device does not currently provide a Bluetooth LE advertiser."
         BluetoothReadiness.ACCESS_UNAVAILABLE -> "Android did not allow access to Bluetooth status. Review permissions or Bluetooth settings."
     }
 
     private fun permissionRationaleText(): String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        "Android will ask for nearby-device Bluetooth permissions. Lattice uses them only to check Bluetooth and scan for one generic service. It will not connect to a device or exchange data. A found service is not an authenticated Lattice peer."
+        "Android will ask for nearby-device Bluetooth scan, connect, and advertise permissions. Lattice scans and advertises an experimental rotating discovery token; sightings are unauthenticated, and no GATT connection or message exchange is available."
     } else {
-        "Android requires location permission for Bluetooth LE scanning on this Android version. Lattice requests it only for BLE discovery and does not access or save your location. The scan looks only for one generic service, does not connect, and exchanges no data."
+        "Android requires location permission for Bluetooth LE scanning on this Android version. Lattice scans and advertises an experimental rotating discovery token; it does not access or save your location, connect to peers, or exchange messages."
     }
 
     private fun openAppSettings() {
@@ -2231,8 +2295,8 @@ private fun NearbyReadinessScreen(
                     Text(state.message, style = MaterialTheme.typography.bodyLarge)
                     if (state.scanning) {
                         Text(
-                            if (state.sightings >= 1024) "Unverified service sightings: 1,024+"
-                            else "Unverified service sightings: ${state.sightings}",
+                            if (state.sightings >= 1024) "Unverified token sightings: 1,024+"
+                            else "Unverified token sightings: ${state.sightings}",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -2250,7 +2314,7 @@ private fun NearbyReadinessScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
-                        "This opt-in foreground service keeps generic BLE discovery active while the app is backgrounded. Signals remain unverified; there is no GATT connection or message exchange.",
+                        "This opt-in foreground service scans and advertises experimental rotating BLE discovery tokens while the app is backgrounded. Signals remain unverified; there is no GATT connection or message exchange.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2310,11 +2374,12 @@ private fun DiscoveryPermissionState.label(): String = when (this) {
 }
 
 private fun BluetoothReadiness.label(): String = when (this) {
-    BluetoothReadiness.PERMISSION_REQUIRED -> "Not checked (permission required)"
-    BluetoothReadiness.READY -> "On; scanner available"
+    BluetoothReadiness.PERMISSION_REQUIRED -> "Not checked (permissions required)"
+    BluetoothReadiness.READY -> "On; scanner and advertiser available"
     BluetoothReadiness.BLUETOOTH_OFF -> "Off"
     BluetoothReadiness.ADAPTER_UNAVAILABLE -> "No adapter"
     BluetoothReadiness.SCANNER_UNAVAILABLE -> "No BLE scanner"
+    BluetoothReadiness.ADVERTISER_UNAVAILABLE -> "No BLE advertiser"
     BluetoothReadiness.ACCESS_UNAVAILABLE -> "Status unavailable"
 }
 

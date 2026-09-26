@@ -1,6 +1,5 @@
 package com.astraive.lattice
 
-import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
@@ -9,16 +8,13 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Base64
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import java.security.SecureRandom
-import java.util.UUID
 
-/** Scans for the single generic candidate service. It never connects or retains device data. */
+/** Scans only valid exp0 service-data tokens and never reads or retains device addresses. */
 internal class NearbyServiceScanner(
     context: Context,
     private val onSightingsChanged: (Int) -> Unit,
@@ -38,9 +34,9 @@ internal class NearbyServiceScanner(
     private var scanner: BluetoothLeScanner? = null
     private var callback: ScanCallback? = null
     private var running = false
-    private var sessionSalt: ByteArray? = null
-    private var digest: MessageDigest? = null
-    private val observedDigests = HashSet<String>()
+    private val sightings = BleExp0SightingCache()
+    private val expiryHandler = Handler(Looper.getMainLooper())
+    private val expiryTask = Runnable { expireSightings() }
 
     fun start(): StartResult {
         synchronized(lock) {
@@ -63,8 +59,6 @@ internal class NearbyServiceScanner(
             }
 
             clearSession()
-            sessionSalt = ByteArray(32).also { SecureRandom().nextBytes(it) }
-            digest = MessageDigest.getInstance("SHA-256")
             val scanCallback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
                     record(result)
@@ -89,7 +83,11 @@ internal class NearbyServiceScanner(
                 leScanner.startScan(
                     listOf(
                         ScanFilter.Builder()
-                            .setServiceUuid(ParcelUuid(LATTICE_SERVICE_UUID_V1))
+                            .setServiceData(
+                                SERVICE_DATA_UUID,
+                                byteArrayOf(BleExp0Advertisement.PROFILE_DISCRIMINATOR),
+                                byteArrayOf(0xff.toByte()),
+                            )
                             .build(),
                     ),
                     ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build(),
@@ -130,50 +128,49 @@ internal class NearbyServiceScanner(
     }
 
     private fun record(result: ScanResult) {
+        val token = BleExp0Advertisement.tokenFromServiceData(
+            result.scanRecord?.getServiceData(SERVICE_DATA_UUID),
+        ) ?: return
+        val key = Base64.encodeToString(token, Base64.NO_WRAP)
+        token.fill(0)
+        val now = SystemClock.elapsedRealtime()
         val newCount = synchronized(lock) {
-            if (!running || observedDigests.size >= MAX_EPHEMERAL_SIGHTINGS) return
-            val address = try {
-                result.device.address
-            } catch (_: SecurityException) {
-                return
-            }
-            val localDigest = digest ?: return
-            val salt = sessionSalt ?: return
-            localDigest.reset()
-            localDigest.update(salt)
-            val key = Base64.encodeToString(
-                localDigest.digest(address.toByteArray(StandardCharsets.UTF_8)),
-                Base64.NO_WRAP,
-            )
-            if (!observedDigests.add(key)) return
-            observedDigests.size
+            if (!running || !sightings.remember(key, now)) return
+            scheduleExpiryLocked(now)
+            sightings.size
         }
         onSightingsChanged(newCount)
     }
 
     private fun clearSession() {
-        observedDigests.clear()
-        sessionSalt?.fill(0)
-        sessionSalt = null
-        digest = null
+        expiryHandler.removeCallbacks(expiryTask)
+        sightings.clear()
     }
 
-    private fun hasScanPermissions(): Boolean {
-        val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    private fun expireSightings() {
+        val count = synchronized(lock) {
+            if (!running) return
+            val now = SystemClock.elapsedRealtime()
+            val currentCount = sightings.expire(now)
+            scheduleExpiryLocked(now)
+            currentCount
         }
-        return required.all {
-            appContext.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
-        }
+        onSightingsChanged(count)
     }
+
+    private fun scheduleExpiryLocked(nowMillis: Long) {
+        expiryHandler.removeCallbacks(expiryTask)
+        val delay = sightings.nextExpiryDelayMillis(nowMillis) ?: return
+        expiryHandler.postDelayed(expiryTask, delay)
+    }
+
+    private fun hasScanPermissions(): Boolean =
+        BleDiscoveryPermissionPolicy.hasRequiredPermissions(appContext)
 
     private fun bluetoothAdapter(): BluetoothAdapter? =
         appContext.getSystemService(BluetoothManager::class.java)?.adapter
 
     private companion object {
-        const val MAX_EPHEMERAL_SIGHTINGS = 1024
-        val LATTICE_SERVICE_UUID_V1: UUID = UUID.fromString("1c9a0001-7d31-4f6a-9b43-4c4154544943")
+        val SERVICE_DATA_UUID = ParcelUuid(BleExp0Advertisement.SERVICE_UUID)
     }
 }
