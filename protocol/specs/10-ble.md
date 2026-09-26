@@ -4,7 +4,7 @@
 **Status:** experimental candidate; not an interoperable release.  
 **Scope:** BLE discovery and link-layer framing only. Event identity, authorization, MLS state, and envelope semantics remain transport-independent.
 
-This document assigns the first migration label and defines candidate service and discovery values for BLE. These values are suitable for isolated development/test builds only; ADR-005 review, byte vectors, independent implementation checks, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
+This document assigns the first migration label and defines candidate service, discovery, and first-contact identity-binding values for BLE. These values are suitable for isolated development/test builds only; ADR-005 review, byte vectors, independent implementation checks, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
 
 ## Version domains and migration labels
 
@@ -57,6 +57,61 @@ Rotation replaces the old token atomically; the advertiser MUST NOT emit both ge
 
 Rotation limits the lifetime of this application-layer handle; it does not guarantee unlinkability or anonymity. A nearby observer may correlate transmissions across a token change using timing, radio address behavior, signal strength, hardware/OS behavior, or physical observation. Android controls address privacy and background execution; the application MUST NOT claim a guaranteed address-rotation schedule or continuous discovery.
 
+
+## Noise XX and first-contact identity binding
+
+For each GATT connection, the central is the Noise initiator and the service host is the responder. Exp0 uses `Noise_XX_25519_ChaChaPoly_SHA256`; the Noise-generated static keys are session-only and MUST NOT be treated as Lattice identity keys. The initiator and responder exchange the three Noise XX handshake messages on `control`, each with an empty Noise payload. A completed Noise handshake alone is unauthenticated and MUST NOT expose Space identifiers, membership, invitations, or application envelopes.
+
+Both sides construct the same fixed-width prologue:
+
+```text
+UTF8("lattice:ble:exp0:noise-xx:v0") || 0x00
+|| service_uuid[16]                    # canonical UUID/network byte order
+|| profile_discriminator[1]            # 0x00
+|| initiator_capabilities[3]
+|| responder_capabilities[3]
+|| observed_responder_token[9]
+```
+
+The service UUID bytes in this prologue use the canonical byte order shown by the UUID string, not Bluetooth's little-endian advertising representation. Capabilities are ordered by handshake role, not GATT direction. Both exp0 capability descriptors are exactly `00 00 00`; the advertisement token is the responder's token observed by the initiator. The prologue length is exactly 61 octets. The responder MUST compare that token with its active token when the first identity proof arrives, then retain the matched value only for this connection through proof completion. If rotation wins that race, it rejects the handshake and requires rediscovery; it MUST NOT accept a token from another profile or silently retry under a weaker one.
+
+After Noise enters transport mode, the peers exchange these strictly sized, Noise-encrypted records. All multi-byte lengths and integers are unsigned big-endian; the existing 65-byte version-1 identity bundle is used unchanged.
+
+| Direction | Record | Exact layout | Bytes |
+| --- | --- | --- | ---: |
+| Initiator → responder | Initiator identity proof | `LBEI || 00 || 01 || initiator_bundle[65] || signature[64]` | 135 |
+| Responder → initiator | Responder identity proof | `LBER || 00 || 02 || responder_bundle[65] || signature[64]` | 135 |
+| Initiator → responder | Initiator confirmation | `LBEC || 00 || 01 || signature[64]` | 70 |
+| Responder → initiator | Responder confirmation | `LBEC || 00 || 02 || signature[64]` | 70 |
+
+The four-byte magic values are the ASCII octets shown. Version and role are one byte each; no length field or optional extension is permitted in these exp0 records.
+
+The signature inputs are exact byte concatenations. `H` is the 32-byte Noise handshake hash; `T` is the 9-byte observed responder token; `CI` and `CR` are the initiator and responder's three-byte capability descriptors; `BI` and `BR` are their exact 65-byte public bundles. Each domain below includes its trailing `0x00`:
+
+```text
+InitiatorProof = UTF8("lattice:ble:exp0:identity-init:v0") || 00
+                 || 00 || H || T || CI || CR || BI
+ResponderProof = UTF8("lattice:ble:exp0:identity-responder:v0") || 00
+                 || 00 || H || T || CI || CR || BI || BR
+InitiatorConfirm = UTF8("lattice:ble:exp0:identity-confirm-initiator:v0") || 00
+                   || 00 || H || T || CI || CR || BI || BR
+ResponderConfirm = UTF8("lattice:ble:exp0:identity-confirm-responder:v0") || 00
+                   || 00 || H || T || CI || CR || BI || BR
+```
+
+Each signature is Ed25519 over its corresponding input, using the signing key in that sender's bundle. The verifier MUST strictly parse the public bundle, validate its version and key encodings, recompute the full fingerprint, verify the expected role/magic and signature, and reject trailing or missing bytes. It MUST NOT infer identity from the Noise static key. Distinct role/domain strings and the Noise handshake hash prevent proof reflection, cross-protocol replay, and reuse across sessions.
+
+The first-contact comparison string is the first six bytes of:
+
+```text
+SHA-256(UTF8("lattice:ble:exp0:sas:v0") || 0x00
+       || H || initiator_fingerprint[32] || responder_fingerprint[32])
+```
+
+Render those bytes as twelve lowercase hexadecimal digits grouped into six two-digit groups separated by hyphens (for example, `ab-cd-ef-01-23-45`). This 48-bit string binds both full identity fingerprints to this session; it does not establish physical distance. If the peer is already pinned, its exact full fingerprint MUST match the pin or the connection closes without a replacement prompt. On first contact, each user MUST verify the same comparison string through an independent out-of-band channel (or verify the full fingerprint through an equivalent trusted QR/invite flow) and explicitly pin the full fingerprint before sensitive scope discovery. Silent trust-on-first-seen is forbidden. A locally pinned fingerprint proves only that the caller accepted that identity; it does not authorize Space membership or application actions.
+
+The initiator sends its confirmation only after verifying the responder proof and local first-contact policy. The responder becomes peer-authenticated only after verifying that confirmation and its own local first-contact policy; it then sends the responder confirmation. The initiator becomes peer-authenticated only after verifying the responder confirmation. Neither side may send sensitive scope data before reaching that state. Any malformed proof, fingerprint mismatch, failed signature, token mismatch, declined comparison, cancellation, or transport error closes the GATT session and discards the Noise state, proofs, and connection-local token copy.
+
 ## Security and release boundary
 
-No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Exact handshake identity binding, replay behavior, frame layout, aggregate reassembly limits, pacing/credit windows, reconnect ownership, and byte-exact positive/negative vectors remain separate requirements. Release claims also require independent implementation checks and physical two-/three-device acceptance; this candidate specification alone proves none of them.
+No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Byte-exact positive/negative handshake and advertisement vectors, replay tests, frame layout, aggregate reassembly limits, pacing/credit windows, reconnect ownership, independent implementation checks, and physical two-/three-device acceptance remain release gates.

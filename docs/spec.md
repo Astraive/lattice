@@ -436,27 +436,27 @@ The implementation **MUST** use platform secure-storage APIs. On iOS, sensitive 
 
 ## Pairwise session establishment
 
-Pairwise control sessions use a reviewed Noise Framework implementation rather than a custom Diffie-Hellman transcript. Noise describes authenticated handshake patterns based on Diffie-Hellman operations and symmetric transcript hashing ([noise](#ref-noise)). The initial contact profile uses a mutually authenticating pattern appropriate to previously unknown static keys; after a peer is verified/pinned, a known-key pattern may reduce round trips.
+BLE experimental profile 0 uses `Noise_XX_25519_ChaChaPoly_SHA256` with a profile-specific prologue; Noise static keys are session-only, not device identities. The 10-ble specification defines signed first-contact identity proofs after Noise enters encrypted transport mode. A completed Noise handshake alone does not authenticate a Lattice peer.
 
-The handshake transcript binds:
+The prologue and identity proofs bind:
 
-- protocol major/minor version;
+- the exp0 profile and generic GATT service UUID;
 
-- both static identity bundles;
+- the initiator and responder roles and their fixed capability descriptors;
 
-- current rotating discovery tokens;
+- the responder discovery token observed by the initiator;
 
-- supported transports and feature bits;
+- the final Noise handshake hash;
 
-- a random session nonce; and
+- both exact, canonical 65-byte identity bundles and their full fingerprints; and
 
-- optional invitation/Space context when joining.
+- the first-contact comparison string derived from the session hash and both fingerprints.
 
 Downgrade to an unsupported or weaker protocol profile must fail closed.
 
 ## Human verification
 
-Users may verify a peer by scanning a QR code or comparing a short authentication string derived from both identity fingerprints and the current session transcript. A verified relationship pins the full fingerprint, not the nickname. Nicknames are presentation metadata and are never trusted authentication labels.
+At first contact, each user compares the exp0 48-bit session authentication string through an independent channel (or verifies the full fingerprint through a trusted QR/invite flow) and explicitly pins the full fingerprint. `PinnedIdentity` checks bundle/fingerprint consistency but does not itself attest to human verification. A pin mismatch closes the path without replacement; an identity signature or Noise handshake does not grant Space membership or authorization.
 
 ## Key rotation and reset
 
