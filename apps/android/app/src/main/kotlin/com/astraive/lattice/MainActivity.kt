@@ -18,6 +18,7 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -70,6 +71,8 @@ internal data class NearbyScreenState(
     val bluetooth: BluetoothReadiness = BluetoothReadiness.PERMISSION_REQUIRED,
     val scanning: Boolean = false,
     val sightings: Int = 0,
+    val persistentNearbyEnabled: Boolean = false,
+    val persistentNearbyStatus: String = "Persistent nearby mode is off.",
     val message: String = "Bluetooth permission has not been requested. Nearby discovery has not started.",
     val showPermissionRationale: Boolean = false,
     val profileStatus: String = "Preparing protected device profile.",
@@ -99,6 +102,7 @@ class MainActivity : ComponentActivity() {
     private var mobileProfile: AndroidMobileProfile? = null
     private lateinit var nearbyScanner: NearbyServiceScanner
     private var receiverRegistered = false
+    private var persistentReceiverRegistered = false
     private var permissionHistoryBeforePrompt = false
 
     private val permissionRequest = registerForActivityResult(
@@ -107,6 +111,29 @@ class MainActivity : ComponentActivity() {
         handlePermissionResult(result)
     }
 
+    private val notificationPermissionRequest = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startPersistentNearbyService()
+        } else {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Not started. Android notification permission is required for a visible persistent-mode notification.",
+            )
+        }
+    }
+
+    private val persistentStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != PersistentNearbyService.ACTION_STATUS) return
+            screenState = screenState.copy(
+                persistentNearbyEnabled = intent.getBooleanExtra(PersistentNearbyService.EXTRA_ENABLED, false),
+                persistentNearbyStatus = intent.getStringExtra(PersistentNearbyService.EXTRA_STATUS)
+                    ?: "Persistent nearby mode status is unavailable.",
+            )
+        }
+    }
     private fun handlePermissionResult(result: Map<String, Boolean>) {
         if (result.isEmpty()) {
             preferences.edit().putBoolean(KEY_REQUESTED_BEFORE, permissionHistoryBeforePrompt).apply()
@@ -186,6 +213,7 @@ class MainActivity : ComponentActivity() {
                     state = screenState,
                     permissionRationale = permissionRationaleText(),
                     onPrimaryAction = ::onPrimaryAction,
+                    onPersistentNearbyAction = ::onPersistentNearbyAction,
                     onDismissRationale = { screenState = screenState.copy(showPermissionRationale = false) },
                     onContinuePermission = ::continuePermissionFlow,
                     onMessageCredentialHexChanged = ::onMessageCredentialHexChanged,
@@ -1424,6 +1452,112 @@ class MainActivity : ComponentActivity() {
     }
 
 
+    private fun onPersistentNearbyAction() {
+        if (screenState.persistentNearbyEnabled || PersistentNearbyService.isOptedIn(this)) {
+            stopPersistentNearbyService()
+            return
+        }
+        if (refreshReadiness() != DiscoveryPermissionState.GRANTED) {
+            screenState = screenState.copy(showPermissionRationale = true)
+            return
+        }
+        if (
+            PersistentNearbyPermissionPolicy.requiresNotificationPermission(Build.VERSION.SDK_INT) &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        if (!PersistentNearbyPermissionPolicy.hasNotificationPermission(this)) {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Android notifications are disabled. Allow them in app settings before starting persistent mode.",
+            )
+            openAppSettings()
+            return
+        }
+        startPersistentNearbyService()
+    }
+
+    private fun startPersistentNearbyService() {
+        if (refreshReadiness() != DiscoveryPermissionState.GRANTED) {
+            screenState = screenState.copy(showPermissionRationale = true)
+            return
+        }
+        if (!PersistentNearbyPermissionPolicy.hasNotificationPermission(this)) {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Persistent mode needs an enabled Android status notification.",
+            )
+            return
+        }
+        stopScanning("Temporary nearby scan stopped; persistent discovery is starting.")
+        try {
+            startForegroundService(
+                Intent(this, PersistentNearbyService::class.java)
+                    .setAction(PersistentNearbyService.ACTION_START),
+            )
+            screenState = screenState.copy(
+                persistentNearbyEnabled = true,
+                persistentNearbyStatus = "Starting the visible persistent nearby service…",
+            )
+        } catch (_: SecurityException) {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Android denied the persistent service. Check Bluetooth and notification permissions.",
+            )
+        } catch (_: RuntimeException) {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Android could not start the persistent nearby service from the current app state.",
+            )
+        }
+    }
+
+    private fun stopPersistentNearbyService() {
+        try {
+            startService(
+                Intent(this, PersistentNearbyService::class.java)
+                    .setAction(PersistentNearbyService.ACTION_STOP),
+            )
+        } catch (_: RuntimeException) {
+            stopService(Intent(this, PersistentNearbyService::class.java))
+        }
+        screenState = screenState.copy(
+            persistentNearbyEnabled = false,
+            persistentNearbyStatus = "Persistent nearby mode stopped.",
+        )
+    }
+
+    private fun restorePersistentNearbyMode() {
+        if (!PersistentNearbyService.isOptedIn(this)) {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Persistent nearby mode is off.",
+            )
+            return
+        }
+        if (
+            refreshReadiness() != DiscoveryPermissionState.GRANTED ||
+            !PersistentNearbyPermissionPolicy.hasNotificationPermission(this)
+        ) {
+            stopPersistentNearbyService()
+            screenState = screenState.copy(
+                persistentNearbyEnabled = false,
+                persistentNearbyStatus = "Persistent mode was not resumed because a required permission is unavailable.",
+            )
+            return
+        }
+        if (PersistentNearbyService.isRunning()) {
+            screenState = screenState.copy(
+                persistentNearbyEnabled = true,
+                persistentNearbyStatus = "Persistent foreground service is running. See its notification for radio status.",
+            )
+        } else {
+            startPersistentNearbyService()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
@@ -1434,12 +1568,27 @@ class MainActivity : ComponentActivity() {
             registerReceiver(bluetoothReceiver, filter)
         }
         receiverRegistered = true
+        val persistentFilter = IntentFilter(PersistentNearbyService.ACTION_STATUS)
+        ContextCompat.registerReceiver(
+            this,
+            persistentStatusReceiver,
+            persistentFilter,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        persistentReceiverRegistered = true
         refreshReadiness()
+        restorePersistentNearbyMode()
     }
 
     override fun onResume() {
         super.onResume()
-        refreshReadiness()
+        val permission = refreshReadiness()
+        if (
+            permission != DiscoveryPermissionState.GRANTED ||
+            !PersistentNearbyPermissionPolicy.hasNotificationPermission(this)
+        ) {
+            if (PersistentNearbyService.isOptedIn(this)) stopPersistentNearbyService()
+        }
     }
 
     override fun onStop() {
@@ -1447,6 +1596,10 @@ class MainActivity : ComponentActivity() {
         if (receiverRegistered) {
             unregisterReceiver(bluetoothReceiver)
             receiverRegistered = false
+        }
+        if (persistentReceiverRegistered) {
+            unregisterReceiver(persistentStatusReceiver)
+            persistentReceiverRegistered = false
         }
         super.onStop()
     }
@@ -1670,6 +1823,7 @@ private fun NearbyReadinessScreen(
     state: NearbyScreenState,
     permissionRationale: String,
     onPrimaryAction: () -> Unit,
+    onPersistentNearbyAction: () -> Unit,
     onDismissRationale: () -> Unit,
     onContinuePermission: () -> Unit,
     onRefreshLocalSpaces: () -> Unit,
@@ -1912,6 +2066,28 @@ private fun NearbyReadinessScreen(
                     Spacer(Modifier.height(4.dp))
                     Button(onClick = onPrimaryAction, modifier = Modifier.fillMaxWidth()) {
                         Text(if (state.scanning) "Stop nearby scan" else primaryLabel(state))
+                    }
+                    Text("Persistent nearby mode", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        state.persistentNearbyStatus,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "This opt-in foreground service keeps generic BLE discovery active while the app is backgrounded. Signals remain unverified; there is no GATT connection or message exchange.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = onPersistentNearbyAction,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (state.persistentNearbyEnabled) {
+                                "Stop persistent nearby mode"
+                            } else {
+                                "Start persistent nearby mode"
+                            },
+                        )
                     }
                 }
             }
