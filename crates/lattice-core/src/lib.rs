@@ -4843,6 +4843,57 @@ mod tests {
                 mls_epoch: 2,
             },
         );
+        let alice_peer = lattice_testkit::PeerId::new(0);
+        let bob_peer = lattice_testkit::PeerId::new(1);
+        let contact_plan = lattice_testkit::ContactPlan::new(
+            3,
+            vec![
+                lattice_testkit::ContactWindow {
+                    from: alice_peer,
+                    to: bob_peer,
+                    starts_at: 10,
+                    ends_at: 11,
+                },
+                lattice_testkit::ContactWindow {
+                    from: alice_peer,
+                    to: bob_peer,
+                    starts_at: 12,
+                    ends_at: 13,
+                },
+            ],
+        )
+        .expect("build explicit membership delivery windows");
+        let mut membership_link =
+            lattice_testkit::DirectedLink::new(0x4d45_4d42, lattice_testkit::LinkConfig::default())
+                .expect("build deterministic membership path");
+        assert!(!contact_plan.is_active(alice_peer, bob_peer, 9));
+        assert!(contact_plan.is_active(alice_peer, bob_peer, 10));
+        membership_link
+            .send(10, post_commit_message.encoded_bytes().to_vec())
+            .expect("queue post-Commit event during first contact");
+        let received_post_commit_bytes = membership_link
+            .deliver(10, 1)
+            .pop()
+            .expect("deliver post-Commit event");
+        let received_post_commit =
+            VerifiedSignatureOnlyEvent::decode_verify(&received_post_commit_bytes)
+                .expect("verify relayed post-Commit event");
+        assert!(!contact_plan.is_active(alice_peer, bob_peer, 11));
+        assert!(contact_plan.is_active(alice_peer, bob_peer, 12));
+        membership_link
+            .send(12, control_event.encoded_bytes().to_vec())
+            .expect("queue MLS Commit during reunion");
+        membership_link
+            .send(12, transition_event.encoded_bytes().to_vec())
+            .expect("queue member admission during reunion");
+        let mut received_membership_events = membership_link.deliver(12, 2);
+        assert_eq!(received_membership_events.len(), 2);
+        let received_control =
+            VerifiedSignatureOnlyEvent::decode_verify(&received_membership_events.remove(0))
+                .expect("verify relayed MLS Commit");
+        let received_transition =
+            VerifiedSignatureOnlyEvent::decode_verify(&received_membership_events.remove(0))
+                .expect("verify relayed member transition");
         let mut bob_joined = super::CreatedSpace {
             space_id,
             group_id: group_id.clone(),
@@ -4853,7 +4904,7 @@ mod tests {
         assert!(matches!(
             bob.accept_synced_application_event(
                 &mut bob_joined,
-                post_commit_message.encoded_bytes(),
+                received_post_commit.encoded_bytes(),
             )
             .expect("hold post-Commit ciphertext behind missing control parent"),
             super::SyncedApplicationOutcome::Pending {
@@ -4866,15 +4917,15 @@ mod tests {
             .accept_space_membership_transition(
                 &group_id,
                 &reducer,
-                control_event.clone(),
-                transition_event.clone(),
+                received_control,
+                received_transition,
             )
             .expect("commit MLS merge and admitted policy transition atomically");
         bob_joined.reducer = updated.clone();
         assert_eq!(
             bob.accept_synced_application_event(
                 &mut bob_joined,
-                post_commit_message.encoded_bytes(),
+                received_post_commit.encoded_bytes(),
             )
             .expect("retry dependent ciphertext after MLS Commit"),
             super::SyncedApplicationOutcome::Accepted {

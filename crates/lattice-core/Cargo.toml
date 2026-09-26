@@ -25,5 +25,6 @@ zeroize = "=1.9.0"
 openmls = { version = "=0.9.0", features = ["test-utils"] }
 openmls_rust_crypto = "=0.6.0"
 lattice-mls = { path = "../lattice-mls", features = ["test-utils"] }
+lattice-testkit = { path = "../lattice-testkit" }
 [lints]
 workspace = true

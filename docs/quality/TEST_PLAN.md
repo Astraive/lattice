@@ -40,6 +40,8 @@ Fuzz targets in the isolated `fuzz/` workspace cover canonical CBOR, identity bu
 
 Model contact graph with time-varying links, asymmetrical drop, MTU, duty cycles, stale summaries, partitions, storage quotas and malicious couriers. Baselines: no forwarding; limited flood; bounded spray; spray plus anti-entropy; relay assistance. For each fixed contact trace report delivered fraction by deadline, distribution of delay, bytes/transmissions per delivered event, cache eviction, missing-history rate and fairness across destinations. The simulator does not claim real battery drain; power must be measured on named hardware.
 
+The deterministic harness uses bounded `lattice_testkit::ContactPlan` windows with `DirectedLink` loss/delay/duplication behavior. Its three-peer chain test records an explicit A→B→C contact trace; it is a protocol/path simulation, not radio evidence. `lattice-core::tests::membership_commit_policy_and_events_commit_atomically` carries signed MLS Commit, membership-transition, and dependent application events over separate reunion windows, proving that the dependent epoch event stays pending until membership dependencies arrive. Reproduce with `cargo test --locked -p lattice-testkit scripted_contacts_forward_one_frame_across_a_three_peer_chain` and `cargo test --locked -p lattice-core membership_commit_policy_and_events_commit_atomically`.
+
 ## Mobile test matrix
 
 | Axis | Required cases |

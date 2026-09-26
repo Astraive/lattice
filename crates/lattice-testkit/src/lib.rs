@@ -4,7 +4,7 @@
 //! It is not cryptographically secure and must not be used for production
 //! randomness, keys, nonces, or security decisions.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 /// A small deterministic pseudorandom stream for repeatable test scenarios.
 ///
@@ -283,6 +283,129 @@ impl<T: Clone> DirectedLink<T> {
     }
 }
 
+/// Maximum number of scripted contact windows retained by one scenario.
+pub const MAX_CONTACT_WINDOWS: usize = 65_536;
+
+/// Stable index of one peer in a deterministic test scenario.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PeerId(u16);
+
+impl PeerId {
+    /// Creates a peer identifier from a zero-based scenario index.
+    #[must_use]
+    pub const fn new(index: u16) -> Self {
+        Self(index)
+    }
+
+    /// Returns the zero-based scenario index.
+    #[must_use]
+    pub const fn index(self) -> u16 {
+        self.0
+    }
+}
+
+/// One directed contact interval. The start is inclusive and the end exclusive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContactWindow {
+    pub from: PeerId,
+    pub to: PeerId,
+    pub starts_at: u64,
+    pub ends_at: u64,
+}
+
+/// Invalid peer topology or contact interval in a deterministic scenario.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContactPlanError {
+    NoPeers,
+    TooManyWindows,
+    UnknownPeer,
+    SelfContact,
+    EmptyWindow,
+    OverlappingWindows,
+}
+
+/// Bounded directed contact trace for deterministic path simulations.
+///
+/// Each peer pair may have multiple non-overlapping windows. Contact
+/// availability is separate from packet loss, duplication, delay, and queue
+/// behavior configured on [`DirectedLink`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContactPlan {
+    peer_count: u16,
+    windows: BTreeMap<(PeerId, PeerId), Vec<(u64, u64)>>,
+}
+
+impl ContactPlan {
+    /// Validates and retains an explicit trace for `peer_count` peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContactPlanError`] for an empty topology, excessive or
+    /// overlapping windows, an out-of-range peer, a self-contact, or a
+    /// zero-width contact interval.
+    pub fn new(
+        peer_count: u16,
+        mut contacts: Vec<ContactWindow>,
+    ) -> Result<Self, ContactPlanError> {
+        if peer_count == 0 {
+            return Err(ContactPlanError::NoPeers);
+        }
+        if contacts.len() > MAX_CONTACT_WINDOWS {
+            return Err(ContactPlanError::TooManyWindows);
+        }
+        if contacts
+            .iter()
+            .any(|contact| contact.from.index() >= peer_count || contact.to.index() >= peer_count)
+        {
+            return Err(ContactPlanError::UnknownPeer);
+        }
+        if contacts.iter().any(|contact| contact.from == contact.to) {
+            return Err(ContactPlanError::SelfContact);
+        }
+        if contacts
+            .iter()
+            .any(|contact| contact.starts_at >= contact.ends_at)
+        {
+            return Err(ContactPlanError::EmptyWindow);
+        }
+
+        contacts.sort_unstable_by_key(|contact| {
+            (contact.from, contact.to, contact.starts_at, contact.ends_at)
+        });
+        let mut windows = BTreeMap::<_, Vec<_>>::new();
+        for contact in contacts {
+            let pair = (contact.from, contact.to);
+            let pair_windows = windows.entry(pair).or_default();
+            if pair_windows
+                .last()
+                .is_some_and(|(_, prior_end)| *prior_end > contact.starts_at)
+            {
+                return Err(ContactPlanError::OverlappingWindows);
+            }
+            pair_windows.push((contact.starts_at, contact.ends_at));
+        }
+        Ok(Self {
+            peer_count,
+            windows,
+        })
+    }
+
+    /// Returns whether the directed contact exists at `tick`.
+    #[must_use]
+    pub fn is_active(&self, from: PeerId, to: PeerId, tick: u64) -> bool {
+        if from.index() >= self.peer_count || to.index() >= self.peer_count || from == to {
+            return false;
+        }
+        self.windows
+            .get(&(from, to))
+            .and_then(|windows| {
+                let index = windows.partition_point(|(starts_at, _)| *starts_at <= tick);
+                index.checked_sub(1).map(|index| windows[index].1)
+            })
+            .is_some_and(|ends_at| tick < ends_at)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +545,71 @@ mod tests {
         assert_eq!(link.deliver(0, 1), vec![1]);
         assert_eq!(link.queued(), 1);
         assert_eq!(link.deliver(0, 10), vec![1]);
+    }
+    #[test]
+    fn scripted_contacts_forward_one_frame_across_a_three_peer_chain() {
+        let a = PeerId::new(0);
+        let b = PeerId::new(1);
+        let c = PeerId::new(2);
+        let plan = ContactPlan::new(
+            3,
+            vec![
+                ContactWindow {
+                    from: a,
+                    to: b,
+                    starts_at: 1,
+                    ends_at: 3,
+                },
+                ContactWindow {
+                    from: b,
+                    to: c,
+                    starts_at: 5,
+                    ends_at: 7,
+                },
+            ],
+        )
+        .unwrap();
+        let mut ab = DirectedLink::new(19, LinkConfig::default()).unwrap();
+        let mut bc = DirectedLink::new(29, LinkConfig::default()).unwrap();
+        let frame = b"authenticated membership event".to_vec();
+
+        assert!(!plan.is_active(a, c, 1));
+        assert!(plan.is_active(a, b, 1));
+        assert_eq!(ab.send(1, frame.clone()).unwrap().copies_queued, 1);
+        let at_b = ab.deliver(1, 1);
+        assert_eq!(at_b, vec![frame.clone()]);
+
+        assert!(!plan.is_active(b, c, 3));
+        assert!(plan.is_active(b, c, 5));
+        assert_eq!(bc.send(5, at_b[0].clone()).unwrap().copies_queued, 1);
+        assert_eq!(bc.deliver(5, 1), vec![frame]);
+    }
+
+    #[test]
+    fn contact_plan_rejects_ambiguous_or_invalid_windows() {
+        let a = PeerId::new(0);
+        let b = PeerId::new(1);
+        let window = |starts_at, ends_at| ContactWindow {
+            from: a,
+            to: b,
+            starts_at,
+            ends_at,
+        };
+        assert_eq!(
+            ContactPlan::new(0, Vec::new()),
+            Err(ContactPlanError::NoPeers)
+        );
+        assert_eq!(
+            ContactPlan::new(2, vec![window(4, 8), window(7, 9)]),
+            Err(ContactPlanError::OverlappingWindows)
+        );
+        assert_eq!(
+            ContactPlan::new(2, vec![window(8, 8)]),
+            Err(ContactPlanError::EmptyWindow)
+        );
+        assert_eq!(
+            ContactPlan::new(1, vec![window(0, 1)]),
+            Err(ContactPlanError::UnknownPeer)
+        );
     }
 }
