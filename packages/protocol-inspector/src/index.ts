@@ -49,8 +49,10 @@ const DEFAULT_MAX_BYTES = 64 * 1024;
 const DEFAULT_MAX_DEPTH = 32;
 const DEFAULT_MAX_ITEMS = 8192;
 const HARD_MAX_BYTES = 1024 * 1024;
+const MAX_STRING_BYTES = 256 * 1024;
+const MAX_COLLECTION_ITEMS = 4_096;
 const DEFAULT_MAX_EVENT_BYTES = HARD_MAX_BYTES;
-const HARD_MAX_DEPTH = 128;
+const HARD_MAX_DEPTH = 32;
 const HARD_MAX_ITEMS = 65_536;
 const HEX = "0123456789abcdef";
 const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -202,6 +204,9 @@ class CborReader {
 
   private readLength(additional: number): number {
     const length = this.readArgument(additional);
+    if (length > BigInt(MAX_STRING_BYTES)) {
+      fail("INSPECTOR_LIMIT_EXCEEDED", "CBOR string exceeds the candidate profile limit");
+    }
     if (length > BigInt(this.bytes.length - this.offset)) {
       fail("INSPECTOR_MALFORMED_CBOR", "CBOR length exceeds remaining input");
     }
@@ -245,6 +250,9 @@ class CborReader {
         }
       }
       case 4: {
+        if (depth >= this.maxDepth) {
+          fail("INSPECTOR_LIMIT_EXCEEDED", "CBOR nesting exceeds the depth limit");
+        }
         const length = this.readContainerLength(additional);
         const items: CborValue[] = [];
         for (let index = 0; index < length; index += 1) {
@@ -253,6 +261,9 @@ class CborReader {
         return { type: "array", items };
       }
       case 5: {
+        if (depth >= this.maxDepth) {
+          fail("INSPECTOR_LIMIT_EXCEEDED", "CBOR nesting exceeds the depth limit");
+        }
         const length = this.readContainerLength(additional);
         const entries: (readonly [CborValue, CborValue])[] = [];
         const seen = new Set<string>();
@@ -288,6 +299,9 @@ class CborReader {
 
   private readContainerLength(additional: number): number {
     const length = this.readArgument(additional);
+    if (length > BigInt(MAX_COLLECTION_ITEMS)) {
+      fail("INSPECTOR_LIMIT_EXCEEDED", "CBOR collection exceeds the candidate profile limit");
+    }
     if (length > BigInt(this.maxItems - this.itemCount)) {
       fail("INSPECTOR_LIMIT_EXCEEDED", "Container exceeds the remaining item limit");
     }
@@ -313,7 +327,7 @@ export function inspectUntrustedCborStructure(
     encodedByteLength: bytes.length,
   };
 }
-export type CandidateEventKind = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type CandidateEventKind = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export interface SignatureVerifiedCandidateEvent {
   readonly status: "signature-verified-candidate";
@@ -382,6 +396,67 @@ const ID_DOMAIN = new TextEncoder().encode("lattice:event:v1");
 const SIGNATURE_DOMAIN = new TextEncoder().encode("lattice:event-signature:v1\0");
 const IDENTITY_DOMAIN = new TextEncoder().encode("lattice:identity-bundle:v1\0");
 
+const EVENT_VERSION = 1n;
+const OUTER_EVENT_VERSION = 1n;
+const IDENTITY_BUNDLE_VERSION = 1;
+const X25519_PROBE_PKCS8 = Uint8Array.from([
+  0x30,
+  0x2e,
+  0x02,
+  0x01,
+  0x00,
+  0x30,
+  0x05,
+  0x06,
+  0x03,
+  0x2b,
+  0x65,
+  0x6e,
+  0x04,
+  0x22,
+  0x04,
+  0x20,
+  ...Array<number>(32).fill(0xa5),
+]);
+let x25519ProbeKeyPromise: Promise<CryptoKey> | undefined;
+
+function hasErrorName(error: unknown, name: string): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === name;
+}
+
+async function hasContributoryX25519Key(
+  publicKey: Uint8Array<ArrayBuffer>,
+  subtle: SubtleCrypto,
+): Promise<boolean> {
+  x25519ProbeKeyPromise ??= subtle.importKey(
+    "pkcs8",
+    X25519_PROBE_PKCS8,
+    { name: "X25519" },
+    false,
+    ["deriveBits"],
+  );
+  let probeKey: CryptoKey;
+  let peerKey: CryptoKey;
+  try {
+    [probeKey, peerKey] = await Promise.all([
+      x25519ProbeKeyPromise,
+      subtle.importKey("raw", publicKey, { name: "X25519" }, false, []),
+    ]);
+  } catch {
+    return fail("INSPECTOR_CRYPTO_UNAVAILABLE", "WebCrypto could not import X25519 identity keys");
+  }
+  try {
+    await subtle.deriveBits({ name: "X25519", public: peerKey }, probeKey, 256);
+    return true;
+  } catch (error) {
+    if (hasErrorName(error, "OperationError")) return false;
+    return fail(
+      "INSPECTOR_CRYPTO_UNAVAILABLE",
+      "WebCrypto could not validate X25519 identity keys",
+    );
+  }
+}
+
 function completeByteStrings(
   values: readonly (Uint8Array<ArrayBuffer> | undefined)[] | undefined,
 ): readonly Uint8Array<ArrayBuffer>[] | undefined {
@@ -414,7 +489,7 @@ export async function inspectCandidateSignedEvent(
 
   const [versionValue, preimageValue, bundleValue, signatureValue] = outerFields;
   if (
-    asUnsigned(versionValue) !== 1n ||
+    asUnsigned(versionValue) !== OUTER_EVENT_VERSION ||
     preimageValue?.type !== "bytes" ||
     bundleValue?.type !== "bytes" ||
     signatureValue?.type !== "bytes"
@@ -427,7 +502,7 @@ export async function inspectCandidateSignedEvent(
   if (preimage === undefined || bundle === undefined || signature === undefined) {
     return invalidCandidateShape();
   }
-  if (bundle.length !== 65 || bundle[0] !== 1 || signature.length !== 64) {
+  if (bundle.length !== 65 || bundle[0] !== IDENTITY_BUNDLE_VERSION || signature.length !== 64) {
     return invalidCandidateShape();
   }
 
@@ -456,7 +531,7 @@ export async function inspectCandidateSignedEvent(
   const epoch = asUnsigned(fields?.[11]);
   if (
     fields === undefined ||
-    asUnsigned(fields[0]) !== 1n ||
+    asUnsigned(fields[0]) !== EVENT_VERSION ||
     spaceId === undefined ||
     spaceId.length !== 16 ||
     !(channel?.type === "null" || (channel?.type === "bytes" && channelBytes?.length === 16)) ||
@@ -470,7 +545,7 @@ export async function inspectCandidateSignedEvent(
     parents.length > 64 ||
     kind === undefined ||
     kind < 1n ||
-    kind > 9n ||
+    kind > 10n ||
     body === undefined ||
     body.length === 0 ||
     body.length > 240 * 1024 ||
@@ -495,6 +570,9 @@ export async function inspectCandidateSignedEvent(
       "INSPECTOR_CRYPTO_UNAVAILABLE",
       "WebCrypto is unavailable for signed-event verification",
     );
+  }
+  if (!(await hasContributoryX25519Key(bundle.subarray(33, 65), subtle))) {
+    return invalidCandidateShape();
   }
   const bundleFingerprint = new Uint8Array(
     await subtle.digest("SHA-256", concatBytes(IDENTITY_DOMAIN, bundle)),

@@ -77,12 +77,50 @@ describe("inspectUntrustedCborStructure", () => {
       "INSPECTOR_LIMIT_EXCEEDED",
     );
   });
+  test("matches the Rust container nesting boundary", () => {
+    const maximumDepth = `${"81".repeat(32)}00`;
+    expect(inspectUntrustedCborStructure(maximumDepth, "hex").encodedByteLength).toBe(33);
+
+    expectErrorCode(
+      () => inspectUntrustedCborStructure(`${"81".repeat(33)}00`, "hex"),
+      "INSPECTOR_LIMIT_EXCEEDED",
+    );
+    expect(inspectUntrustedCborStructure("00", "hex", { maxDepth: 0 }).encodedByteLength).toBe(1);
+    expectErrorCode(
+      () => inspectUntrustedCborStructure("80", "hex", { maxDepth: 0 }),
+      "INSPECTOR_LIMIT_EXCEEDED",
+    );
+  });
+
+  test("matches Rust per-string and per-collection CBOR limits", () => {
+    const maximumString = `5a00040000${"00".repeat(256 * 1024)}`;
+    expect(
+      inspectUntrustedCborStructure(maximumString, "hex", { maxBytes: 1024 * 1024 })
+        .encodedByteLength,
+    ).toBe(262_149);
+    expectErrorCode(
+      () => inspectUntrustedCborStructure("5a00040001", "hex"),
+      "INSPECTOR_LIMIT_EXCEEDED",
+    );
+
+    const maximumArray = `991000${"00".repeat(4_096)}`;
+    expect(inspectUntrustedCborStructure(maximumArray, "hex").encodedByteLength).toBe(4_099);
+    expectErrorCode(
+      () => inspectUntrustedCborStructure("991001", "hex"),
+      "INSPECTOR_LIMIT_EXCEEDED",
+    );
+  });
 });
 const signedEventVector = JSON.parse(
   readFileSync(new URL("../../../protocol/vectors/canonical-cbor.json", import.meta.url), "utf8"),
-) as { signed_event: { preimage_hex: string; outer_hex: string } };
+) as {
+  signed_event: { preimage_hex: string; outer_hex: string };
+  signed_event_ephemeral: { preimage_hex: string; outer_hex: string; event_id_hex: string };
+};
 const SIGNED_EVENT_PREIMAGE = signedEventVector.signed_event.preimage_hex;
 const SIGNED_EVENT_OUTER = signedEventVector.signed_event.outer_hex;
+const EPHEMERAL_SIGNED_EVENT_PREIMAGE = signedEventVector.signed_event_ephemeral.preimage_hex;
+const EPHEMERAL_SIGNED_EVENT_OUTER = signedEventVector.signed_event_ephemeral.outer_hex;
 
 async function expectAsyncErrorCode(action: () => Promise<unknown>, code: string): Promise<void> {
   let caught: unknown;
@@ -117,6 +155,13 @@ describe("inspectCandidateSignedEvent", () => {
     });
   });
 
+  test("accepts the shared ephemeral kind-10 event vector", async () => {
+    const result = await inspectCandidateSignedEvent(EPHEMERAL_SIGNED_EVENT_OUTER, "hex");
+
+    expect(result.kind).toBe(10);
+    expect(result.eventIdHex).toBe(signedEventVector.signed_event_ephemeral.event_id_hex);
+  });
+
   test("rejects a signature-tampered outer event", async () => {
     await expectAsyncErrorCode(
       () => inspectCandidateSignedEvent(`${SIGNED_EVENT_OUTER.slice(0, -2)}0f`, "hex"),
@@ -142,6 +187,31 @@ describe("inspectCandidateSignedEvent", () => {
     await expectAsyncErrorCode(
       () => inspectCandidateSignedEvent(changedOuter, "hex"),
       "INSPECTOR_AUTHOR_FINGERPRINT_MISMATCH",
+    );
+  });
+  test("rejects non-contributory X25519 keys in identity bundles", async () => {
+    const bundleHex = /025841([0-9a-f]{130})/.exec(SIGNED_EVENT_OUTER)?.[1];
+    if (bundleHex === undefined)
+      throw new Error("Signed-event vector does not contain its identity bundle");
+    const nonContributoryBundleHex = `${bundleHex.slice(0, 66)}${"00".repeat(32)}`;
+    const malformedOuter = SIGNED_EVENT_OUTER.replace(bundleHex, nonContributoryBundleHex);
+
+    await expectAsyncErrorCode(
+      () => inspectCandidateSignedEvent(malformedOuter, "hex"),
+      "INSPECTOR_INVALID_EVENT_SHAPE",
+    );
+  });
+
+  test("rejects unknown mandatory event kinds", async () => {
+    const unsupportedPreimage = EPHEMERAL_SIGNED_EVENT_PREIMAGE.replace("0780080a09", "0780080b09");
+    const malformedOuter = EPHEMERAL_SIGNED_EVENT_OUTER.replace(
+      EPHEMERAL_SIGNED_EVENT_PREIMAGE,
+      unsupportedPreimage,
+    );
+
+    await expectAsyncErrorCode(
+      () => inspectCandidateSignedEvent(malformedOuter, "hex"),
+      "INSPECTOR_INVALID_EVENT_SHAPE",
     );
   });
 });
