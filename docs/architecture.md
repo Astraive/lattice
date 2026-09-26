@@ -21,7 +21,7 @@ The organization follows the concerns in [arc42](https://arc42.org/overview/)—
 | Status | Meaning | Example |
 | --- | --- | --- |
 | **Baseline** | Adopted architectural direction; implementation still pending | Rust core, native mobile, transport-independent event IDs |
-| **Profile draft** | Concrete candidate that needs vectors/interoperability review | Deterministic CBOR layout, experimental BLE profile label and migration policy; exact GATT/advertisement bytes remain open |
+| **Profile draft** | Concrete candidate that needs vectors/interoperability review | Deterministic CBOR layout; experimental BLE service, discovery, and first-contact handshake values; release vectors and interoperability remain open |
 | **Open** | Cannot be treated as complete until an ADR and tests exist | MLS concurrent Commit policy, private-channel key isolation |
 | **Deferred** | Outside first interoperable release | Large-room SFU, video, public directory, multi-device user account |
 

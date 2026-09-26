@@ -2,7 +2,7 @@
 
 The same event can cross direct or optional indirect routes. Paths supply bytes and health metrics; they never mint authority. Details in [PROTOCOL.md](../protocol/PROTOCOL.md).
 
-**BLE profile status:** `lattice-ble-exp0` is an experimental candidate, not an interoperable release ([`10-ble.md`](../../protocol/specs/10-ble.md)). It defines candidate service/characteristic UUIDs and advertisement/token lifecycle; authenticated session and framing remain open. Android code remains pre-profile and does not implement this candidate.
+**BLE profile status:** `lattice-ble-exp0` is an experimental candidate, not an interoperable release ([`10-ble.md`](../../protocol/specs/10-ble.md)). It specifies candidate service/characteristic UUIDs, advertisement/token lifecycle, and first-contact identity binding; framing/flow-control and Android wiring remain incomplete.
 
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@ The same event can cross direct or optional indirect routes. Paths supply bytes 
 
 `discovered → link opening → authenticated → active → degraded → closed` is per path, not per person. One pair may have BLE and LAN simultaneously. Path metrics include last successful receive, smoothed latency, available payload size, queue pressure, recent failures and metered/power context. An adapter gives capabilities and opaque send receipts; the router chooses where to send; the core validates received events. GATT enqueue, WebSocket `OK`, and courier deposit each have different receipt scopes and must not be translated into destination delivery.
 
-The experimental [`lattice-ble-exp0` profile](../../protocol/specs/10-ble.md) assigns the service/characteristic UUIDs and rotating-token advertisement. The authenticated session and bounded encrypted-envelope framing are required design work but remain unspecified; the Android scanner and GATT adapters do not use the exp0 UUIDs or exchange authenticated application messages. Physical NET-001/002 acceptance remains open. BLE is a low-volume baseline, not a promise of bandwidth or continuous background scanning. A faster path must be negotiated only after peer authentication and without changing event identity.
+The experimental [`lattice-ble-exp0` profile](../../protocol/specs/10-ble.md) specifies candidate GATT UUIDs, rotating-token discovery, and a first-contact identity-bound Noise session before sensitive scope discovery. Frame format, flow-control, and reconnect rules remain open. Android still uses pre-profile values and has no authenticated GATT application path; physical NET-001/002 acceptance remains open. BLE is low-volume, not a bandwidth or background-scanning guarantee. A faster path must be negotiated only after peer authentication and without changing event identity.
 
 The shared protocol crate defines a bounded, canonical version-1 offer for LAN, Wi-Fi Aware and Wi-Fi Direct/P2P frame limits. `lattice-node::sync::negotiate_authenticated_path_upgrades_once` exchanges offers over a separately domain-bound Noise XX session, verifies each peer against the caller's pinned identity, applies the caller's peer-authorization callback before offers, and intersects limits using the smaller frame size for each common path. This reports supported sizes only; it does not prove reachability or open a path. No platform path adapters are wired to the negotiation yet, so NET-006 remains incomplete.
 
