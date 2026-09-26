@@ -3,14 +3,18 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use fs4::fs_std::FileExt as _;
 use lattice_core::Client;
 use lattice_files::{
     AttachmentManifest, AttachmentStagingLimits, AttachmentStagingStore, MAX_FILE_SIZE,
+    ManagedAttachmentFile,
 };
 use lattice_node::sync::{
     AttachmentReceiveResult, AttachmentSendResult, AuthenticatedAttachmentError,
@@ -248,7 +252,7 @@ pub(crate) async fn receive_authorized_attachment_once(
         &event_id_hex,
         &peer_fingerprint_hex,
     )?;
-    tauri::async_runtime::spawn_blocking(move || receive_attachment_blocking(app, target))
+    tauri::async_runtime::spawn_blocking(move || receive_attachment_blocking(&app, target))
         .await
         .map_err(|error| format!("attachment receive worker failed: {error}"))?
 }
@@ -367,7 +371,7 @@ fn send_attachment_blocking(
 
 #[allow(clippy::too_many_lines)] // Consent, transfer, and export ordering is security-sensitive.
 fn receive_attachment_blocking(
-    app: tauri::AppHandle,
+    app: &tauri::AppHandle,
     target: AttachmentTransferTarget,
 ) -> Result<Option<AttachmentTransferSummary>, String> {
     let (database_path, protector) = profile::open_profile()?;
@@ -409,51 +413,66 @@ fn receive_attachment_blocking(
     let listener = runtime
         .block_on(TcpPeerListener::bind(target.endpoint, MAX_ENVELOPE_BYTES))
         .map_err(|error| format!("listen for pinned attachment sender: {error:?}"))?;
-    let (adapter, _remote_address) = runtime
-        .block_on(tokio::time::timeout(
-            ATTACHMENT_ACCEPT_TIMEOUT,
-            listener.accept(),
-        ))
-        .map_err(|_| "no attachment sender connected before the listener timed out".to_owned())?
-        .map_err(|error| format!("accept attachment sender: {error:?}"))?;
-
     let staging_store = attachment_staging_store()?;
     staging_store
         .cleanup_expired()
         .map_err(|error| format!("clean expired attachment staging: {error}"))?;
-    let staging_file = staging_store
-        .open(&manifest, &event_id)
-        .map_err(|error| format!("open resumable attachment staging: {error}"))?;
-    let transfer_id = staging_file.transfer_id();
+    let transfer_id = manifest
+        .transfer_id(&event_id)
+        .map_err(|error| format!("derive attachment staging identifier: {error}"))?;
+    let consent_accepted = Arc::new(AtomicBool::new(false));
     let mut receiver = lattice_files::StreamedAttachmentReceiver::new(
         manifest.clone(),
         MAX_DESKTOP_ATTACHMENT_FILE_BYTES.min(MAX_FILE_SIZE),
-        staging_file,
+        LazyAttachmentStagingFile {
+            store: staging_store.clone(),
+            manifest: manifest.clone(),
+            event_id,
+            file: None,
+        },
     )
     .map_err(|error| format!("initialize attachment receiver: {error}"))?;
+
     let transfer_manifest = manifest.clone();
     let cancellation = CancellationToken::new();
-    let receiver_ref = &mut receiver;
-    let transfer = runtime.block_on(tokio::time::timeout(
-        ATTACHMENT_SESSION_TIMEOUT,
-        client.with_pinned_identity(
-            &target.peer_fingerprint,
-            |identity, pinned_peer| async move {
-                receive_authenticated_attachment_once(
-                    &adapter,
-                    identity,
-                    pinned_peer,
-                    event_id,
-                    &transfer_manifest,
-                    receiver_ref,
-                    |peer, offered_event, offered_manifest| {
-                        peer.fingerprint() == target.peer_fingerprint
-                            && offered_event == &event_id
-                            && offered_manifest == &transfer_manifest
-                    },
-                    |peer, received_manifest| {
-                        app.dialog()
-                            .message(format!(
+    let accept_deadline = Instant::now() + ATTACHMENT_ACCEPT_TIMEOUT;
+    let transfer = loop {
+        let attempt_manifest = transfer_manifest.clone();
+        let attempt_app = app.clone();
+        let attempt_cancellation = cancellation.clone();
+        let attempt_consent_accepted = Arc::clone(&consent_accepted);
+        let remaining = accept_deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                "no pinned attachment sender authenticated before the listener timed out".to_owned()
+            })?;
+        let (adapter, _remote_address) = runtime
+            .block_on(tokio::time::timeout(remaining, listener.accept()))
+            .map_err(|_| {
+                "no pinned attachment sender authenticated before the listener timed out".to_owned()
+            })?
+            .map_err(|error| format!("accept attachment sender: {error:?}"))?;
+        let receiver_ref = &mut receiver;
+        let attempt = runtime.block_on(tokio::time::timeout(
+            ATTACHMENT_SESSION_TIMEOUT,
+            client.with_pinned_identity(
+                &target.peer_fingerprint,
+                |identity, pinned_peer| async move {
+                    receive_authenticated_attachment_once(
+                        &adapter,
+                        identity,
+                        pinned_peer,
+                        event_id,
+                        &attempt_manifest,
+                        receiver_ref,
+                        |peer, offered_event, offered_manifest| {
+                            peer.fingerprint() == target.peer_fingerprint
+                                && offered_event == &event_id
+                                && offered_manifest == &attempt_manifest
+                        },
+                        |peer, received_manifest| {
+                            let message = format!(
                                 "Receive {} ({} bytes)?\n\nPinned peer: {}\nSpace event: {}\n\nThe file will be exported only after integrity verification.",
                                 lattice_files::sanitize_filename_for_display(
                                     &received_manifest.filename
@@ -461,28 +480,56 @@ fn receive_attachment_blocking(
                                 received_manifest.file_size,
                                 encoding::hex(&peer.fingerprint()),
                                 encoding::hex(&event_id),
-                            ))
-                            .title("Accept attachment transfer")
-                            .buttons(MessageDialogButtons::OkCancel)
-                            .blocking_show()
-                    },
-                    &cancellation,
-                )
-                .await
-            },
-        ),
-    ));
-    let transfer = match transfer {
-        Err(_) => return Err("authenticated attachment session timed out".to_owned()),
-        Ok(Err(error)) => return Err(format!("load pinned attachment identity: {error}")),
-        Ok(Ok(None)) => return Err("attachment sender pin is no longer present".to_owned()),
-        Ok(Ok(Some(Ok(transfer)))) => transfer,
-        Ok(Ok(Some(Err(error)))) => {
-            if matches!(error, AuthenticatedAttachmentError::TransferRejected) {
-                drop(receiver);
-                let _ = staging_store.remove(transfer_id);
+                            );
+                            let app = attempt_app.clone();
+                            async move {
+                                let (response_sender, response_receiver) =
+                                    tokio::sync::oneshot::channel();
+                                app.dialog()
+                                    .message(message)
+                                    .title("Accept attachment transfer")
+                                    .buttons(MessageDialogButtons::OkCancel)
+                                    .show(move |decision| {
+                                        let _ = response_sender.send(decision);
+                                    });
+                                let accepted = response_receiver.await.unwrap_or(false);
+                                if accepted {
+                                    attempt_consent_accepted.store(true, Ordering::Release);
+                                }
+                                accepted
+                            }
+                        },
+                        &attempt_cancellation,
+                    )
+                    .await
+                },
+            ),
+        ));
+        match attempt {
+            Err(_) => return Err("authenticated attachment session timed out".to_owned()),
+            Ok(Err(error)) => {
+                return Err(format!("load pinned attachment identity: {error}"));
             }
-            return Err(format_attachment_error(&error));
+            Ok(Ok(None)) => {
+                return Err("attachment sender pin is no longer present".to_owned());
+            }
+            Ok(Ok(Some(Ok(transfer)))) => break transfer,
+            Ok(Ok(Some(Err(error)))) => {
+                if !consent_accepted.load(Ordering::Acquire)
+                    && matches!(
+                        &error,
+                        AuthenticatedAttachmentError::PeerAuthenticationTimeout
+                            | AuthenticatedAttachmentError::Session(_)
+                    )
+                {
+                    continue;
+                }
+                if matches!(error, AuthenticatedAttachmentError::TransferRejected) {
+                    drop(receiver);
+                    let _ = staging_store.remove(transfer_id);
+                }
+                return Err(format_attachment_error(&error));
+            }
         }
     };
 
@@ -524,6 +571,50 @@ fn attachment_staging_store() -> Result<AttachmentStagingStore, String> {
         limits,
     )
     .map_err(|error| format!("open private attachment staging store: {error}"))
+}
+
+// The authenticated receive API calls `receiver.accept()` only after peer
+// authentication and explicit user consent; open persistent staging on that first storage access.
+struct LazyAttachmentStagingFile {
+    store: AttachmentStagingStore,
+    manifest: AttachmentManifest,
+    event_id: [u8; 32],
+    file: Option<ManagedAttachmentFile>,
+}
+
+impl LazyAttachmentStagingFile {
+    fn ensure_open(&mut self) -> io::Result<&mut ManagedAttachmentFile> {
+        if self.file.is_none() {
+            let file = self
+                .store
+                .open(&self.manifest, &self.event_id)
+                .map_err(io::Error::other)?;
+            self.file = Some(file);
+        }
+        Ok(self.file.as_mut().expect("staging file opened above"))
+    }
+}
+
+impl Read for LazyAttachmentStagingFile {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.ensure_open()?.read(buffer)
+    }
+}
+
+impl Write for LazyAttachmentStagingFile {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.ensure_open()?.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.ensure_open()?.flush()
+    }
+}
+
+impl Seek for LazyAttachmentStagingFile {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.ensure_open()?.seek(position)
+    }
 }
 
 fn export_verified_attachment<S>(
@@ -923,7 +1014,7 @@ fn scan_cache(source_dir: &Path) -> Result<(u64, usize), String> {
 mod tests {
     use std::{
         fs,
-        io::Cursor,
+        io::{Cursor, Seek},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -931,6 +1022,57 @@ mod tests {
         export_verified_attachment, open_verified_source, parse_attachment_target,
         read_cached_filename, stage_source_file,
     };
+
+    #[test]
+    fn incoming_staging_opens_only_on_first_receiver_storage_access() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "lattice-desktop-lazy-staging-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create temporary staging root");
+        let manifest = lattice_files::AttachmentManifest::from_reader(
+            &mut Cursor::new(b"staging opens after consent"),
+            "proof.bin",
+            None,
+        )
+        .expect("build test manifest");
+        let event_id = [0x92; 32];
+        let transfer_id = manifest.transfer_id(&event_id).expect("derive transfer id");
+        let limits = lattice_files::AttachmentStagingLimits::new(
+            1024,
+            2048,
+            1,
+            std::time::Duration::from_hours(1),
+        )
+        .expect("build bounded staging limits");
+        let store = lattice_files::AttachmentStagingStore::new(root.join("incoming"), limits)
+            .expect("create private staging store");
+
+        let mut storage = super::LazyAttachmentStagingFile {
+            store: store.clone(),
+            manifest,
+            event_id,
+
+            file: None,
+        };
+        assert!(storage.file.is_none());
+
+        assert_eq!(
+            storage
+                .seek(std::io::SeekFrom::End(0))
+                .expect("first storage access opens staging"),
+            0
+        );
+        assert!(storage.file.is_some());
+
+        drop(storage);
+        assert!(store.remove(transfer_id).expect("remove staged transfer"));
+        fs::remove_dir_all(root).expect("remove temporary staging root");
+    }
 
     #[test]
     fn selected_attachment_is_retained_by_content_hash_and_deduplicated() {

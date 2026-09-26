@@ -85,14 +85,13 @@ fn discover_local_lan_endpoints_blocking() -> Result<LocalLanDiscovery, String> 
                 if !services.contains_key(full_name) && services.len() >= MAX_LAN_SERVICES {
                     continue;
                 }
-                let endpoints = service
-                    .get_addresses()
-                    .iter()
-                    .filter_map(|scoped_ip| {
-                        endpoint_from_ip(scoped_ip.to_ip_addr(), service.get_port())
-                    })
-                    .take(MAX_SERVICE_ADDRESSES)
-                    .collect::<BTreeSet<_>>();
+                let endpoints = bounded_service_endpoints(
+                    service
+                        .get_addresses()
+                        .iter()
+                        .map(mdns_sd::ScopedIp::to_ip_addr),
+                    service.get_port(),
+                );
                 if !endpoints.is_empty() {
                     services.insert(full_name.to_owned(), endpoints);
                 }
@@ -151,6 +150,17 @@ fn endpoint_from_ip(address: IpAddr, port: u16) -> Option<SocketAddr> {
     (usable && port != 0).then_some(SocketAddr::new(address, port))
 }
 
+fn bounded_service_endpoints(
+    addresses: impl IntoIterator<Item = IpAddr>,
+    port: u16,
+) -> BTreeSet<SocketAddr> {
+    addresses
+        .into_iter()
+        .take(MAX_SERVICE_ADDRESSES)
+        .filter_map(|address| endpoint_from_ip(address, port))
+        .collect()
+}
+
 pub(crate) struct LanServiceAdvertisement {
     daemon: ServiceDaemon,
     full_name: String,
@@ -207,7 +217,7 @@ pub(crate) fn advertise_peer_listener(
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-    use super::{endpoint_from_ip, is_local_ip_candidate};
+    use super::{bounded_service_endpoints, endpoint_from_ip, is_local_ip_candidate};
 
     #[test]
     fn local_ip_candidate_excludes_loopback_and_unspecified_addresses() {
@@ -237,5 +247,15 @@ mod tests {
             endpoint_from_ip("fe80::1".parse().expect("valid link-local address"), 7331).is_none()
         );
         assert!(endpoint_from_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0).is_none());
+    }
+
+    #[test]
+    fn discovery_caps_raw_service_addresses_before_filtering() {
+        let invalid = std::iter::repeat_n(IpAddr::V4(Ipv4Addr::LOCALHOST), 4);
+        let valid_after_cap = std::iter::once(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)));
+        assert!(
+            bounded_service_endpoints(invalid.chain(valid_after_cap), 7331).is_empty(),
+            "addresses past the raw per-service cap must not be inspected"
+        );
     }
 }

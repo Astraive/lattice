@@ -345,7 +345,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
       setAttachmentTransferNotice({
         kind: "status",
         message: result
-          ? `${result.fileName} (${result.fileSize} bytes) was integrity-verified and exported. The peer accepted the transfer; recipient delivery is not claimed.${result.cleanupWarning ? ` ${result.cleanupWarning}` : ""}`
+          ? `${result.fileName} (${result.fileSize} bytes) was integrity-verified and exported locally. No remote receipt or recipient delivery is claimed.${result.cleanupWarning ? ` ${result.cleanupWarning}` : ""}`
           : "Export selection cancelled; no attachment connection was opened.",
       });
     } catch (cause) {
