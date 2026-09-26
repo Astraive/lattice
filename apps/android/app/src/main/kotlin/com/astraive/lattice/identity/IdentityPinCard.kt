@@ -12,6 +12,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 internal data class IdentityPinUiState(
@@ -45,7 +47,11 @@ internal fun IdentityPinCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Pin a peer identity", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Pin a peer identity",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
             Text(
                 "Compare the peer's full fingerprint out of band before saving these exact public bytes. A pin does not connect to that peer or add it to a Space.",
                 style = MaterialTheme.typography.bodySmall,

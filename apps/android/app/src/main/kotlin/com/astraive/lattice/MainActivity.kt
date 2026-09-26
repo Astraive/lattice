@@ -42,6 +42,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
@@ -1918,7 +1920,11 @@ private fun NearbyReadinessScreen(
         ) {
             Text("Lattice", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
-            Text("Nearby", style = MaterialTheme.typography.headlineLarge)
+            Text(
+                "Nearby",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.headlineLarge,
+            )
             Spacer(Modifier.height(20.dp))
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1929,7 +1935,11 @@ private fun NearbyReadinessScreen(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("Device identity", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Device identity",
+                        modifier = Modifier.semantics { heading() },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Text(state.profileStatus, style = MaterialTheme.typography.bodyMedium)
                     state.identityFingerprint?.let { fingerprint ->
                         SelectionContainer {
@@ -1979,7 +1989,11 @@ private fun NearbyReadinessScreen(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("Certificate request", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Certificate request",
+                        modifier = Modifier.semantics { heading() },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Text(
                         "Create a PKCS#10 request for certificate issuance. A certificate authority must return a trusted chain before local Space creation.",
                         style = MaterialTheme.typography.bodySmall,
@@ -2033,7 +2047,11 @@ private fun NearbyReadinessScreen(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("Local Spaces", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Local Spaces",
+                        modifier = Modifier.semantics { heading() },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Button(
                         onClick = onRefreshLocalSpaces,
                         enabled = state.profileStatus == "Protected local identity is available on this device." &&
@@ -2104,10 +2122,18 @@ private fun NearbyReadinessScreen(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("Readiness", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Readiness",
+                        modifier = Modifier.semantics { heading() },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Text("Bluetooth permission: ${state.permission.label()}", style = MaterialTheme.typography.bodyMedium)
                     Text("Bluetooth: ${state.bluetooth.label()}", style = MaterialTheme.typography.bodyMedium)
-                    Text("Wi-Fi upgrade capability (local device only)", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Wi-Fi upgrade capability (local device only)",
+                        modifier = Modifier.semantics { heading() },
+                        style = MaterialTheme.typography.titleSmall,
+                    )
                     Text("Wi-Fi Aware: ${state.wifiCapabilities.aware.label()}", style = MaterialTheme.typography.bodyMedium)
                     Text("Wi-Fi Direct: ${state.wifiCapabilities.direct.label()}", style = MaterialTheme.typography.bodyMedium)
                     Text("LAN interface: ${state.wifiCapabilities.lan.label()}", style = MaterialTheme.typography.bodyMedium)
@@ -2128,7 +2154,11 @@ private fun NearbyReadinessScreen(
                     Button(onClick = onPrimaryAction, modifier = Modifier.fillMaxWidth()) {
                         Text(if (state.scanning) "Stop nearby scan" else primaryLabel(state))
                     }
-                    Text("Persistent nearby mode", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Persistent nearby mode",
+                        modifier = Modifier.semantics { heading() },
+                        style = MaterialTheme.typography.titleSmall,
+                    )
                     Text(
                         state.persistentNearbyStatus,
                         style = MaterialTheme.typography.bodyMedium,

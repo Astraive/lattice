@@ -2,6 +2,7 @@ package com.astraive.lattice
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
@@ -15,6 +16,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileChannelSummary
 import uniffi.lattice_uniffi.MobileChannelType
@@ -63,16 +67,26 @@ internal fun SpaceMessageComposer(
             Text(
                 if (state.editTargetMessageIdHex == null) "Queue a local text message"
                 else "Edit local text message",
+                modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
                 if (state.editTargetMessageIdHex == null) {
-                    "The recent outgoing history is local-only and bounded. Incoming messages, later policy changes, and network delivery are not shown."
+                    "Messages and outbox status below are local records only. The recent outgoing history is bounded; incoming messages, forwarding, and recipient delivery are not available here."
                 } else {
-                    "Editing creates a new immutable encrypted event; the original event remains unchanged."
+                    "Editing creates a new immutable encrypted event in the local outbox; the original event remains unchanged. Forwarding and recipient delivery are not available here."
                 },
             )
-            Text("Channels from local Genesis", style = MaterialTheme.typography.labelMedium)
+            Text(
+                "Channels from the locally restored Genesis snapshot",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(
+                "Local outbox/history is not evidence of forwarding or delivery to a recipient.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             channels.forEach { channel ->
                 val channelType = when (channel.channelType) {
                     MobileChannelType.TEXT -> "Text"
@@ -91,15 +105,24 @@ internal fun SpaceMessageComposer(
                 Text("Choose a channel", style = MaterialTheme.typography.labelMedium)
                 availableChannels.forEach { channel ->
                     val idHex = channel.id.toLowerHex()
+                    val selected = state.selectedChannelIdHex == idHex ||
+                        (state.selectedChannelIdHex == null && channel == availableChannels.first())
+                    val enabled = !state.submitting && state.editTargetMessageIdHex == null
                     androidx.compose.foundation.layout.Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = selected,
+                                enabled = enabled,
+                                role = Role.RadioButton,
+                                onClick = { onChannelSelected(idHex) },
+                            ),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     ) {
                         RadioButton(
-                            selected = state.selectedChannelIdHex == idHex ||
-                                (state.selectedChannelIdHex == null && channel == availableChannels.first()),
-                            onClick = { onChannelSelected(idHex) },
-                            enabled = !state.submitting && state.editTargetMessageIdHex == null,
+                            selected = selected,
+                            onClick = null,
+                            enabled = enabled,
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(channel.name, style = MaterialTheme.typography.bodyMedium)
@@ -173,7 +196,17 @@ internal fun SpaceMessageComposer(
                             ) {
                                 Text(message.content, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    "${message.outboxState ?: "retained locally"} · ${message.eventId.toLowerHex()}",
+                                    "Local outbox record: ${message.outboxState ?: "no queued state; retained locally"}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    "Event ID: ${message.eventId.toLowerHex()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    "Author sequence ${message.authorSequence} · local Lamport value ${message.lamport}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

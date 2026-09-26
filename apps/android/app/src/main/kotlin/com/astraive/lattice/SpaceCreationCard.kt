@@ -3,6 +3,7 @@ package com.astraive.lattice
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
@@ -18,6 +19,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileCreatedSpace
 import uniffi.lattice_uniffi.MobileSpaceSummary
@@ -53,7 +57,11 @@ internal fun LocalSpaceRecoveryCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Recover a local Space generation", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Recover a local Space generation",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
             Text(
                 "Recovery requires a generation already stored locally and its trusted X.509 credential. It creates a new local one-member recovery root; it does not import a Space, restore membership, contact a relay, or synchronize.",
                 style = MaterialTheme.typography.bodySmall,
@@ -65,12 +73,19 @@ internal fun LocalSpaceRecoveryCard(
                 spaces.forEachIndexed { index, space ->
                     val key = recoverySpaceKey(space)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = state.selectedSpaceKey == key,
+                                enabled = !state.recovering,
+                                role = Role.RadioButton,
+                                onClick = { onSpaceSelected(key) },
+                            ),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(
                             selected = state.selectedSpaceKey == key,
-                            onClick = { onSpaceSelected(key) },
+                            onClick = null,
                             enabled = !state.recovering,
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -178,7 +193,11 @@ internal fun SpaceWelcomeJoinCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Join from a pinned Welcome", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Join from a pinned Welcome",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
             Text(
                 "Import a signed Welcome package from a peer whose complete identity bundle is already pinned in this profile. The package carries a signed policy checkpoint; it is not independent MLS history replay or a delivery confirmation.",
                 style = MaterialTheme.typography.bodySmall,
@@ -264,7 +283,11 @@ internal fun SpaceCreationCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Create a local Space", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Create a local Space",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
             Text(
                 "Paste the exact leaf-first RFC 9420 TLS X.509 credential vector as hexadecimal. The OS trust chain and local signing identity are checked before local MLS state is committed. This does not join another member or contact a network.",
                 style = MaterialTheme.typography.bodySmall,
