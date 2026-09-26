@@ -243,6 +243,7 @@ fn error_code(error: &(dyn Error + 'static)) -> &'static str {
             relay::RelayConfigError::InvalidSettings => "LOCAL_CONFIG_INVALID",
             relay::RelayConfigError::SettingsLimit => "LIMIT_EXCEEDED",
             relay::RelayConfigError::HashCollision => "LOCAL_CONFIG_CONFLICT",
+            relay::RelayConfigError::Io(_) => "IO_ERROR",
         };
     }
     if error
