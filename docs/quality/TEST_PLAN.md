@@ -34,7 +34,15 @@ An ID becomes **verified** only with implementation revision, test command/scena
 
 Generate small histories across 2–6 members, with random signed message, edit, permission, invite, ban, MLS proposal and Commit operations. Permute deliveries, duplicates, pauses, clock jumps, reconnections and adversarial relays. At each prefix assert: no unauthorized projection; identical accepted sets plus chosen branch policy produce identical views; removed members do not obtain later epoch secrets; no event ID changes on path change; and every pending object has a bounded recovery/failure reason. Exhaustively enumerate very small branch histories where practical, then fuzz longer ones with fixed seeds and shrinking.
 
-Fuzz targets in the isolated `fuzz/` workspace cover canonical CBOR, identity bundles, signed events, relay envelopes, NIP-01 JSON, and attachment manifest/chunk-bitmap validation. List them with `cargo +nightly fuzz list --fuzz-dir fuzz`; run a target with `cargo +nightly fuzz run --fuzz-dir fuzz canonical -- -max_total_time=60`. On Windows, the default AddressSanitizer executable needs an LLVM runtime DLL; a sanitizer-free campaign still requires a linker compatible with libFuzzer's coverage sections. No campaign result is claimed until the target runs on a supported toolchain. BLE fragment assembly, invite URI, MLS wrapper, and voice signaling targets remain planned. A zero-crash run on one budget is not proof of security; reproducible crashes remain release blockers until triaged.
+Fuzz targets in the isolated `fuzz/` workspace cover canonical CBOR, identity bundles, signed events, relay envelopes, NIP-01 JSON, and attachment manifest/chunk-bitmap validation. List them with `cargo +nightly fuzz list --fuzz-dir fuzz`; run a target with `cargo +nightly fuzz run --fuzz-dir fuzz canonical -- -max_total_time=60`. On Windows, the default AddressSanitizer executable needs `clang_rt.asan_dynamic-x86_64.dll` on `PATH`. For a Visual Studio 2022 Build Tools installation, PowerShell can locate and prepend the DLL directory:
+
+```powershell
+$asan = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" | Select-Object -First 1
+$env:PATH = "$($asan.DirectoryName);$env:PATH"
+$env:ASAN_OPTIONS = "quarantine_size_mb=64:thread_local_quarantine_size_kb=256"
+```
+
+A sanitizer-free campaign still requires a linker compatible with libFuzzer's coverage sections. On Windows, a 60-second `signed-event` campaign with `ASAN_OPTIONS=quarantine_size_mb=64:thread_local_quarantine_size_kb=256` completed 557,506 executions at 226 MiB reported process RSS; this is harness RSS, not decoder-only allocation. No campaign result is claimed until the target runs on a supported toolchain. BLE fragment assembly, invite URI, MLS wrapper, and voice signaling targets remain planned. The default libFuzzer maximum input length is 4096 bytes; increase `-max_len` explicitly when exercising decoder boundary budgets. A zero-crash run on one budget is not proof of security; reproducible crashes remain release blockers until triaged.
 
 ## Network laboratory
 
