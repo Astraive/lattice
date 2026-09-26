@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 import { PeerIdentityPinPanel } from "./features/identity/PeerIdentityPinPanel";
 import { LocalNetworkSettings } from "./features/network/LocalNetworkSettings";
+import { PersistentPeerMode } from "./features/network/PersistentPeerMode";
 import { LocalSpaceBrowser } from "./features/spaces/LocalSpaceBrowser";
 import { LocalSpaceCreator } from "./features/spaces/LocalSpaceCreator";
 import "./App.css";
@@ -202,6 +203,7 @@ function App() {
           />
           <LocalSpaceBrowser runtimeAvailable={runtimeAvailable} />
           <LocalNetworkSettings runtimeAvailable={runtimeAvailable} />
+          <PersistentPeerMode runtimeAvailable={runtimeAvailable} />
         </section>
       </main>
 

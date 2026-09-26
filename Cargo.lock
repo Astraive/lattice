@@ -3112,12 +3112,18 @@ dependencies = [
  "if-addrs",
  "lattice-core",
  "lattice-files",
+ "lattice-node",
  "lattice-platform",
  "lattice-relay",
+ "lattice-storage",
+ "lattice-transport",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -1,4 +1,8 @@
+use tauri::Manager as _;
+
 mod attachments;
+mod peer_mode;
+
 mod encoding;
 
 mod identity;
@@ -15,7 +19,19 @@ mod spaces;
 /// Panics when Tauri cannot initialize the configured application runtime.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let peer_mode_state = peer_mode::PeerModeState::load();
+    let autostart = peer_mode_state.clone();
+    let app = tauri::Builder::default()
+        .manage(peer_mode_state)
+        .setup(move |_| {
+            if autostart.should_autostart() {
+                let autostart = autostart.clone();
+                tauri::async_runtime::spawn(async move {
+                    autostart.autostart().await;
+                });
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             identity::initialize_device_identity,
@@ -38,8 +54,17 @@ pub fn run() {
             local_network::scan_local_path_capabilities,
             relay_settings::list_local_relays,
             relay_settings::add_local_relay,
-            relay_settings::remove_local_relay
+            relay_settings::remove_local_relay,
+            peer_mode::get_persistent_peer_mode_status,
+            peer_mode::configure_persistent_peer_mode
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run the Lattice desktop application");
+        .build(tauri::generate_context!())
+        .expect("failed to build the Lattice desktop application");
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit)
+            && let Some(state) = app_handle.try_state::<peer_mode::PeerModeState>()
+        {
+            state.cancel_on_exit();
+        }
+    });
 }

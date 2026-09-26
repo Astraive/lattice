@@ -31,7 +31,7 @@ The React WebView receives prepared view models, not raw keys, MLS states or unr
 
 ## Persistent peer mode
 
-With user opt-in, desktop can remain online for a Space it belongs to and hold authorized history under retention, or act as courier of opaque envelopes without membership. These are different modes: courier-only holds no Space keys; member mode can decrypt according to membership and local storage policy. The operator sees byte quota, queue depth, uptime, relay connections and power/network impact. If it disappears, other peers keep valid history and reconcile on another path when available.
+Desktop persistent peer mode is courier-only. Opt-in settings persist a TCP listen address and one exact pinned peer fingerprint, and the listener resumes on application startup. It accepts authenticated opaque courier envelopes serially with bounded sessions and stores them in the existing queue under default 16 MiB/4,096-item total limits; the panel reports queue bytes and items. Disabling the mode stops listening and clears retained courier envelopes. It does not join a Space, decrypt or authorize Space content, automatically forward envelopes, use configured relays, or claim recipient delivery. The default loopback address is local-only; selecting another interface does not prove reachability or bypass firewall policy.
 
 ## Desktop release matrix
 
