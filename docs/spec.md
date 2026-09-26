@@ -47,7 +47,7 @@ The system is constrained by four non-negotiable requirements:
 
 BitChat demonstrates a practical dual-transport model in which nearby peers form a BLE application mesh and distant peers may be reached using Nostr relays when Internet connectivity exists. Its 2026 whitepaper describes a common transport interface, BLE controlled flooding, store-and-forward couriers, and Nostr relay fallback ([bitchatwhitepaper](#ref-bitchatwhitepaper)). This architecture validates the broad feasibility of separating message routing from one fixed network path. Lattice adopts that architectural idea but expands the application semantics to persistent communities, role-controlled channels, replicated metadata, files, and live voice.
 
-A relevant privacy lesson is that BitChat’s current whitepaper explicitly notes linkability created by stable identity material exposed in nearby announcements ([bitchatwhitepaper](#ref-bitchatwhitepaper)). Lattice therefore does not advertise the stable account/device public key or stable device identifier in BLE advertisements. Discovery uses rotating unlinkable tokens and performs authenticated identity binding only after an encrypted session is established.
+BitChat's current whitepaper explicitly notes linkability created by stable identity material exposed in nearby announcements ([bitchatwhitepaper](#ref-bitchatwhitepaper)). Lattice therefore does not advertise the stable account/device public key or stable device identifier in BLE advertisements. The experimental `lattice-ble-exp0` direction uses rotating discovery tokens, but their unlinkability and resistance to passive correlation are not established; stable identity is disclosed only inside an authenticated encrypted session.
 
 ## Delay- and disruption-tolerant networking
 
@@ -340,25 +340,7 @@ The BLE physical layer’s nominal radio rate is not equivalent to application t
 
 ### BLE service layout
 
-The initial service contains the following logical characteristics:
-
-- `control`: authenticated handshake/control frames;
-
-- `rx`: write-with/without-response ingress selected by capability;
-
-- `tx`: notification/indication egress;
-
-- `capabilities`: compact transport/version descriptor;
-
-- `upgrade`: parameters for negotiating Wi-Fi Aware/LAN/WebRTC escalation.
-
-The exact 128-bit UUID allocation is generated once for the project and treated as wire protocol. Test UUIDs **MUST NOT** ship in release clients.
-
-### Rotating discovery beacons
-
-Advertising payloads **MUST NOT** contain a stable public key, nickname, Space identifier, or long-lived peer identifier. Instead each device periodically derives a discovery token: $$D_t = \operatorname{Trunc}_{128}(\operatorname{HMAC}_{K_d}(\lfloor t/W \rfloor \parallel r)),$$ where $K_d$ is a local discovery secret, $W$ is a rotation window, and $r$ is a boot/session randomizer. The token is used only to deduplicate observations within a short window. Stable identity is disclosed only inside an authenticated encrypted session.
-
-For pre-established trusted peers, an optional private rendezvous token may be derived from a pairwise secret so that known contacts can recognize one another without exposing that relationship to unrelated scanners. This optimization is disabled until its privacy behavior is independently reviewed.
+[`protocol/specs/10-ble.md`](../protocol/specs/10-ble.md) assigns the `lattice-ble-exp0` candidate service UUID and five characteristic UUIDs (`control`, `rx`, `tx`, `capabilities`, `upgrade`), their roles, and a three-byte capability descriptor. Its legacy advertisement is exactly a 31-octet Flags plus 128-bit Service Data packet: profile discriminator `0x00` and a fresh 72-bit random token. The token rotates every 900 monotonic seconds and is retained only in a bounded, in-memory 15-minute sighting table. It is not identity or authorization and makes no unlinkability claim; RF address, timing, signal, hardware, and OS behavior can still correlate observations. This candidate requires explicit `lattice-ble-exp0` opt-in and is not wired to the Android scanner/GATT primitives. The old scan-prototype UUID and frame codec remain `pre-profile`.
 
 ### Fragmentation and reassembly
 
@@ -2417,7 +2399,9 @@ Clients reject a token when its signed wall-clock expiry has passed. During peer
 
 The QR encoding uses compressed binary-to-text representation with a checksum and a URI scheme such as `lattice://join/<payload>`. If the invite exceeds practical QR size, the app presents a file/nearby transfer or a shorter rendezvous token that requires reaching an authorized member. A public Lattice URL shortener is not required.
 
-# BLE Profile Draft
+# BLE Profile Draft — Experimental profile 0
+
+The migration label and compatibility boundary are specified in [`10-ble.md`](../protocol/specs/10-ble.md). The label is not an on-air field and does not freeze advertisement, GATT, handshake, or framing bytes. This document's remaining BLE behavior is design input, not proof of implementation or interoperability.
 
 ## Advertising
 

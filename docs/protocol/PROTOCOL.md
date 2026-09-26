@@ -1,6 +1,6 @@
 # Protocol profile and interoperability boundaries
 
-**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. Bounded executable candidates cover canonical CBOR, event-ID hashing, local identity, and NIP-01/NIP-11 relay networking; see [`protocol/specs/00-overview.md`](../../protocol/specs/00-overview.md) and its vector file. These candidates are not an interoperability claim. Do not ship independent client implementations from this summary alone.
+**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. Bounded executable candidates cover canonical CBOR, event-ID hashing, local identity, and NIP-01/NIP-11 relay networking; [`10-ble.md`](../../protocol/specs/10-ble.md) assigns experimental BLE labels and candidate service/discovery values, not a frozen interoperable profile. Do not ship independent client implementations from this summary alone.
 
 ## Current executable candidate
 
@@ -33,7 +33,7 @@ Identity bundle candidate fields: Ed25519 verify key, X25519 DH key, version, cr
 
 ## Transport handshakes and BLE
 
-Nearby paths perform a reviewed Noise handshake with explicit pattern, prologue, transcript identity/version/capability/token binding and replay window. Advertising carries a generic service UUID and rotating app token, never static key or Space name. BLE GATT `control`, `rx`, `tx`, `capabilities`, and `upgrade` characteristics are candidates. Fragment after envelope encryption; per-peer aggregate reassembly bytes, object count, deadline, fragment count and pacing credits are mandatory. Adapter “queued to OS” is not remote receipt.
+Nearby BLE design uses a reviewed Noise handshake with explicit pattern, prologue, transcript identity/version/capability/token binding and replay window; its exact exp0 profile remains open. Candidate exp0 advertising, service and characteristic UUIDs, and token lifecycle are defined in [`10-ble.md`](../../protocol/specs/10-ble.md), but are not frozen or wired to the Android scanner/GATT primitives. Fragment after envelope encryption; per-peer aggregate reassembly bytes, object count, deadline, fragment count and pacing credits remain required design bounds. Adapter “queued to OS” is not remote receipt.
 
 ## Sync state
 
@@ -67,7 +67,7 @@ References: [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), [RFC 9750](https
 | `01-identifiers`, `02-encoding` | Field widths, byte order/CBOR profile, domain strings, canonical hashes |
 | `03-identity`, `04-sessions` | Identity bundle, credential verification, Noise pattern/prologue/replay |
 | `05-events`, `06-spaces`, `07-permissions` | Signed event framing, Space/membership payloads, permission registry and causal conflicts; candidate specs exist, reducers remain incomplete |
-| `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts, delivery class/TTL/copy budget, fragmentation and GATT profile; MLS protected persistence is integrated, link profile remains candidate |
+| `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts and delivery class/TTL/copy budget remain candidates; `10-ble` assigns exp0 service/discovery values, while handshake, fragmentation and interoperable GATT framing remain open |
 | `11-sync`, `12-routing` | Gap summaries, snapshots, path metrics, retry and courier rules |
 | `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; bounded Rust relay networking exists, while app integration and independent-relay interoperability remain unimplemented |
 | `16-versioning` | Required/optional feature bits, downgrade prevention and migration |
