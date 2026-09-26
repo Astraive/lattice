@@ -380,7 +380,7 @@ These limits are required to prevent trivial memory-exhaustion attacks.
 
 ## LAN transport
 
-LAN discovery uses mDNS/DNS-SD only for a generic Lattice service and ephemeral endpoint instance name. Identity exchange occurs after secure connection establishment. Once discovered, peers prefer QUIC or TCP depending on implementation maturity. The first interoperable release may use length-prefixed TLS/TCP because it is simpler to debug; a later QUIC adapter can add stream multiplexing and migration without changing application events.
+LAN discovery uses mDNS/DNS-SD service type `_lattice._tcp.local.` only for a generic Lattice service and ephemeral endpoint instance name. The session-random instance and host labels contain no identity or Space data, and the service publishes no TXT records. An opted-in persistent listener may advertise only while bound to a non-loopback endpoint; wildcard binds use the service daemon's interface addresses. Discovery exposes only bounded socket endpoint candidates. mDNS records are unauthenticated and do not establish reachability, peer identity, or trust; applications authenticate a selected endpoint through the exact pinned identity before sensitive exchange. This LAN profile does not imply automatic connection or change the direct transport framing.
 
 ## Relay transport
 

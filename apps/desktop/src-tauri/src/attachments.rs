@@ -1,22 +1,57 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use fs4::fs_std::FileExt as _;
 use lattice_core::Client;
-use lattice_files::{AttachmentManifest, MAX_FILE_SIZE};
+use lattice_files::{
+    AttachmentManifest, AttachmentStagingLimits, AttachmentStagingStore, MAX_FILE_SIZE,
+};
+use lattice_node::sync::{
+    AttachmentReceiveResult, AttachmentSendResult, AuthenticatedAttachmentError,
+    receive_authenticated_attachment_once, send_authenticated_attachment_once,
+};
+use lattice_platform::MAX_ENVELOPE_BYTES;
+use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
 use serde::Serialize;
-use tauri_plugin_dialog::DialogExt as _;
+use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
+use tokio_util::sync::CancellationToken;
 
 use super::{encoding, profile};
 
 const MAX_DESKTOP_ATTACHMENT_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_DESKTOP_ATTACHMENT_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_DESKTOP_ATTACHMENT_CACHE_FILES: usize = 64;
+const MAX_DESKTOP_ATTACHMENT_STAGING_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_DESKTOP_ATTACHMENT_STAGING_FILES: usize = 64;
+const DESKTOP_ATTACHMENT_RETENTION: Duration = Duration::from_hours(168);
+const ATTACHMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const ATTACHMENT_ACCEPT_TIMEOUT: Duration = Duration::from_mins(5);
+const ATTACHMENT_SESSION_TIMEOUT: Duration = Duration::from_mins(30);
 static NEXT_UPLOAD_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // Reports independent transfer facts, not a single state.
+pub(crate) struct AttachmentTransferSummary {
+    state: &'static str,
+    event_id: String,
+    authenticated_peer_fingerprint: String,
+    file_name: String,
+    file_size: u64,
+    chunks_transferred: usize,
+    integrity_verified: bool,
+    exported_locally: bool,
+    staging_removed: bool,
+    cleanup_warning: Option<String>,
+    recipient_delivery_claimed: bool,
+    network_contacted: bool,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +202,458 @@ pub(crate) fn remove_local_attachment_source(
         file_hash: hash,
         removed,
     })
+}
+/// Sends one Core-authorized manifest to an already pinned peer.
+///
+/// Only the content-addressed local source is opened. The manifest is re-read
+/// and compared before transfer; no destination identity is learned or pinned
+/// automatically.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) async fn send_authorized_attachment_once(
+    connect_address: String,
+    space_id_hex: String,
+    group_reference_hex: String,
+    event_id_hex: String,
+    peer_fingerprint_hex: String,
+) -> Result<AttachmentTransferSummary, String> {
+    let target = parse_attachment_target(
+        &connect_address,
+        &space_id_hex,
+        &group_reference_hex,
+        &event_id_hex,
+        &peer_fingerprint_hex,
+    )?;
+    tauri::async_runtime::spawn_blocking(move || send_attachment_blocking(target))
+        .await
+        .map_err(|error| format!("attachment send worker failed: {error}"))?
+}
+
+/// Receives one locally authorized manifest after pinned authentication and an
+/// explicit native consent prompt, then exports only integrity-verified bytes.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) async fn receive_authorized_attachment_once(
+    app: tauri::AppHandle,
+    listen_address: String,
+    space_id_hex: String,
+    group_reference_hex: String,
+    event_id_hex: String,
+    peer_fingerprint_hex: String,
+) -> Result<Option<AttachmentTransferSummary>, String> {
+    let target = parse_attachment_target(
+        &listen_address,
+        &space_id_hex,
+        &group_reference_hex,
+        &event_id_hex,
+        &peer_fingerprint_hex,
+    )?;
+    tauri::async_runtime::spawn_blocking(move || receive_attachment_blocking(app, target))
+        .await
+        .map_err(|error| format!("attachment receive worker failed: {error}"))?
+}
+
+#[derive(Clone, Copy)]
+struct AttachmentTransferTarget {
+    endpoint: SocketAddr,
+    space_id: [u8; 16],
+    group_reference: [u8; 32],
+    event_id: [u8; 32],
+    peer_fingerprint: [u8; 32],
+}
+
+fn parse_attachment_target(
+    endpoint: &str,
+    space_id_hex: &str,
+    group_reference_hex: &str,
+    event_id_hex: &str,
+    peer_fingerprint_hex: &str,
+) -> Result<AttachmentTransferTarget, String> {
+    if endpoint.len() > 128 {
+        return Err("attachment TCP endpoint is too long".to_owned());
+    }
+    let endpoint = endpoint
+        .parse::<SocketAddr>()
+        .map_err(|_| "attachment TCP endpoint must be an IP address and port".to_owned())?;
+    if endpoint.port() == 0 {
+        return Err("attachment TCP endpoint must use a nonzero port".to_owned());
+    }
+    let space_id = encoding::parse_fixed_hex::<16>(space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(group_reference_hex, "MLS group reference")?;
+    let event_id = encoding::parse_fixed_hex::<32>(event_id_hex, "attachment event ID")?;
+    let peer_fingerprint =
+        encoding::parse_fixed_hex::<32>(peer_fingerprint_hex, "peer fingerprint")?;
+    Ok(AttachmentTransferTarget {
+        endpoint,
+        space_id,
+        group_reference,
+        event_id,
+        peer_fingerprint,
+    })
+}
+
+fn send_attachment_blocking(
+    target: AttachmentTransferTarget,
+) -> Result<AttachmentTransferSummary, String> {
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    if client
+        .pinned_identity(&target.peer_fingerprint)
+        .map_err(|error| format!("validate attachment peer pin: {error}"))?
+        .is_none()
+    {
+        return Err("attachment destination fingerprint is not pinned in this profile".to_owned());
+    }
+    let created = client
+        .restore_space(&target.space_id, &target.group_reference)
+        .map_err(|error| format!("restore attachment Space generation: {error}"))?;
+    let authorized = created
+        .reducer()
+        .authorized_attachment_manifest(&target.event_id)
+        .ok_or_else(|| "attachment event is not authorized in this Space generation".to_owned())?;
+    let manifest = authorized.manifest().clone();
+    let event_id = *authorized.event_id();
+
+    let source_dir = profile::data_dir()?.join("attachments").join("outgoing");
+    create_private_directory(&source_dir)?;
+    let _source_lock = acquire_cache_lock(&source_dir)?;
+    let source_path = source_dir.join(format!("{}.blob", encoding::hex(&manifest.file_hash)));
+    let mut source = open_verified_source(&source_path, &manifest)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("start attachment transfer runtime: {error}"))?;
+    let adapter = runtime
+        .block_on(tokio::time::timeout(
+            ATTACHMENT_CONNECT_TIMEOUT,
+            TcpPeerAdapter::connect(target.endpoint, MAX_ENVELOPE_BYTES),
+        ))
+        .map_err(|_| "attachment TCP connection timed out".to_owned())?
+        .map_err(|error| format!("connect attachment peer: {error:?}"))?;
+    let cancellation = CancellationToken::new();
+    let transfer_manifest = manifest.clone();
+    let transfer = runtime
+        .block_on(tokio::time::timeout(
+            ATTACHMENT_SESSION_TIMEOUT,
+            client.with_pinned_identity(
+                &target.peer_fingerprint,
+                |identity, pinned_peer| async move {
+                    send_authenticated_attachment_once(
+                        &adapter,
+                        identity,
+                        pinned_peer,
+                        event_id,
+                        &transfer_manifest,
+                        &mut source,
+                        |peer, requested_event, requested_manifest| {
+                            peer.fingerprint() == target.peer_fingerprint
+                                && requested_event == &event_id
+                                && requested_manifest == &transfer_manifest
+                        },
+                        &cancellation,
+                    )
+                    .await
+                },
+            ),
+        ))
+        .map_err(|_| "authenticated attachment session timed out".to_owned())?
+        .map_err(|error| format!("load pinned attachment identity: {error}"))?
+        .ok_or_else(|| "attachment destination pin is no longer present".to_owned())?
+        .map_err(|error| format_attachment_error(&error))?;
+    Ok(send_transfer_summary(&manifest, target.event_id, transfer))
+}
+
+#[allow(clippy::too_many_lines)] // Consent, transfer, and export ordering is security-sensitive.
+fn receive_attachment_blocking(
+    app: tauri::AppHandle,
+    target: AttachmentTransferTarget,
+) -> Result<Option<AttachmentTransferSummary>, String> {
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client =
+        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    if client
+        .pinned_identity(&target.peer_fingerprint)
+        .map_err(|error| format!("validate attachment peer pin: {error}"))?
+        .is_none()
+    {
+        return Err("attachment sender fingerprint is not pinned in this profile".to_owned());
+    }
+    let created = client
+        .restore_space(&target.space_id, &target.group_reference)
+        .map_err(|error| format!("restore attachment Space generation: {error}"))?;
+    let authorized = created
+        .reducer()
+        .authorized_attachment_manifest(&target.event_id)
+        .ok_or_else(|| "attachment event is not authorized in this Space generation".to_owned())?;
+    let manifest = authorized.manifest().clone();
+    let event_id = *authorized.event_id();
+    let file_name = lattice_files::sanitize_filename_for_display(&manifest.filename);
+    let Some(export_path) = app
+        .dialog()
+        .file()
+        .set_file_name(&file_name)
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let export_path = export_path
+        .into_path()
+        .map_err(|error| format!("selected export path is unavailable: {error}"))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("start attachment transfer runtime: {error}"))?;
+    let listener = runtime
+        .block_on(TcpPeerListener::bind(target.endpoint, MAX_ENVELOPE_BYTES))
+        .map_err(|error| format!("listen for pinned attachment sender: {error:?}"))?;
+    let (adapter, _remote_address) = runtime
+        .block_on(tokio::time::timeout(
+            ATTACHMENT_ACCEPT_TIMEOUT,
+            listener.accept(),
+        ))
+        .map_err(|_| "no attachment sender connected before the listener timed out".to_owned())?
+        .map_err(|error| format!("accept attachment sender: {error:?}"))?;
+
+    let staging_store = attachment_staging_store()?;
+    staging_store
+        .cleanup_expired()
+        .map_err(|error| format!("clean expired attachment staging: {error}"))?;
+    let staging_file = staging_store
+        .open(&manifest, &event_id)
+        .map_err(|error| format!("open resumable attachment staging: {error}"))?;
+    let transfer_id = staging_file.transfer_id();
+    let mut receiver = lattice_files::StreamedAttachmentReceiver::new(
+        manifest.clone(),
+        MAX_DESKTOP_ATTACHMENT_FILE_BYTES.min(MAX_FILE_SIZE),
+        staging_file,
+    )
+    .map_err(|error| format!("initialize attachment receiver: {error}"))?;
+    let transfer_manifest = manifest.clone();
+    let cancellation = CancellationToken::new();
+    let receiver_ref = &mut receiver;
+    let transfer = runtime.block_on(tokio::time::timeout(
+        ATTACHMENT_SESSION_TIMEOUT,
+        client.with_pinned_identity(
+            &target.peer_fingerprint,
+            |identity, pinned_peer| async move {
+                receive_authenticated_attachment_once(
+                    &adapter,
+                    identity,
+                    pinned_peer,
+                    event_id,
+                    &transfer_manifest,
+                    receiver_ref,
+                    |peer, offered_event, offered_manifest| {
+                        peer.fingerprint() == target.peer_fingerprint
+                            && offered_event == &event_id
+                            && offered_manifest == &transfer_manifest
+                    },
+                    |peer, received_manifest| {
+                        app.dialog()
+                            .message(format!(
+                                "Receive {} ({} bytes)?\n\nPinned peer: {}\nSpace event: {}\n\nThe file will be exported only after integrity verification.",
+                                lattice_files::sanitize_filename_for_display(
+                                    &received_manifest.filename
+                                ),
+                                received_manifest.file_size,
+                                encoding::hex(&peer.fingerprint()),
+                                encoding::hex(&event_id),
+                            ))
+                            .title("Accept attachment transfer")
+                            .buttons(MessageDialogButtons::OkCancel)
+                            .blocking_show()
+                    },
+                    &cancellation,
+                )
+                .await
+            },
+        ),
+    ));
+    let transfer = match transfer {
+        Err(_) => return Err("authenticated attachment session timed out".to_owned()),
+        Ok(Err(error)) => return Err(format!("load pinned attachment identity: {error}")),
+        Ok(Ok(None)) => return Err("attachment sender pin is no longer present".to_owned()),
+        Ok(Ok(Some(Ok(transfer)))) => transfer,
+        Ok(Ok(Some(Err(error)))) => {
+            if matches!(error, AuthenticatedAttachmentError::TransferRejected) {
+                drop(receiver);
+                let _ = staging_store.remove(transfer_id);
+            }
+            return Err(format_attachment_error(&error));
+        }
+    };
+
+    let export_cleanup_warning = export_verified_attachment(&mut receiver, &export_path)?;
+    drop(receiver);
+    let (staging_removed, staging_cleanup_warning) = match staging_store.remove(transfer_id) {
+        Ok(removed) => (removed, None),
+        Err(error) => (
+            false,
+            Some(format!("verified staging cleanup failed: {error}")),
+        ),
+    };
+    let cleanup_warning = match (export_cleanup_warning, staging_cleanup_warning) {
+        (Some(export_warning), Some(staging_warning)) => {
+            Some(format!("{export_warning}; {staging_warning}"))
+        }
+        (Some(warning), None) | (None, Some(warning)) => Some(warning),
+        (None, None) => None,
+    };
+    Ok(Some(receive_transfer_summary(
+        &manifest,
+        target.event_id,
+        transfer,
+        staging_removed,
+        cleanup_warning,
+    )))
+}
+
+fn attachment_staging_store() -> Result<AttachmentStagingStore, String> {
+    let limits = AttachmentStagingLimits::new(
+        MAX_DESKTOP_ATTACHMENT_FILE_BYTES.min(MAX_FILE_SIZE),
+        MAX_DESKTOP_ATTACHMENT_STAGING_BYTES,
+        MAX_DESKTOP_ATTACHMENT_STAGING_FILES,
+        DESKTOP_ATTACHMENT_RETENTION,
+    )
+    .map_err(|error| format!("configure attachment staging limits: {error}"))?;
+    AttachmentStagingStore::new(
+        profile::data_dir()?.join("attachments").join("incoming"),
+        limits,
+    )
+    .map_err(|error| format!("open private attachment staging store: {error}"))
+}
+
+fn export_verified_attachment<S>(
+    receiver: &mut lattice_files::StreamedAttachmentReceiver<S>,
+    destination: &Path,
+) -> Result<Option<String>, String>
+where
+    S: Read + Write + Seek,
+{
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let (temporary_path, mut temporary_file) = loop {
+        let id = NEXT_UPLOAD_ID.fetch_add(1, Ordering::Relaxed);
+        let temporary_path = parent.join(format!(
+            ".lattice-attachment-export-{}-{id}.part",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&temporary_path) {
+            Ok(file) => break (temporary_path, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!("create private attachment export staging: {error}"));
+            }
+        }
+    };
+    let copy_result = receiver
+        .copy_verified_to(&mut temporary_file)
+        .and_then(|()| {
+            temporary_file
+                .sync_all()
+                .map_err(lattice_files::AttachmentError::from)
+        });
+    drop(temporary_file);
+    if let Err(error) = copy_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!(
+            "export verified attachment; private staging remains available for retry: {error}"
+        ));
+    }
+    if let Err(error) = fs::hard_link(&temporary_path, destination) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!(
+            "commit verified export without overwriting existing data; private staging remains available for retry: {error}"
+        ));
+    }
+    match fs::remove_file(&temporary_path) {
+        Ok(()) => Ok(None),
+        Err(error) => Ok(Some(format!(
+            "verified export succeeded but temporary output cleanup failed: {error}"
+        ))),
+    }
+}
+
+fn open_verified_source(path: &Path, expected: &AttachmentManifest) -> Result<File, String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| "retained attachment source is unavailable")?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("retained attachment source is not a regular file".to_owned());
+    }
+    if metadata.len() != expected.file_size {
+        return Err("retained attachment source size does not match its manifest".to_owned());
+    }
+    let mut source =
+        File::open(path).map_err(|error| format!("open retained attachment source: {error}"))?;
+    let actual = AttachmentManifest::from_reader(&mut source, &expected.filename, None)
+        .map_err(|error| format!("verify retained attachment source: {error}"))?;
+    if &actual != expected {
+        return Err("retained attachment source does not match its authorized manifest".to_owned());
+    }
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind retained attachment source: {error}"))?;
+    Ok(source)
+}
+
+fn format_attachment_error(error: &AuthenticatedAttachmentError) -> String {
+    format!("authenticated attachment transfer failed: {error}")
+}
+
+fn send_transfer_summary(
+    manifest: &AttachmentManifest,
+    event_id: [u8; 32],
+    result: AttachmentSendResult,
+) -> AttachmentTransferSummary {
+    AttachmentTransferSummary {
+        state: "peer_integrity_verified",
+        event_id: encoding::hex(&event_id),
+        authenticated_peer_fingerprint: encoding::hex(&result.authenticated_peer.fingerprint()),
+        file_name: manifest.filename.clone(),
+        file_size: manifest.file_size,
+        chunks_transferred: result.chunks_sent,
+        integrity_verified: result.receiver_verified_complete,
+        exported_locally: false,
+        staging_removed: false,
+        cleanup_warning: None,
+        recipient_delivery_claimed: false,
+        network_contacted: true,
+    }
+}
+
+fn receive_transfer_summary(
+    manifest: &AttachmentManifest,
+    event_id: [u8; 32],
+    result: AttachmentReceiveResult,
+    staging_removed: bool,
+    cleanup_warning: Option<String>,
+) -> AttachmentTransferSummary {
+    AttachmentTransferSummary {
+        state: "received_and_exported",
+        event_id: encoding::hex(&event_id),
+        authenticated_peer_fingerprint: encoding::hex(&result.authenticated_peer.fingerprint()),
+        file_name: manifest.filename.clone(),
+        file_size: manifest.file_size,
+        chunks_transferred: result.chunks_received,
+        integrity_verified: result.verified_complete,
+        exported_locally: true,
+        staging_removed,
+        cleanup_warning,
+        recipient_delivery_claimed: false,
+        network_contacted: true,
+    }
 }
 
 fn queue_selected_file(
@@ -440,7 +927,10 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{read_cached_filename, stage_source_file};
+    use super::{
+        export_verified_attachment, open_verified_source, parse_attachment_target,
+        read_cached_filename, stage_source_file,
+    };
 
     #[test]
     fn selected_attachment_is_retained_by_content_hash_and_deduplicated() {
@@ -500,5 +990,133 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove temporary attachment cache");
+    }
+    #[test]
+    fn attachment_target_requires_literal_socket_and_nonzero_port() {
+        let space_id = "11".repeat(16);
+        let group_reference = "22".repeat(32);
+        let event_id = "33".repeat(32);
+        let peer_fingerprint = "44".repeat(32);
+        let valid = parse_attachment_target(
+            "192.168.1.8:7332",
+            &space_id,
+            &group_reference,
+            &event_id,
+            &peer_fingerprint,
+        )
+        .expect("valid pinned endpoint");
+        assert_eq!(valid.endpoint.port(), 7332);
+        assert_eq!(valid.peer_fingerprint, [0x44; 32]);
+
+        assert!(
+            parse_attachment_target(
+                "peer.example:7332",
+                &space_id,
+                &group_reference,
+                &event_id,
+                &peer_fingerprint,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_attachment_target(
+                "192.168.1.8:0",
+                &space_id,
+                &group_reference,
+                &event_id,
+                &peer_fingerprint,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn changed_cached_source_is_rejected_against_authorized_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "lattice-desktop-attachment-source-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create temporary attachment root");
+        let source_path = root.join("proof.bin");
+        let source_dir = root.join("cache");
+        fs::write(&source_path, vec![0x63; 128]).expect("create source bytes");
+        let (manifest, _) =
+            stage_source_file(&source_path, &source_dir).expect("stage source bytes");
+        let cached_path = source_dir.join(format!(
+            "{}.blob",
+            crate::encoding::hex(&manifest.file_hash)
+        ));
+        let mut altered = fs::read(&cached_path).expect("read staged source");
+        altered[0] ^= 1;
+        fs::write(&cached_path, altered).expect("alter staged source");
+
+        assert!(open_verified_source(&cached_path, &manifest).is_err());
+        fs::remove_dir_all(root).expect("remove temporary attachment root");
+    }
+
+    #[test]
+    fn verified_export_is_complete_and_never_overwrites_existing_data() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "lattice-desktop-attachment-export-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create temporary export directory");
+        let content = vec![0x72; lattice_files::CHUNK_SIZE + 19];
+        let manifest = lattice_files::AttachmentManifest::from_reader(
+            &mut Cursor::new(content.clone()),
+            "proof.bin",
+            None,
+        )
+        .expect("build test manifest");
+        let mut receiver = lattice_files::StreamedAttachmentReceiver::new(
+            manifest,
+            lattice_files::MAX_FILE_SIZE,
+            Cursor::new(Vec::new()),
+        )
+        .expect("create streamed receiver");
+        receiver.accept().expect("accept test transfer");
+        for (index, chunk) in content.chunks(lattice_files::CHUNK_SIZE).enumerate() {
+            receiver
+                .submit_chunk(index, chunk)
+                .expect("submit verified test chunk");
+        }
+
+        let destination = root.join("proof.bin");
+        assert_eq!(
+            export_verified_attachment(&mut receiver, &destination)
+                .expect("export verified attachment"),
+            None
+        );
+        assert_eq!(
+            fs::read(&destination).expect("read verified export"),
+            content
+        );
+
+        fs::write(&destination, b"keep existing file").expect("prepare existing destination");
+        assert!(export_verified_attachment(&mut receiver, &destination).is_err());
+        assert_eq!(
+            fs::read(&destination).expect("read preserved destination"),
+            b"keep existing file"
+        );
+        let leftover_parts = fs::read_dir(&root)
+            .expect("list export directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "part")
+            })
+            .count();
+        assert_eq!(leftover_parts, 0);
+        fs::remove_dir_all(root).expect("remove temporary export directory");
     }
 }

@@ -53,6 +53,20 @@ type AttachmentCacheStatus = {
   storedBytes: number;
   storedFiles: number;
 };
+type AttachmentTransferSummary = {
+  state: "peer_integrity_verified" | "received_and_exported";
+  eventId: string;
+  authenticatedPeerFingerprint: string;
+  fileName: string;
+  fileSize: number;
+  chunksTransferred: number;
+  integrityVerified: boolean;
+  exportedLocally: boolean;
+  stagingRemoved: boolean;
+  cleanupWarning: string | null;
+  recipientDeliveryClaimed: false;
+  networkContacted: true;
+};
 
 type LocalTextMessage = {
   eventId: string;
@@ -118,6 +132,15 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
   const [attachmentCacheBytes, setAttachmentCacheBytes] = useState<number | null>(null);
   const [attachmentCacheBusy, setAttachmentCacheBusy] = useState(false);
   const [attachmentCacheError, setAttachmentCacheError] = useState<string | null>(null);
+  const [attachmentEventId, setAttachmentEventId] = useState("");
+  const [attachmentPeerFingerprint, setAttachmentPeerFingerprint] = useState("");
+  const [attachmentConnectAddress, setAttachmentConnectAddress] = useState("");
+  const [attachmentListenAddress, setAttachmentListenAddress] = useState("127.0.0.1:7332");
+  const [attachmentTransferBusy, setAttachmentTransferBusy] = useState(false);
+  const [attachmentTransferNotice, setAttachmentTransferNotice] = useState<{
+    kind: "status" | "error";
+    message: string;
+  } | null>(null);
   async function loadHistory() {
     const requestedChannel = channelId;
     setHistoryBusy(true);
@@ -209,6 +232,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
 
   async function queueFileAttachment() {
     setBusy(true);
+    setAttachmentEventId("");
     setFeedback(null);
     setEventId(null);
     try {
@@ -219,9 +243,10 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
         channelIdHex: channelId,
       });
       if (!queued) return;
+      setAttachmentEventId(queued.eventId);
       setEventId(queued.eventId);
       setFeedback(
-        `${queued.fileName} (${queued.fileSize} bytes, ${queued.chunkCount} chunks) was queued locally. Its source copy is retained for a future transfer; no network or recipient delivery was attempted.`,
+        `${queued.fileName} (${queued.fileSize} bytes, ${queued.chunkCount} chunks) was queued locally. Its content-addressed source copy is retained; use the transfer panel with the event ID and exact peer pin to send it. No network or recipient delivery was attempted yet.`,
       );
     } catch (cause) {
       setFeedback(
@@ -275,6 +300,61 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
       setAttachmentCacheError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setAttachmentCacheBusy(false);
+    }
+  }
+
+  async function sendAttachment() {
+    setAttachmentTransferBusy(true);
+    setAttachmentTransferNotice(null);
+    try {
+      const result = await invoke<AttachmentTransferSummary>("send_authorized_attachment_once", {
+        connectAddress: attachmentConnectAddress,
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        eventIdHex: attachmentEventId.trim(),
+        peerFingerprintHex: attachmentPeerFingerprint.trim(),
+      });
+      setAttachmentTransferNotice({
+        kind: "status",
+        message: `Pinned peer ${result.authenticatedPeerFingerprint} verified ${result.fileName} (${result.fileSize} bytes) across ${result.chunksTransferred} chunk(s). This is not recipient-delivery proof.`,
+      });
+    } catch (cause) {
+      setAttachmentTransferNotice({
+        kind: "error",
+        message: `Attachment send failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    } finally {
+      setAttachmentTransferBusy(false);
+    }
+  }
+
+  async function receiveAttachment() {
+    setAttachmentTransferBusy(true);
+    setAttachmentTransferNotice(null);
+    try {
+      const result = await invoke<AttachmentTransferSummary | null>(
+        "receive_authorized_attachment_once",
+        {
+          listenAddress: attachmentListenAddress,
+          spaceIdHex: space.spaceId,
+          groupReferenceHex: space.groupReference,
+          eventIdHex: attachmentEventId.trim(),
+          peerFingerprintHex: attachmentPeerFingerprint.trim(),
+        },
+      );
+      setAttachmentTransferNotice({
+        kind: "status",
+        message: result
+          ? `${result.fileName} (${result.fileSize} bytes) was integrity-verified and exported. The peer accepted the transfer; recipient delivery is not claimed.${result.cleanupWarning ? ` ${result.cleanupWarning}` : ""}`
+          : "Export selection cancelled; no attachment connection was opened.",
+      });
+    } catch (cause) {
+      setAttachmentTransferNotice({
+        kind: "error",
+        message: `Attachment receive failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    } finally {
+      setAttachmentTransferBusy(false);
     }
   }
 
@@ -344,7 +424,8 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
           )}
           <p>
             Attachments are capped at 128 MiB per file and 512 MiB in the local source cache.
-            Selected file bytes are retained locally; transfer is not available in this client.
+            The selected file is retained locally; send/receive requires an exact pinned peer and
+            an already authorized manifest on both devices.
           </p>
           <section className="local-message-history" aria-label="Retained attachment source cache">
             <div>
@@ -387,6 +468,88 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                   </li>
                 ))}
               </ul>
+            )}
+          </section>
+          <section className="local-message-history" aria-label="Authenticated attachment transfer">
+            <h4>Authenticated attachment transfer</h4>
+            <p>
+              The sender and receiver must already have this authorized manifest in the same Space
+              generation and must pin each other’s exact device fingerprint. Run the receiver first.
+              The receiver selects an export path, authenticates the sender, then asks for consent
+              before accepting bytes. Transfers time out after 30 minutes.
+            </p>
+            <label htmlFor="attachment-transfer-event-id">Authorized attachment event ID</label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-event-id"
+              maxLength={64}
+              onChange={(event) => setAttachmentEventId(event.target.value.trim())}
+              spellCheck={false}
+              value={attachmentEventId}
+            />
+            <label htmlFor="attachment-transfer-peer-pin">
+              Exact pinned peer fingerprint (64 hex characters)
+            </label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-peer-pin"
+              maxLength={64}
+              onChange={(event) => setAttachmentPeerFingerprint(event.target.value.trim())}
+              spellCheck={false}
+              value={attachmentPeerFingerprint}
+            />
+            <label htmlFor="attachment-transfer-connect-address">Peer TCP address</label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-connect-address"
+              maxLength={128}
+              onChange={(event) => setAttachmentConnectAddress(event.target.value.trim())}
+              placeholder="192.168.1.20:7332"
+              spellCheck={false}
+              value={attachmentConnectAddress}
+            />
+            <button
+              type="button"
+              disabled={
+                attachmentTransferBusy ||
+                attachmentEventId.length !== 64 ||
+                attachmentPeerFingerprint.length !== 64 ||
+                attachmentConnectAddress.length === 0
+              }
+              onClick={() => void sendAttachment()}
+            >
+              {attachmentTransferBusy ? "Transferring…" : "Send authorized attachment"}
+            </button>
+            <label htmlFor="attachment-transfer-listen-address">Local TCP listen address</label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-listen-address"
+              maxLength={128}
+              onChange={(event) => setAttachmentListenAddress(event.target.value.trim())}
+              spellCheck={false}
+              value={attachmentListenAddress}
+            />
+            <button
+              type="button"
+              disabled={
+                attachmentTransferBusy ||
+                attachmentEventId.length !== 64 ||
+                attachmentPeerFingerprint.length !== 64 ||
+                attachmentListenAddress.length === 0
+              }
+              onClick={() => void receiveAttachment()}
+            >
+              {attachmentTransferBusy ? "Transferring…" : "Receive and export attachment"}
+            </button>
+            <p>
+              The local address must be reachable by the sender; firewall and network reachability
+              are not tested. Source bytes stay local on send; received bytes are staged privately
+              and exported only after chunk and whole-file integrity verification.
+            </p>
+            {attachmentTransferNotice && (
+              <p role={attachmentTransferNotice.kind === "status" ? "status" : "alert"}>
+                {attachmentTransferNotice.message}
+              </p>
             )}
           </section>
           {editTarget && (

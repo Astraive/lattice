@@ -7,6 +7,14 @@ type LocalPathCapabilities = {
 
 type RelayListStatus = { relayUrls: string[] };
 type RelayMutationStatus = { relayUrl: string; changed: boolean };
+type LocalLanEndpoint = { address: string };
+type LocalLanDiscovery = {
+  state: "endpoint_observed" | "no_endpoint_observed";
+  networkContacted: boolean;
+  identityAuthenticated: boolean;
+  reachabilityVerified: boolean;
+  endpoints: LocalLanEndpoint[];
+};
 
 type Props = { runtimeAvailable: boolean };
 
@@ -17,6 +25,7 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  const [lanDiscovery, setLanDiscovery] = useState<LocalLanDiscovery | null>(null);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -74,6 +83,25 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
     }
   }
 
+  async function discoverLanEndpoints() {
+    setBusy(true);
+    setError(null);
+    setStatus("");
+    setLanDiscovery(null);
+    try {
+      const result = await invoke<LocalLanDiscovery>("discover_local_lan_endpoints");
+      setLanDiscovery(result);
+      setStatus(
+        result.endpoints.length > 0
+          ? `Observed ${result.endpoints.length} LAN endpoint candidate(s).`
+          : "LAN scan completed; no endpoint was observed.",
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <section className="local-network-settings" aria-labelledby="local-network-title">
       <div className="section-heading">
@@ -96,9 +124,39 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
               LAN address {pathCapabilities?.localIpAddressObserved ? "observed" : "not observed"}
             </strong>
             <span>Interface names and addresses are not exposed.</span>
-            <span>Reachability: not checked. Nearby peers: not scanned.</span>
+            <span>Reachability: not checked. LAN endpoint scan: not run in this session.</span>
             <span>BLE, Wi-Fi Aware, and Wi-Fi Direct are not probed on desktop.</span>
           </div>
+          <div className="identity-actions">
+            <button type="button" disabled={busy} onClick={() => void discoverLanEndpoints()}>
+              Scan LAN for Lattice endpoints
+            </button>
+          </div>
+          {lanDiscovery && (
+            <div className="relay-settings" aria-labelledby="lan-discovery-title">
+              <h4 id="lan-discovery-title">LAN endpoint observations</h4>
+              <p>
+                {lanDiscovery.state === "endpoint_observed"
+                  ? "The scan observed these endpoints in mDNS records."
+                  : "The scan completed without observing a Lattice endpoint."}
+              </p>
+              {lanDiscovery.endpoints.length > 0 && (
+                <ul className="relay-settings-list">
+                  {lanDiscovery.endpoints.map(({ address }) => (
+                    <li key={address}>
+                      <code>{address}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p>
+                Network contacted: {lanDiscovery.networkContacted ? "yes" : "no"}. Identity
+                authenticated: {lanDiscovery.identityAuthenticated ? "yes" : "no"}. Reachability
+                verified: {lanDiscovery.reachabilityVerified ? "yes" : "no"}. No connection was
+                attempted; verify a peer pin before connecting.
+              </p>
+            </div>
+          )}
           <div className="relay-settings">
             <div className="relay-settings-heading">
               <div>
@@ -144,7 +202,7 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
           </div>
         </>
       )}
-      {busy && <p role="status">Updating local connectivity settings…</p>}
+      {busy && <p role="status">Working with local connectivity settings…</p>}
       {status && <p role="status">{status}</p>}
       {error && <p role="alert">{error}</p>}
     </section>

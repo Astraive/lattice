@@ -47,16 +47,21 @@ pub fn run() {
             attachments::queue_local_file_attachment,
             attachments::list_local_attachment_sources,
             attachments::remove_local_attachment_source,
+            attachments::send_authorized_attachment_once,
+            attachments::receive_authorized_attachment_once,
             spaces::search_local_text_messages,
             identity::pin_peer_identity,
             identity::get_pinned_identity,
             identity::unpin_peer_identity,
             local_network::scan_local_path_capabilities,
+            local_network::discover_local_lan_endpoints,
             relay_settings::list_local_relays,
             relay_settings::add_local_relay,
             relay_settings::remove_local_relay,
             peer_mode::get_persistent_peer_mode_status,
-            peer_mode::configure_persistent_peer_mode
+            peer_mode::configure_persistent_peer_mode,
+            peer_mode::list_retained_courier_items,
+            peer_mode::forward_queued_courier_item
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Lattice desktop application");
