@@ -32,6 +32,44 @@ const IDENTITY_PROOF_V2_DOMAIN: &[u8] = b"lattice:direct-sync-identity-proof:v2\
 const PATH_UPGRADE_PROLOGUE: &[u8] = b"lattice:path-upgrade:noise-xx:v1\0";
 const PATH_UPGRADE_PROOF_DOMAIN: &[u8] = b"lattice:path-upgrade-identity-proof:v1\0";
 
+const COURIER_PROLOGUE: &[u8] = b"lattice:courier-transfer:noise-xx:v1\0";
+const COURIER_IDENTITY_PROOF_DOMAIN: &[u8] = b"lattice:courier-identity-proof:v1\0";
+
+pub(crate) async fn establish_courier_channel<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    role: NoiseRole,
+    cancellation: &CancellationToken,
+) -> Result<EstablishedNoiseTransportSession, AuthenticatedSyncError> {
+    establish_authenticated_channel_with_protocol(
+        adapter,
+        local_identity,
+        pinned_peer,
+        role,
+        cancellation,
+        COURIER_PROLOGUE,
+        COURIER_IDENTITY_PROOF_DOMAIN,
+    )
+    .await
+}
+
+pub(crate) async fn send_courier_frame<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    channel: &mut EstablishedNoiseTransportSession,
+    plaintext: &[u8],
+    cancellation: &CancellationToken,
+) -> Result<TransportReceipt, AuthenticatedSyncError> {
+    send_encrypted(adapter, channel, plaintext, cancellation).await
+}
+
+pub(crate) async fn receive_courier_frame<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    channel: &mut EstablishedNoiseTransportSession,
+    cancellation: &CancellationToken,
+) -> Result<Vec<u8>, AuthenticatedSyncError> {
+    receive_decrypted(adapter, channel, cancellation).await
+}
 /// Failure while establishing or using one authenticated direct-sync session.
 #[derive(Debug, Error)]
 pub enum AuthenticatedSyncError {

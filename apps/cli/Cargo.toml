@@ -26,6 +26,7 @@ lattice-node = { path = "../../crates/lattice-node" }
 lattice-transport = { path = "../../crates/lattice-transport" }
 lattice-router = { path = "../../crates/lattice-router" }
 lattice-sync = { path = "../../crates/lattice-sync" }
+lattice-mesh = { path = "../../crates/lattice-mesh" }
 openmls = "=0.9.0"
 sha2 = "=0.10.9"
 tokio = { version = "=1.53.1", features = ["net", "rt", "time"] }

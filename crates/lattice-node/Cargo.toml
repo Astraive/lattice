@@ -19,9 +19,13 @@ lattice-sync = { path = "../lattice-sync", version = "=0.1.0" }
 lattice-transport = { path = "../lattice-transport", version = "=0.1.0" }
 lattice-protocol = { path = "../lattice-protocol", version = "=0.1.0" }
 lattice-relay = { path = "../lattice-relay", version = "=0.1.0" }
+lattice-mesh = { path = "../lattice-mesh", version = "=0.1.0" }
 thiserror = "=2.0.20"
 tokio = { version = "=1.53.1", features = ["macros", "rt"] }
 tokio-util = { version = "=0.7.19", features = ["rt"] }
+
+[dev-dependencies]
+lattice-transport = { path = "../lattice-transport", version = "=0.1.0" }
 
 [lints]
 workspace = true

@@ -33,12 +33,16 @@ pub use attachment_transfer::{
     receive_authenticated_attachment_once, send_authenticated_attachment_once,
 };
 mod direct_session;
+pub use direct_session::AuthenticatedSyncError;
 pub use direct_session::{
-    AuthenticatedPathUpgradeError, AuthenticatedPathUpgradeNegotiation, AuthenticatedSyncError,
-    AuthenticatedSyncExchange, AuthenticatedSyncServeResult, AuthenticatedSyncV2Exchange,
-    AuthenticatedSyncV2ServeResult, execute_authenticated_sync_once,
-    execute_authenticated_sync_v2_once, negotiate_authenticated_path_upgrades_once,
-    serve_authenticated_sync_request_once, serve_authenticated_sync_v2_once,
+    AuthenticatedPathUpgradeError, AuthenticatedPathUpgradeNegotiation, AuthenticatedSyncExchange,
+    AuthenticatedSyncServeResult, AuthenticatedSyncV2Exchange, AuthenticatedSyncV2ServeResult,
+    execute_authenticated_sync_once, execute_authenticated_sync_v2_once,
+    negotiate_authenticated_path_upgrades_once, serve_authenticated_sync_request_once,
+    serve_authenticated_sync_v2_once,
+};
+pub(crate) use direct_session::{
+    establish_courier_channel, receive_courier_frame, send_courier_frame,
 };
 mod store_source;
 pub use store_source::{StoreSyncEventSource, StoreSyncSummarySource};

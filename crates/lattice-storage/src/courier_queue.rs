@@ -15,6 +15,8 @@ use crate::{Store, StoreError};
 /// Default persistent courier ceilings. Queue retention remains disabled until opted in.
 pub const DEFAULT_COURIER_LIMITS: CourierLimits =
     CourierLimits::new(1024 * 1024, 4 * 1024 * 1024, 256, 16 * 1024 * 1024, 4096);
+/// Maximum number of courier identifiers returned in one listing page.
+pub const MAX_COURIER_QUEUE_PAGE_SIZE: usize = 4096;
 
 /// Current persisted opt-in and quota usage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +64,7 @@ pub enum CourierQueueError {
     InvalidHopBudget,
     HopBudgetExhausted,
     SequenceExhausted,
+    PageTooLarge { actual: usize, maximum: usize },
     CorruptData(&'static str),
 }
 
@@ -88,6 +91,12 @@ impl fmt::Display for CourierQueueError {
             Self::InvalidHopBudget => formatter.write_str("courier copy budget exceeds hop limit"),
             Self::HopBudgetExhausted => formatter.write_str("courier copy budget is exhausted"),
             Self::SequenceExhausted => formatter.write_str("courier queue sequence is exhausted"),
+            Self::PageTooLarge { actual, maximum } => {
+                write!(
+                    formatter,
+                    "courier page is {actual} items; maximum is {maximum}"
+                )
+            }
             Self::CorruptData(message) => {
                 write!(formatter, "corrupt courier queue data: {message}")
             }
@@ -164,6 +173,74 @@ impl Store {
             enabled,
             limits,
             usage,
+        })
+    }
+
+    /// Returns oldest-first local envelope identifiers, bounded to one page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `limit` exceeds the page ceiling or `SQLite` fails.
+    pub fn list_courier_envelope_ids(&self, limit: usize) -> Result<Vec<EnvelopeId>> {
+        if limit > MAX_COURIER_QUEUE_PAGE_SIZE {
+            return Err(CourierQueueError::PageTooLarge {
+                actual: limit,
+                maximum: MAX_COURIER_QUEUE_PAGE_SIZE,
+            });
+        }
+        let mut statement = self
+            .connection
+            .prepare("SELECT envelope_id FROM courier_queue ORDER BY sequence ASC LIMIT ?1")?;
+        let rows = statement.query_map([to_i64_usize(limit)?], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.map(|row| decode_envelope(row?)).collect()
+    }
+
+    /// Reads one opaque queue record without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ID is absent, persisted fields are corrupt, or
+    /// `SQLite` fails.
+    pub fn read_courier_envelope(&self, envelope_id: EnvelopeId) -> Result<CourierQueueEntry> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT sequence, peer_id, event_id, expires_at_ms, hop_limit,
+                    remaining_copy_budget, traffic_class, encrypted_opaque_bytes
+             FROM courier_queue WHERE envelope_id = ?1",
+                params![envelope_id.as_bytes().as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, Vec<u8>>(7)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(CourierQueueError::EnvelopeMissing)?;
+        let (sequence, peer, event, expires, hop, budget, class, bytes) = row;
+        Ok(CourierQueueEntry {
+            peer_id: decode_peer(peer)?,
+            metadata: CourierMetadata::new(
+                envelope_id,
+                decode_event(event)?,
+                u64::try_from(expires)
+                    .map_err(|_| CourierQueueError::CorruptData("negative expiry"))?,
+                u16::try_from(hop)
+                    .map_err(|_| CourierQueueError::CorruptData("invalid hop limit"))?,
+                u16::try_from(budget)
+                    .map_err(|_| CourierQueueError::CorruptData("invalid copy budget"))?,
+                decode_traffic_class(class)?,
+            ),
+            encrypted_opaque_bytes: bytes,
+            sequence: u64::try_from(sequence)
+                .map_err(|_| CourierQueueError::CorruptData("invalid insertion sequence"))?,
         })
     }
 
@@ -538,6 +615,12 @@ fn decode_traffic_class(value: i64) -> Result<TrafficClass> {
     }
 }
 
+fn decode_envelope(value: Vec<u8>) -> Result<EnvelopeId> {
+    let bytes: [u8; 16] = value
+        .try_into()
+        .map_err(|_| CourierQueueError::CorruptData("invalid envelope ID"))?;
+    Ok(EnvelopeId::new(bytes))
+}
 fn decode_peer(value: Vec<u8>) -> Result<PeerId> {
     let bytes: [u8; 16] = value
         .try_into()
@@ -618,6 +701,21 @@ mod tests {
         store
             .queue_courier_envelope(peer, &metadata(1, 2, 100, 2), b"ciphertext", 10)
             .expect("admit");
+        assert_eq!(
+            store
+                .list_courier_envelope_ids(1)
+                .expect("list bounded queue page"),
+            vec![EnvelopeId::new([1; 16])]
+        );
+        let preview = store
+            .read_courier_envelope(EnvelopeId::new([1; 16]))
+            .expect("read without consuming");
+        assert_eq!(preview.encrypted_opaque_bytes, b"ciphertext");
+        assert_eq!(preview.metadata.remaining_copy_budget(), 2);
+        assert!(matches!(
+            store.list_courier_envelope_ids(MAX_COURIER_QUEUE_PAGE_SIZE + 1),
+            Err(CourierQueueError::PageTooLarge { .. })
+        ));
         drop(store);
 
         let mut store = Store::open(&path).expect("reopen");

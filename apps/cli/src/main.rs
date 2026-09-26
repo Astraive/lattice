@@ -1,5 +1,6 @@
 mod doctor;
 mod identity;
+mod node;
 mod peer;
 mod relay;
 mod space;
@@ -8,6 +9,7 @@ mod sync;
 use identity::{
     IdentityCommand, certificate_request_pem, print_pinned_identity, write_certificate_request_pem,
 };
+use node::NodeCommand;
 use relay::RelayCommand;
 use space::{SpaceCommand, print_space_history, print_space_page, print_space_search};
 use sync::SyncCommand;
@@ -101,6 +103,11 @@ enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    /// Run a bounded pinned-peer courier listener or inspect/forward queued envelopes.
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
     },
 }
 
@@ -338,6 +345,10 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
             let (database_path, protector) = open_profile(&data_dir)?;
             sync::execute(&command, &database_path, &protector, json)
         }
+        Command::Node { command } => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            node::execute(&command, &database_path, &protector, json)
+        }
     }
 }
 
@@ -375,6 +386,9 @@ fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
     match command {
         Command::Sync { command } => {
             sync::validate_command(command).map_err(CliError::invalid_input)?;
+        }
+        Command::Node { command } => {
+            node::validate_command(command).map_err(CliError::invalid_input)?;
         }
         Command::Relay { command } => match command {
             RelayCommand::Add { url }

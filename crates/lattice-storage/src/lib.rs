@@ -11,7 +11,7 @@ mod courier_queue;
 mod trusted_identities;
 pub use courier_queue::{
     CourierQueueEntry, CourierQueueError, CourierQueueReceipt, CourierQueueStatus,
-    DEFAULT_COURIER_LIMITS,
+    DEFAULT_COURIER_LIMITS, MAX_COURIER_QUEUE_PAGE_SIZE,
 };
 
 pub use trusted_identities::TrustedIdentityRecord;
