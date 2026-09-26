@@ -5,7 +5,7 @@
 **Status vocabulary at audit start:** `PENDING-AUDIT` means no runtime acceptance claim has been established by this ledger yet; it is not a final feature state. Each row must end as exactly `VERIFIED`, `BLOCKED-EXTERNAL`, `INTENTIONALLY REMOVED` (only by product-owner authorization), or `FAILED`, with evidence. Do not convert a row to VERIFIED from code, a feature commit, compilation, or an isolated unit test alone.
 
 | Capability | Originating history (short commit) | Subsystem / requirements | Current implementation locations | Clients / paths | Existing tests / runtime acceptance required | Audit-start state and known blocker |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | Workspace, build graph, platform scaffolds | `64998b7 ebc85b0 27997a0 3bf23d4 f25badc 908d98b 577b9e3 789f85c e9d56da 4b1d541 9ed10e7 c793c14 a44459b e378390 b4c8440 8fc5bee` | Build/repo; delivery infrastructure | Cargo workspace, Bun workspace, `apps/{android,desktop,cli,ios}`, CI | Android/Desktop/CLI; iOS reference only | CI and clean native builds; build is not runtime acceptance | PENDING-AUDIT; broad integration unverified |
 | Canonical encoding, event IDs, signed events, vectors and inspector | `3562485 85c3aa1 f270d96 5dbcbe9 b79f7b2 ea8482b 6fda265 dc9cf16 8f68674 d310bb0 5d00c12` | LAT-002/003/006/018; protocol/events | `crates/lattice-protocol`, `crates/lattice-events`, `crates/lattice-identity`, `packages/protocol-inspector`, `protocol/specs/{02-encoding,05-events}.md`, `protocol/vectors/canonical-cbor.json` | Shared Rust; TS inspector; Android shared vector consumption | Rust vectors, hostile decoder tests, inspector tests; clean-room Kotlin/TS/CLI parity still required | PENDING-AUDIT; candidate only, cross-binding clean-room results absent |
 | Identity generation, storage, fingerprints and protected keys | `9211ed5 d8252d7 5413b14 295921f` | IDN-001/002/007/009, LAT-009 | `crates/lattice-identity`, `crates/lattice-platform`, `crates/lattice-uniffi`, Android protector/profile, CLI identity, Desktop profile | Android/CLI/Desktop; OS key stores | Identity vector/CSR/protector tests; fresh-process reopen and real storage behavior required | PENDING-AUDIT; Android hardware proof unavailable in prior environment; CSR does not issue credentials |
@@ -66,22 +66,12 @@ These are read-only source-path findings, not runtime acceptance evidence. All r
 - **Bounded fuzz campaigns (Windows):** added a structured `sync-plan` libFuzzer target exercising per-author sequences, same-sequence event-ID disagreements, gaps, and dependency inputs; documented it in the test plan and registered the `lattice-sync` dependency. With nightly Rust, default AddressSanitizer, the installed MSVC `clang_rt.asan_dynamic-x86_64.dll` on `PATH`, `ASAN_OPTIONS=quarantine_size_mb=64:thread_local_quarantine_size_kb=256`, and `-max_len=4096`, bounded campaigns completed without crash: canonical 661 executions, signed-event 641, identity-bundle 127,458, sync-plan 32,807, relay-envelope 1,109,096, and nostr-event 1,265. These are short smoke budgets, not release-strength coverage; Windows MSVC cannot run this harness with `--sanitizer none` because the coverage-section linker symbols remain unresolved.
 - **BLE profile/migration boundary:** `protocol/specs/10-ble.md` assigns `pre-profile`, `lattice-ble-exp0`, and reserved `lattice-ble-v1` labels; exp0 is metadata, not an on-air string or interoperability claim. Candidate exp0 UUIDs cover one service and five characteristics; its 31-byte legacy advertisement carries discriminator `0` and a fresh 72-bit random token rotated every 900 monotonic seconds, with sightings memory-only and capped at 1,024. The candidate handshake uses Noise XX plus post-Noise Ed25519 proofs binding both exact identity bundles, observed discovery token and session transcript; first contact requires matching a 48-bit session string and explicit full-fingerprint pin. Android still scans the old pre-profile UUID, deduplicates session-salted device-address digests rather than tokens, and has no advertiser or authenticated GATT message path. Vectors, ADR-005 review, platform wiring, and physical acceptance remain open.
 
-
-
-
-
-
-
-
-
-
 Source-only audit lanes are being consolidated against exact production callsites, tests and requirement provenance; none of these observations imply an end-to-end pass.
-
 
 ## Audit run log
 
 | Pass | Revision | Scope | Command/scenario | Evidence | Result |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | Initial inventory | `main` at start | Full branch subject/path index and documentation map | `git rev-list --count main`; `git log --reverse --format='%H%x09%s' main`; `git log --format='%h%x09%s' --name-only main` | 214 commits; full subject/path output reviewed; docs and current candidate profiles read | Historical index enumerated; commit-level runtime validation not yet done |
 | Windows PKI smoke | `main` at audit start | Development CA, CSR-derived Ed25519 leaf, TLS certificate vector, native trust and production credential validation | PowerShell 7.6.6; OpenSSL 3.6.0; temporary CLI profiles; `space create --credential ... --channel general` | Current User Root installed then removed; the CLI created a local Genesis; trusted wrong-key, expired and untrusted-root credentials produced expected validation failures; scratch profiles removed | Positive and three negative validator paths passed on Windows CLI only; Android/Desktop remain unverified |
 | Candidate event and decoder conformance | `7967549` plus audit changes | Event kind/version, identity bundle and canonical-CBOR bounds | `bun test` and `bun run check` in `packages/protocol-inspector`; `cargo test -p lattice-protocol -p lattice-events` | Kind-10 vector verifies in TypeScript and Rust; kind 11 and low-order X25519 rejected; 16 inspector tests and 19 Rust tests passed | Candidate parser/vector evidence only; no client-to-client transport claim |
