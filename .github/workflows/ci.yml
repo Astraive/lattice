@@ -96,19 +96,3 @@ jobs:
       - name: Validate Android application
         run: ./gradlew lintDebug testDebugUnitTest assembleDebug
 
-  ios:
-    name: iOS
-    runs-on: macos-15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Build iOS application
-        run: >-
-          xcodebuild
-          -project apps/ios/Lattice.xcodeproj
-          -scheme Lattice
-          -sdk iphonesimulator
-          -configuration Debug
-          CODE_SIGNING_ALLOWED=NO
-          build

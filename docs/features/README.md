@@ -1,6 +1,6 @@
 # Feature catalog
 
-Each feature ID is also a functional requirement. A row has desired behavior, a pass condition, and an earliest build milestone. All are proposed except where explicitly blocked. The [central register](../REQUIREMENTS.md) owns shared `LAT` requirements; files below own the domain IDs. “MVP” means a testable implementation slice, not a security claim.
+Each feature ID is a functional requirement with desired behavior, a pass condition and an earliest build milestone. Rows may be proposed, blocked, implemented, verified or retired; see the [central register](../REQUIREMENTS.md) for current release scope. The files below own domain IDs. “MVP” means a testable implementation slice, not a security claim.
 
 | Area | Prefix | Document | Scope |
 | --- | --- | --- | --- |
@@ -10,7 +10,7 @@ Each feature ID is also a functional requirement. A row has desired behavior, a 
 | Networking | NET | [networking.md](networking.md) | BLE, direct paths, mesh, sync, relays |
 | Files | FIL | [files.md](files.md) | Manifests, chunk transfer and resume |
 | Voice | VOC | [voice.md](voice.md) | Small-room live audio and failure behavior |
-| Mobile | MOB | [mobile.md](mobile.md) | Android/iOS radio, lifecycle and UI |
+| Mobile | MOB | [mobile.md](mobile.md) | Android radio, lifecycle and UI |
 | Desktop | DSK | [desktop.md](desktop.md) | Tauri app and node controls |
 | CLI | CLI | [cli.md](cli.md) | Commands, diagnostics, optional peer |
 

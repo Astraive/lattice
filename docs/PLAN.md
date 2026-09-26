@@ -1,12 +1,12 @@
 # Lattice implementation plan
 
-**Status:** planned; dates are intentionally absent until staffing and device availability are known. Each milestone has an exit gate, and later work depends on earlier evidence. Prototype wire choices may change before v1 freeze.
+**Status:** planned; dates are intentionally absent until staffing and device availability are known. Each milestone has an exit gate, and later work depends on earlier evidence. Prototype wire choices may change before v1 freeze. **Current release scope:** Android, desktop and CLI; iOS is excluded from implementation, verification and release claims. Existing iOS design material is retained as future reference only.
 
 | Milestone | Build slice | Depends on | Exit gate | IDs |
 | --- | --- | --- | --- | --- |
 | M0 — Protocol lab | Cargo skeleton, canonical CBOR, identity, event/hash vectors, fake clocks/paths, in-memory log | None | Two Rust replicas converge on reordered valid text; invalid bytes rejected | LAT-002–003, IDN-001, NET-003 |
 | M1 — Android nearby text | Compose shell, UniFFI, Android BLE GATT, SQLite/outbox, one Space/text channel | M0 | Three Android devices exchange and recover text with Internet disabled | LAT-001,004, IDN-002–003, SPC-001–002, MSG-001–003, NET-001–004, MOB-001–003 |
-| M2 — iOS interoperability | SwiftUI shell, Core Bluetooth, permissions/background states, mixed sync | M1 | Android/iPhone direct text and missed-history repair on physical devices | SPC-003 prototype, NET-005, MOB-004–006, LAT-008,016 |
+| M2 — Android device acceptance | Lifecycle, permissions/background states, radio reliability and physical-device matrix | M1 | Android foreground/lock/background/restart cases preserve truthful capability and durable outbox behavior on named physical devices | NET-005, MOB-006, LAT-008,016 |
 | M3 — Secure Spaces | MLS lifecycle, roles, channels, DM, edits, policy, local search | M2; ADR-001/002 | Add/remove/rekey, policy conflict and channel-confidentiality cases pass | SPC-004–011, MSG-004–012, IDN-004–008, NET-012 |
 | M4 — Fast local/files | Capability probe, Wi-Fi Aware/LAN, routing, couriers, content hashes | M3 | Mixed-device direct file resumes across path change | NET-006–008, FIL-001–007 |
 | M5 — Optional relays | Versioned mailbox/Nostr adapter, subscriptions, relay privacy settings | M3; ADR-003 | Two remote peers sync through two independent relays; offline nearby still works | NET-009–011,013 |
@@ -19,7 +19,7 @@
 ```mermaid
 flowchart TD
     M0["M0 wire and simulator"] --> M1["M1 Android BLE"]
-    M1 --> M2["M2 iOS interop"]
+    M1 --> M2["M2 Android device acceptance"]
     M2 --> A["ADR-001 and ADR-002"]
     A --> M3["M3 secure Spaces"]
     M3 --> M4["M4 fast paths and files"]
@@ -36,7 +36,7 @@ Each milestone delivers: implementation, updated requirement statuses, protocol 
 
 ## Research and hardware work scheduled into implementation
 
-At M1/M2 collect GATT MTU/flow-control behavior and platform background traces on named phones. At M3 model-check or bounded-enumerate concurrent admin/MLS histories. At M4 compare direct-only, bounded courier, and anti-entropy in seeded contact traces and measure battery. At M5 audit relay metadata. At M6 measure NAT success, jitter and upload per participant. At M8 commission independent review of keys/authorization and verify build migration.
+At M1/M2 collect GATT MTU/flow-control behavior and Android background traces on named phones. At M3 model-check or bounded-enumerate concurrent admin/MLS histories. At M4 compare direct-only, bounded courier, and anti-entropy in seeded contact traces and measure battery. At M5 audit relay metadata. At M6 measure NAT success, jitter and upload per participant. At M8 commission independent review of keys/authorization and verify build migration.
 
 See [TODO.md](TODO.md) for actionable items and [TEST_PLAN.md](quality/TEST_PLAN.md) for exact matrices. A paper is outside the build plan until running code and reproducible results exist.
 
@@ -46,7 +46,7 @@ See [TODO.md](TODO.md) for actionable items and [TEST_PLAN.md](quality/TEST_PLAN
 
 **M1** produces a vertical Android slice from Compose button through UniFFI, Rust local transaction, BLE envelope, remote verification/projection and durable receipt. Begin with direct text, then a three-device opportunistic path. Record actual GATT behavior and app restart. Avoid premature custom rich text or public relays.
 
-**M2** proves the protocol is implementable on iOS and compatible with Android in real radio conditions. SwiftUI/Core Bluetooth adapter performs same vector and local schema checks. Record which foreground/background states are viable; if discovery fails on a supported device, fix path assumptions before multiplying features.
+**M2** verifies Android lifecycle and physical-device behavior after the nearby text path exists. Exercise foreground, locked, background, restart and permission changes on named supported devices; record radio limits and preserve truthful degraded states. It does not add an iOS implementation or compatibility gate.
 
 **M3** adds the authorization boundary: invites, credentials/KeyPackages, MLS group changes, roles, channel rules, DMs and messaging mutations. ADR-001/002 policies are accepted; their implementation and security evidence remain exit gates. Channel UI and protocol metadata must reflect ADR-002's policy-only read semantics. A failed partition membership experiment prevents progression to a “secure Spaces” claim even if happy-path chat works.
 
@@ -62,7 +62,7 @@ See [TODO.md](TODO.md) for actionable items and [TEST_PLAN.md](quality/TEST_PLAN
 | --- | --- |
 | M0 → M1 | Codec vectors disagree or duplicate author sequences can create inconsistent events. |
 | M1 → M2 | Offline local commit/physical BLE transfer fails or restart loses the outbox. |
-| M2 → M3 | Android/iOS cannot authenticate and reconcile the same event bytes. |
+| M2 → M3 | Android physical lifecycle, permission and restart cases violate authenticated sync or durable-state behavior. |
 | M3 → M4/M5 | MLS concurrency, Welcome handling, policy or private-channel claim is unresolved. |
 | M5 → public relay claim | Relay kind/retrieval/privacy profile is unversioned or works on only one test service. |
 | M6 → voice claim | Call UI misreports connected state or omits no-TURN failure. |

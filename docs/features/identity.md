@@ -10,7 +10,7 @@ One installation equals one v1 cryptographic device identity. Multi-device user 
 | IDN-004 | Invite shall bind Space genesis hash, inviter identity/signature, expiry, nonce and untrusted rendezvous hints. | Tampered, expired and wrong-genesis invites fail; relay hint never grants membership. | M3 |
 | IDN-005 | A user shall be able to pin a verified peer after QR or session-bound code comparison. | Key substitution after pin prompts mismatch and rejects silent trust rollover. | M3 |
 | IDN-006 | Identity reset shall clearly create a new member identity and require authorized re-add to Spaces. | Old key cannot sign new member actions; recovery path is explicit. | M3 |
-| IDN-007 | Secret storage shall use Keychain/Keystore wrapping where supported and report hardware protection accurately. | Test locked/unlocked/reinstalled app cases; no plaintext key in SQLite. | M3 |
+| IDN-007 | Secret storage shall use platform-protected wrapping on Android and desktop where supported, with protection level reported accurately. | Test locked/unlocked/reinstalled app cases; no plaintext key in SQLite. | M3 |
 | IDN-008 | MLS KeyPackages shall have explicit lifecycle, consumption and replenishment behavior. | A non-last-resort package is consumed atomically with Welcome acceptance and cannot be reused; expired inventory is replaced from protected local MLS state, so a dropped package can be recovered by publishing a fresh one. | M3 |
 | IDN-009 | A device may generate a PKCS#10 request bound to its exact full identity fingerprint. | Verify CSR signature and Ed25519 SPKI; require exactly `urn:lattice:identity:v1:<lowercase-full-fingerprint>` as URI SAN; request creation never exports private material or claims certificate issuance. | M7 |
 
@@ -33,7 +33,7 @@ Android Diagnostics classifies the profile's AES wrapping key with `KeyInfo.secu
 
 | Situation | Required behavior |
 | --- | --- |
-| Keychain/Keystore unavailable or locked | Do not send/authenticate; display locked-key state and retry after unlock. |
+| Platform secure storage unavailable or locked | Do not send/authenticate; display locked-key state and retry after unlock. |
 | KeyPackage stale or consumed | Fetch/advertise a fresh package; reject reuse that would weaken expected secrecy. |
 | KeyPackage publication lost or package expires unused | For a known delivery loss, discard its local private bundle and mark it lost, then replenish immediately; otherwise stop counting expired inventory and publish a fresh distinct package. Never reuse a consumed package. |
 | Wrong Space genesis for an invite | Reject the invite and show the conflicting fingerprint; never substitute a similarly named Space. |

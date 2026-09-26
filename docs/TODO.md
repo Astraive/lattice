@@ -17,7 +17,6 @@
 
 - [ ] Wire Android Compose → UniFFI → Rust core with local SQLite outbox. (MOB-001, MSG-001–003; M1)
 - [ ] Test three-device Android store/carry/sync under app restart. (NET-004–005; M1/M2)
-- [ ] Implement SwiftUI/Core Bluetooth and run mixed-device captures. (MOB-004–005; M2)
 - [ ] Implement signed invite, verification, KeyPackage lifecycle and member rekey. (IDN-004–008, SPC-003,006; M3)
 - [ ] Implement role/policy reducer and adversarial concurrency tests. (SPC-004–010, LAT-007; M3)
 - [ ] Implement DMs, edits, tombstones, threads, reactions, mentions and local search. (MSG-004–012; M3)
@@ -47,7 +46,7 @@ When completing an item, link its code revision, device/test result, protocol ve
 
 **Storage:** authored sequence reservation; atomic local event/outbox commit; receive insert/projection; pending dependency queue; key/DB crash journal; migrations; history retention; file temp cleanup; search-index purge.
 
-**Mobile:** Android central/peripheral GATT and permissions; iOS Core Bluetooth modes; radio duty cycle and battery capture; mixed-platform vectors; supported/unsupported Wi-Fi Aware; foreground/background UI; secure-storage behavior; audio interruptions.
+**Mobile:** Android central/peripheral GATT and permissions; radio duty cycle and battery capture; Android device matrix; supported/unsupported Wi-Fi Aware; foreground/background UI; secure-storage behavior; audio interruptions. iOS-specific design material is not a current implementation or acceptance task.
 
 **Community:** signed genesis and invite; KeyPackage/Welcome; role hierarchy; channel overrides; moderation, bans and removal; message editing/tombstones/threads; DMs; protected private-channel key semantics.
 

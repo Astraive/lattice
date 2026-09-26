@@ -23,6 +23,8 @@ This is an engineering specification rather than a marketing description. It def
 
 The document uses the key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in the sense of RFC 2119 and RFC 8174 when written in uppercase ([rfc2119](#ref-rfc2119); [rfc8174](#ref-rfc8174)). Statements labeled *design target* are objectives rather than measured performance claims. Statements labeled *future* are intentionally outside the first interoperable protocol version.
 
+> **Current implementation scope:** Android, desktop and CLI. The iOS-specific requirements and architecture in this research draft are retained as future product-design reference only; they are not implementation, verification or release-acceptance requirements for the current project.
+
 ## Non-goals
 
 Lattice is not designed to provide anonymous networking, guaranteed censorship resistance against a global adversary, guaranteed delivery in a permanently partitioned network, or unlimited Discord-scale voice conferences without infrastructure. It does not attempt to replace the Bluetooth Mesh Profile. It uses BLE links to construct an application-specific peer overlay suitable for phones and desktops. It also does not claim that a mobile operating system will permit continuous background scanning, advertising, or audio operation under all conditions.

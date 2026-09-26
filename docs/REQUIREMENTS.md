@@ -2,6 +2,8 @@
 
 **Status:** proposed v0.1. “Shall” denotes desired behavior for the indicated release; it does not assert implementation. Each requirement has a stable ID and a concrete pass condition. `M0`–`M8` refer to [PLAN.md](PLAN.md).
 
+**Current delivery scope:** Android, desktop and CLI. iOS is excluded from implementation, verification, release gates and support claims. Stable IDs MOB-004 and MOB-005 are retired for this scope; their retained iOS design material is reference only.
+
 ## ID registry
 
 | Prefix | Domain | Source file | Range |
@@ -13,11 +15,11 @@
 | `NET` | Discovery, routing, relays, sync | [networking.md](features/networking.md) | NET-001–NET-013 |
 | `FIL` | Attachments and transfer | [files.md](features/files.md) | FIL-001–FIL-007 |
 | `VOC` | Voice and media | [voice.md](features/voice.md) | VOC-001–VOC-008 |
-| `MOB` | Native Android/iOS behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-011 |
+| `MOB` | Native Android behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-011 |
 | `DSK` | Desktop | [desktop.md](features/desktop.md) | DSK-001–DSK-007 |
 | `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-011 |
 
-IDs are never renumbered. A row is one independently testable requirement; amend the row and history when semantics change. Status values: **proposed**, **blocked**, **implemented**, **verified**, **retired**. All rows begin proposed unless explicitly blocked. `M0`–`M2` prototype work does not make the wider v1 profile stable.
+IDs are never renumbered. A row is one independently testable requirement; amend the row and history when semantics change. Status values: **proposed**, **blocked**, **implemented**, **verified**, **retired**. New active rows begin proposed unless explicitly blocked; retired rows are excluded from current release acceptance. `M0`–`M2` prototype work does not make the wider v1 profile stable.
 
 ## Cross-cutting requirements
 
@@ -38,7 +40,7 @@ IDs are never renumbered. A row is one independently testable requirement; amend
 | LAT-013 | Accessible navigation, labels, keyboard support and scalable text shall work on shipped clients. | Screen-reader/keyboard/text-scale matrix; voice status not color-only. | M8 |
 | LAT-014 | No app-controlled telemetry endpoint shall be required for product operation. | Deny all project domains; functionality and local diagnostics remain available. | M8 |
 | LAT-015 | Content deletion and member removal shall not be presented as retroactive remote erasure. | UX copy and malicious-retention scenario checked. | M3 |
-| LAT-016 | Radio/voice/background behavior shall adapt to supported OS permissions, entitlements and lifecycle states. | Physical Android/iOS foreground/background/restart matrix. | M2 |
+| LAT-016 | Radio/voice/background behavior shall adapt to supported OS permissions and lifecycle states in current delivery scope. | Physical Android foreground/background/restart matrix; desktop and CLI checks where applicable. | M2 |
 | LAT-017 | Normal operations shall not silently require a specific volunteer node, relay or TURN provider. | Tests remove each optional component; expected degraded capabilities are explicit. | M6 |
 | LAT-018 | A stable protocol release shall include public vectors, migration path, fuzz coverage and interop results. | Release checklist and clean-room decoder reproduce canonical IDs. | M8 |
 | LAT-019 | Logs and diagnostic exports shall exclude plaintext, keys and unnecessary identifiers by default. | Automated redaction fixture review and manual capture audit. | M8 |
@@ -48,7 +50,7 @@ IDs are never renumbered. A row is one independently testable requirement; amend
 
 | Scope | Required IDs | Gate |
 | --- | --- | --- |
-| Prototype | LAT-001–004, IDN-001–003, SPC-001–003, MSG-001–003, NET-001–005, MOB-001–004 | M0–M2 |
+| Prototype | LAT-001–004, IDN-001–003, SPC-001–003, MSG-001–003, NET-001–005, MOB-001–003, MOB-006 | M0–M2 |
 | Interoperable security core | LAT-003,007,009,015, IDN-004–008, SPC-004–011, MSG-004–009 | M3 |
 | Local files/fast paths | NET-006–008, FIL-001–007 | M4 |
 | Optional Internet | NET-009–013, DSK-001–006, CLI-001–009 | M5/M7 |

@@ -6,7 +6,7 @@
 
 | Suite | Scenario | Required result | IDs |
 | --- | --- | --- | --- |
-| Canonical wire | Same object in Rust/Kotlin/Swift, malformed duplicate key and bad length | Same bytes/ID; malformed rejected before allocation | LAT-002–003, NET-003 |
+| Canonical wire | Same object in Rust/Kotlin, malformed duplicate key and bad length | Same bytes/ID; malformed rejected before allocation | LAT-002–003, NET-003 |
 | Auth/policy | Forged admin, wrong genesis, stale member, blocked channel | Never enters valid projection | IDN-004–005, SPC-003–011 |
 | MLS race | Two authorized commits from same epoch, missing proposal/Welcome, delayed merge | Defined ADR-001 branch choice and recovery; no silent insecure winner | SPC-006–007 |
 | Event convergence | Random event permutations with edits/deletes/reactions | Identical valid projections after dependencies | LAT-007, MSG-002/006–008 |
@@ -16,11 +16,11 @@
 | Relays | Two independent relays, duplicates/drop/reorder/retention | Same event ID; withheld content pending; metadata documented | NET-009–013 |
 | Voice | LAN, heterogeneous NAT, TURN, no TURN, small rooms | Correct connected/failure state and bounded measured quality | VOC-001–008 |
 | Privacy | BLE capture, relay capture, log export | No unintended plaintext/key; residual metadata disclosed | LAT-010/019 |
-| Accessibility | VoiceOver/TalkBack, keyboard, scale, reduced motion | All critical states and actions usable | LAT-013, MOB-009 |
+| Accessibility | Android TalkBack, desktop screen reader/keyboard, scale, reduced motion | All critical states and actions usable | LAT-013, MOB-009 |
 
 ## Physical devices and measurements
 
-Test Android↔Android, iOS↔iOS and Android↔iOS with supported/unsupported Wi-Fi Aware hardware. Capture exact model, OS/build, radios, permissions, foreground/locked/background/restarted states and environmental factors. Measure discovery/connection success, useful BLE throughput, end-to-end latency, delivery fraction, duplicated bytes, battery/power, large-sync duration, file resume, voice setup success/jitter/loss and TURN fraction. Use multiple independent trials with uncertainty intervals; separate simulated energy proxy from battery measurement. Never substitute one success on a simulator for cross-platform interoperability.
+Test Android↔Android on supported/unsupported Wi-Fi Aware hardware; verify Android↔desktop and desktop↔desktop protocol behavior separately where a shared transport exists. Capture exact model, OS/build, radios, permissions, foreground/locked/background/restarted states and environmental factors. Measure discovery/connection success, useful BLE throughput, end-to-end latency, delivery fraction, duplicated bytes, battery/power, large-sync duration, file resume, voice setup success/jitter/loss and TURN fraction. Use multiple independent trials with uncertainty intervals; separate simulated energy proxy from battery measurement. Never substitute one success on an Android emulator for physical-radio evidence.
 
 ## Automated gates
 
@@ -54,7 +54,7 @@ The deterministic harness uses bounded `lattice_testkit::ContactPlan` windows wi
 
 | Axis | Required cases |
 | --- | --- |
-| Pairs | Android/Android, iPhone/iPhone, Android/iPhone; mix Wi-Fi Aware capable/incapable |
+| Pairs | Android/Android for BLE; Android/desktop and desktop/desktop for supported shared paths |
 | App state | Both foreground, one background, both locked, process restart, OS termination and reboot |
 | Permission | Granted, denied, revoked, Bluetooth off, Wi-Fi off, local-network denied |
 | Link | Good nearby signal, edge/weak signal, moving contact, LAN, no Internet, metered Internet |
@@ -68,4 +68,4 @@ Test local disk full immediately before send; crash between MLS change and log c
 
 ## Release evidence record
 
-Each run stores requirement IDs, test source revision, seed/fixture, expected invariant, actual result, environment, logs/artifact hash, limitations and reviewer. A v1 release report includes known failed/unsupported platform paths, key migration results, independent protocol review scope, packet-capture privacy findings, and battery/voice measures. No “works on iOS” statement can be based solely on a simulator.
+Each run stores requirement IDs, test source revision, seed/fixture, expected invariant, actual result, environment, logs/artifact hash, limitations and reviewer. A v1 release report includes known failed/unsupported paths within current Android, desktop and CLI scope, key migration results, independent protocol review scope, packet-capture privacy findings, and battery/voice measures. iOS is out of scope and receives no support claim.
