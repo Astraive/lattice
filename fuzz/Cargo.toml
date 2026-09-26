@@ -13,6 +13,7 @@ lattice-files = { path = "../crates/lattice-files" }
 lattice-events = { path = "../crates/lattice-events" }
 lattice-identity = { path = "../crates/lattice-identity" }
 lattice-protocol = { path = "../crates/lattice-protocol" }
+lattice-sync = { path = "../crates/lattice-sync" }
 lattice-relay = { path = "../crates/lattice-relay" }
 
 # Use independent workspace for fuzzers
@@ -57,6 +58,13 @@ bench = false
 [[bin]]
 name = "attachment-manifest"
 path = "fuzz_targets/attachment_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync-plan"
+path = "fuzz_targets/sync_plan.rs"
 test = false
 doc = false
 bench = false

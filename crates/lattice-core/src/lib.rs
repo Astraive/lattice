@@ -1096,6 +1096,22 @@ fn decode_text_edit(plaintext: &[u8]) -> Result<([u8; 32], String), CoreError> {
     Ok((target, content))
 }
 
+fn decode_tombstone_target(plaintext: &[u8]) -> Result<[u8; 32], CoreError> {
+    let Value::Map(fields) = decode_canonical(plaintext)? else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    if fields.len() != 4 || fields[0] != (0, Value::Unsigned(1)) {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    }
+    let Value::Bytes(target) = &fields[1].1 else {
+        return Err(CoreError::LocalSpaceMessageCacheInvalid);
+    };
+    target
+        .as_slice()
+        .try_into()
+        .map_err(|_| CoreError::LocalSpaceMessageCacheInvalid)
+}
+
 fn create_space_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
@@ -3574,12 +3590,26 @@ fn persist_received_text_projection(
 ) -> Result<(), CoreError> {
     let event = bound.event();
     let Some(channel_id) = event.channel_id().copied() else {
-        return if matches!(event.kind(), EventKind::Message | EventKind::Edit) {
+        return if matches!(
+            event.kind(),
+            EventKind::Message | EventKind::Edit | EventKind::Tombstone
+        ) {
             Err(CoreError::LocalSpaceMessageCacheInvalid)
         } else {
             Ok(())
         };
     };
+    if event.kind() == EventKind::Tombstone {
+        let target = decode_tombstone_target(bound.plaintext())?;
+        Store::delete_cached_space_message_in_transaction(
+            transaction,
+            &target,
+            &space_id,
+            &group_reference,
+            &channel_id,
+        )?;
+        return Ok(());
+    }
     let (event_kind, target, content) = match event.kind() {
         EventKind::Message => (
             EventKind::Message,
@@ -6403,6 +6433,15 @@ mod tests {
                 vec![lattice_protocol::EventId::from_bytes(message_id)],
             ),
             &tombstone_plaintext,
+        );
+        let deleted_search = bob
+            .search_local_text_messages(&space_id, &group_reference, &channel_id, "edited over MLS")
+            .expect("search excludes tombstoned cached content");
+        assert_eq!(deleted_search.total_matches, 0);
+        assert!(
+            bob.local_text_message_history(&space_id, &group_reference, &channel_id)
+                .expect("history excludes tombstoned cached content")
+                .is_empty()
         );
         let history = joined.reducer().message_history(&channel_id);
         let projected = history
