@@ -1,4 +1,6 @@
+mod attachments;
 mod encoding;
+
 mod identity;
 mod local_network;
 mod profile;
@@ -14,6 +16,7 @@ mod spaces;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             identity::initialize_device_identity,
             identity::get_device_identity,
@@ -25,6 +28,9 @@ pub fn run() {
             spaces::queue_local_text_message,
             spaces::queue_local_text_message_edit,
             spaces::list_local_text_messages,
+            attachments::queue_local_file_attachment,
+            attachments::list_local_attachment_sources,
+            attachments::remove_local_attachment_source,
             spaces::search_local_text_messages,
             identity::pin_peer_identity,
             identity::get_pinned_identity,

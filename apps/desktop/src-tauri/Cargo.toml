@@ -23,6 +23,10 @@ if-addrs = "=0.13.4"
 serde = { version = "1", features = ["derive"] }
 directories = "=6.0.0"
 base64 = "=0.22.1"
+lattice-files = { path = "../../../crates/lattice-files" }
+fs4 = "=0.13.1"
+tauri-plugin-dialog = { version = "=2.7.3", default-features = false }
+
 
 [lints]
 workspace = true

@@ -19,6 +19,8 @@ The Spaces browser also imports a versioned Welcome bootstrap through `import_lo
 
 The Connectivity panel reports only whether the host exposes a non-loopback IP address; it does not enumerate interfaces, scan peers, or test reachability. Optional `wss://` relay URLs are validated and persisted in the same profile settings used by the CLI. Adding or removing a URL does not contact the relay or activate relay transport.
 
+The local file composer opens the operating-system picker, retains a profile-local content-addressed source copy (128 MiB per file, 512 MiB and 64 sources total), and queues the authorized encrypted manifest in the local outbox. The cache UI lists and removes source copies; removing one does not remove its queued manifest. Source bytes are ordinary files and are not encrypted at rest by this feature. No attachment network transfer, incoming acceptance, or recipient delivery is available in this client.
+
 Tauri security boundary and local content rendering are reviewed separately from Rust protocol correctness. A persistent desktop helps availability but never becomes mandatory for a Space.
 
 The Windows host Tauri build (`bun run tauri build --no-bundle`) succeeds and the executable starts. `bun run tauri build` produced the configured MSI and NSIS installer bundles. End-to-end recovery submission against an initialized profile remains unverified.

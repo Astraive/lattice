@@ -34,6 +34,26 @@ type QueuedLocalMessage = {
   state: "queued";
   eventId: string;
 };
+
+type QueuedLocalFileAttachment = {
+  state: "queued_locally";
+  eventId: string;
+  fileName: string;
+  fileSize: number;
+  fileHash: string;
+  chunkCount: number;
+  sourceRetainedLocally: true;
+  networkContacted: false;
+  recipientDeliveryClaimed: false;
+};
+
+type AttachmentSource = { hash: string; name: string; size: number };
+type AttachmentCacheStatus = {
+  sources: AttachmentSource[];
+  storedBytes: number;
+  storedFiles: number;
+};
+
 type LocalTextMessage = {
   eventId: string;
   authorId: string;
@@ -94,6 +114,10 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
     "totalMatches" | "scannedMessages"
   > | null>(null);
   const visibleHistory = historyChannelId === channelId ? history : [];
+  const [attachmentSources, setAttachmentSources] = useState<AttachmentSource[]>([]);
+  const [attachmentCacheBytes, setAttachmentCacheBytes] = useState<number | null>(null);
+  const [attachmentCacheBusy, setAttachmentCacheBusy] = useState(false);
+  const [attachmentCacheError, setAttachmentCacheError] = useState<string | null>(null);
   async function loadHistory() {
     const requestedChannel = channelId;
     setHistoryBusy(true);
@@ -183,6 +207,77 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
     }
   }
 
+  async function queueFileAttachment() {
+    setBusy(true);
+    setFeedback(null);
+    setEventId(null);
+    try {
+      const queued = await invoke<QueuedLocalFileAttachment | null>("queue_local_file_attachment", {
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        credentialVectorHex,
+        channelIdHex: channelId,
+      });
+      if (!queued) return;
+      setEventId(queued.eventId);
+      setFeedback(
+        `${queued.fileName} (${queued.fileSize} bytes, ${queued.chunkCount} chunks) was queued locally. Its source copy is retained for a future transfer; no network or recipient delivery was attempted.`,
+      );
+    } catch (cause) {
+      setFeedback(
+        `File attachment was not queued: ${cause instanceof Error ? cause.message : String(cause)}. A staged source copy may remain in the local cache; inspect or remove it below.`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAttachmentSources() {
+    setAttachmentCacheBusy(true);
+    setAttachmentCacheError(null);
+    try {
+      const result = await invoke<AttachmentCacheStatus>("list_local_attachment_sources");
+      setAttachmentSources(result.sources);
+      setAttachmentCacheBytes(result.storedBytes);
+    } catch (cause) {
+      setAttachmentCacheError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAttachmentCacheBusy(false);
+    }
+  }
+
+  async function removeAttachmentSource(fileHash: string) {
+    if (
+      !window.confirm(
+        "Remove this retained source copy? Its queued manifest remains, but it cannot be transferred without the file bytes.",
+      )
+    ) {
+      return;
+    }
+    setAttachmentCacheBusy(true);
+    setAttachmentCacheError(null);
+    try {
+      const result = await invoke<{ removed: boolean }>("remove_local_attachment_source", {
+        fileHashHex: fileHash,
+      });
+      if (result.removed) {
+        setAttachmentSources((current) => current.filter((source) => source.hash !== fileHash));
+        setAttachmentCacheBytes((current) =>
+          current === null
+            ? current
+            : Math.max(
+                0,
+                current - (attachmentSources.find((source) => source.hash === fileHash)?.size ?? 0),
+              ),
+        );
+      }
+    } catch (cause) {
+      setAttachmentCacheError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAttachmentCacheBusy(false);
+    }
+  }
+
   function beginEdit(message: LocalTextMessage) {
     setEditTarget(message.eventId);
     setContent(message.content);
@@ -238,6 +333,62 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
           >
             {busy ? "Committing…" : editTarget ? "Queue edit" : "Queue locally"}
           </button>
+          {!editTarget && (
+            <button
+              type="button"
+              disabled={busy || !channelId || !credentialIsValid}
+              onClick={() => void queueFileAttachment()}
+            >
+              {busy ? "Queuing file…" : "Choose file and queue attachment"}
+            </button>
+          )}
+          <p>
+            Attachments are capped at 128 MiB per file and 512 MiB in the local source cache.
+            Selected file bytes are retained locally; transfer is not available in this client.
+          </p>
+          <section className="local-message-history" aria-label="Retained attachment source cache">
+            <div>
+              <h4>Retained attachment source files</h4>
+              <p>
+                Source copies are ordinary local files in your OS user profile and are not encrypted
+                at rest by this feature. Removing one does not delete its queued manifest, but
+                leaves that manifest without source bytes for future transfer.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={attachmentCacheBusy}
+              onClick={() => void refreshAttachmentSources()}
+            >
+              {attachmentCacheBusy ? "Working…" : "Load or refresh retained files"}
+            </button>
+            {attachmentCacheBytes !== null && (
+              <p>
+                {attachmentSources.length} retained file
+                {attachmentSources.length === 1 ? "" : "s"} · {attachmentCacheBytes} of 536870912
+                bytes used
+              </p>
+            )}
+            {attachmentCacheError && <p role="alert">{attachmentCacheError}</p>}
+            {attachmentSources.length > 0 && (
+              <ul>
+                {attachmentSources.map((source) => (
+                  <li key={source.hash}>
+                    <span>
+                      {source.name} · {source.size} bytes
+                    </span>
+                    <button
+                      type="button"
+                      disabled={attachmentCacheBusy}
+                      onClick={() => void removeAttachmentSource(source.hash)}
+                    >
+                      Remove source copy
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
           {editTarget && (
             <button
               type="button"
