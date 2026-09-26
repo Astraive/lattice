@@ -2468,7 +2468,13 @@ internal object uniffiCallbackInterfacePlatformKeyProtector {
                     FfiConverterByteArray.lift(`ciphertext`),
                 )
             }
-            val writeReturn = { value: kotlin.ByteArray -> uniffiOutReturn.setValue(FfiConverterByteArray.lower(value)) }
+            val writeReturn = { value: kotlin.ByteArray ->
+                try {
+                    uniffiOutReturn.setValue(FfiConverterByteArray.lower(value))
+                } finally {
+                    value.fill(0)
+                }
+            }
             uniffiTraitInterfaceCallWithError(
                 uniffiCallStatus,
                 makeCall,
