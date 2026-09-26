@@ -4,7 +4,7 @@
 **Status:** experimental candidate; not an interoperable release.  
 **Scope:** BLE discovery, authenticated link establishment, and link-layer envelope framing only. Event identity, authorization, MLS state, and envelope semantics remain transport-independent.
 
-This document assigns the first migration label and defines candidate service, discovery, and first-contact identity-binding values for BLE. These values are suitable for isolated development/test builds only; ADR-005 review, byte vectors, independent implementation checks, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
+This document assigns the first migration label and defines candidate service, discovery, first-contact identity-binding, and bounded-framing values for BLE. [`ADR-005`](../../docs/decisions/ADR-005-ble-exp0-profile.md) records their experimental status, and [`ble-exp0.json`](../vectors/ble-exp0.json) supplies candidate byte vectors. These are development/test values only; negative/replay coverage, a reproducible Noise transport vector, independent implementation checks, security/privacy review, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
 
 ## Version domains and migration labels
 
@@ -57,7 +57,6 @@ Rotation replaces the old token atomically; the advertiser MUST NOT emit both ge
 
 Rotation limits the lifetime of this application-layer handle; it does not guarantee unlinkability or anonymity. A nearby observer may correlate transmissions across a token change using timing, radio address behavior, signal strength, hardware/OS behavior, or physical observation. Android controls address privacy and background execution; the application MUST NOT claim a guaranteed address-rotation schedule or continuous discovery.
 
-
 ## Noise XX and first-contact identity binding
 
 For each GATT connection, the central is the Noise initiator and the service host is the responder. Exp0 uses `Noise_XX_25519_ChaChaPoly_SHA256`; the Noise-generated static keys are session-only and MUST NOT be treated as Lattice identity keys. The initiator and responder exchange the three Noise XX handshake messages on `control`, each with an empty Noise payload. A completed Noise handshake alone is unauthenticated and MUST NOT expose Space identifiers, membership, invitations, or application envelopes.
@@ -77,12 +76,10 @@ The service UUID bytes in this prologue use the canonical byte order shown by th
 
 After Noise enters transport mode, the peers exchange these strictly sized, Noise-encrypted records. All multi-byte lengths and integers are unsigned big-endian; the existing 65-byte version-1 identity bundle is used unchanged.
 
-| Direction | Record | Exact layout | Bytes |
-| --- | --- | --- | ---: |
-| Initiator → responder | Initiator identity proof | `LBEI || 00 || 01 || initiator_bundle[65] || signature[64]` | 135 |
-| Responder → initiator | Responder identity proof | `LBER || 00 || 02 || responder_bundle[65] || signature[64]` | 135 |
-| Initiator → responder | Initiator confirmation | `LBEC || 00 || 01 || signature[64]` | 70 |
-| Responder → initiator | Responder confirmation | `LBEC || 00 || 02 || signature[64]` | 70 |
+- Initiator → responder, identity proof (135 bytes): `LBEI || 00 || 01 || initiator_bundle[65] || signature[64]`.
+- Responder → initiator, identity proof (135 bytes): `LBER || 00 || 02 || responder_bundle[65] || signature[64]`.
+- Initiator → responder, confirmation (70 bytes): `LBEC || 00 || 01 || signature[64]`.
+- Responder → initiator, confirmation (70 bytes): `LBEC || 00 || 02 || signature[64]`.
 
 The four-byte magic values are the ASCII octets shown. Version and role are one byte each; no length field or optional extension is permitted in these exp0 records.
 
@@ -130,4 +127,4 @@ These ceilings bound one BLE session, not a measured throughput or battery promi
 
 ## Security and release boundary
 
-No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Byte-exact positive/negative handshake, advertisement, frame, and credit vectors; replay tests; independent implementation checks; and physical two-/three-device acceptance remain release gates.
+No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Candidate positive advertisement, prologue, identity-proof, frame, and credit vectors are in [`ble-exp0.json`](../vectors/ble-exp0.json); malformed/negative and replay coverage, a reproducible Noise XX transport vector, independent implementation checks, and physical two-/three-device acceptance remain release gates.

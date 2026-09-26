@@ -2,7 +2,7 @@
 
 The same event can cross direct or optional indirect routes. Paths supply bytes and health metrics; they never mint authority. Details in [PROTOCOL.md](../protocol/PROTOCOL.md).
 
-**BLE profile status:** `lattice-ble-exp0` is an experimental candidate, not an interoperable release ([`10-ble.md`](../../protocol/specs/10-ble.md)). It defines candidate service/characteristic UUIDs, advertisement/token lifecycle, first-contact identity binding, bounded envelope framing, a four-frame credit window, and connection-local reassembly/reconnect behavior; Android wiring and device acceptance remain incomplete.
+**BLE profile status:** `lattice-ble-exp0` is an experimental candidate, not an interoperable release ([`10-ble.md`](../../protocol/specs/10-ble.md), [ADR-005](../decisions/ADR-005-ble-exp0-profile.md), [candidate byte vectors](../../protocol/vectors/ble-exp0.json)). It defines service/characteristic UUIDs, advertisement/token lifecycle, first-contact identity binding, bounded envelope framing, a four-frame credit window, and connection-local reassembly/reconnect behavior; Android wiring and device acceptance remain incomplete.
 
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
