@@ -36,6 +36,7 @@ The complete map encoding is the signed preimage. A zero sequence, duplicate/uns
 | 7 | MLS control | MLS engine validates its TLS message separately |
 | 8 | File manifest | Exact candidate metadata validation and authorization in `07-permissions.md`; chunk transfer and file projection external |
 | 9 | Voice signal | Authorization is unsupported until session/action schema is specified |
+| 10 | Ephemeral | Reserved encrypted presence/typing hints; not durably stored or store-forwarded, and Core authorization is not defined |
 
 ## Candidate signed outer object
 
