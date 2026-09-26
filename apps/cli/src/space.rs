@@ -81,6 +81,21 @@ pub(super) enum SpaceCommand {
         #[arg(long)]
         channel_id: String,
     },
+    /// Search the full bounded local text cache without contacting the network.
+    Search {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Random 16-byte channel ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        channel_id: String,
+        /// Non-empty Unicode case-insensitive substring query.
+        #[arg(long)]
+        query: String,
+    },
     /// Queue an authorized immutable edit to a locally authored message.
     ///
     /// The edit and encrypted local cached body are committed locally; no
@@ -181,6 +196,28 @@ pub(super) fn print_space_page(page: &lattice_core::RestoredSpacePage, json: boo
         }
     }
 }
+fn outbox_state_name(state: Option<lattice_core::OutboxState>) -> Option<&'static str> {
+    state.map(|state| match state {
+        lattice_core::OutboxState::Queued => "queued",
+        lattice_core::OutboxState::Forwarded => "forwarded",
+        lattice_core::OutboxState::Delivered => "delivered",
+        lattice_core::OutboxState::Failed => "failed",
+    })
+}
+
+fn message_json(message: &lattice_core::LocalTextMessageRecord) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "event_id": hex(&message.event_id),
+        "channel_id": hex(&message.channel_id),
+        "author_id": hex(&message.author_id),
+        "author_sequence": message.author_sequence,
+        "lamport": message.lamport,
+        "content": message.content,
+        "outbox_state": outbox_state_name(message.outbox_state),
+    })
+}
+
 pub(super) fn print_space_history(
     space_id: &[u8; 16],
     group_reference: &[u8; 32],
@@ -188,30 +225,8 @@ pub(super) fn print_space_history(
     messages: &[lattice_core::LocalTextMessageRecord],
     json: bool,
 ) {
-    let outbox_state = |state: Option<lattice_core::OutboxState>| {
-        state.map(|state| match state {
-            lattice_core::OutboxState::Queued => "queued",
-            lattice_core::OutboxState::Forwarded => "forwarded",
-            lattice_core::OutboxState::Delivered => "delivered",
-            lattice_core::OutboxState::Failed => "failed",
-        })
-    };
     if json {
-        let messages = messages
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "schema_version": 1,
-                    "event_id": hex(&message.event_id),
-                    "channel_id": hex(&message.channel_id),
-                    "author_id": hex(&message.author_id),
-                    "author_sequence": message.author_sequence,
-                    "lamport": message.lamport,
-                    "content": message.content,
-                    "outbox_state": outbox_state(message.outbox_state),
-                })
-            })
-            .collect::<Vec<_>>();
+        let messages = messages.iter().map(message_json).collect::<Vec<_>>();
         println!(
             "{}",
             serde_json::json!({
@@ -238,7 +253,7 @@ pub(super) fn print_space_history(
             hex(channel_id)
         );
         for message in messages {
-            let state = outbox_state(message.outbox_state).unwrap_or("retained locally");
+            let state = outbox_state_name(message.outbox_state).unwrap_or("retained locally");
             println!(
                 "{} [{state}] {}",
                 hex(&message.event_id),
@@ -250,4 +265,59 @@ pub(super) fn print_space_history(
             "Outbox states are local records; a destination-receipt state is not independently verified here."
         );
     }
+}
+
+pub(super) fn space_search_json(
+    space_id: &[u8; 16],
+    group_reference: &[u8; 32],
+    channel_id: &[u8; 16],
+    query: &str,
+    result: &lattice_core::LocalTextMessageSearchResult,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "command": "space_search",
+        "space_id": hex(space_id),
+        "group_reference": hex(group_reference),
+        "channel_id": hex(channel_id),
+        "query": query,
+        "source": "encrypted_local_text_cache",
+        "network_contacted": false,
+        "total_matches": result.total_matches,
+        "scanned_messages": result.scanned_messages,
+        "returned_matches": result.messages.len(),
+        "messages": result.messages.iter().map(message_json).collect::<Vec<_>>(),
+    })
+}
+
+pub(super) fn print_space_search(
+    space_id: &[u8; 16],
+    group_reference: &[u8; 32],
+    channel_id: &[u8; 16],
+    query: &str,
+    result: &lattice_core::LocalTextMessageSearchResult,
+    json: bool,
+) {
+    if json {
+        println!(
+            "{}",
+            space_search_json(space_id, group_reference, channel_id, query, result)
+        );
+        return;
+    }
+    println!(
+        "{} matching message(s) among {} locally retained messages; showing {} newest matches.",
+        result.total_matches,
+        result.scanned_messages,
+        result.messages.len()
+    );
+    for message in &result.messages {
+        let state = outbox_state_name(message.outbox_state).unwrap_or("retained locally");
+        println!(
+            "{} [{state}] {}",
+            hex(&message.event_id),
+            message.content.escape_default()
+        );
+    }
+    println!("Search used the encrypted local cache; no network contact was made.");
 }

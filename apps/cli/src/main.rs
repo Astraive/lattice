@@ -8,7 +8,7 @@ use identity::{
     IdentityCommand, certificate_request_pem, print_pinned_identity, write_certificate_request_pem,
 };
 use relay::RelayCommand;
-use space::{SpaceCommand, print_space_history, print_space_page};
+use space::{SpaceCommand, print_space_history, print_space_page, print_space_search};
 use sync::SyncCommand;
 
 use std::{
@@ -110,6 +110,7 @@ enum SpaceCommandInput {
     Join([u8; 32]),
     Edit(SpaceEditInput),
     History(SpaceHistoryInput),
+    Search(SpaceHistoryInput),
 }
 
 fn main() -> ExitCode {
@@ -207,6 +208,7 @@ fn error_code(error: &(dyn Error + 'static)) -> &'static str {
     if let Some(error) = error.downcast_ref::<CoreError>() {
         return match error {
             CoreError::MissingIdentity => "IDENTITY_NOT_INITIALIZED",
+            CoreError::InvalidLocalTextMessageSearch => "INVALID_INPUT",
             CoreError::PinnedIdentityConflict => "PIN_CONFLICT",
             CoreError::Storage(_) => "STORAGE_ERROR",
             CoreError::Identity(_) => "IDENTITY_ERROR",
@@ -388,6 +390,15 @@ fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
                 .into());
             }
         }
+        Command::Space {
+            command: SpaceCommand::Search { query, .. },
+        } if query.is_empty() || query.len() > lattice_core::MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES => {
+            return Err(CliError::invalid_input(format!(
+                "search query must contain 1 to {} UTF-8 bytes",
+                lattice_core::MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES
+            ))
+            .into());
+        }
         Command::Send { text, .. }
         | Command::Space {
             command: SpaceCommand::Edit { text, .. },
@@ -473,6 +484,12 @@ fn parse_space_history_input(command: &Command) -> Result<Option<SpaceHistoryInp
                     space_id,
                     group_reference,
                     channel_id,
+                }
+                | SpaceCommand::Search {
+                    space_id,
+                    group_reference,
+                    channel_id,
+                    ..
                 },
         } => Ok(Some((
             parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
@@ -505,6 +522,11 @@ fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, Cli
         } => parse_space_history_input(command)?
             .map(SpaceCommandInput::History)
             .ok_or_else(|| CliError::invalid_input("history identifiers were not parsed")),
+        Command::Space {
+            command: SpaceCommand::Search { .. },
+        } => parse_space_history_input(command)?
+            .map(SpaceCommandInput::Search)
+            .ok_or_else(|| CliError::invalid_input("search identifiers were not parsed")),
         Command::Space {
             command:
                 SpaceCommand::Join {
@@ -771,6 +793,32 @@ fn execute_space(
             let messages =
                 client.local_text_message_history(&space_id, &group_reference, &channel_id)?;
             print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
+        }
+        SpaceCommand::Search { query, .. } => {
+            let SpaceCommandInput::Search((space_id, group_reference, channel_id)) = input else {
+                return Err(CliError::invalid_input("search identifiers were not parsed").into());
+            };
+            let mut client = match Client::open_existing(database_path, protector) {
+                Ok(client) => client,
+                Err(CoreError::MissingIdentity) => {
+                    return Err(CliError::missing_identity().into());
+                }
+                Err(error) => return Err(Box::new(error)),
+            };
+            let result = client.search_local_text_messages(
+                &space_id,
+                &group_reference,
+                &channel_id,
+                &query,
+            )?;
+            print_space_search(
+                &space_id,
+                &group_reference,
+                &channel_id,
+                &query,
+                &result,
+                json,
+            );
         }
     }
     Ok(())
@@ -1304,9 +1352,10 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, IdentityCommand, SpaceCommand, execute, parse_fixed_hex,
-        parse_lookup_fingerprint, parse_send_input, parse_space_cursor, parse_space_edit_input,
-        parse_space_history_input, queued_event_json, space_cursor_hex,
+        Cli, Command, IdentityCommand, SpaceCommand, SpaceCommandInput, execute, parse_fixed_hex,
+        parse_lookup_fingerprint, parse_send_input, parse_space_command_input, parse_space_cursor,
+        parse_space_edit_input, parse_space_history_input, queued_event_json, space_cursor_hex,
+        validate_command_inputs,
     };
     use clap::Parser;
     use lattice_core::SpaceGenesisCursor;
@@ -1521,6 +1570,78 @@ mod tests {
             panic!("expected space history command");
         }
         assert!(parse_space_history_input(&parsed.command).is_err());
+    }
+
+    #[test]
+    fn space_search_parses_bounds_and_reports_local_match_counts() {
+        use lattice_core::{LocalTextMessageRecord, LocalTextMessageSearchResult, OutboxState};
+
+        let mut parsed = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "search",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--channel-id",
+            &"33".repeat(16),
+            "--query",
+            "needle",
+        ])
+        .expect("search command parses");
+        assert_eq!(
+            parse_space_history_input(&parsed.command).expect("search IDs parse"),
+            Some(([0x11; 16], [0x22; 32], [0x33; 16]))
+        );
+        assert!(matches!(
+            parse_space_command_input(&parsed.command),
+            Ok(SpaceCommandInput::Search(_))
+        ));
+        assert!(validate_command_inputs(&parsed.command).is_ok());
+
+        if let Command::Space {
+            command: SpaceCommand::Search { query, .. },
+        } = &mut parsed.command
+        {
+            query.clear();
+        }
+        assert!(validate_command_inputs(&parsed.command).is_err());
+        if let Command::Space {
+            command: SpaceCommand::Search { query, .. },
+        } = &mut parsed.command
+        {
+            *query = "x".repeat(lattice_core::MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES + 1);
+        }
+        assert!(validate_command_inputs(&parsed.command).is_err());
+
+        let result = LocalTextMessageSearchResult {
+            messages: vec![LocalTextMessageRecord {
+                event_id: [0x44; 32],
+                channel_id: [0x33; 16],
+                author_id: [0x55; 32],
+                author_sequence: 7,
+                lamport: 9,
+                content: "needle match".to_owned(),
+                outbox_state: Some(OutboxState::Queued),
+            }],
+            total_matches: 3,
+            scanned_messages: 12,
+        };
+        let output = super::space::space_search_json(
+            &[0x11; 16],
+            &[0x22; 32],
+            &[0x33; 16],
+            "needle",
+            &result,
+        );
+        assert_eq!(output["command"], "space_search");
+        assert_eq!(output["network_contacted"], false);
+        assert_eq!(output["total_matches"], 3);
+        assert_eq!(output["scanned_messages"], 12);
+        assert_eq!(output["returned_matches"], 1);
+        assert_eq!(output["messages"][0]["event_id"], "44".repeat(32));
+        assert_eq!(output["messages"][0]["outbox_state"], "queued");
     }
 
     #[test]
