@@ -45,7 +45,7 @@ use openmls::{
     prelude::{
         Capabilities, Ciphersuite, ContentType, Extension, GroupEpoch, GroupId, KeyPackageIn,
         LeafNode, LeafNodeIndex, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageIn,
-        MlsMessageOut, ProcessedMessageContent, Proposal, ProtocolVersion,
+        MlsMessageOut, ProcessedMessageContent, Proposal, ProtocolVersion, Sender,
     },
 };
 use openmls_traits::{
@@ -964,6 +964,10 @@ pub enum IncomingResult {
     Proposal {
         /// Whether the proposal used the external sender path.
         external: bool,
+        /// Authenticated member identity for member-sent proposals.
+        member_identity_fingerprint: Option<[u8; 32]>,
+        /// Whether this is the sender's voluntary self-removal proposal.
+        self_remove: bool,
         /// Space authorization has not been evaluated.
         space_authorization: SpaceAuthorization,
     },
@@ -1656,6 +1660,34 @@ impl GroupState {
         })
     }
 
+    /// Creates an authenticated MLS Remove proposal targeting this device.
+    ///
+    /// Another member must commit the proposal before membership ends; this
+    /// method does not advance the group epoch or remove the local member.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the group is not operational, the credential does
+    /// not match the signer, this identity is not in the group, or `OpenMLS`
+    /// rejects the proposal.
+    pub fn prepare_leave<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+    ) -> MlsResult<MlsMessage> {
+        self.ensure_operational()?;
+        credential.check_signer(identity)?;
+        if !self.contains_member_identity(credential.identity_fingerprint()) {
+            return Err(MlsError::GroupMemberNotFound);
+        }
+        let proposal = self
+            .inner
+            .leave_group(provider, &DeviceSigner(identity))
+            .map_err(|_| MlsError::OpenMlsFailure)?;
+        encode_message(&proposal, MlsWireKind::Proposal)
+    }
+
     /// Merges the exact prepared Commit and releases its Welcome.
     ///
     /// # Errors
@@ -1776,6 +1808,39 @@ impl GroupState {
             .create_message(provider, &DeviceSigner(identity), plaintext)
             .map_err(|_| MlsError::OpenMlsFailure)?;
         encode_message(&message, MlsWireKind::Application)
+    }
+
+    /// Encrypts one parent-epoch application and returns evidence for binding
+    /// the exact locally authored ciphertext to its plaintext and MLS sender.
+    ///
+    /// The evidence is constructed only after `OpenMLS` successfully creates the
+    /// application with this device credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prepared Add is stale, no local Commit is
+    /// pending, the credential does not match the signer, the plaintext exceeds
+    /// its bound, or `OpenMLS` rejects encryption.
+    pub fn encrypt_application_for_pending_membership_with_evidence<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+        prepared: &PreparedAdd,
+        plaintext: &[u8],
+    ) -> MlsResult<(MlsMessage, MlsApplication)> {
+        let wire = self.encrypt_application_for_pending_membership(
+            provider, identity, credential, prepared, plaintext,
+        )?;
+        let application = MlsApplication {
+            plaintext: plaintext.to_vec(),
+            member_signature_key: Some(identity.public_key()),
+            member_identity_fingerprint: Some(*credential.identity_fingerprint()),
+            ciphertext_sha256: Sha256::digest(wire.as_bytes()).into(),
+            epoch: self.inner.epoch().as_u64(),
+            group_reference: self.group_reference(),
+        };
+        Ok((wire, application))
     }
 
     /// Encrypts a parent-epoch policy transition while this prepared Remove
@@ -1912,6 +1977,7 @@ impl GroupState {
                 ),
                 other => classify_non_commit(
                     other,
+                    &sender,
                     member_identity_fingerprint,
                     member_signature_key,
                     ciphertext_sha256,
@@ -1923,6 +1989,7 @@ impl GroupState {
 
         classify_non_commit(
             content,
+            &sender,
             member_identity_fingerprint,
             member_signature_key,
             ciphertext_sha256,
@@ -2810,8 +2877,10 @@ fn derive_group_reference(group_id: &[u8]) -> [u8; 32] {
     hasher.update(group_id);
     hasher.finalize().into()
 }
+
 fn classify_non_commit(
     content: ProcessedMessageContent,
+    sender: &Sender,
     member_identity_fingerprint: Option<[u8; 32]>,
     member_signature_key: Option<[u8; 32]>,
     ciphertext_sha256: [u8; 32],
@@ -2831,12 +2900,23 @@ fn classify_non_commit(
                 group_reference,
             }))
         }
-        ProcessedMessageContent::ProposalMessage(_) => Ok(IncomingResult::Proposal {
+        ProcessedMessageContent::ProposalMessage(proposal) => Ok(IncomingResult::Proposal {
             external: false,
+            member_identity_fingerprint,
+            self_remove: match proposal.proposal() {
+                Proposal::SelfRemove => true,
+                Proposal::Remove(remove) => matches!(
+                    sender,
+                    Sender::Member(sender_leaf) if sender_leaf == &remove.removed()
+                ),
+                _ => false,
+            },
             space_authorization: SpaceAuthorization::NotEvaluated,
         }),
         ProcessedMessageContent::ExternalJoinProposalMessage(_) => Ok(IncomingResult::Proposal {
             external: true,
+            member_identity_fingerprint: None,
+            self_remove: false,
             space_authorization: SpaceAuthorization::NotEvaluated,
         }),
         _ => Err(MlsError::UnsupportedMessage),
@@ -3037,7 +3117,7 @@ mod group_reference_tests {
 mod membership_change_tests {
     use super::{
         DeviceCredentialInput, DirectMessageGroup, GroupState, IncomingResult, MlsMembershipAction,
-        ValidatedMlsMembershipChange, key_package_wire_sha256,
+        MlsWireKind, ValidatedMlsMembershipChange, key_package_wire_sha256,
     };
     use lattice_identity::DeviceIdentity;
     use openmls::credentials::{Credential, CredentialType};
@@ -3233,6 +3313,66 @@ mod membership_change_tests {
                 .process_incoming(&provider_charlie, future_epoch_message.as_bytes())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn voluntary_leave_is_a_pending_authenticated_remove_proposal() {
+        let provider_alice = OpenMlsRustCrypto::default();
+        let provider_bob = OpenMlsRustCrypto::default();
+        let alice_identity = DeviceIdentity::generate().expect("Alice identity");
+        let bob_identity = DeviceIdentity::generate().expect("Bob identity");
+        let alice_credential = test_credential(&alice_identity);
+        let bob_credential = test_credential(&bob_identity);
+
+        let mut alice = GroupState::create(&provider_alice, &alice_identity, &alice_credential)
+            .expect("create Alice group");
+        let package =
+            GroupState::publish_key_package(&provider_bob, &bob_identity, &bob_credential)
+                .expect("publish Bob KeyPackage");
+        let add = alice
+            .prepare_add(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                package.as_bytes(),
+            )
+            .expect("prepare Bob add");
+        let welcome = alice
+            .accept_prepared_add(&provider_alice, &add, add.commit().as_bytes())
+            .expect("accept Bob add");
+        let mut bob = GroupState::from_welcome(
+            &provider_bob,
+            &alice.group_id(),
+            &bob_credential,
+            welcome.as_bytes(),
+        )
+        .expect("join Bob group");
+
+        let parent_epoch = bob.epoch();
+        let proposal = bob
+            .prepare_leave(&provider_bob, &bob_identity, &bob_credential)
+            .expect("create voluntary Remove proposal");
+        assert_eq!(proposal.kind(), MlsWireKind::Proposal);
+        assert_eq!(bob.epoch(), parent_epoch);
+        assert!(bob.contains_member_identity(&bob_identity.fingerprint()));
+        let restored_bob = GroupState::load(&provider_bob, &bob.group_id())
+            .expect("reload after queuing self-removal proposal");
+        assert!(restored_bob.contains_member_identity(&bob_identity.fingerprint()));
+        let received = alice.process_incoming(&provider_alice, proposal.as_bytes());
+        assert!(
+            matches!(
+                &received,
+                Ok(IncomingResult::Proposal {
+                    external: false,
+                    member_identity_fingerprint: Some(author),
+                    self_remove: true,
+                    ..
+                }) if author == &bob_identity.fingerprint()
+            ),
+            "{received:?}"
+        );
+        assert_eq!(alice.epoch(), parent_epoch);
+        assert!(alice.contains_member_identity(&bob_identity.fingerprint()));
     }
 
     #[test]

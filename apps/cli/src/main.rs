@@ -26,6 +26,7 @@ use lattice_core::{
     MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, SpaceGenesisCursor, space::ChannelType,
 };
 use lattice_mls::api::DeviceCredentialInput;
+use lattice_mls::api::MAX_MLS_WIRE_BYTES;
 use lattice_platform::{OsKeyringProtectionError, OsKeyringProtector};
 use openmls::credentials::{Credential, CredentialType};
 
@@ -108,6 +109,8 @@ enum SpaceCommandInput {
     Restore(SpaceRestoreInput),
     Recover(SpaceRestoreInput),
     Join([u8; 32]),
+    Invite(SpaceRestoreInput),
+    Leave(SpaceRestoreInput),
     Edit(SpaceEditInput),
     History(SpaceHistoryInput),
     Search(SpaceHistoryInput),
@@ -466,6 +469,16 @@ fn parse_space_restore_input(command: &Command) -> Result<Option<SpaceRestoreInp
                     space_id,
                     group_reference,
                     ..
+                }
+                | SpaceCommand::Leave {
+                    space_id,
+                    group_reference,
+                    ..
+                }
+                | SpaceCommand::Invite {
+                    space_id,
+                    group_reference,
+                    ..
                 },
         } => Ok(Some((
             parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
@@ -502,6 +515,16 @@ fn parse_space_history_input(command: &Command) -> Result<Option<SpaceHistoryInp
 }
 fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, CliError> {
     match command {
+        Command::Space {
+            command: SpaceCommand::Invite { .. },
+        } => parse_space_restore_input(command)?
+            .map(SpaceCommandInput::Invite)
+            .ok_or_else(|| CliError::invalid_input("Space identifiers were not parsed")),
+        Command::Space {
+            command: SpaceCommand::Leave { .. },
+        } => parse_space_restore_input(command)?
+            .map(SpaceCommandInput::Leave)
+            .ok_or_else(|| CliError::invalid_input("Space identifiers were not parsed")),
         Command::Space {
             command: SpaceCommand::Restore { .. } | SpaceCommand::Recover { .. },
         } => parse_space_restore_input(command)?
@@ -548,7 +571,10 @@ fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn E
                 SpaceCommand::Create { credential, .. }
                 | SpaceCommand::Recover { credential, .. }
                 | SpaceCommand::Edit { credential, .. }
-                | SpaceCommand::Join { credential, .. },
+                | SpaceCommand::KeyPackage { credential, .. }
+                | SpaceCommand::Invite { credential, .. }
+                | SpaceCommand::Join { credential, .. }
+                | SpaceCommand::Leave { credential, .. },
         } => Some(credential),
         _ => None,
     };
@@ -558,19 +584,25 @@ fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn E
 }
 
 fn read_space_package(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-    let Command::Space {
-        command: SpaceCommand::Join { package, .. },
-    } = command
-    else {
-        return Ok(None);
+    let (path, maximum, description) = match command {
+        Command::Space {
+            command: SpaceCommand::Join { package, .. },
+        } => (
+            package,
+            MAX_SPACE_WELCOME_BOOTSTRAP_BYTES,
+            "Welcome bootstrap package",
+        ),
+        Command::Space {
+            command: SpaceCommand::Invite { key_package, .. },
+        } => (key_package, MAX_MLS_WIRE_BYTES, "KeyPackage"),
+        _ => return Ok(None),
     };
-    let mut file = std::fs::File::open(package)?;
-    let mut bytes = Vec::with_capacity(MAX_SPACE_WELCOME_BOOTSTRAP_BYTES.min(4096));
-    Read::take(&mut file, (MAX_SPACE_WELCOME_BOOTSTRAP_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.is_empty() || bytes.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(maximum.min(4096));
+    Read::take(&mut file, (maximum + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > maximum {
         return Err(CliError::invalid_input(format!(
-            "Welcome bootstrap package must contain 1 to {MAX_SPACE_WELCOME_BOOTSTRAP_BYTES} bytes"
+            "{description} must contain 1 to {maximum} bytes"
         ))
         .into());
     }
@@ -704,7 +736,6 @@ fn execute_unpin_identity(
             "{}",
             serde_json::json!({
                 "schema_version": 1,
-                "command": "identity_unpin",
                 "fingerprint": hex(fingerprint),
                 "locally_removed": removed,
                 "remote_identity_revoked": false,
@@ -736,6 +767,22 @@ fn execute_space(
                 .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
             execute_space_create(credential_bytes, channels, database_path, protector, json)?;
         }
+        SpaceCommand::KeyPackage { output, .. } => {
+            let credential_bytes = credential_bytes
+                .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+            execute_space_key_package(credential_bytes, &output, database_path, protector, json)?;
+        }
+        command @ SpaceCommand::Invite { .. } => {
+            execute_space_invite_command(
+                command,
+                credential_bytes,
+                package_bytes,
+                input,
+                database_path,
+                protector,
+                json,
+            )?;
+        }
         SpaceCommand::Join { .. } => {
             execute_space_join(
                 credential_bytes,
@@ -749,6 +796,9 @@ fn execute_space(
         SpaceCommand::Restore { .. } => {
             execute_space_restore(input, database_path, protector, json)?;
         }
+        SpaceCommand::Leave { .. } => {
+            execute_space_leave(credential_bytes, input, database_path, protector, json)?;
+        }
         SpaceCommand::Recover { .. } => {
             execute_space_recovery(credential_bytes, input, database_path, protector, json)?;
         }
@@ -756,73 +806,174 @@ fn execute_space(
             execute_space_list(after.as_deref(), database_path, protector, json)?;
         }
         SpaceCommand::Edit { text, .. } => {
-            let credential_bytes = credential_bytes
-                .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
-            let SpaceCommandInput::Edit((space_id, group_reference, channel_id, target)) = input
-            else {
-                return Err(CliError::invalid_input("edit identifiers were not parsed").into());
-            };
-            let mut client = match Client::open_existing(database_path, protector) {
-                Ok(client) => client,
-                Err(CoreError::MissingIdentity) => {
-                    return Err(CliError::missing_identity().into());
-                }
-                Err(error) => return Err(Box::new(error)),
-            };
-            let queued = client.queue_text_message_edit_from_x509_credential(
-                &space_id,
-                &group_reference,
-                credential_bytes,
-                channel_id,
-                target,
+            execute_space_edit(
                 &text,
+                credential_bytes,
+                input,
+                database_path,
+                protector,
+                json,
             )?;
-            print_queued_event(json, "space_edit", "Edit queued", queued.event_id());
         }
         SpaceCommand::History { .. } => {
-            let SpaceCommandInput::History((space_id, group_reference, channel_id)) = input else {
-                return Err(CliError::invalid_input("history identifiers were not parsed").into());
-            };
-            let mut client = match Client::open_existing(database_path, protector) {
-                Ok(client) => client,
-                Err(CoreError::MissingIdentity) => {
-                    return Err(CliError::missing_identity().into());
-                }
-                Err(error) => return Err(Box::new(error)),
-            };
-            let messages =
-                client.local_text_message_history(&space_id, &group_reference, &channel_id)?;
-            print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
+            execute_space_history(input, database_path, protector, json)?;
         }
         SpaceCommand::Search { query, .. } => {
-            let SpaceCommandInput::Search((space_id, group_reference, channel_id)) = input else {
-                return Err(CliError::invalid_input("search identifiers were not parsed").into());
-            };
-            let mut client = match Client::open_existing(database_path, protector) {
-                Ok(client) => client,
-                Err(CoreError::MissingIdentity) => {
-                    return Err(CliError::missing_identity().into());
-                }
-                Err(error) => return Err(Box::new(error)),
-            };
-            let result = client.search_local_text_messages(
-                &space_id,
-                &group_reference,
-                &channel_id,
-                &query,
-            )?;
-            print_space_search(
-                &space_id,
-                &group_reference,
-                &channel_id,
-                &query,
-                &result,
-                json,
-            );
+            execute_space_search(&query, input, database_path, protector, json)?;
         }
     }
     Ok(())
 }
+fn execute_space_invite_command(
+    command: SpaceCommand,
+    credential_bytes: Option<Vec<u8>>,
+    package_bytes: Option<Vec<u8>>,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let SpaceCommand::Invite {
+        token_output,
+        welcome_output,
+        expires_at,
+        expires_at_revision,
+        max_uses,
+        ..
+    } = command
+    else {
+        return Err(CliError::invalid_input("Invite options were not parsed").into());
+    };
+    let credential_bytes = credential_bytes
+        .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+    let key_package_bytes =
+        package_bytes.ok_or_else(|| CliError::invalid_input("KeyPackage was not loaded"))?;
+    let SpaceCommandInput::Invite((space_id, group_reference)) = input else {
+        return Err(CliError::invalid_input("Space identifiers were not parsed").into());
+    };
+    ensure_new_output_paths(&[&token_output, &welcome_output])?;
+    if expires_at <= unix_time_now()? {
+        return Err(CliError::invalid_input("invite expiry must be in the future").into());
+    }
+    execute_space_invite(
+        credential_bytes,
+        &key_package_bytes,
+        space_id,
+        group_reference,
+        &token_output,
+        &welcome_output,
+        expires_at,
+        expires_at_revision,
+        max_uses,
+        database_path,
+        protector,
+        json,
+    )
+}
+
+fn execute_space_leave(
+    credential_bytes: Option<Vec<u8>>,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let credential_bytes = credential_bytes
+        .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+    let SpaceCommandInput::Leave((space_id, group_reference)) = input else {
+        return Err(CliError::invalid_input("Leave identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let event_id = client.request_space_leave_from_x509_credential(
+        &space_id,
+        &group_reference,
+        credential_bytes,
+    )?;
+    print_queued_event(json, "space_leave", "Leave request queued", &event_id);
+    Ok(())
+}
+
+fn execute_space_edit(
+    text: &str,
+    credential_bytes: Option<Vec<u8>>,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let credential_bytes = credential_bytes
+        .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+    let SpaceCommandInput::Edit((space_id, group_reference, channel_id, target)) = input else {
+        return Err(CliError::invalid_input("edit identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let queued = client.queue_text_message_edit_from_x509_credential(
+        &space_id,
+        &group_reference,
+        credential_bytes,
+        channel_id,
+        target,
+        text,
+    )?;
+    print_queued_event(json, "space_edit", "Edit queued", queued.event_id());
+    Ok(())
+}
+
+fn execute_space_history(
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let SpaceCommandInput::History((space_id, group_reference, channel_id)) = input else {
+        return Err(CliError::invalid_input("history identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let messages = client.local_text_message_history(&space_id, &group_reference, &channel_id)?;
+    print_space_history(&space_id, &group_reference, &channel_id, &messages, json);
+    Ok(())
+}
+
+fn execute_space_search(
+    query: &str,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let SpaceCommandInput::Search((space_id, group_reference, channel_id)) = input else {
+        return Err(CliError::invalid_input("search identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let result =
+        client.search_local_text_messages(&space_id, &group_reference, &channel_id, query)?;
+    print_space_search(
+        &space_id,
+        &group_reference,
+        &channel_id,
+        query,
+        &result,
+        json,
+    );
+    Ok(())
+}
+
 fn execute_send(
     input: SendInput,
     credential_bytes: Vec<u8>,
@@ -928,6 +1079,182 @@ fn execute_space_join(
         println!(
             "This import persisted local state only; no relay or peer delivery, and no general message history replay."
         );
+    }
+    Ok(())
+}
+
+fn execute_space_key_package(
+    credential_bytes: Vec<u8>,
+    output: &Path,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ensure_new_output_paths(&[output])?;
+    let now = unix_time_now()?;
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let credential = Credential::new(CredentialType::X509, credential_bytes);
+    let credential = client.with_mls_transaction(|identity, _, _| {
+        DeviceCredentialInput::from_x509_credential(identity, credential).map_err(CoreError::Mls)
+    })?;
+    let wire = client.publish_key_package(&credential, now)?;
+    write_new_files(&[(output, &wire)])?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_key_package",
+                "state": "published_locally",
+                "output_file": output,
+                "key_package_bytes": wire.len(),
+                "tracked_as_one_time": true,
+                "network_contacted": false,
+            })
+        );
+    } else {
+        println!(
+            "Published a fresh one-time KeyPackage to {}.",
+            output.display()
+        );
+        println!("No network contact was made.");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_space_invite(
+    credential_bytes: Vec<u8>,
+    key_package_bytes: &[u8],
+    space_id: [u8; 16],
+    group_reference: [u8; 32],
+    token_output: &Path,
+    welcome_output: &Path,
+    expires_at: u64,
+    expires_at_revision: Option<u64>,
+    max_uses: Option<u16>,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let credential_content = Credential::new(CredentialType::X509, credential_bytes);
+    let credential = client.with_mls_transaction(|identity, _, _| {
+        DeviceCredentialInput::from_x509_credential(identity, credential_content)
+            .map_err(CoreError::Mls)
+    })?;
+    let mut space = client.restore_space(&space_id, &group_reference)?;
+    let invitation = client.create_space_invite(
+        &mut space,
+        &credential,
+        key_package_bytes,
+        expires_at_revision,
+        expires_at,
+        max_uses,
+    )?;
+    let invite_event_id = hex(invitation.invite_event_id());
+    let target_fingerprint = hex(invitation.target_fingerprint());
+    write_new_files(&[
+        (token_output, invitation.token()),
+        (welcome_output, invitation.welcome_bootstrap()),
+    ])?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "command": "space_invite",
+                "state": "invitation_created_locally",
+                "invite_event_id": invite_event_id,
+                "target_fingerprint": target_fingerprint,
+                "token_file": token_output,
+                "welcome_file": welcome_output,
+                "expires_at_unix_seconds": expires_at,
+                "expires_at_revision": expires_at_revision,
+                "max_uses": max_uses,
+                "events_queued": 3,
+                "peer_delivery": false,
+                "network_contacted": false,
+            })
+        );
+    } else {
+        println!("Created an offline invitation for {target_fingerprint}.");
+        println!("Invite event: {invite_event_id}");
+        println!("Signed token: {}", token_output.display());
+        println!("Welcome bootstrap: {}", welcome_output.display());
+        println!("Queued locally only; no relay or peer delivery occurred.");
+    }
+    Ok(())
+}
+
+fn unix_time_now() -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| CliError::invalid_input("system clock is before the Unix epoch"))?
+        .as_secs())
+}
+
+fn ensure_new_output_paths(paths: &[&Path]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut canonical_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| CliError::invalid_input("output path must name a file"))?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let canonical = parent.canonicalize()?.join(file_name);
+        if canonical_paths.contains(&canonical) {
+            return Err(CliError::invalid_input("output paths must be distinct").into());
+        }
+        if path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("output file already exists: {}", path.display()),
+            )
+            .into());
+        }
+        canonical_paths.push(canonical);
+    }
+    Ok(())
+}
+
+fn write_new_files(files: &[(&Path, &[u8])]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut opened = Vec::with_capacity(files.len());
+    for (path, _) in files {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => opened.push((path.to_path_buf(), file)),
+            Err(error) => {
+                let created_count = opened.len();
+                drop(opened);
+                for (created_path, _) in files.iter().take(created_count) {
+                    let _ = std::fs::remove_file(created_path);
+                }
+                return Err(error.into());
+            }
+        }
+    }
+    for (index, (_, bytes)) in files.iter().enumerate() {
+        if let Err(error) = std::io::Write::write_all(&mut opened[index].1, bytes) {
+            drop(opened);
+            for (path, _) in files {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
     }
     Ok(())
 }
@@ -1209,6 +1536,9 @@ fn print_about(json: bool) {
                     "local_space_genesis_creation",
                     "local_space_genesis_listing_and_restoration",
                     "local_space_one_member_recovery",
+                    "local_space_key_package_publication",
+                    "local_space_invitation_creation",
+                    "local_space_leave_request",
                     "local_pinned_welcome_bootstrap_import",
                     "local_text_message_queue_and_edit",
                     "local_outgoing_message_history",
@@ -1218,7 +1548,7 @@ fn print_about(json: bool) {
                     "local_profile_diagnostics"
                 ],
                 "unavailable": [
-                    "complete_space_invite_leave_and_membership_lifecycle",
+                    "peer_membership_commit",
                     "certificate_issuance_or_import",
                     "network_message_forwarding_or_delivery",
                     "peer_synchronization",
@@ -1230,10 +1560,10 @@ fn print_about(json: bool) {
     } else {
         println!("Lattice local-first communication");
         println!(
-            "Available: protected device identity, CSR export, local identity pins and local trust removal; local Space Genesis create/list/restore, pinned-inviter Welcome bootstrap import, and one-member recovery; text send/edit queued to the local outbox and outgoing history; outbox inspection; local relay URL settings and NIP-11 metadata probing; profile diagnostics."
+            "Available: protected device identity, CSR export, local identity pins and local trust removal; local Space Genesis create/list/restore, one-time KeyPackage publication, signed offline invitations, pinned-inviter Welcome import, one-member recovery, and queued self-leave requests; text send/edit, outgoing history and outbox inspection; local relay settings/probes; profile diagnostics."
         );
         println!(
-            "Not available: full Space invite/leave and ongoing membership lifecycle, certificate issuance/import, remote identity revocation, peer synchronization, message forwarding/delivery, or voice media."
+            "Not available: peer-side membership commits, certificate issuance/import, remote identity revocation, peer synchronization, message forwarding/delivery, or voice media."
         );
         println!("A local queue state is not evidence of relay forwarding or recipient delivery.");
     }
@@ -1544,6 +1874,77 @@ mod tests {
     }
 
     #[test]
+    fn space_leave_parses_identifiers_for_a_queued_request() {
+        let parsed = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "leave",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--credential",
+            "device.der",
+        ])
+        .expect("Leave command parses");
+        assert!(matches!(
+            parse_space_command_input(&parsed.command),
+            Ok(SpaceCommandInput::Leave((space_id, group_reference)))
+                if space_id == [0x11; 16] && group_reference == [0x22; 32]
+        ));
+        assert!(validate_command_inputs(&parsed.command).is_ok());
+    }
+
+    #[test]
+    fn space_invite_and_key_package_commands_parse_local_artifact_inputs() {
+        let invite = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "invite",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--credential",
+            "inviter.der",
+            "--key-package",
+            "invitee.kp",
+            "--token-output",
+            "invite.token",
+            "--welcome-output",
+            "welcome.pkg",
+            "--expires-at",
+            "2000000000",
+            "--max-uses",
+            "1",
+        ])
+        .expect("Invite command parses");
+        assert!(matches!(
+            parse_space_command_input(&invite.command),
+            Ok(SpaceCommandInput::Invite((space_id, group_reference)))
+                if space_id == [0x11; 16] && group_reference == [0x22; 32]
+        ));
+        assert!(validate_command_inputs(&invite.command).is_ok());
+
+        let key_package = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "key-package",
+            "--credential",
+            "device.der",
+            "--output",
+            "device.kp",
+        ])
+        .expect("KeyPackage command parses");
+        assert!(matches!(
+            key_package.command,
+            Command::Space {
+                command: SpaceCommand::KeyPackage { output, .. }
+            } if output == std::path::Path::new("device.kp")
+        ));
+    }
+
+    #[test]
     fn space_history_parses_and_validates_immutable_identifiers() {
         let mut parsed = Cli::try_parse_from([
             "lattice",
@@ -1688,6 +2089,41 @@ mod tests {
                 "A".repeat(64)
             )
         );
+    }
+
+    #[test]
+    fn invite_artifact_writer_preserves_existing_file_and_cleans_partial_output() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "lattice-cli-invite-output-{}-{nonce}",
+            std::process::id(),
+        ));
+        std::fs::create_dir(&directory).expect("create isolated output directory");
+        let new_output = directory.join("token.bin");
+        let existing_output = directory.join("welcome.bin");
+        std::fs::write(&existing_output, b"preserve existing bytes")
+            .expect("create existing output fixture");
+        let error = super::write_new_files(&[
+            (&new_output, b"new token"),
+            (&existing_output, b"replacement welcome"),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .expect("writer reports the filesystem error")
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert!(!new_output.exists(), "partial output is removed");
+        assert_eq!(
+            std::fs::read(&existing_output).expect("read untouched existing file"),
+            b"preserve existing bytes"
+        );
+        std::fs::remove_dir_all(directory).expect("remove temporary outputs");
     }
 
     #[test]

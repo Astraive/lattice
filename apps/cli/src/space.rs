@@ -15,6 +15,48 @@ pub(super) enum SpaceCommand {
         #[arg(long = "channel", required = true)]
         channels: Vec<String>,
     },
+    /// Publish a fresh one-time X.509 `KeyPackage` to an output file.
+    KeyPackage {
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+        /// New file for the raw TLS-encoded `KeyPackage`; existing files are never replaced.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Create an offline invitation for a validated one-time `KeyPackage`.
+    ///
+    /// The signed token and Welcome bootstrap are written locally; this command
+    /// does not contact relays or deliver either file to the invited device.
+    Invite {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+        /// Path to the invited device's raw TLS-encoded `KeyPackage`.
+        #[arg(long)]
+        key_package: PathBuf,
+        /// New file for canonical signed token bytes; existing files are never replaced.
+        #[arg(long)]
+        token_output: PathBuf,
+        /// New file for the signed Welcome bootstrap; existing files are never replaced.
+        #[arg(long)]
+        welcome_output: PathBuf,
+        /// Signed local Unix expiry time in seconds.
+        #[arg(long)]
+        expires_at: u64,
+        /// Optional policy revision at which the invite expires.
+        #[arg(long)]
+        expires_at_revision: Option<u64>,
+        /// Optional maximum accepted uses; omit for no policy use limit.
+        #[arg(long)]
+        max_uses: Option<u16>,
+    },
     /// Import a versioned Welcome bootstrap package into the local protected profile.
     ///
     /// The inviter fingerprint must already be pinned locally. Import validates
@@ -27,6 +69,21 @@ pub(super) enum SpaceCommand {
         /// Pinned inviter fingerprint as exactly 64 hexadecimal characters.
         #[arg(long)]
         inviter_fingerprint: String,
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+    },
+    /// Queue an authenticated MLS self-removal proposal for a joined Space.
+    ///
+    /// The request does not change the local roster or remove this device;
+    /// another current member must commit it to end group membership.
+    Leave {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
         /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
         #[arg(long)]
         credential: PathBuf,

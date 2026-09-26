@@ -34,7 +34,17 @@ fn about_json_reports_versioned_capability_boundaries() {
     assert!(
         available
             .iter()
-            .any(|capability| capability == "local_peer_pin_revocation")
+            .any(|capability| capability == "local_space_leave_request")
+    );
+    assert!(
+        available
+            .iter()
+            .any(|capability| capability == "local_space_key_package_publication")
+    );
+    assert!(
+        available
+            .iter()
+            .any(|capability| capability == "local_space_invitation_creation")
     );
     let unavailable = value["unavailable"]
         .as_array()
@@ -42,7 +52,7 @@ fn about_json_reports_versioned_capability_boundaries() {
     assert!(
         unavailable
             .iter()
-            .any(|capability| capability == "complete_space_invite_leave_and_membership_lifecycle")
+            .any(|capability| capability == "peer_membership_commit")
     );
     assert!(
         unavailable
