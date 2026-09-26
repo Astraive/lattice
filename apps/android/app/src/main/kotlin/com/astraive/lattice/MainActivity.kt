@@ -10,6 +10,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -73,6 +75,7 @@ internal data class NearbyScreenState(
     val sightings: Int = 0,
     val persistentNearbyEnabled: Boolean = false,
     val persistentNearbyStatus: String = "Persistent nearby mode is off.",
+    val wifiCapabilities: AndroidWifiCapabilities = AndroidWifiCapabilities(),
     val message: String = "Bluetooth permission has not been requested. Nearby discovery has not started.",
     val showPermissionRationale: Boolean = false,
     val profileStatus: String = "Preparing protected device profile.",
@@ -104,6 +107,7 @@ class MainActivity : ComponentActivity() {
     private var receiverRegistered = false
     private var persistentReceiverRegistered = false
     private var permissionHistoryBeforePrompt = false
+    private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val permissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -1463,9 +1467,13 @@ class MainActivity : ComponentActivity() {
         }
         if (
             PersistentNearbyPermissionPolicy.requiresNotificationPermission(Build.VERSION.SDK_INT) &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(
+                PersistentNearbyPermissionPolicy.notificationPermission(),
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
-            notificationPermissionRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+            notificationPermissionRequest.launch(
+                PersistentNearbyPermissionPolicy.notificationPermission(),
+            )
             return
         }
         if (!PersistentNearbyPermissionPolicy.hasNotificationPermission(this)) {
@@ -1558,6 +1566,46 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun refreshWifiCapabilities() {
+        screenState = screenState.copy(
+            wifiCapabilities = AndroidWifiCapabilityProbe.probe(applicationContext),
+        )
+    }
+
+    private fun startWifiCapabilityMonitoring() {
+        if (wifiNetworkCallback != null) return
+        val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return
+        fun scheduleRefresh() {
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) refreshWifiCapabilities()
+            }
+        }
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = scheduleRefresh()
+            override fun onLost(network: Network) = scheduleRefresh()
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: android.net.NetworkCapabilities,
+            ) = scheduleRefresh()
+        }
+        try {
+            connectivityManager.registerDefaultNetworkCallback(callback)
+            wifiNetworkCallback = callback
+        } catch (_: RuntimeException) {
+            refreshWifiCapabilities()
+        }
+    }
+
+    private fun stopWifiCapabilityMonitoring() {
+        val callback = wifiNetworkCallback ?: return
+        wifiNetworkCallback = null
+        try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback)
+        } catch (_: RuntimeException) {
+            // The system may already have removed the callback during process teardown.
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
@@ -1577,11 +1625,14 @@ class MainActivity : ComponentActivity() {
         )
         persistentReceiverRegistered = true
         refreshReadiness()
+        refreshWifiCapabilities()
+        startWifiCapabilityMonitoring()
         restorePersistentNearbyMode()
     }
 
     override fun onResume() {
         super.onResume()
+        refreshWifiCapabilities()
         val permission = refreshReadiness()
         if (
             permission != DiscoveryPermissionState.GRANTED ||
@@ -1601,6 +1652,7 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(persistentStatusReceiver)
             persistentReceiverRegistered = false
         }
+        stopWifiCapabilityMonitoring()
         super.onStop()
     }
 
@@ -2055,6 +2107,15 @@ private fun NearbyReadinessScreen(
                     Text("Readiness", style = MaterialTheme.typography.titleMedium)
                     Text("Bluetooth permission: ${state.permission.label()}", style = MaterialTheme.typography.bodyMedium)
                     Text("Bluetooth: ${state.bluetooth.label()}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Wi-Fi upgrade capability (local device only)", style = MaterialTheme.typography.titleSmall)
+                    Text("Wi-Fi Aware: ${state.wifiCapabilities.aware.label()}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Wi-Fi Direct: ${state.wifiCapabilities.direct.label()}", style = MaterialTheme.typography.bodyMedium)
+                    Text("LAN interface: ${state.wifiCapabilities.lan.label()}", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "A local capability is not a reachable or authenticated peer path. No Wi-Fi data path is active; Bluetooth discovery remains the baseline only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Text(state.message, style = MaterialTheme.typography.bodyLarge)
                     if (state.scanning) {
                         Text(
@@ -2131,6 +2192,14 @@ private fun BluetoothReadiness.label(): String = when (this) {
     BluetoothReadiness.ADAPTER_UNAVAILABLE -> "No adapter"
     BluetoothReadiness.SCANNER_UNAVAILABLE -> "No BLE scanner"
     BluetoothReadiness.ACCESS_UNAVAILABLE -> "Status unavailable"
+}
+
+private fun WifiCapabilityState.label(): String = when (this) {
+    WifiCapabilityState.NOT_PROBED -> "Not probed"
+    WifiCapabilityState.AVAILABLE -> "Capability available locally"
+    WifiCapabilityState.TEMPORARILY_UNAVAILABLE -> "Temporarily unavailable"
+    WifiCapabilityState.PERMISSION_REQUIRED -> "Permission required"
+    WifiCapabilityState.UNSUPPORTED -> "Unsupported on this device"
 }
 
 private fun primaryLabel(state: NearbyScreenState): String = when {

@@ -23,6 +23,8 @@ import android.os.Looper
 internal object PersistentNearbyPermissionPolicy {
     fun requiresNotificationPermission(apiLevel: Int): Boolean =
         apiLevel >= Build.VERSION_CODES.TIRAMISU
+    @SuppressLint("InlinedApi")
+    fun notificationPermission(): String = Manifest.permission.POST_NOTIFICATIONS
 
     @SuppressLint("InlinedApi")
     fun hasNotificationPermission(context: Context): Boolean {
