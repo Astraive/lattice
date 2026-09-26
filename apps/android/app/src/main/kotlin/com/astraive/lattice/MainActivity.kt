@@ -33,6 +33,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -69,8 +71,15 @@ internal enum class BluetoothReadiness {
     SCANNER_UNAVAILABLE,
     ACCESS_UNAVAILABLE,
 }
+internal enum class NearbyDestination {
+    IDENTITY,
+    SPACES,
+    DIAGNOSTICS,
+}
 
 internal data class NearbyScreenState(
+    val destination: NearbyDestination = NearbyDestination.IDENTITY,
+    val selectedSpaceKey: String? = null,
     val permission: DiscoveryPermissionState = DiscoveryPermissionState.NOT_REQUESTED,
     val bluetooth: BluetoothReadiness = BluetoothReadiness.PERMISSION_REQUIRED,
     val scanning: Boolean = false,
@@ -218,6 +227,14 @@ class MainActivity : ComponentActivity() {
                 NearbyReadinessScreen(
                     state = screenState,
                     permissionRationale = permissionRationaleText(),
+                    destination = screenState.destination,
+                    selectedSpaceKey = screenState.selectedSpaceKey,
+                    onDestinationSelected = { destination ->
+                        screenState = screenState.copy(destination = destination)
+                    },
+                    onOpenLocalSpace = { spaceKey ->
+                        screenState = screenState.copy(selectedSpaceKey = spaceKey)
+                    },
                     onPrimaryAction = ::onPrimaryAction,
                     onPersistentNearbyAction = ::onPersistentNearbyAction,
                     onDismissRationale = { screenState = screenState.copy(showPermissionRationale = false) },
@@ -1876,6 +1893,10 @@ internal fun ByteArray.toLowerHex(): String {
 private fun NearbyReadinessScreen(
     state: NearbyScreenState,
     permissionRationale: String,
+    destination: NearbyDestination,
+    selectedSpaceKey: String?,
+    onDestinationSelected: (NearbyDestination) -> Unit,
+    onOpenLocalSpace: (String?) -> Unit,
     onPrimaryAction: () -> Unit,
     onPersistentNearbyAction: () -> Unit,
     onDismissRationale: () -> Unit,
@@ -1911,21 +1932,33 @@ private fun NearbyReadinessScreen(
     onCancelMessageEdit: (String) -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 32.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.Top,
-        ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            PrimaryTabRow(selectedTabIndex = destination.ordinal) {
+                NearbyDestination.entries.forEach { page ->
+                    Tab(
+                        selected = destination == page,
+                        onClick = { onDestinationSelected(page) },
+                        text = { Text(page.label()) },
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 32.dp),
+                verticalArrangement = Arrangement.Top,
+            ) {
             Text("Lattice", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Nearby",
+                destination.label(),
                 modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.headlineLarge,
             )
             Spacer(Modifier.height(20.dp))
+            if (destination == NearbyDestination.IDENTITY) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,
@@ -2021,6 +2054,8 @@ private fun NearbyReadinessScreen(
                 }
             }
             Spacer(Modifier.height(20.dp))
+            }
+            if (destination == NearbyDestination.SPACES) {
             SpaceCreationCard(
                 state = state.spaceCreation,
                 profileReady = state.profileStatus == "Protected local identity is available on this device.",
@@ -2066,20 +2101,54 @@ private fun NearbyReadinessScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(state.localSpacesStatus, style = MaterialTheme.typography.bodyMedium)
-                    state.localSpaces.forEachIndexed { index, space ->
-                        Text("Local Genesis snapshot ${index + 1}", style = MaterialTheme.typography.titleSmall)
+                    val selectedSpace = selectedSpaceKey?.let { key ->
+                        state.localSpaces.firstOrNull { localSpaceKey(it) == key }
+                    }
+                    if (selectedSpaceKey != null && selectedSpace == null) {
+                        Text("The selected Space is not in the current local page.")
+                        Button(onClick = { onOpenLocalSpace(null) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Back to local Spaces")
+                        }
+                    } else if (selectedSpace == null) {
+                        state.localSpaces.forEachIndexed { index, space ->
+                            Text("Local Genesis snapshot ${index + 1}", style = MaterialTheme.typography.titleSmall)
+                            SelectionContainer {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Space ID: ${space.spaceId.toLowerHex()}", style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        "Generation group reference: ${space.groupReference.toLowerHex()}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = { onOpenLocalSpace(localSpaceKey(space)) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Open channels for local Space ${index + 1}")
+                            }
+                        }
+                    } else {
+                        val spaceKey = localSpaceKey(selectedSpace)
+                        Button(onClick = { onOpenLocalSpace(null) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Back to local Spaces")
+                        }
+                        Text(
+                            "Local Space channels",
+                            modifier = Modifier.semantics { heading() },
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Space ID: ${space.spaceId.toLowerHex()}", style = MaterialTheme.typography.bodySmall)
+                                Text("Space ID: ${selectedSpace.spaceId.toLowerHex()}", style = MaterialTheme.typography.bodySmall)
                                 Text(
-                                    "Generation group reference: ${space.groupReference.toLowerHex()}",
+                                    "Generation group reference: ${selectedSpace.groupReference.toLowerHex()}",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
                         }
-                        val spaceKey = localSpaceKey(space)
                         SpaceMessageComposer(
-                            channels = space.channels,
+                            channels = selectedSpace.channels,
                             state = state.messageComposers[spaceKey] ?: LocalMessageComposerState(),
                             profileReady = state.profileStatus == "Protected local identity is available on this device.",
                             onCredentialVectorHexChanged = { onMessageCredentialHexChanged(spaceKey, it) },
@@ -2112,7 +2181,9 @@ private fun NearbyReadinessScreen(
                 onRecover = onRecoverLocalSpace,
             )
             Spacer(Modifier.height(20.dp))
+            }
 
+            if (destination == NearbyDestination.DIAGNOSTICS) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,
@@ -2188,7 +2259,9 @@ private fun NearbyReadinessScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            }
         }
+    }
     }
 
     if (state.showPermissionRationale) {
@@ -2205,6 +2278,12 @@ private fun NearbyReadinessScreen(
             dismissButton = { TextButton(onClick = onDismissRationale) { Text("Not now") } },
         )
     }
+}
+
+private fun NearbyDestination.label(): String = when (this) {
+    NearbyDestination.IDENTITY -> "Identity"
+    NearbyDestination.SPACES -> "Spaces"
+    NearbyDestination.DIAGNOSTICS -> "Diagnostics"
 }
 
 private fun DiscoveryPermissionState.label(): String = when (this) {
