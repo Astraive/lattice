@@ -23,7 +23,7 @@ The local file composer opens the operating-system picker, retains a profile-loc
 
 Tauri security boundary and local content rendering are reviewed separately from Rust protocol correctness. A persistent desktop helps availability but never becomes mandatory for a Space.
 
-The Windows host Tauri build (`bun run tauri build --no-bundle`) succeeds and the executable starts. `bun run tauri build` produced the configured MSI and NSIS installer bundles. End-to-end recovery submission against an initialized profile remains unverified.
+On Windows, `bun run tauri build --no-bundle` reruns the TypeScript/Vite production build and produces `target/release/lattice-desktop.exe`. Five focused Rust tests reproduce and verify the identity-bundle, MLS group-reference, canonical-CBOR, signed-event, and Space Welcome vector outputs. `bun run tauri build` produced the configured MSI and NSIS installer bundles in the earlier packaging run. End-to-end recovery submission against an initialized profile remains unverified.
 
 ## Process and security boundary
 
