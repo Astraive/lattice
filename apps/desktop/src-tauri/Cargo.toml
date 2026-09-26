@@ -17,6 +17,9 @@ tauri-build = { version = "=2.6.3", features = [] }
 tauri = { version = "=2.11.6", features = [] }
 lattice-core = { path = "../../../crates/lattice-core" }
 lattice-platform = { path = "../../../crates/lattice-platform" }
+lattice-relay = { path = "../../../crates/lattice-relay" }
+if-addrs = "=0.13.4"
+
 serde = { version = "1", features = ["derive"] }
 directories = "=6.0.0"
 base64 = "=0.22.1"

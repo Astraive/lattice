@@ -610,3 +610,137 @@ footer {
     transition-duration: 0.01ms;
   }
 }
+
+.local-network-settings {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.local-network-settings .section-heading {
+  align-items: center;
+  padding-bottom: 16px;
+}
+
+.local-network-settings .section-heading h3,
+.relay-settings-heading h4,
+.relay-settings-heading p {
+  margin: 0;
+}
+
+.local-network-settings .section-heading h3 {
+  font-size: 1.1rem;
+}
+
+.local-network-settings .section-heading > button {
+  flex: 0 0 auto;
+}
+
+.local-path-status,
+.relay-settings {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--surface-raised);
+}
+
+.local-path-status {
+  display: grid;
+  gap: 7px;
+}
+
+.local-path-status strong,
+.relay-settings-heading > span {
+  color: var(--accent);
+  font-size: 0.86rem;
+}
+
+.local-path-status span,
+.relay-settings-heading p,
+.local-network-settings .relay-settings-form > small,
+.relay-settings > p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.relay-settings {
+  margin-top: 12px;
+}
+
+.relay-settings-heading,
+.relay-settings-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relay-settings-heading {
+  margin-bottom: 16px;
+}
+
+.relay-settings-heading h4 {
+  font-size: 0.95rem;
+}
+
+.relay-settings-form {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-settings-form label {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.relay-settings-form > div {
+  display: flex;
+  gap: 8px;
+}
+
+.relay-settings-form input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: inherit;
+  background: var(--surface);
+}
+
+.local-network-settings .relay-settings-form > small {
+  display: block;
+}
+
+.relay-settings-list {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.relay-settings-list li {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.relay-settings-list code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 600px) {
+  .relay-settings-form > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-settings-list li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

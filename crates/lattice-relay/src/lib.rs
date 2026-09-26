@@ -6,6 +6,8 @@
 //! acceptance never represents recipient delivery. Envelope IDs and inner
 //! event IDs are distinct.
 
+pub mod settings;
+
 pub mod network;
 pub mod nip01;
 pub mod nip11;

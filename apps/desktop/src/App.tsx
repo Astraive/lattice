@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 import { PeerIdentityPinPanel } from "./features/identity/PeerIdentityPinPanel";
+import { LocalNetworkSettings } from "./features/network/LocalNetworkSettings";
 import { LocalSpaceBrowser } from "./features/spaces/LocalSpaceBrowser";
 import { LocalSpaceCreator } from "./features/spaces/LocalSpaceCreator";
 import "./App.css";
@@ -22,9 +23,9 @@ const stack = [
     detail: "Queues locally authorized text and edits to the durable outbox; no network delivery",
   },
   {
-    label: "Desktop discovery",
-    state: "Not enabled",
-    detail: "No nearby or LAN transport is active on desktop",
+    label: "Local LAN readiness",
+    state: "Local-only scan",
+    detail: "Reports non-loopback IP availability; peers and relays are not contacted.",
   },
 ] as const;
 
@@ -200,6 +201,7 @@ function App() {
             identityReady={identity !== null}
           />
           <LocalSpaceBrowser runtimeAvailable={runtimeAvailable} />
+          <LocalNetworkSettings runtimeAvailable={runtimeAvailable} />
         </section>
       </main>
 

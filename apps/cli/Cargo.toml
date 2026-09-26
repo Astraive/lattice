@@ -28,11 +28,10 @@ lattice-router = { path = "../../crates/lattice-router" }
 lattice-sync = { path = "../../crates/lattice-sync" }
 lattice-mesh = { path = "../../crates/lattice-mesh" }
 openmls = "=0.9.0"
-sha2 = "=0.10.9"
 tokio = { version = "=1.53.1", features = ["net", "rt", "time"] }
 tokio-util = { version = "=0.7.19", features = ["rt"] }
-url = "=2.5.8"
 if-addrs = "=0.13.4"
+
 
 [lints]
 workspace = true

@@ -17,6 +17,8 @@ For MSG-011, desktop offline search invokes Core to scan every locally retained 
 
 The Spaces browser also imports a versioned Welcome bootstrap through `import_local_space_welcome_bootstrap`. It accepts a bounded hexadecimal package, exact inviter fingerprint, and X.509 credential, and requires that inviter to be pinned in the protected profile. The result is local signed policy-checkpoint state; no relay is contacted, and general historical-event replay or delivery is not claimed.
 
+The Connectivity panel reports only whether the host exposes a non-loopback IP address; it does not enumerate interfaces, scan peers, or test reachability. Optional `wss://` relay URLs are validated and persisted in the same profile settings used by the CLI. Adding or removing a URL does not contact the relay or activate relay transport.
+
 Tauri security boundary and local content rendering are reviewed separately from Rust protocol correctness. A persistent desktop helps availability but never becomes mandatory for a Space.
 
 The Windows host Tauri build (`bun run tauri build --no-bundle`) succeeds and the executable starts. `bun run tauri build` produced the configured MSI and NSIS installer bundles. End-to-end recovery submission against an initialized profile remains unverified.

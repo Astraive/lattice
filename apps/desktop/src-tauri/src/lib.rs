@@ -1,6 +1,9 @@
 mod encoding;
 mod identity;
+mod local_network;
 mod profile;
+mod relay_settings;
+
 mod spaces;
 
 /// Starts the native Lattice desktop process.
@@ -25,7 +28,11 @@ pub fn run() {
             spaces::search_local_text_messages,
             identity::pin_peer_identity,
             identity::get_pinned_identity,
-            identity::unpin_peer_identity
+            identity::unpin_peer_identity,
+            local_network::scan_local_path_capabilities,
+            relay_settings::list_local_relays,
+            relay_settings::add_local_relay,
+            relay_settings::remove_local_relay
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Lattice desktop application");
