@@ -1,0 +1,26 @@
+# Cross-client interoperability matrix
+
+`VERIFIED` means the sender produced a real Lattice event and the receiver consumed it through its normal authenticated Core/sync path. Compile success, unit tests, or direct database insertion do not count. Final states are `VERIFIED`, `BLOCKED-EXTERNAL`, or `FAILED`; `BLOCKED-EXTERNAL` names a missing environment prerequisite, while `FAILED` means the required client capability is absent or acceptance is unmet.
+
+| Sender | Receiver | Required | Result | Evidence / blocker |
+| --- | --- | --- | --- | --- |
+| Android | Android | Yes | BLOCKED-EXTERNAL | Physical devices and offline BLE exchange unavailable; procedure in [physical acceptance](PHYSICAL_ANDROID_ACCEPTANCE.md). |
+| Android | Desktop | Yes | BLOCKED-EXTERNAL | No live Android peer; Desktop application event consumption is not established. |
+| Android | CLI | Yes | BLOCKED-EXTERNAL | No Android runtime/device and no demonstrated Android-to-CLI path. |
+| Android | Web | Yes | FAILED | The Web local profile does not expose a browser-to-native carrier; Android physical hardware is also unavailable. |
+| Desktop | Android | Yes | BLOCKED-EXTERNAL | No Android peer runtime. |
+| Desktop | Desktop | Yes | BLOCKED-EXTERNAL | `sync_local_space_once` and Core event acceptance compile; no two-profile process exchange was run because the available WebView control and inspector routes failed. |
+| Desktop | CLI | Yes | BLOCKED-EXTERNAL | Desktop has a bounded v2/Core path; no Desktop↔CLI process exchange was run because the available WebView control and inspector routes failed. |
+| Desktop | Web | Yes | FAILED | The experimental Web path only exchanges events through same-origin open tabs; no Desktop↔Web transport or process exchange is implemented. |
+| CLI | Android | Yes | BLOCKED-EXTERNAL | No Android runtime/device and no demonstrated Android-to-CLI path. |
+| CLI | Desktop | Yes | BLOCKED-EXTERNAL | Desktop has a bounded v2/Core path; no CLI↔Desktop process exchange was run because the available WebView control and inspector routes failed. |
+| CLI | CLI | Yes | VERIFIED | Two independently persisted CLI processes exchanged authenticated Space events; exact scenario in quality-ledger audit run log. |
+| CLI | Web | Yes | VERIFIED | Managed Chromium joined a CLI-created Space through the normal KeyPackage/Welcome flow. Over one-session loopback WebSocket sessions, the CLI event `624d899b127f2bec1d5bfee7469140e5a8ebd270674a86b5a50a3bd1cf56d5d5` appeared in browser Core history; the browser-originated event is recorded in the paired run below. |
+| Web | Android | Yes | FAILED | The experimental Web path has no Android carrier; physical Android acceptance is separately blocked by unavailable hardware. |
+| Web | Desktop | Yes | FAILED | No Desktop↔Web carrier or process exchange is implemented. |
+| Web | CLI | Yes | VERIFIED | Browser event `ae4683759251019b58ccfbb542d14063e78bcbb6e7d7cee6e1b9bb77582704a5` was accepted by CLI Core and decrypted in CLI history. This verifies only the exact HTTP-origin-pinned `ws://` loopback path, not HTTPS, Internet, Desktop or Android. |
+| Web | Web | Yes | VERIFIED | Two independent OPFS profiles in managed Chromium joined the same Space using an offline signed Welcome after explicit out-of-band inviter fingerprint pinning; same-origin BroadcastChannel carried signed MLS events through Core acceptance in both directions. Event IDs: Alice→Bob `3e1d267865cc7be0cddba2585d16bf15592395e185e132dbb23bebc0135c5a61`; Bob→Alice `092d4d513100b1d6b1f0e745f31e6853e946abd9e3a1e673a2b4d9fe266fe09a`. Both histories and identities persisted after full page reload and profile reopen. A separate smoke disabled BroadcastChannel, exchanged SDP manually, and observed WebRTC-carried event frames pass Core validation; ICE restart triggered bounded reconciliation of one 476-byte event. Exact WebRTC event ID was not captured, and the event was already in the receiver history, so this is transport/replay evidence, not first-time event projection, WAN reachability, or cross-client proof. |
+
+## Acceptance record fields
+
+For each future run, retain separate identities/profile directories and capture revision, runtime versions, Space, selected transport, event ID, sender result, receiver result, signature and authorization outcomes, durable state, restart result, and raw logs with private material redacted. Do not upgrade a row based on independent client tests.

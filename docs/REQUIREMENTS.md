@@ -2,7 +2,7 @@
 
 **Status:** proposed v0.1. “Shall” denotes desired behavior for the indicated release; it does not assert implementation. Each requirement has a stable ID and a concrete pass condition. `M0`–`M8` refer to [PLAN.md](PLAN.md).
 
-**Current delivery scope:** Android, desktop and CLI. iOS is excluded from implementation, verification, release gates and support claims. Stable IDs MOB-004 and MOB-005 are retired for this scope; their retained iOS design material is reference only.
+**Current delivery scope:** Android, desktop and CLI. A browser Web client is an additional required target for this work, but it is proposed and unsupported until its security, storage and interoperability gates pass. iOS remains excluded from implementation, verification, release gates and support claims. Stable IDs MOB-004 and MOB-005 are retired for this scope; their retained iOS design material is reference only.
 
 ## ID registry
 
@@ -18,6 +18,7 @@
 | `MOB` | Native Android behavior | [mobile.md](features/mobile.md) | MOB-001–MOB-011 |
 | `DSK` | Desktop | [desktop.md](features/desktop.md) | DSK-001–DSK-007 |
 | `CLI` | CLI and node | [cli.md](features/cli.md) | CLI-001–CLI-011 |
+| `WEB` | Browser client | [web.md](features/web.md) | WEB-001–WEB-009 |
 
 IDs are never renumbered. A row is one independently testable requirement; amend the row and history when semantics change. Status values: **proposed**, **blocked**, **implemented**, **verified**, **retired**. New active rows begin proposed unless explicitly blocked; retired rows are excluded from current release acceptance. `M0`–`M2` prototype work does not make the wider v1 profile stable.
 

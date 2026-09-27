@@ -1,0 +1,16 @@
+# Transport behavior matrix
+
+A transport is an opaque carrier; it does not establish message delivery, authorization, or authoritative state. Rows separate component evidence from a live product path.
+
+| Transport/path | Implemented surface | Runtime evidence | Status / limitation |
+| --- | --- | --- | --- |
+| Authenticated CLI direct TCP sync | CLI/Node v2 session and Core acceptance | Two-process CLI reconciliation passed; quality-ledger run log | VERIFIED for recorded CLI path. |
+| Desktop direct sync / peer courier | Bounded authenticated v2 sync command with Core event acceptance; persistent courier remains a separate opaque-envelope path | Rust command compile and frontend production build passed; no Desktop sync session was run | UNVERIFIED as an application-messaging path until a real peer event is accepted and projected. |
+| Android BLE | Candidate experimental profile and mobile adapter work tracked | No physical offline Android pair test available; current workstation lacks Android devices/adb | BLOCKED-EXTERNAL for physical acceptance; scanner is not messaging. |
+| Router path negotiation/health | Rust component APIs | Unit suites only; no production route/health/negotiation callsite found in source audit | Not an integrated transport selector. |
+| Courier over TCP | Storage queue and authenticated one-hop transfer | Local queue and one-hop transfer tests passed | Single-hop only; source row may be consumed before transfer succeeds; multi-hop unverified. |
+| Relay mailbox | Codec, protocol validation and client primitives | Parser/unit tests; no product publish/retrieve callsite | Not a working relay-backed receive path. |
+| Browser event carrier | `apps/web` worker; same-origin BroadcastChannel, manually signaled WebRTC, and one-session loopback WebSocket to CLI | Managed Chromium: BroadcastChannel and WebRTC profile paths passed; a separate native CLI profile and Web profile exchanged one Core-accepted MLS event in each direction over exact-Origin/token-paired `ws://` loopback sessions. CLI received browser event `ae4683759251019b58ccfbb542d14063e78bcbb6e7d7cee6e1b9bb77582704a5`; browser projected CLI event `624d899b127f2bec1d5bfee7469140e5a8ebd270674a86b5a50a3bd1cf56d5d5`. | VERIFIED for exercised browser-local and Web↔CLI loopback paths only. No TLS/WSS, HTTPS page support, WAN/NAT/TURN, Desktop/Android interop, delivery receipts, or other-browser evidence. |
+| Shared OPFS SQLite | `lattice_mls::api::install_browser_opfs_vfs_for_profile` and Web worker | LLVM clang-enabled production WASM build; managed Chromium simultaneously opened distinct profile directories and persisted identity, Space and messages through reload/reopen. | VERIFIED for the exercised profile path; crash recovery, quota handling, same-profile locks and supported-browser matrix remain unverified. |
+
+Future transport tests must record capability negotiation, authenticated peer identity, path loss, reconnect, queue behavior, event identity preservation, and the receiver's normal Core authorization result.
