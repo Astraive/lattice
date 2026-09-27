@@ -107,8 +107,8 @@
     {
       "id": "desktop-client",
       "capability": "Desktop identity, Space/message UI, local paths and bounded sync",
-      "status": "BLOCKED-EXTERNAL",
-      "acceptance_boundary": "Sync/Core command compiles; Desktop process acceptance could not run because WebView input and inspector routes failed."
+      "status": "FAILED",
+      "acceptance_boundary": "A real Tauri Desktop profile accepted and projected one CLI-authored signed MLS event, and CLI accepted one Desktop-authored event in the same authenticated v2 round. A later membership event was rejected as WrongEventKind; Desktop-to-Desktop, membership convergence and restart acceptance remain unmet."
     },
     {
       "id": "desktop-theme",
@@ -197,12 +197,12 @@
       "requirements": ["desktop", "sync"],
       "implementation_files": ["apps/desktop"],
       "clients": ["Desktop", "Desktop"],
-      "tested_path": "A bounded authenticated v2 Desktop sync command validates scoped signed events and routes them through Core acceptance; no runtime event exchange has been exercised.",
-      "command_or_scenario": "Source review plus cargo check -p lattice-desktop and bun run build in apps/desktop; no two-Desktop process scenario.",
-      "result": "implementation compiles; real Desktop application-event receipt not run",
-      "evidence": ["docs/quality/FEATURE_LEDGER.md"],
+      "tested_path": "A same-Space two-Desktop attempt did not complete an event exchange: after a later CLI membership transition, the earlier Desktop Core profile rejected the synchronized event as WrongEventKind.",
+      "command_or_scenario": "Two isolated Tauri profiles joined from CLI-issued Welcomes; `sync_local_space_once` after the second join returned `Core rejected synchronized event: Space message rejected: Rejected(WrongEventKind)`.",
+      "result": "No Desktop-to-Desktop application event exchange; membership-event propagation failed before reciprocal peer acceptance.",
+      "evidence": ["docs/verification/INTEROP_MATRIX.md", "docs/verification/KNOWN_BLOCKERS.md"],
       "status": "FAILED",
-      "scope_note": "Courier acceptance of an opaque envelope does not satisfy message-event delivery."
+      "scope_note": "This failure is distinct from the verified one-round Desktop↔CLI text exchange; the two Desktop profiles did not reach a shared current MLS state."
     },
     {
       "id": "interop-desktop-cli",
@@ -210,12 +210,12 @@
       "requirements": ["desktop", "cli", "sync"],
       "implementation_files": ["apps/desktop", "apps/cli"],
       "clients": ["Desktop", "CLI"],
-      "tested_path": "Desktop exposes the bounded authenticated v2/Core event path; interoperability with CLI has not been exercised.",
-      "command_or_scenario": "Source review plus cargo check -p lattice-desktop and bun run build in apps/desktop; no Desktop/CLI process scenario.",
-      "result": "no real Desktop/CLI application event exchange observed",
-      "evidence": ["docs/quality/FEATURE_LEDGER.md"],
-      "status": "FAILED",
-      "scope_note": "FAILED means the required process-level acceptance remains unmet; compile success is not interop proof."
+      "tested_path": "A real Tauri Desktop process and an independent CLI process exchanged one signed MLS text event in each direction over the authenticated v2 TCP sync path, with independently persisted profiles and reciprocal identity pins.",
+      "command_or_scenario": "CLI `sync reconcile` ran concurrently with the Desktop UI `sync_local_space_once` command in Space `b8eff9b22db2a68cb9e943d62f6beb1a`. Desktop accepted CLI event `47091a8214ed502c8d7d0c314d07112e3d10a9c1fdf431d3782fc29fc447eef5`; CLI accepted Desktop event `893999d4d8e6e6f24255339468d7e61ee2307bb0ffaeac5c3d652e9aad9fbcdb`; both decrypted histories contained both texts.",
+      "result": "The Desktop one-round operation completed and both clients retained both events; the CLI's subsequent reconciliation round ended `transport_failure` after the Desktop one-shot process closed.",
+      "evidence": ["docs/verification/INTEROP_MATRIX.md", "docs/verification/EVIDENCE_INDEX.md"],
+      "status": "VERIFIED",
+      "scope_note": "Verifies exactly one authenticated reciprocal application-event round. Does not prove convergence, retries, delivery receipts, restart, Android, Web, or Desktop↔Desktop."
     },
     {
       "id": "core-openmls-transaction",
