@@ -1,6 +1,7 @@
 package com.astraive.lattice
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -33,5 +34,18 @@ class BleExp0AdvertisementTest {
             return
         }
         error("invalid exp0 token length was accepted")
+    }
+
+    @Test
+    fun gattProfileUuidAssignmentsMatchTheExperimentalProfile() {
+        assertEquals("1c9a0000-7d31-4f6a-9b43-4c4154544943", BleExp0GattProfile.serviceUuid.toString())
+        assertEquals("1c9a0002-7d31-4f6a-9b43-4c4154544943", BleExp0GattProfile.controlUuid.toString())
+        assertEquals("1c9a0003-7d31-4f6a-9b43-4c4154544943", BleExp0GattProfile.rxUuid.toString())
+        assertEquals("1c9a0004-7d31-4f6a-9b43-4c4154544943", BleExp0GattProfile.txUuid.toString())
+        assertEquals(
+            "1c9a0005-7d31-4f6a-9b43-4c4154544943",
+            BleExp0GattProfile.capabilitiesUuid.toString(),
+        )
+        assertEquals("1c9a0006-7d31-4f6a-9b43-4c4154544943", BleExp0GattProfile.upgradeUuid.toString())
     }
 }

@@ -72,6 +72,11 @@ internal class NearbyBleAdvertiser(
         synchronized(lock) { stopLocked() }
     }
 
+    /** Returns a connection-local copy of the current token, never the mutable advertiser buffer. */
+    fun activeTokenSnapshot(): ByteArray? = synchronized(lock) {
+        if (!running) null else activeToken?.copyOf()
+    }
+
     @SuppressLint("MissingPermission")
     private fun startAdvertisingLocked(
         leAdvertiser: BluetoothLeAdvertiser,

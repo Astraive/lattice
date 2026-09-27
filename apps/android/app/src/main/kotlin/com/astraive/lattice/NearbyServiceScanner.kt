@@ -1,6 +1,7 @@
 package com.astraive.lattice
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
@@ -14,11 +15,19 @@ import android.os.ParcelUuid
 import android.os.SystemClock
 import android.util.Base64
 
-/** Scans only valid exp0 service-data tokens and never reads or retains device addresses. */
+/** Retained only in memory for an explicit user-selected exp0 GATT connection. */
+internal data class BleExp0PeerCandidate(
+    val selectionId: Int,
+    val device: BluetoothDevice,
+    val responderToken: ByteArray,
+)
+
+/** Scans valid exp0 service tokens and retains ephemeral OS handles only until token expiry. */
 internal class NearbyServiceScanner(
     context: Context,
     private val onSightingsChanged: (Int) -> Unit,
     private val onFailure: (String) -> Unit,
+    private val onCandidatesChanged: (List<BleExp0PeerCandidate>) -> Unit = {},
 ) {
     enum class StartResult {
         STARTED,
@@ -35,6 +44,14 @@ internal class NearbyServiceScanner(
     private var callback: ScanCallback? = null
     private var running = false
     private val sightings = BleExp0SightingCache()
+    private data class Candidate(
+        val selectionId: Int,
+        val device: BluetoothDevice,
+        val token: ByteArray,
+        val firstSeenAt: Long,
+    )
+    private val candidates = LinkedHashMap<String, Candidate>()
+    private var nextSelectionId = 1
     private val expiryHandler = Handler(Looper.getMainLooper())
     private val expiryTask = Runnable { expireSightings() }
 
@@ -132,31 +149,59 @@ internal class NearbyServiceScanner(
             result.scanRecord?.getServiceData(SERVICE_DATA_UUID),
         ) ?: return
         val key = Base64.encodeToString(token, Base64.NO_WRAP)
-        token.fill(0)
         val now = SystemClock.elapsedRealtime()
-        val newCount = synchronized(lock) {
-            if (!running || !sightings.remember(key, now)) return
-            scheduleExpiryLocked(now)
-            sightings.size
+        val update = synchronized(lock) {
+            try {
+                if (!running) return
+                pruneCandidatesLocked(now)
+                if (candidates.containsKey(key) || !sightings.remember(key, now)) return
+                if (nextSelectionId == Int.MAX_VALUE) return
+                candidates[key] = Candidate(nextSelectionId++, result.device, token.copyOf(), now)
+                scheduleExpiryLocked(now)
+                Pair(sightings.size, candidateSnapshotLocked())
+            } finally {
+                token.fill(0)
+            }
         }
-        onSightingsChanged(newCount)
+        onSightingsChanged(update.first)
+        onCandidatesChanged(update.second)
     }
 
     private fun clearSession() {
         expiryHandler.removeCallbacks(expiryTask)
         sightings.clear()
+        candidates.values.forEach { it.token.fill(0) }
+        candidates.clear()
+        onCandidatesChanged(emptyList())
     }
 
     private fun expireSightings() {
-        val count = synchronized(lock) {
+        val update = synchronized(lock) {
             if (!running) return
             val now = SystemClock.elapsedRealtime()
             val currentCount = sightings.expire(now)
+            pruneCandidatesLocked(now)
             scheduleExpiryLocked(now)
-            currentCount
+            Pair(currentCount, candidateSnapshotLocked())
         }
-        onSightingsChanged(count)
+        onSightingsChanged(update.first)
+        onCandidatesChanged(update.second)
     }
+
+    private fun pruneCandidatesLocked(nowMillis: Long) {
+        val iterator = candidates.entries.iterator()
+        while (iterator.hasNext()) {
+            val candidate = iterator.next().value
+            if (nowMillis - candidate.firstSeenAt >= BleExp0Advertisement.TOKEN_ROTATION_MILLIS) {
+                candidate.token.fill(0)
+                iterator.remove()
+            }
+        }
+    }
+
+    private fun candidateSnapshotLocked(): List<BleExp0PeerCandidate> =
+        candidates.values.map { BleExp0PeerCandidate(it.selectionId, it.device, it.token.copyOf()) }
+
 
     private fun scheduleExpiryLocked(nowMillis: Long) {
         expiryHandler.removeCallbacks(expiryTask)
