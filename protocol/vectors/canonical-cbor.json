@@ -40,19 +40,13 @@
       },
       {
         "name": "array",
-        "value": [
-          "1",
-          "a"
-        ],
+        "value": ["1", "a"],
         "hex": "82016161"
       },
       {
         "name": "ordered-integer-map",
         "value": [
-          [
-            "0",
-            true
-          ],
+          ["0", true],
           [
             "10",
             {

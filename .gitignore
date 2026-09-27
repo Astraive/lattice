@@ -22,6 +22,7 @@ captures/
 apps/android/app/src/main/jniLibs/
 
 apps/desktop/src-tauri/gen/
+apps/web/src/wasm/
 
 # Environment and logs
 .env

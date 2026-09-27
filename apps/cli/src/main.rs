@@ -5,6 +5,7 @@ mod peer;
 mod relay;
 mod space;
 mod sync;
+mod web_sync;
 
 use identity::{
     IdentityCommand, certificate_request_pem, print_pinned_identity, write_certificate_request_pem,

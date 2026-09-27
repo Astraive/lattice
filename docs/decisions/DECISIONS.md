@@ -8,7 +8,7 @@ This index tracks accepted decisions and unresolved choices. Each accepted choic
 | ADR-002 | Does channel privacy include read confidentiality from other Space members? | Accepted policy-only channel access; read-private channel types are unsupported. | SPC-011, LAT-003 | Accepted; implementation evidence pending |
 | ADR-003 | Relay kind, tags, outer identity, expiration/size and backfill | Accepted Nostr mailbox candidate with stable per-generation tag; no interop or deletion claim. | NET-010 | Candidate accepted; two-relay evidence pending |
 | ADR-004 | Snapshot provenance, compaction, retention and history recovery | Retain dependencies; surface gaps rather than accepting unverifiable snapshot. | MSG-011, LAT-007 | M8 |
-| ADR-005 | Rotating BLE advertisement/rendezvous token design | Avoid stable app identity, but do not claim anonymity/unlinkability. | NET-001, LAT-010 | M2/M8 |
+| ADR-005 | Experimental BLE discovery, identity binding, and bounded framing | Candidate exp0 rules; rotating discovery token, explicit identity pinning, and no anonymity/unlinkability claim. | NET-001–002, MOB-003, LAT-010 | Candidate recorded; privacy, implementation, and physical interoperability evidence pending |
 | ADR-006 | One human on multiple devices and key recovery | Each installation is a separate v1 MLS member. | IDN-006 | After v1 |
 | ADR-007 | Room topology and future SFU trust | Small measured peer topology only; no unlimited conference. | VOC-008 | M6/M8 |
 

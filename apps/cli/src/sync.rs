@@ -1,5 +1,6 @@
 use std::{error::Error, io, net::SocketAddr, path::Path, time::Duration};
 
+use super::web_sync;
 use clap::Subcommand;
 use lattice_core::{Client, CoreError};
 use lattice_events::VerifiedSignatureOnlyEvent;
@@ -9,7 +10,7 @@ use lattice_node::sync::{
     execute_authenticated_sync_v2_once, serve_authenticated_sync_v2_once,
     space_generation_scope_id,
 };
-use lattice_platform::{MAX_EVENT_BYTES, OsKeyringProtector};
+use lattice_platform::{MAX_ENVELOPE_BYTES, OsKeyringProtector};
 use lattice_router::EventDeduplicator;
 use lattice_storage::{MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_PAGE_SIZE, OutboxState, Store};
 use lattice_sync::{
@@ -80,6 +81,21 @@ pub(super) enum SyncCommand {
         #[arg(long)]
         peer_fingerprint: String,
     },
+    /// Accept one bounded local browser event reconciliation over a loopback WebSocket.
+    WebServeOnce {
+        /// Loopback TCP endpoint to bind, for example `127.0.0.1:7448`.
+        #[arg(long)]
+        listen: SocketAddr,
+        /// Exact local browser Origin, for example `http://127.0.0.1:1430`.
+        #[arg(long)]
+        allow_origin: String,
+        /// Space ID as 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// MLS group reference as 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+    },
 }
 
 pub(super) fn validate_command(command: &SyncCommand) -> Result<(), String> {
@@ -115,6 +131,20 @@ pub(super) fn validate_command(command: &SyncCommand) -> Result<(), String> {
             super::parse_fixed_hex::<16>(space_id, "space ID")?;
             super::parse_fixed_hex::<32>(group_reference, "group reference")?;
             super::parse_fixed_hex::<32>(peer_fingerprint, "peer fingerprint")?;
+            Ok(())
+        }
+        SyncCommand::WebServeOnce {
+            listen,
+            allow_origin,
+            space_id,
+            group_reference,
+        } => {
+            if !listen.ip().is_loopback() {
+                return Err("Web sync listener must bind a loopback address".to_owned());
+            }
+            super::web_sync::validate_origin(allow_origin).map_err(|error| error.to_string())?;
+            super::parse_fixed_hex::<16>(space_id, "space ID")?;
+            super::parse_fixed_hex::<32>(group_reference, "group reference")?;
             Ok(())
         }
     }
@@ -177,6 +207,20 @@ pub(super) fn execute(
             protector,
             json,
         ),
+        SyncCommand::WebServeOnce {
+            listen,
+            allow_origin,
+            space_id,
+            group_reference,
+        } => web_sync::run(
+            *listen,
+            allow_origin,
+            space_id,
+            group_reference,
+            database_path,
+            protector,
+            json,
+        ),
     }
 }
 
@@ -214,6 +258,7 @@ struct FetchEventCounts {
     pending: usize,
     pending_dependency_ids: Vec<String>,
     duplicates: usize,
+    checkpoint_excluded: usize,
     retried_accepted: usize,
     retried_pending: usize,
     retried_duplicates: usize,
@@ -287,7 +332,7 @@ fn fetch_from_peer(
         .enable_all()
         .build()?;
     let adapter = runtime
-        .block_on(TcpPeerAdapter::connect(target.connect, MAX_EVENT_BYTES))
+        .block_on(TcpPeerAdapter::connect(target.connect, MAX_ENVELOPE_BYTES))
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
     let cancellation = CancellationToken::new();
     let pinned = runtime.block_on(client.with_pinned_identity(
@@ -378,6 +423,9 @@ fn accept_fetched_events(
                 );
             }
             lattice_core::SyncedApplicationOutcome::Duplicate { .. } => counts.duplicates += 1,
+            lattice_core::SyncedApplicationOutcome::CheckpointExcluded { .. } => {
+                counts.checkpoint_excluded += 1;
+            }
         }
     }
     Ok(counts)
@@ -412,9 +460,24 @@ fn accept_reconciliation_events(
                 counts.duplicates += 1;
                 counts.retried_duplicates += 1;
             }
+            lattice_core::SyncedApplicationOutcome::CheckpointExcluded { .. } => {
+                counts.checkpoint_excluded += 1;
+            }
         }
     }
     Ok(counts)
+}
+
+fn fetch_result_state(counts: &FetchEventCounts, rejected_events: usize) -> &'static str {
+    if rejected_events > 0 {
+        "event_rejected"
+    } else if counts.pending > 0 {
+        "pending_dependencies"
+    } else if counts.accepted + counts.duplicates + counts.checkpoint_excluded > 0 {
+        "event_received"
+    } else {
+        "unresolved"
+    }
 }
 
 fn print_fetch_result(
@@ -446,15 +509,7 @@ fn print_fetch_result(
         .map(|dependency| super::hex(dependency.as_bytes()))
         .collect::<Vec<_>>();
     if json {
-        let state = if rejected_events > 0 {
-            "event_rejected"
-        } else if counts.pending > 0 {
-            "pending_dependencies"
-        } else if counts.accepted + counts.duplicates > 0 {
-            "event_received"
-        } else {
-            "unresolved"
-        };
+        let state = fetch_result_state(counts, rejected_events);
         println!(
             "{}",
             serde_json::json!({
@@ -476,19 +531,21 @@ fn print_fetch_result(
                 "pending_dependency_ids": counts.pending_dependency_ids,
                 "pending_events": counts.pending,
                 "duplicate_events": counts.duplicates,
+                "checkpoint_excluded_events": counts.checkpoint_excluded,
                 "rejected_events": rejected_events,
                 "recipient_delivery_claimed": false,
             })
         );
     } else {
         println!(
-            "Scoped sync plan for Space {} group {}: {}; received {} event(s), retained {} pending, recognized {} duplicates, rejected {rejected_events}.",
+            "Scoped sync plan for Space {} group {}: {}; received {} event(s), retained {} pending, recognized {} duplicates, excluded {} pre-checkpoint ciphertext event(s), rejected {rejected_events}.",
             super::hex(&target.space_id),
             super::hex(&target.group_reference),
             sync_status_name(exchange.plan.status),
             counts.accepted,
             counts.pending,
             counts.duplicates,
+            counts.checkpoint_excluded,
         );
         for requested in &exchange.plan.request_ranges {
             println!(
@@ -590,7 +647,7 @@ fn serve_once(
         .enable_all()
         .build()?;
     let listener = runtime
-        .block_on(TcpPeerListener::bind(listen, MAX_EVENT_BYTES))
+        .block_on(TcpPeerListener::bind(listen, MAX_ENVELOPE_BYTES))
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
     let bound = listener
         .local_addr()
@@ -872,12 +929,15 @@ fn run_reconciliation_round_attempt(
     ReconciliationRoundFailure,
 > {
     let (outbound_adapter, (inbound_adapter, _remote_address)) = runtime
-        .block_on(tokio::time::timeout(RECONCILIATION_STAGE_TIMEOUT, async {
-            tokio::try_join!(
-                TcpPeerAdapter::connect(target.connect, MAX_EVENT_BYTES),
-                listener.accept()
-            )
-        }))
+        .block_on(async {
+            tokio::time::timeout(RECONCILIATION_STAGE_TIMEOUT, async {
+                tokio::try_join!(
+                    TcpPeerAdapter::connect(target.connect, MAX_ENVELOPE_BYTES),
+                    listener.accept()
+                )
+            })
+            .await
+        })
         .map_err(|_| {
             ReconciliationRoundFailure::Transport(
                 "TCP connect/accept stage timed out after 30 seconds".to_owned(),
@@ -905,40 +965,43 @@ fn run_reconciliation_round_attempt(
     };
 
     let pinned_session = runtime
-        .block_on(tokio::time::timeout(
-            RECONCILIATION_STAGE_TIMEOUT,
-            client.with_pinned_identity(
-                &target.peer_fingerprint,
-                |identity, pinned_peer| async move {
-                    let outbound = execute_authenticated_sync_v2_once(
-                        &outbound_adapter,
-                        identity,
-                        pinned_peer,
-                        local_summary,
-                        &mut deduplicator,
-                        &mut validator,
-                        |peer, requested_scope| {
-                            peer.fingerprint() == target.peer_fingerprint
-                                && requested_scope == target.scope
-                        },
-                        &cancellation,
-                    );
-                    let inbound = serve_authenticated_sync_v2_once(
-                        &inbound_adapter,
-                        identity,
-                        pinned_peer,
-                        summary_source,
-                        event_source,
-                        |peer, requested_scope| {
-                            peer.fingerprint() == target.peer_fingerprint
-                                && requested_scope == target.scope
-                        },
-                        &cancellation,
-                    );
-                    tokio::try_join!(outbound, inbound)
-                },
-            ),
-        ))
+        .block_on(async {
+            tokio::time::timeout(
+                RECONCILIATION_STAGE_TIMEOUT,
+                client.with_pinned_identity(
+                    &target.peer_fingerprint,
+                    |identity, pinned_peer| async move {
+                        let outbound = execute_authenticated_sync_v2_once(
+                            &outbound_adapter,
+                            identity,
+                            pinned_peer,
+                            local_summary,
+                            &mut deduplicator,
+                            &mut validator,
+                            |peer, requested_scope| {
+                                peer.fingerprint() == target.peer_fingerprint
+                                    && requested_scope == target.scope
+                            },
+                            &cancellation,
+                        );
+                        let inbound = serve_authenticated_sync_v2_once(
+                            &inbound_adapter,
+                            identity,
+                            pinned_peer,
+                            summary_source,
+                            event_source,
+                            |peer, requested_scope| {
+                                peer.fingerprint() == target.peer_fingerprint
+                                    && requested_scope == target.scope
+                            },
+                            &cancellation,
+                        );
+                        tokio::try_join!(outbound, inbound)
+                    },
+                ),
+            )
+            .await
+        })
         .map_err(|_| {
             ReconciliationRoundFailure::Transport(
                 "authenticated sync stage timed out after 30 seconds".to_owned(),
@@ -1020,7 +1083,7 @@ fn reconcile(
         .enable_all()
         .build()?;
     let listener = runtime
-        .block_on(TcpPeerListener::bind(request.listen, MAX_EVENT_BYTES))
+        .block_on(TcpPeerListener::bind(request.listen, MAX_ENVELOPE_BYTES))
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
     let bound = listener
         .local_addr()

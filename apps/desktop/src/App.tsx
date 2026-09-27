@@ -20,8 +20,9 @@ const stack = [
   },
   {
     label: "Spaces and messaging",
-    state: "Local Space messaging",
-    detail: "Queues locally authorized text and edits to the durable outbox; no network delivery",
+    state: "Local queue + explicit sync",
+    detail:
+      "Pinned peers can exchange Space events in a bounded sync round; no recipient delivery receipt",
   },
   {
     label: "Local LAN readiness",
@@ -97,9 +98,9 @@ function App() {
           <p className="eyebrow">Local-first community communication</p>
           <h1 id="page-title">Your communities should not depend on a central account.</h1>
           <p className="lede">
-            The desktop client protects the device identity, creates local Space Genesis snapshots
-            from a system-trusted device credential, and inspects recovered local snapshots. Remote
-            membership and network delivery remain unavailable; outgoing text and edits stay local.
+            The desktop client protects the device identity and stores Space events locally. Already
+            joined peers can exchange a bounded history round through explicit authenticated sync;
+            remote membership is not automatic, and recipient delivery is not claimed.
           </p>
           <div className="principles">
             <span>Offline correctness</span>

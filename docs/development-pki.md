@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not create the Lattice identity CSR.' }
   -DeviceName 'cli-a'
 ```
 
-Repeat the profile and issuance steps only for client identities whose normal APIs produce CSRs. The example uses a CLI profile. Android and Desktop issuance must use their own normal CSR paths and still need client-specific acceptance. Web has no client/profile yet; do not treat the protocol inspector as a Web Lattice client. The issuer creates a short-lived leaf certificate and a binary RFC 9420 certificate vector containing the leaf certificate; the self-signed root is installed separately as a local trust anchor.
+Repeat the profile and issuance steps for client identities whose normal APIs produce CSRs. Android, Desktop, CLI, and Web have normal identity CSR paths; each still needs client-specific acceptance. For Web, create a fresh browser profile with the issuer DER and confirmed SHA-256 fingerprint pinned at creation, create its CSR in the profile UI, issue the leaf through this script, and paste only the leaf DER into that same profile. The issuer creates a short-lived leaf certificate and a binary RFC 9420 certificate vector containing the leaf certificate; the self-signed root is installed separately as a native trust anchor for CLI/Desktop.
 
 ## Install and remove the development root
 
@@ -58,7 +58,7 @@ Desktop and CLI use the host's native certificate roots through `rustls-native-c
 
 Android does not use the host loader. `lattice-mls` reads the Conscrypt APEX CA directory when it contains any certificate-named files, otherwise it reads `/system/etc/security/cacerts`. Ordinary user-installed Android certificates, APK network-security configuration, and Windows trust changes do not affect this custom validator. For a test-only system image, provision the development CA as a PEM or DER file with a numeric suffix (for example, `lattice-development-only-ca.0`) in the exact CA directory the loader selects, then restart the app. The loader chooses APEX whenever it contains a numeric-suffix entry; the legacy directory is only a fallback when APEX has none. This repository does not build or modify Android system images. Use a disposable emulator or test system image; do not alter a personal device. No credential-validation bypass or app-supplied root is supported.
 
-There is no Web Lattice client or browser credential path in this repository. Do not issue or claim Web credentials until the browser client and its trust model are implemented and verified.
+Web validates credentials against the root DER and SHA-256 fingerprint confirmed when its profile was created; it does not inherit Windows, Linux, or macOS trust-store changes. Browser key and root-pin scope is origin/profile-local. A Web credential therefore requires its CSR to be signed by that exact pinned issuer; a native CLI peer separately requires the same issuer in its OS trust store.
 
 ## Verify using the real production validator
 

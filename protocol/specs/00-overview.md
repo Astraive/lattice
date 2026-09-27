@@ -29,6 +29,6 @@ The per-item limits are implemented in `crates/lattice-protocol`; they are not a
 - [`06-spaces.md`](06-spaces.md) and [`07-permissions.md`](07-permissions.md): exact candidate payload/permission schemas; Rust has a candidate policy reducer and authorization gate, while MLS membership proof, durable reducer restore, and message projection remain incomplete.
 - [`08-mls.md`](08-mls.md): MLS event binding and encrypted durable provider boundary; credential trust, causal membership validation, and durable conflict recovery remain incomplete.
 - [`09-envelope.md`](09-envelope.md) and [`13-relay.md`](13-relay.md): candidate envelope codec, strict NIP-01 signed-event codec, and bounded NIP-11 capability parser; no production relay adapter or interoperability claim.
-- [`10-ble.md`](10-ble.md): experimental BLE label plus candidate service/discovery and first-contact identity binding; framing, flow-control, and interoperability remain open.
+- [`10-ble.md`](10-ble.md): experimental BLE discovery, identity binding, and bounded framing/flow-control candidate; implementation and interoperability remain open.
 
 Other entries in the planned [`PROTOCOL.md` document map](../../docs/protocol/PROTOCOL.md#wire-document-decomposition-and-freeze-order) remain unimplemented. See `docs/TODO.md` and `docs/quality/TEST_PLAN.md` for evidence and release gates.
