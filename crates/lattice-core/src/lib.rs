@@ -18,10 +18,15 @@ use rusqlite::Transaction;
 
 use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
 use lattice_files::AttachmentManifest;
-use lattice_identity::{DeviceIdentity, IdentityError, IdentityPublicBundle, PrivateKeyProtector};
+use lattice_identity::{
+    BleExp0IdentitySignature, DeviceIdentity, IdentityError, IdentityPublicBundle,
+    PrivateKeyProtector,
+};
 use lattice_mls::{
     ProtectedCodecError, ProtectedSqliteProvider,
-    api::{DeviceCredentialInput, GroupState, IncomingResult, MlsApplication},
+    api::{
+        CredentialTrustPolicy, DeviceCredentialInput, GroupState, IncomingResult, MlsApplication,
+    },
     migrate_protected_sqlite, with_mls_storage_key,
 };
 use lattice_protocol::{Value, decode_canonical, encode_canonical};
@@ -30,7 +35,7 @@ use lattice_storage::{
     MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
     SpaceMembershipTransitionSnapshot, Store, StoreError,
 };
-pub use lattice_storage::{OutboxState, SpaceGenesisCursor};
+pub use lattice_storage::{MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState, SpaceGenesisCursor};
 use openmls::credentials::Credential;
 use openmls::prelude::CredentialType;
 use thiserror::Error;
@@ -226,6 +231,27 @@ impl CreatedSpace {
     #[must_use]
     pub const fn reducer(&self) -> &space::SpaceReducer {
         &self.reducer
+    }
+}
+
+/// One bounded page of verified signed events retained in an outbox.
+#[must_use]
+pub struct OutboxApplicationEventPage {
+    events: Vec<Vec<u8>>,
+    next_cursor: Option<[u8; 32]>,
+}
+
+impl OutboxApplicationEventPage {
+    /// Returns exact signed event bytes for the requested Space generation.
+    #[must_use]
+    pub fn events(&self) -> &[Vec<u8>] {
+        &self.events
+    }
+
+    /// Returns the cursor for the next outbox page, if this page was full.
+    #[must_use]
+    pub const fn next_cursor(&self) -> Option<[u8; 32]> {
+        self.next_cursor
     }
 }
 
@@ -498,6 +524,9 @@ pub enum CoreError {
     /// One of the current policy-head events is missing from local storage.
     #[error("a Space policy parent event is missing")]
     SpaceParentEventMissing,
+    /// The outbox references a signed event that is absent from durable storage.
+    #[error("outbox event is missing its signed event record")]
+    OutboxEventMissing,
     /// The Lamport counter cannot advance beyond the parent events.
     #[error("Space message Lamport counter is exhausted")]
     SpaceLamportExhausted,
@@ -1217,6 +1246,7 @@ pub struct Client {
     store: Store,
     identity: DeviceIdentity,
     mls_storage_key: Zeroizing<[u8; 32]>,
+    credential_trust_policy: CredentialTrustPolicy,
 }
 
 impl Client {
@@ -1233,6 +1263,27 @@ impl Client {
         database_path: impl AsRef<Path>,
         protector: &P,
     ) -> Result<Self, CoreError> {
+        Self::open_or_create_with_trust_policy(
+            database_path,
+            protector,
+            CredentialTrustPolicy::native_system(),
+        )
+    }
+
+    /// Opens or initializes a profile with an explicit immutable trust policy.
+    ///
+    /// Browser callers must load their confirmed issuer pin from profile-local
+    /// storage and pass it here; absence of that pin is not native trust.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the store cannot be opened, protected identity
+    /// cannot be loaded or created, or protected MLS storage cannot be initialized.
+    pub fn open_or_create_with_trust_policy<P: PrivateKeyProtector>(
+        database_path: impl AsRef<Path>,
+        protector: &P,
+        credential_trust_policy: CredentialTrustPolicy,
+    ) -> Result<Self, CoreError> {
         let mut store = Store::open(database_path)?;
         let identity = if let Some(ciphertext) = store.load_protected_identity()? {
             DeviceIdentity::load_protected(protector, &ciphertext)?
@@ -1247,10 +1298,32 @@ impl Client {
                 DeviceIdentity::load_protected(protector, &persisted)?
             }
         };
-        Self::finish_open(store, identity, protector)
+        Self::finish_open(store, identity, protector, credential_trust_policy)
     }
 
-    /// Opens a profile only when its protected device identity already exists.
+    /// Opens an existing profile using the caller's immutable credential trust policy.
+    ///
+    /// This is the explicit entrypoint for profiles whose trust anchor is
+    /// supplied out of band, such as a Web profile with a pinned root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the store, protected identity, or protected MLS
+    /// storage cannot be opened.
+    pub fn open_existing_with_trust_policy<P: PrivateKeyProtector>(
+        database_path: impl AsRef<Path>,
+        protector: &P,
+        credential_trust_policy: CredentialTrustPolicy,
+    ) -> Result<Self, CoreError> {
+        let store = Store::open(database_path)?;
+        let ciphertext = store
+            .load_protected_identity()?
+            .ok_or(CoreError::MissingIdentity)?;
+        let identity = DeviceIdentity::load_protected(protector, &ciphertext)?;
+        Self::finish_open(store, identity, protector, credential_trust_policy)
+    }
+
+    /// Opens a profile using the native operating-system trust store.
     ///
     /// # Errors
     ///
@@ -1260,18 +1333,18 @@ impl Client {
         database_path: impl AsRef<Path>,
         protector: &P,
     ) -> Result<Self, CoreError> {
-        let store = Store::open(database_path)?;
-        let ciphertext = store
-            .load_protected_identity()?
-            .ok_or(CoreError::MissingIdentity)?;
-        let identity = DeviceIdentity::load_protected(protector, &ciphertext)?;
-        Self::finish_open(store, identity, protector)
+        Self::open_existing_with_trust_policy(
+            database_path,
+            protector,
+            CredentialTrustPolicy::native_system(),
+        )
     }
 
     fn finish_open<P: PrivateKeyProtector>(
         mut store: Store,
         identity: DeviceIdentity,
         protector: &P,
+        credential_trust_policy: CredentialTrustPolicy,
     ) -> Result<Self, CoreError> {
         store.with_connection_mut(|connection| {
             migrate_protected_sqlite(connection).map_err(|_| CoreError::MlsStorageMigration)
@@ -1281,8 +1354,28 @@ impl Client {
             store,
             identity,
             mls_storage_key,
+            credential_trust_policy,
         })
     }
+    /// Returns this profile's immutable credential trust policy.
+    pub fn credential_trust_policy(&self) -> &CredentialTrustPolicy {
+        &self.credential_trust_policy
+    }
+
+    fn ensure_credential_trust_policy(
+        &self,
+        credential: &DeviceCredentialInput,
+    ) -> Result<(), CoreError> {
+        if credential
+            .trust_policy()
+            .same_policy(&self.credential_trust_policy)
+        {
+            Ok(())
+        } else {
+            Err(CoreError::SpaceCredentialInvalid)
+        }
+    }
+
     /// Runs protected `OpenMLS` and application writes in one `SQLite` transaction.
     ///
     /// The key is scoped only for this callback. Returning an error rolls back
@@ -1334,6 +1427,7 @@ impl Client {
         target_available: usize,
         now: u64,
     ) -> Result<Vec<Vec<u8>>, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         if target_available > MAX_LOCAL_KEY_PACKAGE_INVENTORY {
             return Err(CoreError::KeyPackageInventoryLimit);
         }
@@ -1359,6 +1453,7 @@ impl Client {
         credential: &DeviceCredentialInput,
         now: u64,
     ) -> Result<Vec<u8>, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         self.with_mls_transaction(|identity, provider, transaction| {
             let message = GroupState::publish_key_package(provider, identity, credential)?;
             let wire = message.as_bytes().to_vec();
@@ -1426,6 +1521,7 @@ impl Client {
         credential: &lattice_mls::api::DeviceCredentialInput,
         channels: Vec<InitialChannel>,
     ) -> Result<CreatedSpace, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         let creator = self.identity.fingerprint();
         let (space_id, plaintext) = prepare_space_genesis(&creator, channels)?;
         let (genesis_event, reducer, group_id, group_reference) =
@@ -1468,6 +1564,7 @@ impl Client {
         prior: &CreatedSpace,
         credential: &lattice_mls::api::DeviceCredentialInput,
     ) -> Result<CreatedSpace, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         let creator = self.identity.fingerprint();
         let (space_id, plaintext) = prepare_space_recovery_genesis(&prior.reducer, &creator)?;
         let prior_reducer = &prior.reducer;
@@ -1495,7 +1592,8 @@ impl Client {
     /// Restores a local generation and creates an authorized one-member recovery root.
     ///
     /// The X.509 vector must match this device's signing identity and pass the
-    /// production OS trust path. Existing members do not automatically rejoin.
+    /// production trust policy attached to this Client. Existing members do
+    /// not automatically rejoin.
     ///
     /// # Errors
     ///
@@ -1508,16 +1606,21 @@ impl Client {
         credential_content: Vec<u8>,
     ) -> Result<CreatedSpace, CoreError> {
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let prior = self.restore_space(space_id, group_reference)?;
         self.create_space_recovery_generation(&prior, &credential)
     }
-    /// Creates a local candidate Space from a system-trusted RFC 9420 X.509 credential vector.
+    /// Creates a local candidate Space from an RFC 9420 credential vector under
+    /// this Client's trust policy.
     ///
     /// The credential content is leaf-first TLS certificate-vector bytes. It is
-    /// validated against this client's signing identity and the production OS
-    /// trust path before the atomic Space-creation transaction is entered.
+    /// validated against this client's signing identity and configured trust
+    /// policy before the atomic Space-creation transaction is entered.
     ///
     /// # Errors
     ///
@@ -1531,8 +1634,12 @@ impl Client {
         channels: Vec<InitialChannel>,
     ) -> Result<CreatedSpace, CoreError> {
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         self.create_space(&credential, channels)
     }
 
@@ -1652,6 +1759,7 @@ impl Client {
         content: &str,
         mentions: &[space::MentionTarget],
     ) -> Result<QueuedMessage, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
         let policy = created
             .reducer
@@ -1674,9 +1782,16 @@ impl Client {
             cached_text: Some((None, content)),
             event_kind: EventKind::Message,
         };
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let (event_id, staged_reducer) =
-            self.with_mls_transaction(|identity, provider, transaction| {
-                queue_application_event_in_transaction(identity, provider, transaction, message)
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                queue_application_event_in_transaction(
+                    identity,
+                    provider,
+                    transaction,
+                    &credential_trust_policy,
+                    message,
+                )
             })?;
         created.reducer = staged_reducer;
         Ok(QueuedMessage { event_id })
@@ -1689,9 +1804,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error if the original message is not an authorized ancestor,
-    /// the local MLS generation has advanced beyond the supported Genesis
-    /// state, the payload is invalid, or storage/MLS encryption fails.
+    /// Returns an error if the target is not an authorized ancestor, the current
+    /// MLS roster does not match the accepted policy, the payload is invalid,
+    /// or storage/MLS encryption fails.
     pub fn queue_text_message_edit(
         &mut self,
         created: &mut CreatedSpace,
@@ -1700,6 +1815,7 @@ impl Client {
         target: [u8; 32],
         content: &str,
     ) -> Result<QueuedMessage, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
         self.restore_cached_local_message_projection(created, channel_id, target)?;
         let policy = created
@@ -1725,9 +1841,16 @@ impl Client {
             cached_text: Some((Some(target), content)),
             event_kind: EventKind::Edit,
         };
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let (event_id, staged_reducer) =
-            self.with_mls_transaction(|identity, provider, transaction| {
-                queue_application_event_in_transaction(identity, provider, transaction, message)
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                queue_application_event_in_transaction(
+                    identity,
+                    provider,
+                    transaction,
+                    &credential_trust_policy,
+                    message,
+                )
             })?;
         created.reducer = staged_reducer;
         Ok(QueuedMessage { event_id })
@@ -1736,9 +1859,8 @@ impl Client {
     /// Restores the local Genesis policy, validates an RFC 9420 X.509 credential,
     /// then encrypts and atomically queues a text message without network I/O.
     ///
-    /// This recovery path is limited to a locally created, unchanged generation;
-    /// a later MLS membership transition is rejected rather than authorized
-    /// against stale Genesis policy.
+    /// Restores the local Space and replays validated membership transitions
+    /// before authorizing the message against the current local policy.
     ///
     /// # Errors
     ///
@@ -1758,8 +1880,12 @@ impl Client {
             return Err(CoreError::SpaceCredentialInvalid);
         }
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_text_message(&mut created, &credential, channel_id, content)
     }
@@ -1783,6 +1909,7 @@ impl Client {
         channel_id: space::EntityId,
         manifest: &AttachmentManifest,
     ) -> Result<QueuedFileManifest, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
         manifest.validate()?;
         let policy = created
@@ -1806,9 +1933,16 @@ impl Client {
             cached_text: None,
             event_kind: EventKind::FileManifest,
         };
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let (event_id, staged_reducer) =
-            self.with_mls_transaction(|identity, provider, transaction| {
-                queue_application_event_in_transaction(identity, provider, transaction, message)
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                queue_application_event_in_transaction(
+                    identity,
+                    provider,
+                    transaction,
+                    &credential_trust_policy,
+                    message,
+                )
             })?;
         created.reducer = staged_reducer;
         Ok(QueuedFileManifest { event_id })
@@ -1835,8 +1969,12 @@ impl Client {
             return Err(CoreError::SpaceCredentialInvalid);
         }
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_file_manifest(&mut created, &credential, channel_id, manifest)
     }
@@ -1866,12 +2004,16 @@ impl Client {
             return Err(CoreError::SpaceCredentialInvalid);
         }
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_text_message_edit(&mut created, &credential, channel_id, target, content)
     }
-    /// Authenticates and commits one received application event for this Space generation.
+    /// Accepts one signature-verified event for an already restored generation.
     ///
     /// Missing signed parents are retained in the bounded pending store without
     /// advancing MLS state. Accepted events update the MLS state, reducer, exact
@@ -1887,6 +2029,37 @@ impl Client {
         canonical_bytes: &[u8],
     ) -> Result<SyncedApplicationOutcome, CoreError> {
         let event = VerifiedSignatureOnlyEvent::decode_verify(canonical_bytes)?;
+        self.accept_verified_synced_application_event(created, canonical_bytes, event)
+    }
+
+    /// Restores the local generation named by a verified event and ingests it.
+    ///
+    /// This is the transport-facing entry point for an opaque signed event.
+    /// The event is signature-verified before its identifiers select a local
+    /// generation; normal MLS binding, dependency, and authorization checks
+    /// determine whether it is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed or untrusted event bytes, an unavailable
+    /// local generation, or failed MLS, authorization, or storage validation.
+    pub fn accept_synced_application_event_for_local_generation(
+        &mut self,
+        canonical_bytes: &[u8],
+    ) -> Result<SyncedApplicationOutcome, CoreError> {
+        let event = VerifiedSignatureOnlyEvent::decode_verify(canonical_bytes)?;
+        let space_id = *event.space_id();
+        let group_reference = *event.mls_group_reference();
+        let mut created = self.restore_space(&space_id, &group_reference)?;
+        self.accept_verified_synced_application_event(&mut created, canonical_bytes, event)
+    }
+
+    fn accept_verified_synced_application_event(
+        &mut self,
+        created: &mut CreatedSpace,
+        canonical_bytes: &[u8],
+        event: VerifiedSignatureOnlyEvent,
+    ) -> Result<SyncedApplicationOutcome, CoreError> {
         if event.space_id() != &created.space_id
             || event.mls_group_reference() != &created.group_reference
         {
@@ -1932,9 +2105,14 @@ impl Client {
         let space_id = created.space_id;
         let group_reference = created.group_reference;
         let reducer = created.reducer.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let staged_reducer =
             self.with_mls_transaction(move |_identity, provider, transaction| {
-                let mut group = GroupState::load(provider, &group_id)?;
+                let mut group = GroupState::load_with_trust_policy(
+                    provider,
+                    &group_id,
+                    &credential_trust_policy,
+                )?;
                 if group.group_reference() != group_reference {
                     return Err(CoreError::MlsEventBindingFailed);
                 }
@@ -2400,6 +2578,7 @@ impl Client {
         let encrypted_state = snapshot.encrypted_state;
         let context = recovery_context;
         let restored_event = event.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let (group_reference, reducer) =
             self.with_mls_transaction(move |identity, provider, _transaction| {
                 if event.author_fingerprint() != &identity.fingerprint() {
@@ -2407,7 +2586,11 @@ impl Client {
                         space::RejectReason::CreatorMismatch,
                     ));
                 }
-                let mut group = GroupState::load(provider, &group_id_for_load)?;
+                let mut group = GroupState::load_with_trust_policy(
+                    provider,
+                    &group_id_for_load,
+                    &credential_trust_policy,
+                )?;
                 let group_reference = group.group_reference();
                 if group_reference != expected_group_reference {
                     return Err(CoreError::SpaceGenesisRejected(
@@ -2557,6 +2740,7 @@ impl Client {
         expires_at_unix_seconds: u64,
         max_uses: Option<u16>,
     ) -> Result<CreatedSpaceInvite, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         let policy = created
             .reducer
             .policy()
@@ -2620,13 +2804,18 @@ impl Client {
             }
             existing_head_events.push(event);
         }
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let (invite_event, token, target_fingerprint, staged_reducer, welcome_bootstrap) = self
             .with_mls_transaction(move |identity, provider, transaction| {
                 let mut staged_reducer = reducer;
                 if identity.fingerprint() != inviter_identity {
                     return Err(CoreError::SpaceCredentialInvalid);
                 }
-                let mut group = GroupState::load(provider, &group_id)?;
+                let mut group = GroupState::load_with_trust_policy(
+                    provider,
+                    &group_id,
+                    &credential_trust_policy,
+                )?;
                 if group.group_reference() != expected_group_reference {
                     return Err(CoreError::SpaceMembershipNotApplied(
                         space::ApplyResult::Rejected(space::RejectReason::WrongGeneration),
@@ -2843,14 +3032,16 @@ impl Client {
                     identity,
                     &staged_space,
                     &group,
-                    welcome.as_bytes(),
-                    &genesis_plaintext,
-                    &invite_event,
-                    &invite_plaintext,
-                    &head_events,
-                    Some(&control_event),
-                    target,
-                    group.epoch(),
+                    &space_bootstrap::SpaceWelcomeEvidence {
+                        welcome_wire: welcome.as_bytes(),
+                        genesis_plaintext: &genesis_plaintext,
+                        invite_event: &invite_event,
+                        invite_plaintext: &invite_plaintext,
+                        head_events: &head_events,
+                        last_control_event: Some(&control_event),
+                        target,
+                        epoch: group.epoch(),
+                    },
                 )?;
                 Ok((
                     invite_event,
@@ -2867,6 +3058,70 @@ impl Client {
             token,
             welcome_bootstrap,
         })
+    }
+
+    /// Publishes a one-time X.509 `KeyPackage` using this profile's pinned issuer.
+    ///
+    /// The certificate vector is validated against the local signing identity
+    /// and trust policy before MLS creates or stores the package.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::SpaceCredentialInvalid`] if the credential is
+    /// malformed, untrusted, or does not match the local identity. MLS or
+    /// storage failures are also returned.
+    pub fn publish_x509_key_package(
+        &mut self,
+        credential_content: Vec<u8>,
+        now: u64,
+    ) -> Result<Vec<u8>, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        self.publish_key_package(&credential, now)
+    }
+
+    /// Creates an offline invite using a device certificate validated locally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::SpaceCredentialInvalid`] for malformed, untrusted,
+    /// or mismatched credential bytes. Invalid key packages, denied invitation
+    /// policy, event creation, MLS, and storage failures are also returned.
+    pub fn create_space_invite_from_x509_credential(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential_content: Vec<u8>,
+        key_package_wire: &[u8],
+        expires_at_revision: Option<u64>,
+        expires_at_unix_seconds: u64,
+        max_uses: Option<u16>,
+    ) -> Result<CreatedSpaceInvite, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        self.create_space_invite(
+            created,
+            &credential,
+            key_package_wire,
+            expires_at_revision,
+            expires_at_unix_seconds,
+            max_uses,
+        )
     }
 
     /// Atomically accepts one staged MLS Commit and its parent-epoch policy transition.
@@ -2921,8 +3176,10 @@ impl Client {
                 CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
             })?;
         let mut staged_reducer = reducer.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
         self.with_mls_transaction(move |_identity, provider, transaction| {
-            let mut group = GroupState::load(provider, &group_id)?;
+            let mut group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
             if group.group_reference() != expected_group_reference {
                 return Err(CoreError::SpaceMembershipNotApplied(
                     space::ApplyResult::Rejected(space::RejectReason::WrongGeneration),
@@ -3015,6 +3272,7 @@ impl Client {
         created: &CreatedSpace,
         credential: &DeviceCredentialInput,
     ) -> Result<[u8; 32], CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
         let policy = created
             .reducer
@@ -3039,8 +3297,10 @@ impl Client {
         let group_id = created.group_id.clone();
         let space_id = created.space_id;
         let group_reference = created.group_reference;
+        let credential_trust_policy = self.credential_trust_policy.clone();
         self.with_mls_transaction(|identity, provider, transaction| {
-            let mut group = GroupState::load(provider, &group_id)?;
+            let mut group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
             if group.group_reference() != group_reference
                 || !group.contains_member_identity(&identity.fingerprint())
             {
@@ -3103,8 +3363,12 @@ impl Client {
         credential_content: Vec<u8>,
     ) -> Result<[u8; 32], CoreError> {
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let created = self.restore_space(space_id, group_reference)?;
         self.request_space_leave(&created, &credential)
     }
@@ -3150,11 +3414,12 @@ impl Client {
             return Err(CoreError::SpaceParentEventMissing);
         }
         let group_id = created.group_id.clone();
-        self.with_mls_transaction(|_identity, provider, transaction| {
-            let mut group = GroupState::load(provider, &group_id)?;
-            if group.group_reference() != created.group_reference
-                || event.mls_epoch() != group.epoch()
-            {
+        let group_reference = created.group_reference;
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        self.with_mls_transaction(move |_identity, provider, transaction| {
+            let mut group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
+            if group.group_reference() != group_reference || event.mls_epoch() != group.epoch() {
                 return Err(CoreError::MlsEventBindingFailed);
             }
             match group.process_incoming(provider, event.protected_body())? {
@@ -3222,8 +3487,10 @@ impl Client {
         let first_event_id = *first_control_event.event_id().as_bytes();
         let second_event_id = *second_control_event.event_id().as_bytes();
         let mut staged_reducer = reducer.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
         self.with_mls_transaction(move |_identity, provider, transaction| {
-            let mut group = GroupState::load(provider, &group_id)?;
+            let mut group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
             if group.group_reference() != expected_group_reference
                 || first_control_event.mls_epoch() != group.epoch()
                 || second_control_event.mls_epoch() != group.epoch()
@@ -3307,6 +3574,21 @@ impl Client {
         }
     }
 
+    /// Signs a role-bound, transcript-specific exp0 identity proof or confirmation.
+    ///
+    /// The identity key remains inside Core. The typed context limits signing
+    /// to the protocol domains and peer-bundle positions defined by exp0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError`] when a supplied peer bundle is malformed.
+    pub fn sign_ble_exp0_identity_signature(
+        &self,
+        signature: &BleExp0IdentitySignature,
+    ) -> Result<[u8; 64], IdentityError> {
+        self.identity.sign_ble_exp0_signature(signature)
+    }
+
     /// Returns the next local author sequence reserved by the durable store.
     ///
     /// # Errors
@@ -3316,6 +3598,90 @@ impl Client {
         Ok(self
             .store
             .next_author_sequence(&self.identity.fingerprint())?)
+    }
+    /// Returns a bounded event-ID-ordered page of durable opaque outbox envelopes.
+    ///
+    /// The envelope bytes are unchanged from their durable representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] for an invalid page limit, malformed stored data,
+    /// or storage failures.
+    pub fn outbox_page(
+        &self,
+        after_event_id: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<OutboxEntry>, CoreError> {
+        Ok(self.store.list_outbox_page(after_event_id, limit)?)
+    }
+
+    /// Returns verified signed application events from one Space generation's outbox.
+    ///
+    /// Each page is bounded by [`MAX_OUTBOX_PAGE_SIZE`]. The cursor advances
+    /// over every outbox entry, including entries from other generations, so
+    /// callers can iterate without rescanning prior rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] when the page limit, stored envelope linkage,
+    /// signed event bytes, or storage state is invalid.
+    pub fn outbox_application_event_page(
+        &self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        after_event_id: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<OutboxApplicationEventPage, CoreError> {
+        let entries = self.store.list_outbox_page(after_event_id, limit)?;
+        let next_cursor = if entries.len() == limit {
+            entries.last().map(|entry| entry.event_id)
+        } else {
+            None
+        };
+        let mut events = Vec::new();
+        for entry in entries {
+            let record = self
+                .store
+                .load_event(&entry.event_id)?
+                .ok_or(CoreError::OutboxEventMissing)?;
+            let event = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+            if record.event_id != entry.event_id || event.event_id().as_bytes() != &entry.event_id {
+                return Err(CoreError::MlsEventBindingFailed);
+            }
+            if event.space_id() == space_id
+                && event.mls_group_reference() == group_reference
+                && event.kind() == EventKind::Message
+            {
+                events.push(record.canonical_bytes);
+            }
+        }
+        Ok(OutboxApplicationEventPage {
+            events,
+            next_cursor,
+        })
+    }
+    /// Records one relay or direct-peer forwarding attempt for a durable outbox row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the timestamp or outbox state transition is invalid.
+    pub fn mark_outbox_forwarded(
+        &mut self,
+        event_id: [u8; 32],
+        next_attempt_ms: i64,
+    ) -> Result<(), CoreError> {
+        self.store.mark_forwarded(event_id, next_attempt_ms)?;
+        Ok(())
+    }
+
+    /// Records a destination receipt after an authenticated transport acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the outbox row is missing, not forwarded, or storage fails.
+    pub fn record_destination_receipt(&mut self, event_id: [u8; 32]) -> Result<(), CoreError> {
+        self.store.record_destination_receipt(event_id)?;
+        Ok(())
     }
 }
 
@@ -3516,12 +3882,24 @@ fn queue_application_event_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
     transaction: &Transaction<'_>,
+    credential_trust_policy: &CredentialTrustPolicy,
     message: LocalApplicationEvent<'_>,
 ) -> Result<([u8; 32], space::SpaceReducer), CoreError> {
-    let mut group = GroupState::load(provider, &message.group_id)?;
+    let mut group =
+        GroupState::load_with_trust_policy(provider, &message.group_id, credential_trust_policy)?;
+    let policy = message
+        .reducer
+        .policy()
+        .ok_or(CoreError::SpaceGenesisRejected(
+            space::RejectReason::MissingPolicy,
+        ))?;
+    let mut active_members = policy
+        .members
+        .iter()
+        .filter(|member| member.status == space::MemberStatus::Active);
     if group.group_reference() != message.group_reference
-        || group.epoch() != 0
-        || group.member_count() != 1
+        || group.member_count() != active_members.clone().count()
+        || active_members.any(|member| !group.contains_member_identity(&member.fingerprint))
     {
         return Err(CoreError::SpaceGenesisRejected(
             space::RejectReason::WrongGeneration,
@@ -4292,6 +4670,10 @@ mod tests {
         assert_eq!(queued[0].event_id, event_id);
         assert_eq!(queued[0].state, OutboxState::Queued);
         assert_eq!(queued[0].envelope_bytes, event.canonical_bytes);
+        assert_eq!(
+            client.outbox_page(None, 10).expect("read Core outbox page"),
+            queued
+        );
 
         drop(client);
         let mut reopened = Client::open_existing(&database.0, &protector).expect("reopen profile");
@@ -6027,6 +6409,28 @@ mod tests {
                 .revision,
             2
         );
+        let channel_id = created
+            .reducer()
+            .policy()
+            .expect("committed membership policy")
+            .channels[0]
+            .id;
+        let queued = alice
+            .queue_text_message(
+                &mut created,
+                &alice_credential,
+                channel_id,
+                "message after verified membership transition",
+            )
+            .expect("queue on the accepted two-member MLS roster");
+        let stored = alice
+            .store
+            .load_event(queued.event_id())
+            .expect("load queued post-membership event")
+            .expect("post-membership event is durable");
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)
+            .expect("verify post-membership event");
+        assert_eq!(event.mls_epoch(), 1);
         bob.pin_identity(
             &alice.identity.public_bundle().to_bytes(),
             alice_fingerprint,
@@ -6380,8 +6784,8 @@ mod tests {
             }
         );
         assert_eq!(
-            bob.accept_synced_application_event(&mut joined, message_event.encoded_bytes())
-                .expect("recognize exact duplicate"),
+            bob.accept_synced_application_event_for_local_generation(message_event.encoded_bytes())
+                .expect("restore and recognize exact duplicate"),
             super::SyncedApplicationOutcome::Duplicate {
                 event_id: message_id
             }
