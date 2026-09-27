@@ -14,6 +14,8 @@ use zeroize::Zeroizing;
 
 const FINGERPRINT_DOMAIN: &[u8] = b"lattice:identity-bundle:v1\0";
 const PUBLIC_BUNDLE_VERSION: u8 = 1;
+/// Exact encoded width of one version-1 public identity bundle.
+pub const IDENTITY_PUBLIC_BUNDLE_BYTES: usize = 1 + 32 + 32;
 const PUBLIC_BUNDLE_LEN: usize = 1 + 32 + 32;
 
 const PROTECTED_MATERIAL_VERSION: u8 = 1;
@@ -182,6 +184,33 @@ impl IdentityPublicBundle {
     }
 }
 
+/// Exact exp0 transcript context a local identity may sign for one GATT session.
+///
+/// Peer bundles are supplied only for proof/confirmation steps that include
+/// both identities. The local identity's bundle is inserted by the signer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BleExp0IdentitySignature {
+    InitiatorProof {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+    },
+    ResponderProof {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+        initiator_bundle: [u8; IDENTITY_PUBLIC_BUNDLE_BYTES],
+    },
+    InitiatorConfirmation {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+        responder_bundle: [u8; IDENTITY_PUBLIC_BUNDLE_BYTES],
+    },
+    ResponderConfirmation {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+        initiator_bundle: [u8; IDENTITY_PUBLIC_BUNDLE_BYTES],
+    },
+}
+
 /// A local identity with non-exportable-by-API Ed25519 and X25519 private keys.
 ///
 /// The type intentionally does not implement `Debug`, `Clone`, or serialization.
@@ -328,6 +357,24 @@ impl DeviceIdentity {
     #[must_use]
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         self.signing_key.sign(message).to_bytes()
+    }
+
+    /// Signs one role-specific exp0 identity proof or transcript confirmation.
+    ///
+    /// Peer bundle bytes are parsed before they enter the signed transcript.
+    /// The method never exports private key material or signs caller-selected
+    /// arbitrary messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError`] when the supplied peer bundle is malformed.
+    pub fn sign_ble_exp0_signature(
+        &self,
+        signature: &BleExp0IdentitySignature,
+    ) -> Result<[u8; 64], IdentityError> {
+        let local_bundle = self.public_bundle().to_bytes();
+        let input = ble_exp0_signature_input(&local_bundle, signature)?;
+        Ok(self.sign(&input))
     }
 
     /// Creates a DER-encoded PKCS#10 request for this identity.
@@ -520,6 +567,108 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(),
         .map_err(|_| IdentityError::VerificationFailed)
 }
 
+fn ble_exp0_signature_input(
+    signer_bundle: &[u8; PUBLIC_BUNDLE_LEN],
+    signature: &BleExp0IdentitySignature,
+) -> Result<Vec<u8>, IdentityError> {
+    let mut input = Vec::with_capacity(256);
+    match signature {
+        BleExp0IdentitySignature::InitiatorProof {
+            handshake_hash,
+            responder_token,
+        } => append_ble_exp0_signature_input(
+            &mut input,
+            b"lattice:ble:exp0:identity-init:v0\0",
+            handshake_hash,
+            responder_token,
+            signer_bundle,
+            None,
+        ),
+        BleExp0IdentitySignature::ResponderProof {
+            handshake_hash,
+            responder_token,
+            initiator_bundle,
+        } => {
+            let initiator_bundle = IdentityPublicBundle::from_bytes(initiator_bundle)?.to_bytes();
+            append_ble_exp0_signature_input(
+                &mut input,
+                b"lattice:ble:exp0:identity-responder:v0\0",
+                handshake_hash,
+                responder_token,
+                &initiator_bundle,
+                Some(signer_bundle),
+            );
+        }
+        BleExp0IdentitySignature::InitiatorConfirmation {
+            handshake_hash,
+            responder_token,
+            responder_bundle,
+        } => {
+            let responder_bundle = IdentityPublicBundle::from_bytes(responder_bundle)?.to_bytes();
+            append_ble_exp0_signature_input(
+                &mut input,
+                b"lattice:ble:exp0:identity-confirm-initiator:v0\0",
+                handshake_hash,
+                responder_token,
+                signer_bundle,
+                Some(&responder_bundle),
+            );
+        }
+        BleExp0IdentitySignature::ResponderConfirmation {
+            handshake_hash,
+            responder_token,
+            initiator_bundle,
+        } => {
+            let initiator_bundle = IdentityPublicBundle::from_bytes(initiator_bundle)?.to_bytes();
+            append_ble_exp0_signature_input(
+                &mut input,
+                b"lattice:ble:exp0:identity-confirm-responder:v0\0",
+                handshake_hash,
+                responder_token,
+                &initiator_bundle,
+                Some(signer_bundle),
+            );
+        }
+    }
+    Ok(input)
+}
+
+/// Verifies a role-specific exp0 identity proof or transcript confirmation.
+///
+/// # Errors
+///
+/// Returns [`IdentityError`] for malformed identity bundles, invalid signature
+/// lengths, or signatures that do not authenticate the exact transcript.
+pub fn verify_ble_exp0_signature(
+    signer_bundle: &[u8],
+    context: &BleExp0IdentitySignature,
+    signature: &[u8],
+) -> Result<(), IdentityError> {
+    let signer_bundle = IdentityPublicBundle::from_bytes(signer_bundle)?;
+    let signer_bytes = signer_bundle.to_bytes();
+    let input = ble_exp0_signature_input(&signer_bytes, context)?;
+    verify(&signer_bundle.ed25519_public_key(), &input, signature)
+}
+
+fn append_ble_exp0_signature_input(
+    input: &mut Vec<u8>,
+    domain: &[u8],
+    handshake_hash: &[u8; 32],
+    responder_token: &[u8; 9],
+    initiator_bundle: &[u8; PUBLIC_BUNDLE_LEN],
+    responder_bundle: Option<&[u8; PUBLIC_BUNDLE_LEN]>,
+) {
+    input.extend_from_slice(domain);
+    input.push(0); // profile discriminator
+    input.extend_from_slice(handshake_hash);
+    input.extend_from_slice(responder_token);
+    input.extend_from_slice(&[0; 6]); // initiator and responder capabilities
+    input.extend_from_slice(initiator_bundle);
+    if let Some(responder_bundle) = responder_bundle {
+        input.extend_from_slice(responder_bundle);
+    }
+}
+
 fn fingerprint_for_bundle(bundle_bytes: &[u8; PUBLIC_BUNDLE_LEN]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(FINGERPRINT_DOMAIN);
@@ -530,8 +679,8 @@ fn fingerprint_for_bundle(bundle_bytes: &[u8; PUBLIC_BUNDLE_LEN]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
-        PrivateKeyProtectionError, PrivateKeyProtector, verify,
+        BleExp0IdentitySignature, DeviceIdentity, IdentityError, IdentityPublicBundle,
+        PinnedIdentity, PrivateKeyProtectionError, PrivateKeyProtector, verify,
     };
     use ed25519_dalek::SigningKey;
     use ed25519_dalek::{Signature, VerifyingKey};
@@ -1000,6 +1149,90 @@ mod tests {
                 maximum: 4096,
                 actual: 4097,
             })
+        );
+    }
+
+    #[test]
+    fn ble_exp0_signatures_bind_the_role_transcript_token_and_bundles() {
+        let initiator = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let responder = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let handshake_hash = [0x41; 32];
+        let responder_token = [0x92; 9];
+        let initiator_bundle = initiator.public_bundle().to_bytes();
+        let responder_bundle = responder.public_bundle().to_bytes();
+        let cases = [
+            (
+                BleExp0IdentitySignature::InitiatorProof {
+                    handshake_hash,
+                    responder_token,
+                },
+                &initiator,
+                b"lattice:ble:exp0:identity-init:v0\0".as_slice(),
+                &initiator_bundle,
+                None,
+            ),
+            (
+                BleExp0IdentitySignature::ResponderProof {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle,
+                },
+                &responder,
+                b"lattice:ble:exp0:identity-responder:v0\0".as_slice(),
+                &initiator_bundle,
+                Some(&responder_bundle),
+            ),
+            (
+                BleExp0IdentitySignature::InitiatorConfirmation {
+                    handshake_hash,
+                    responder_token,
+                    responder_bundle,
+                },
+                &initiator,
+                b"lattice:ble:exp0:identity-confirm-initiator:v0\0".as_slice(),
+                &initiator_bundle,
+                Some(&responder_bundle),
+            ),
+            (
+                BleExp0IdentitySignature::ResponderConfirmation {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle,
+                },
+                &responder,
+                b"lattice:ble:exp0:identity-confirm-responder:v0\0".as_slice(),
+                &initiator_bundle,
+                Some(&responder_bundle),
+            ),
+        ];
+
+        for (record, signer, domain, initiator_bundle, responder_bundle) in cases {
+            let signature = signer
+                .sign_ble_exp0_signature(&record)
+                .expect("valid role bundle");
+            let mut input = domain.to_vec();
+            input.push(0); // profile discriminator
+            input.extend_from_slice(&handshake_hash);
+            input.extend_from_slice(&responder_token);
+            input.extend_from_slice(&[0; 6]);
+            input.extend_from_slice(initiator_bundle);
+            if let Some(responder_bundle) = responder_bundle {
+                input.extend_from_slice(responder_bundle);
+            }
+            verify(&signer.public_key(), &input, &signature)
+                .expect("signature matches the exact exp0 input");
+            input[0] ^= 1;
+            assert!(verify(&signer.public_key(), &input, &signature).is_err());
+        }
+
+        assert!(
+            responder
+                .sign_ble_exp0_signature(&BleExp0IdentitySignature::ResponderProof {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle: [0; 65],
+                })
+                .is_err()
         );
     }
 

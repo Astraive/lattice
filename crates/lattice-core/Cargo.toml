@@ -17,7 +17,7 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-storage = { path = "../lattice-storage" }
 thiserror = "2"
 getrandom = "=0.4.3"
-rusqlite = { version = "=0.37.0", features = ["bundled"] }
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
 openmls = "=0.9.0"
 zeroize = "=1.9.0"
 

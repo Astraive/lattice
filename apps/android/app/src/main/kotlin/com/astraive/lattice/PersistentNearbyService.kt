@@ -50,6 +50,7 @@ internal class PersistentNearbyService : Service() {
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var nearbyScanner: NearbyServiceScanner
+    private lateinit var nearbyAdvertiser: NearbyBleAdvertiser
     private var bluetoothReceiverRegistered = false
     private var foregroundStarted = false
 
@@ -60,7 +61,8 @@ internal class PersistentNearbyService : Service() {
                 BluetoothAdapter.STATE_OFF,
                 BluetoothAdapter.STATE_TURNING_OFF -> {
                     nearbyScanner.stop()
-                    publishStatus("Paused — Bluetooth is off. Turn it on to resume nearby discovery.")
+                    nearbyAdvertiser.stop()
+                    publishStatus("Paused — Bluetooth is off. Turn it on to resume BLE discovery.")
                 }
                 BluetoothAdapter.STATE_ON -> startScanOrPause()
             }
@@ -76,11 +78,23 @@ internal class PersistentNearbyService : Service() {
             onFailure = { failure ->
                 mainHandler.post {
                     if (isOptedIn(this)) {
-                        if (!BleGattPermissionPolicy.hasConnectPermission(this) || !hasBleScanPermission()) {
+                        if (!BleDiscoveryPermissionPolicy.hasRequiredPermissions(this)) {
                             stopMode("Persistent nearby mode stopped because Bluetooth permission was revoked.")
                         } else {
+                            nearbyAdvertiser.stop()
                             publishStatus("Paused — Android stopped BLE scanning ($failure). Stop and start the mode to retry.")
                         }
+                    }
+                }
+            },
+        )
+        nearbyAdvertiser = NearbyBleAdvertiser(
+            context = applicationContext,
+            onFailure = { failure ->
+                mainHandler.post {
+                    if (isOptedIn(this)) {
+                        nearbyScanner.stop()
+                        publishStatus("Paused — $failure")
                     }
                 }
             },
@@ -106,7 +120,7 @@ internal class PersistentNearbyService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        if (!BleGattPermissionPolicy.hasConnectPermission(this) ||
+        if (!BleDiscoveryPermissionPolicy.hasRequiredPermissions(this) ||
             !PersistentNearbyPermissionPolicy.hasNotificationPermission(this)
         ) {
             stopMode("Persistent nearby mode stopped because a required permission is unavailable.")
@@ -130,6 +144,7 @@ internal class PersistentNearbyService : Service() {
 
     override fun onDestroy() {
         if (::nearbyScanner.isInitialized) nearbyScanner.stop()
+        if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
         if (bluetoothReceiverRegistered) {
             unregisterReceiver(bluetoothReceiver)
             bluetoothReceiverRegistered = false
@@ -141,18 +156,30 @@ internal class PersistentNearbyService : Service() {
     }
 
     private fun startScanOrPause() {
-        if (!BleGattPermissionPolicy.hasConnectPermission(this) ||
-            !hasBleScanPermission()
-        ) {
+        if (!BleDiscoveryPermissionPolicy.hasRequiredPermissions(this)) {
             stopMode("Persistent nearby mode stopped because Bluetooth permission was revoked.")
             return
         }
         when (nearbyScanner.start()) {
-            NearbyServiceScanner.StartResult.STARTED -> publishStatus(
-                "Active — scanning for generic service signals only. Sightings are unauthenticated; no GATT connection or message exchange is available.",
-            )
+            NearbyServiceScanner.StartResult.STARTED -> when (nearbyAdvertiser.start()) {
+                NearbyBleAdvertiser.StartResult.STARTED -> publishStatus(
+                    "Active — scanning and advertising exp0 discovery tokens. Sightings are unauthenticated; no GATT connection or message exchange is available.",
+                )
+                NearbyBleAdvertiser.StartResult.PERMISSION_MISSING -> stopMode(
+                    "Persistent nearby mode stopped because Bluetooth advertising permission was revoked.",
+                )
+                NearbyBleAdvertiser.StartResult.BLUETOOTH_OFF -> {
+                    nearbyScanner.stop()
+                    publishStatus("Paused — Bluetooth is off. Turn it on to resume BLE discovery.")
+                }
+                NearbyBleAdvertiser.StartResult.ADAPTER_UNAVAILABLE,
+                NearbyBleAdvertiser.StartResult.ADVERTISER_UNAVAILABLE,
+                NearbyBleAdvertiser.StartResult.FAILED -> stopMode(
+                    "Persistent BLE discovery is unavailable on this device.",
+                )
+            }
             NearbyServiceScanner.StartResult.BLUETOOTH_OFF -> publishStatus(
-                "Paused — Bluetooth is off. Turn it on to resume nearby discovery.",
+                "Paused — Bluetooth is off. Turn it on to resume BLE discovery.",
             )
             NearbyServiceScanner.StartResult.PERMISSION_MISSING -> stopMode(
                 "Persistent nearby mode stopped because Bluetooth permission was revoked.",
@@ -160,15 +187,9 @@ internal class PersistentNearbyService : Service() {
             NearbyServiceScanner.StartResult.ADAPTER_UNAVAILABLE,
             NearbyServiceScanner.StartResult.SCANNER_UNAVAILABLE,
             NearbyServiceScanner.StartResult.FAILED -> stopMode(
-                "Persistent nearby discovery is unavailable on this device.",
+                "Persistent BLE discovery is unavailable on this device.",
             )
         }
-    }
-
-    private fun hasBleScanPermission(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
-    } else {
-        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun publishStatus(status: String) {
@@ -188,6 +209,7 @@ internal class PersistentNearbyService : Service() {
 
     private fun stopMode(status: String) {
         nearbyScanner.stop()
+        nearbyAdvertiser.stop()
         setOptedIn(this, false)
         sendStatus(enabled = false, status = status)
         if (foregroundStarted) {
