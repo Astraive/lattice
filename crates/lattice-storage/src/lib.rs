@@ -1381,6 +1381,35 @@ impl Store {
         Ok(())
     }
 
+    /// Removes one cached text projection in the same transaction as a
+    /// tombstone event.
+    ///
+    /// A missing row is valid: the target may not have been cached locally.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delete fails.
+    pub fn delete_cached_space_message_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        event_id: &[u8; ID_BYTES],
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+    ) -> Result<()> {
+        transaction.execute(
+            "DELETE FROM cached_space_messages
+             WHERE event_id = ?1 AND space_id = ?2
+               AND group_reference = ?3 AND channel_id = ?4",
+            params![
+                &event_id[..],
+                &space_id[..],
+                &group_reference[..],
+                &channel_id[..],
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Checks whether one generation/channel retains a text projection.
     ///
     /// # Errors

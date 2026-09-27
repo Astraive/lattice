@@ -758,6 +758,34 @@ mod tests {
                 .expect("32-byte event ID vector");
         assert_eq!(event.event_id().as_bytes(), &expected_id);
     }
+    #[test]
+    fn published_ephemeral_signed_event_vector_verifies_exact_bytes_and_id() {
+        let preimage = decode_hex(concat!(
+            "ac00010150000102030405060708090a0b0c0d0e0f02f60358205f7e15d6",
+            "a462c18997358f8934ac2d0c53556bce94ed7d031b7c9813da55c02a0401",
+            "05182a061b0000018bcfe568000780080a0944010203040a5820a5a5a5a5",
+            "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50b00",
+        ));
+        let identity_bundle = decode_hex(
+            "01d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+        );
+        let signature = decode_hex(
+            "45a8dace07b85a5579c289c521ee88abb077cd78a67aed5f5a20f548ed68fad5ed448668d4778cfdac1b17bb896ad482b78232d93f557905cf73d70bef6ebf04",
+        );
+        let encoded = encode_canonical(&outer_value(&preimage, &identity_bundle, &signature))
+            .expect("canonical outer ephemeral event vector");
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&encoded)
+            .expect("published ephemeral event vector");
+        assert_eq!(event.encode(), encoded);
+        assert_eq!(event.kind(), EventKind::Ephemeral);
+        assert_eq!(event.preimage_bytes(), preimage);
+        let expected_id: [u8; 32] =
+            decode_hex("1175bb986226c266df335a01d47b82cf148d765e5dfc828451f8d2cc2fda77f1")
+                .try_into()
+                .expect("32-byte event ID vector");
+        assert_eq!(event.event_id().as_bytes(), &expected_id);
+    }
+
     fn signed_outer(
         identity: &DeviceIdentity,
         author_fingerprint: [u8; 32],

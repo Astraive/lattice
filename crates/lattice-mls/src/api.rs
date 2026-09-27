@@ -2,10 +2,10 @@
 //!
 //! This API signs with [`DeviceIdentity`] and accepts X.509 credentials only
 //! when the RFC 9420 certificate vector is well-formed, its leaf Ed25519 SPKI
-//! matches the MLS signature key, its chain verifies to operating-system trust
-//! roots, and its canonical Lattice fingerprint URI SAN matches the full device
-//! identity fingerprint. Hostname matching is intentionally not used: the
-//! credential is bound to the cryptographic device identity, not a DNS name.
+//! matches the MLS signature key, its certificate path verifies under the
+//! caller-selected trust policy, and its canonical Lattice identity URI SAN
+//! matches the full device fingerprint. Hostname matching is intentionally not
+//! used: credentials bind to cryptographic device identity, not DNS names.
 //! MLS membership still does not confer Space authorization.
 //!
 //! The signing key comes from the identity crate's in-process
@@ -29,7 +29,7 @@
 //! Distinct incoming successors are quarantined only in process memory. This
 //! API does not implement ADR-001 recovery or event-log atomicity.
 
-use std::{collections::HashMap, error::Error, fmt};
+use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
 #[cfg(target_os = "android")]
 use std::{fs, io::Read, path::Path};
@@ -58,12 +58,60 @@ use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
 use sha2::{Digest, Sha256};
 use webpki::{EndEntityCert, ExtendedKeyUsageValidator, KeyPurposeIdIter};
 
+/// OPFS pool management handle for the current dedicated worker.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub type BrowserOpfsPool = sqlite_wasm_vfs::sahpool::OpfsSAHPoolUtil;
+
+/// Installs the OPFS Sync Access Handle Pool VFS as SQLite's default.
+///
+/// Call this once from a secure-context dedicated worker before opening any
+/// database connection. Keep the returned handle while the worker owns the
+/// profile. This only installs the VFS; it does not make the synchronous Core
+/// API, identity key protection, or profile lifecycle browser-compatible.
+/// Use one SQLite connection per database and do not enable WAL shared-memory
+/// coordination across connections.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn install_browser_opfs_vfs()
+-> Result<BrowserOpfsPool, sqlite_wasm_vfs::sahpool::OpfsSAHError> {
+    sqlite_wasm_vfs::sahpool::install::<rusqlite::ffi::WasmOsCallback>(
+        &sqlite_wasm_vfs::sahpool::OpfsSAHPoolCfg::default(),
+        true,
+    )
+    .await
+}
+
+/// Installs an OPFS pool isolated to one stable browser profile identifier.
+///
+/// Distinct profiles use distinct VFS names and OPFS directories, allowing
+/// separately locked browser tabs to own their SQLite connections concurrently.
+/// The identifier is hashed before it enters VFS or filesystem names.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn install_browser_opfs_vfs_for_profile(
+    profile_id: &str,
+) -> Result<BrowserOpfsPool, sqlite_wasm_vfs::sahpool::OpfsSAHError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(profile_id.as_bytes());
+    let mut suffix = String::with_capacity(64);
+    for byte in digest {
+        suffix.push(char::from(HEX[usize::from(byte >> 4)]));
+        suffix.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    let directory = format!(".lattice-opfs-{suffix}");
+    let vfs_name = format!("lattice-opfs-{suffix}");
+    let config = sqlite_wasm_vfs::sahpool::OpfsSAHPoolCfgBuilder::new()
+        .vfs_name(&vfs_name)
+        .directory(&directory)
+        .build();
+    sqlite_wasm_vfs::sahpool::install::<rusqlite::ffi::WasmOsCallback>(&config, true).await
+}
+
 /// `OpenMLS` ciphersuite used by the current executable MLS candidate.
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 /// Maximum TLS-encoded MLS object accepted or emitted by this boundary.
 pub const MAX_MLS_WIRE_BYTES: usize = 1024 * 1024;
 /// Maximum opaque X.509 credential content accepted by this boundary.
 pub const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
+const MAX_PINNED_ROOT_BYTES: usize = MAX_CREDENTIAL_BYTES;
 /// Maximum number of DER certificates accepted in one X.509 credential chain.
 pub const MAX_X509_CHAIN_CERTIFICATES: usize = 8;
 /// Maximum MLS group identifier accepted by this boundary.
@@ -221,28 +269,132 @@ impl Error for MlsError {}
 /// Result type for production MLS operations.
 pub type MlsResult<T> = Result<T, MlsError>;
 
+/// Policy selecting the trust anchor used for X.509 MLS credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CredentialTrustPolicy {
+    /// Trust roots accepted by the host operating system.
+    NativeSystem,
+    /// Trust only the exact caller-confirmed root DER.
+    PinnedRoot(Arc<PinnedRootTrust>),
+}
+
+/// Opaque validated data behind a [`CredentialTrustPolicy::PinnedRoot`].
+///
+/// Values can be created only by [`CredentialTrustPolicy::pinned_root_der`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedRootTrust {
+    root_der: Vec<u8>,
+    sha256: [u8; 32],
+}
+
+impl CredentialTrustPolicy {
+    /// Trust roots accepted by the host operating system.
+    #[must_use]
+    pub const fn native_system() -> Self {
+        Self::NativeSystem
+    }
+
+    /// Pins one imported root certificate after its SHA-256 fingerprint was
+    /// confirmed out of band.
+    ///
+    /// The root DER is copied into this immutable policy. Its digest must match
+    /// `expected_sha256`, and the certificate must be a currently valid CA
+    /// permitted to sign certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InputTooLarge`] when the root exceeds
+    /// [`MAX_CREDENTIAL_BYTES`], and [`MlsError::CredentialValidationFailed`]
+    /// when the fingerprint differs or the DER is malformed, expired, not a
+    /// CA, or lacks `keyCertSign`.
+    pub fn pinned_root_der(root_der: &[u8], expected_sha256: &[u8; 32]) -> MlsResult<Self> {
+        if root_der.len() > MAX_PINNED_ROOT_BYTES {
+            return Err(MlsError::InputTooLarge {
+                kind: "X.509 issuer root",
+                maximum: MAX_PINNED_ROOT_BYTES,
+                actual: root_der.len(),
+            });
+        }
+        let sha256: [u8; 32] = Sha256::digest(root_der).into();
+        if &sha256 != expected_sha256 {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        validate_pinned_root_der(root_der)?;
+        Ok(Self::PinnedRoot(Arc::new(PinnedRootTrust {
+            root_der: root_der.to_vec(),
+            sha256,
+        })))
+    }
+
+    /// Returns the exact pinned root DER, or `None` for native system trust.
+    #[must_use]
+    pub fn root_der(&self) -> Option<&[u8]> {
+        match self {
+            Self::NativeSystem => None,
+            Self::PinnedRoot(root) => Some(&root.root_der),
+        }
+    }
+
+    /// Returns the SHA-256 digest of the pinned root DER, or `None` for native
+    /// system trust.
+    #[must_use]
+    pub fn sha256(&self) -> Option<&[u8; 32]> {
+        match self {
+            Self::NativeSystem => None,
+            Self::PinnedRoot(root) => Some(&root.sha256),
+        }
+    }
+
+    /// Reports whether two policies have identical trust semantics.
+    #[must_use]
+    pub fn same_policy(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    const fn is_pinned(&self) -> bool {
+        matches!(self, Self::PinnedRoot(_))
+    }
+}
+
 /// Caller-supplied X.509 credential paired with a local device key.
 ///
 /// The production constructor validates the exact RFC 9420 certificate vector,
-/// device Ed25519 SPKI, full-fingerprint SAN, validity period, and OS-rooted
-/// certificate path before constructing a value.
+/// device Ed25519 SPKI, full-fingerprint SAN, validity period, and selected
+/// certificate trust policy.
 #[derive(Clone, Debug)]
 pub struct DeviceCredentialInput {
     credential_with_key: CredentialWithKey,
     identity_fingerprint: [u8; 32],
+    trust_policy: CredentialTrustPolicy,
 }
 
 impl DeviceCredentialInput {
-    /// Validates and pairs X.509 credential content with `identity`.
+    /// Validates and pairs X.509 credential content with `identity` using native
+    /// operating-system trust.
+    ///
+    /// # Errors
+    ///
+    /// Returns the credential validation errors documented by
+    /// [`Self::from_x509_credential_with_policy`].
+    pub fn from_x509_credential(
+        identity: &DeviceIdentity,
+        credential: Credential,
+    ) -> MlsResult<Self> {
+        Self::from_x509_credential_with_policy(
+            identity,
+            credential,
+            &CredentialTrustPolicy::native_system(),
+        )
+    }
+
+    /// Validates and pairs X.509 credential content with `identity` under the
+    /// supplied immutable trust policy.
     ///
     /// The content is the RFC 9420 TLS variable-length certificate vector,
     /// ordered leaf-first. The leaf SPKI must be the device's Ed25519 signing
-    /// key, and exactly one canonical `urn:lattice:identity:v1:<fingerprint>`
-    /// URI SAN must match the full Lattice identity fingerprint. The chain is
-    /// verified against the operating system trust store at the current time;
-    /// no hostname or caller-provided root semantics are applied. EKU presence
-    /// is validated structurally but no TLS client/server EKU is imposed because
-    /// RFC 9420 does not select one for MLS credentials.
+    /// key, and exactly one canonical identity URI SAN must match the full
+    /// Lattice device identity fingerprint. Pinned mode verifies only to its
+    /// exact root DER and never consults operating-system roots.
     ///
     /// # Errors
     ///
@@ -253,9 +405,10 @@ impl DeviceCredentialInput {
     /// leaf Ed25519 SPKI differs from the device signing key, or
     /// [`MlsError::CredentialValidationFailed`] for malformed, mismatched,
     /// expired, untrusted, or otherwise invalid X.509 data.
-    pub fn from_x509_credential(
+    pub fn from_x509_credential_with_policy(
         identity: &DeviceIdentity,
         credential: Credential,
+        trust_policy: &CredentialTrustPolicy,
     ) -> MlsResult<Self> {
         check_x509_credential_type(&credential)?;
         check_credential_size(&credential)?;
@@ -265,6 +418,7 @@ impl DeviceCredentialInput {
             &credential,
             &identity_public_key,
             Some(&identity_fingerprint),
+            trust_policy,
             true,
             false,
         )?;
@@ -274,6 +428,7 @@ impl DeviceCredentialInput {
                 signature_key: identity.public_key().to_vec().into(),
             },
             identity_fingerprint,
+            trust_policy: trust_policy.clone(),
         })
     }
 
@@ -312,6 +467,7 @@ impl DeviceCredentialInput {
                 signature_key: identity.public_key().to_vec().into(),
             },
             identity_fingerprint,
+            trust_policy: CredentialTrustPolicy::native_system(),
         })
     }
 
@@ -325,6 +481,12 @@ impl DeviceCredentialInput {
     #[must_use]
     pub const fn identity_fingerprint(&self) -> &[u8; 32] {
         &self.identity_fingerprint
+    }
+
+    /// Returns the trust policy used to validate this credential.
+    #[must_use]
+    pub const fn trust_policy(&self) -> &CredentialTrustPolicy {
+        &self.trust_policy
     }
 
     fn check_signer(&self, identity: &DeviceIdentity) -> MlsResult<()> {
@@ -366,6 +528,7 @@ fn validate_x509_credential(
     credential: &Credential,
     signature_key: &[u8],
     expected_identity_fingerprint: Option<&[u8; 32]>,
+    trust_policy: &CredentialTrustPolicy,
     verify_chain: bool,
     allow_test_marker: bool,
 ) -> MlsResult<[u8; 32]> {
@@ -420,7 +583,7 @@ fn validate_x509_credential(
             .iter()
             .map(|certificate| CertificateDer::from(certificate.as_slice()))
             .collect();
-        verify_x509_path(&leaf, &intermediates)?;
+        verify_x509_path(&leaf, &intermediates, trust_policy)?;
     }
 
     Ok(identity_fingerprint)
@@ -651,11 +814,236 @@ fn certificate_issuer_subject(certificate: &[u8]) -> MlsResult<(&[u8], &[u8])> {
     Ok((issuer, subject))
 }
 
+fn validate_pinned_root_der(root_der: &[u8]) -> MlsResult<()> {
+    let root = CertificateDer::from(root_der);
+    webpki::anchor_from_trusted_cert(&root).map_err(|_| MlsError::CredentialValidationFailed)?;
+    let (not_before, not_after, is_ca, can_sign_certificates) = pinned_root_constraints(root_der)?;
+    let now = i64::try_from(UnixTime::now().as_secs())
+        .map_err(|_| MlsError::CredentialValidationFailed)?;
+    if !is_ca || !can_sign_certificates || now < not_before || now > not_after {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    Ok(())
+}
+
+fn pinned_root_constraints(root_der: &[u8]) -> MlsResult<(i64, i64, bool, bool)> {
+    let mut outer = root_der;
+    let mut certificate = der_read_expected(&mut outer, 0x30)?;
+    if !outer.is_empty() {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let mut tbs = der_read_expected(&mut certificate, 0x30)?;
+    if tbs.first() == Some(&0xa0) {
+        let _ = der_read_expected(&mut tbs, 0xa0)?;
+    }
+    let _ = der_read_expected(&mut tbs, 0x02)?;
+    let _ = der_read_expected(&mut tbs, 0x30)?;
+    let _ = der_read_expected(&mut tbs, 0x30)?;
+    let mut validity = der_read_expected(&mut tbs, 0x30)?;
+    let not_before = der_read_any(&mut validity)?;
+    let not_after = der_read_any(&mut validity)?;
+    if !validity.is_empty() {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let not_before = parse_x509_time(not_before.0, not_before.1)?;
+    let not_after = parse_x509_time(not_after.0, not_after.1)?;
+    if not_before > not_after {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let _ = der_read_expected(&mut tbs, 0x30)?;
+    let _ = der_read_expected(&mut tbs, 0x30)?;
+
+    let mut basic_constraints = None;
+    let mut key_usage = None;
+    while !tbs.is_empty() {
+        let (tag, value) = der_read_any(&mut tbs)?;
+        match tag {
+            0x81 | 0x82 => {}
+            0xa3 => parse_root_extensions(value, &mut basic_constraints, &mut key_usage)?,
+            _ => return Err(MlsError::CredentialValidationFailed),
+        }
+    }
+    if !certificate.is_empty() {
+        let _ = der_read_expected(&mut certificate, 0x30)?;
+        let _ = der_read_expected(&mut certificate, 0x03)?;
+    }
+    if !certificate.is_empty() {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let is_ca = basic_constraints.ok_or(MlsError::CredentialValidationFailed)?;
+    let can_sign_certificates = key_usage.ok_or(MlsError::CredentialValidationFailed)?;
+    Ok((not_before, not_after, is_ca, can_sign_certificates))
+}
+
+fn parse_root_extensions(
+    encoded: &[u8],
+    basic_constraints: &mut Option<bool>,
+    key_usage: &mut Option<bool>,
+) -> MlsResult<()> {
+    let mut explicit = encoded;
+    let mut extensions = der_read_expected(&mut explicit, 0x30)?;
+    if !explicit.is_empty() {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    while !extensions.is_empty() {
+        let mut extension = der_read_expected(&mut extensions, 0x30)?;
+        let oid = der_read_expected(&mut extension, 0x06)?;
+        let critical = if extension.first() == Some(&0x01) {
+            let encoded_critical = der_read_expected(&mut extension, 0x01)?;
+            if encoded_critical.len() != 1 || !matches!(encoded_critical[0], 0x00 | 0xff) {
+                return Err(MlsError::CredentialValidationFailed);
+            }
+            encoded_critical[0] == 0xff
+        } else {
+            false
+        };
+        let value = der_read_expected(&mut extension, 0x04)?;
+        if !extension.is_empty() {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        match oid {
+            [0x55, 0x1d, 0x13] => {
+                if basic_constraints.is_some() {
+                    return Err(MlsError::CredentialValidationFailed);
+                }
+                *basic_constraints = Some(parse_basic_constraints(value)?);
+            }
+            [0x55, 0x1d, 0x0f] => {
+                if key_usage.is_some() {
+                    return Err(MlsError::CredentialValidationFailed);
+                }
+                *key_usage = Some(parse_key_usage(value)?);
+            }
+            _ if critical => return Err(MlsError::CredentialValidationFailed),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn parse_basic_constraints(encoded: &[u8]) -> MlsResult<bool> {
+    let mut outer = encoded;
+    let mut constraints = der_read_expected(&mut outer, 0x30)?;
+    if !outer.is_empty() {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let is_ca = if constraints.first() == Some(&0x01) {
+        let value = der_read_expected(&mut constraints, 0x01)?;
+        if value.len() != 1 || !matches!(value[0], 0x00 | 0xff) {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        value[0] == 0xff
+    } else {
+        false
+    };
+    if constraints.first() == Some(&0x02) {
+        let path_length = der_read_expected(&mut constraints, 0x02)?;
+        if !is_ca
+            || path_length.is_empty()
+            || path_length[0] & 0x80 != 0
+            || (path_length.len() > 1 && path_length[0] == 0 && path_length[1] & 0x80 == 0)
+        {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+    }
+    if !constraints.is_empty() {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    Ok(is_ca)
+}
+
+fn parse_key_usage(encoded: &[u8]) -> MlsResult<bool> {
+    let mut outer = encoded;
+    let bits = der_read_expected(&mut outer, 0x03)?;
+    if !outer.is_empty() || bits.len() < 2 || bits[0] > 7 {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let usage_bits = &bits[1..];
+    if usage_bits.is_empty()
+        || (bits[0] > 0 && usage_bits[usage_bits.len() - 1] & ((1 << bits[0]) - 1) != 0)
+    {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    Ok(usage_bits[0] & (0x80 >> 5) != 0)
+}
+
+fn parse_x509_time(tag: u8, encoded: &[u8]) -> MlsResult<i64> {
+    let (year, start) = match tag {
+        0x17 if encoded.len() == 13 && encoded[12] == b'Z' => {
+            let short_year = parse_decimal(&encoded[..2])?;
+            (
+                if short_year >= 50 {
+                    1900 + short_year
+                } else {
+                    2000 + short_year
+                },
+                2,
+            )
+        }
+        0x18 if encoded.len() == 15 && encoded[14] == b'Z' => (parse_decimal(&encoded[..4])?, 4),
+        _ => return Err(MlsError::CredentialValidationFailed),
+    };
+    let month = parse_decimal(&encoded[start..start + 2])?;
+    let day = parse_decimal(&encoded[start + 2..start + 4])?;
+    let hour = parse_decimal(&encoded[start + 4..start + 6])?;
+    let minute = parse_decimal(&encoded[start + 6..start + 8])?;
+    let second = parse_decimal(&encoded[start + 8..start + 10])?;
+    if !(1..=12).contains(&month)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+        || day < 1
+        || day > days_in_month(year, month)
+    {
+        return Err(MlsError::CredentialValidationFailed);
+    }
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let adjusted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Ok((era * 146_097 + day_of_era - 719_468) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn parse_decimal(encoded: &[u8]) -> MlsResult<i64> {
+    encoded.iter().try_fold(0i64, |value, digit| {
+        if !digit.is_ascii_digit() {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i64::from(*digit - b'0')))
+            .ok_or(MlsError::CredentialValidationFailed)
+    })
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
 fn verify_x509_path(
     leaf: &EndEntityCert<'_>,
     intermediates: &[CertificateDer<'_>],
+    trust_policy: &CredentialTrustPolicy,
 ) -> MlsResult<()> {
-    let root_certificates = load_platform_roots()?;
+    let (root_certificates, pinned_root) = match trust_policy {
+        CredentialTrustPolicy::NativeSystem => (load_platform_roots()?, None),
+        CredentialTrustPolicy::PinnedRoot(root) => (
+            vec![CertificateDer::from(root.root_der.as_slice())],
+            Some(root.root_der.as_slice()),
+        ),
+    };
     let trust_anchors: Vec<TrustAnchor<'_>> = root_certificates
         .iter()
         .filter_map(|certificate| webpki::anchor_from_trusted_cert(certificate).ok())
@@ -663,9 +1051,26 @@ fn verify_x509_path(
     if trust_anchors.is_empty() {
         return Err(MlsError::CredentialValidationFailed);
     }
+    if let Some(pinned_root) = pinned_root {
+        let path_intermediates: Vec<_> = intermediates
+            .iter()
+            .filter(|certificate| certificate.as_ref() != pinned_root)
+            .map(|certificate| CertificateDer::from(certificate.as_ref()))
+            .collect();
+        verify_x509_path_with_anchors(leaf, &path_intermediates, &trust_anchors)
+    } else {
+        verify_x509_path_with_anchors(leaf, intermediates, &trust_anchors)
+    }
+}
+
+fn verify_x509_path_with_anchors(
+    leaf: &EndEntityCert<'_>,
+    intermediates: &[CertificateDer<'_>],
+    trust_anchors: &[TrustAnchor<'_>],
+) -> MlsResult<()> {
     leaf.verify_for_usage(
         webpki::ALL_VERIFICATION_ALGS,
-        &trust_anchors,
+        trust_anchors,
         intermediates,
         UnixTime::now(),
         AnyExtendedKeyUsage,
@@ -810,13 +1215,18 @@ fn decode_android_ca_certificate(encoded: Vec<u8>) -> MlsResult<CertificateDer<'
     Ok(CertificateDer::from(encoded))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
 fn load_platform_roots() -> MlsResult<Vec<CertificateDer<'static>>> {
     let result = rustls_native_certs::load_native_certs();
     if result.certs.is_empty() {
         return Err(MlsError::CredentialValidationFailed);
     }
     Ok(result.certs)
+}
+
+#[cfg(all(not(target_os = "android"), target_arch = "wasm32"))]
+fn load_platform_roots() -> MlsResult<Vec<CertificateDer<'static>>> {
+    Err(MlsError::CredentialValidationFailed)
 }
 struct DeviceSigner<'a>(&'a DeviceIdentity);
 
@@ -1195,6 +1605,7 @@ pub struct GroupState {
     incoming_commit: Option<IncomingCommit>,
     conflict: Option<ConflictEvidence>,
     member_identity_fingerprints: HashMap<[u8; 32], [u8; 32]>,
+    trust_policy: CredentialTrustPolicy,
 }
 
 /// Prepared add transition; its Welcome is withheld until exact Commit acceptance.
@@ -1298,19 +1709,19 @@ impl GroupState {
             incoming_commit: None,
             conflict: None,
             member_identity_fingerprints,
+            trust_policy: credential.trust_policy.clone(),
         })
     }
 
-    /// Loads `OpenMLS` secret state from the caller's provider.
+    /// Loads native-system-trust `OpenMLS` state from the caller's provider.
     ///
     /// Persisted members are checked for supported credential framing, the
     /// canonical identity SAN, and SPKI/signature-key equality. Certificate
-    /// path and validity are not rechecked here: each credential was admitted
-    /// at a trusted group transition, and time passing must not erase that
-    /// persisted membership. This restores only `OpenMLS` state; it cannot
-    /// recover process-local incoming-`Commit` or conflict quarantine. Callers
-    /// must authenticate and restore their own boundary metadata or must not
-    /// resume the group as operational.
+    /// path and validity are not rechecked: time passing does not erase
+    /// persisted membership. This is the existing native restore behavior.
+    /// This restores only `OpenMLS` state, not process-local incoming-Commit or
+    /// conflict quarantine. Callers must restore their boundary metadata before
+    /// relying on this group as operational.
     ///
     /// # Errors
     ///
@@ -1322,6 +1733,25 @@ impl GroupState {
     /// [`MlsError::CredentialValidationFailed`] for malformed persisted member
     /// credential content.
     pub fn load<P: OpenMlsProvider>(provider: &P, group_id: &[u8]) -> MlsResult<Self> {
+        Self::load_with_trust_policy(provider, group_id, &CredentialTrustPolicy::native_system())
+    }
+
+    /// Loads a group while retaining `trust_policy` for later credential checks.
+    ///
+    /// Native system trust preserves structural-only restore semantics.
+    /// Pinned-root trust revalidates every stored member's certificate path and
+    /// current validity against only the exact pinned root.
+    ///
+    /// # Errors
+    ///
+    /// Returns the group loading errors documented by [`Self::load`], or
+    /// [`MlsError::CredentialValidationFailed`] when a pinned restore finds an
+    /// invalid or untrusted persisted member.
+    pub fn load_with_trust_policy<P: OpenMlsProvider>(
+        provider: &P,
+        group_id: &[u8],
+        trust_policy: &CredentialTrustPolicy,
+    ) -> MlsResult<Self> {
         check_group_id(group_id)?;
         let id = GroupId::from_slice(group_id);
         let inner = MlsGroup::load(provider.storage(), &id)
@@ -1341,7 +1771,8 @@ impl GroupState {
                 &member.credential,
                 &signature_key,
                 None,
-                false,
+                trust_policy,
+                trust_policy.is_pinned(),
                 cfg!(any(test, feature = "test-utils")),
             )?;
             if member_identity_fingerprints
@@ -1356,6 +1787,7 @@ impl GroupState {
             incoming_commit: None,
             conflict: None,
             member_identity_fingerprints,
+            trust_policy: trust_policy.clone(),
         })
     }
 
@@ -1388,7 +1820,7 @@ impl GroupState {
     }
 
     /// Joins from a `Welcome` only when the expected credential and signer key
-    /// match and every staged member's certificate validates to OS trust.
+    /// match and every staged member's certificate validates under its trust policy.
     ///
     /// This does not establish Space authorization.
     ///
@@ -1444,6 +1876,7 @@ impl GroupState {
                 &member.credential,
                 &signature_key,
                 expected_fingerprint,
+                expected_credential.trust_policy(),
                 true,
                 cfg!(any(test, feature = "test-utils")),
             )?;
@@ -1473,6 +1906,7 @@ impl GroupState {
             incoming_commit: None,
             conflict: None,
             member_identity_fingerprints,
+            trust_policy: expected_credential.trust_policy().clone(),
         })
     }
 
@@ -1486,6 +1920,12 @@ impl GroupState {
     #[must_use]
     pub fn group_reference(&self) -> [u8; 32] {
         derive_group_reference(self.inner.group_id().as_slice())
+    }
+
+    /// Returns the trust policy retained by this group.
+    #[must_use]
+    pub const fn trust_policy(&self) -> &CredentialTrustPolicy {
+        &self.trust_policy
     }
 
     /// Returns the current MLS epoch.
@@ -1563,6 +2003,7 @@ impl GroupState {
     ) -> MlsResult<PreparedAdd> {
         self.ensure_operational()?;
         credential.check_signer(identity)?;
+        self.check_trust_policy(credential.trust_policy())?;
         if self.member_count() >= MAX_GROUP_MEMBERS {
             return Err(MlsError::GroupStateLimit);
         }
@@ -1570,7 +2011,7 @@ impl GroupState {
             key_package,
             signature_key,
             identity_fingerprint,
-        } = decode_key_package(provider, key_package_wire)?;
+        } = decode_key_package(provider, key_package_wire, &self.trust_policy)?;
         let key_package_sha256 = Sha256::digest(
             key_package
                 .tls_serialize_detached()
@@ -1625,6 +2066,7 @@ impl GroupState {
     ) -> MlsResult<PreparedRemoval> {
         self.ensure_operational()?;
         credential.check_signer(identity)?;
+        self.check_trust_policy(credential.trust_policy())?;
         if target_fingerprint == credential.identity_fingerprint() {
             return Err(MlsError::InvalidInput);
         }
@@ -1678,6 +2120,7 @@ impl GroupState {
     ) -> MlsResult<MlsMessage> {
         self.ensure_operational()?;
         credential.check_signer(identity)?;
+        self.check_trust_policy(credential.trust_policy())?;
         if !self.contains_member_identity(credential.identity_fingerprint()) {
             return Err(MlsError::GroupMemberNotFound);
         }
@@ -1793,6 +2236,7 @@ impl GroupState {
         self.ensure_not_conflicted()?;
         self.ensure_active()?;
         credential.check_signer(identity)?;
+        self.check_trust_policy(credential.trust_policy())?;
         if prepared.group_id != self.group_id() {
             return Err(MlsError::WrongGroup);
         }
@@ -1861,6 +2305,7 @@ impl GroupState {
         self.ensure_not_conflicted()?;
         self.ensure_active()?;
         credential.check_signer(identity)?;
+        self.check_trust_policy(credential.trust_policy())?;
         if prepared.group_id != self.group_id() {
             return Err(MlsError::WrongGroup);
         }
@@ -1894,6 +2339,7 @@ impl GroupState {
     ) -> MlsResult<MlsMessage> {
         self.ensure_operational()?;
         credential.check_signer(identity)?;
+        self.check_trust_policy(credential.trust_policy())?;
         check_application_size(plaintext)?;
         let message = self
             .inner
@@ -2098,6 +2544,13 @@ impl GroupState {
         }
     }
 
+    fn check_trust_policy(&self, trust_policy: &CredentialTrustPolicy) -> MlsResult<()> {
+        if !self.trust_policy.same_policy(trust_policy) {
+            return Err(MlsError::CredentialValidationFailed);
+        }
+        Ok(())
+    }
+
     fn ensure_active(&self) -> MlsResult<()> {
         if self.inner.is_active() {
             Ok(())
@@ -2219,6 +2672,7 @@ impl GroupState {
                 credential,
                 &candidate.signature_key,
                 None,
+                &self.trust_policy,
                 true,
                 cfg!(any(test, feature = "test-utils")),
             )?;
@@ -2405,7 +2859,7 @@ impl DirectMessageGroup {
         if peer_identity == *credential.identity_fingerprint() {
             return Err(MlsError::InvalidInput);
         }
-        let decoded = decode_key_package(provider, peer_key_package)?;
+        let decoded = decode_key_package(provider, peer_key_package, credential.trust_policy())?;
         if decoded.identity_fingerprint != peer_identity {
             return Err(MlsError::CredentialValidationFailed);
         }
@@ -2475,10 +2929,34 @@ impl DirectMessageGroup {
         local_identity: [u8; 32],
         peer_identity: [u8; 32],
     ) -> MlsResult<Self> {
+        Self::load_with_trust_policy(
+            provider,
+            group_id,
+            local_identity,
+            peer_identity,
+            &CredentialTrustPolicy::native_system(),
+        )
+    }
+
+    /// Reloads a persisted pairwise group using the exact caller-selected
+    /// credential trust policy.
+    /// # Errors
+    ///
+    /// Returns [`MlsError::InvalidInput`] when the local and peer identities
+    /// are equal, or an MLS/provider error if the stored group is missing,
+    /// fails to load, violates the trust policy, or is not exactly the pinned
+    /// pair.
+    pub fn load_with_trust_policy<P: OpenMlsProvider>(
+        provider: &P,
+        group_id: &[u8],
+        local_identity: [u8; 32],
+        peer_identity: [u8; 32],
+        trust_policy: &CredentialTrustPolicy,
+    ) -> MlsResult<Self> {
         if peer_identity == local_identity {
             return Err(MlsError::InvalidInput);
         }
-        let group = GroupState::load(provider, group_id)?;
+        let group = GroupState::load_with_trust_policy(provider, group_id, trust_policy)?;
         let direct = Self {
             group,
             local_identity,
@@ -2822,6 +3300,7 @@ struct DecodedKeyPackage {
 fn decode_key_package<P: OpenMlsProvider>(
     provider: &P,
     wire: &[u8],
+    trust_policy: &CredentialTrustPolicy,
 ) -> MlsResult<DecodedKeyPackage> {
     let parsed = parse_message(wire)?;
     let key_package: KeyPackageIn = match parsed.extract() {
@@ -2841,6 +3320,7 @@ fn decode_key_package<P: OpenMlsProvider>(
         leaf.credential(),
         &signature_key,
         None,
+        trust_policy,
         true,
         cfg!(any(test, feature = "test-utils")),
     )?;
@@ -2926,6 +3406,21 @@ fn classify_non_commit(
 mod credential_san_tests {
     use super::{identity_uri, validate_identity_san};
 
+    #[test]
+    fn rejects_oversized_pinned_root_before_hashing_or_parsing() {
+        use super::{CredentialTrustPolicy, MAX_PINNED_ROOT_BYTES, MlsError};
+
+        let root_der = vec![0; MAX_PINNED_ROOT_BYTES + 1];
+        assert_eq!(
+            CredentialTrustPolicy::pinned_root_der(&root_der, &[0; 32]),
+            Err(MlsError::InputTooLarge {
+                kind: "X.509 issuer root",
+                maximum: MAX_PINNED_ROOT_BYTES,
+                actual: MAX_PINNED_ROOT_BYTES + 1,
+            })
+        );
+    }
+
     fn der(tag: u8, content: &[u8]) -> Vec<u8> {
         let mut encoded = vec![tag];
         if content.len() < 128 {
@@ -3006,6 +3501,159 @@ mod credential_san_tests {
         certificate.extend_from_slice(&algorithm);
         certificate.extend_from_slice(&der(0x03, &signature_bits));
         der(0x30, &certificate)
+    }
+    fn ca_certificate_for_identity(identity: &lattice_identity::DeviceIdentity) -> Vec<u8> {
+        let algorithm = der(0x30, &der(0x06, &[0x2b, 0x65, 0x70]));
+        let common_name = der(0x30, &{
+            let mut attribute = der(0x06, &[0x55, 0x04, 0x03]);
+            attribute.extend_from_slice(&der(0x0c, b"lattice-test"));
+            attribute
+        });
+        let name = der(0x30, &der(0x31, &common_name));
+        let mut validity = der(0x17, b"200101000000Z");
+        validity.extend_from_slice(&der(0x17, b"490101000000Z"));
+        let validity = der(0x30, &validity);
+        let mut subject_public_key = vec![0];
+        subject_public_key.extend_from_slice(&identity.public_key());
+        let mut subject_public_key_info = algorithm.clone();
+        subject_public_key_info.extend_from_slice(&der(0x03, &subject_public_key));
+        let subject_public_key_info = der(0x30, &subject_public_key_info);
+
+        let mut basic_constraints = der(0x06, &[0x55, 0x1d, 0x13]);
+        basic_constraints.extend_from_slice(&der(0x04, &der(0x30, &der(0x01, &[0xff]))));
+        let basic_constraints = der(0x30, &basic_constraints);
+        let mut key_usage = der(0x06, &[0x55, 0x1d, 0x0f]);
+        key_usage.extend_from_slice(&der(0x04, &der(0x03, &[2, 0x04])));
+        let key_usage = der(0x30, &key_usage);
+        let extensions = der(
+            0xa3,
+            &der(
+                0x30,
+                &[basic_constraints, key_usage]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>(),
+            ),
+        );
+
+        let mut tbs = der(0xa0, &der(0x02, &[2]));
+        tbs.extend_from_slice(&der(0x02, &[1]));
+        tbs.extend_from_slice(&algorithm);
+        tbs.extend_from_slice(&name);
+        tbs.extend_from_slice(&validity);
+        tbs.extend_from_slice(&name);
+        tbs.extend_from_slice(&subject_public_key_info);
+        tbs.extend_from_slice(&extensions);
+        let tbs = der(0x30, &tbs);
+        let mut signature = vec![0];
+        signature.extend_from_slice(&identity.sign(&tbs));
+        let mut certificate = tbs;
+        certificate.extend_from_slice(&algorithm);
+        certificate.extend_from_slice(&der(0x03, &signature));
+        der(0x30, &certificate)
+    }
+
+    #[test]
+    fn pinned_root_accepts_exact_chain_and_rejects_a_different_root() {
+        use openmls::credentials::{Credential, CredentialType};
+        use openmls::prelude::tls_codec::{Serialize as TlsSerialize, VLBytes};
+        use sha2::Digest;
+
+        use super::{CredentialTrustPolicy, DeviceCredentialInput, MlsError, Sha256};
+
+        let identity = lattice_identity::DeviceIdentity::generate()
+            .expect("test device identity generation succeeds");
+        let root_der = ca_certificate_for_identity(&identity);
+        let root_sha256: [u8; 32] = Sha256::digest(&root_der).into();
+        let policy = CredentialTrustPolicy::pinned_root_der(&root_der, &root_sha256)
+            .expect("valid caller-confirmed CA pin");
+        assert_eq!(policy.root_der(), Some(root_der.as_slice()));
+        assert_eq!(policy.sha256(), Some(&root_sha256));
+
+        let content = vec![VLBytes::new(certificate_for_identity(&identity))]
+            .tls_serialize_detached()
+            .expect("RFC 9420 certificate vector encodes");
+        let credential = Credential::new(CredentialType::X509, content);
+        DeviceCredentialInput::from_x509_credential_with_policy(&identity, credential, &policy)
+            .expect("leaf verifies against exact pinned root");
+
+        let other_identity = lattice_identity::DeviceIdentity::generate()
+            .expect("second test device identity generation succeeds");
+        let other_root = ca_certificate_for_identity(&other_identity);
+        let other_digest: [u8; 32] = Sha256::digest(&other_root).into();
+        let other_policy = CredentialTrustPolicy::pinned_root_der(&other_root, &other_digest)
+            .expect("second valid caller-confirmed CA pin");
+        let content = vec![VLBytes::new(certificate_for_identity(&identity))]
+            .tls_serialize_detached()
+            .expect("RFC 9420 certificate vector encodes");
+        let credential = Credential::new(CredentialType::X509, content);
+        assert_eq!(
+            DeviceCredentialInput::from_x509_credential_with_policy(
+                &identity,
+                credential,
+                &other_policy
+            )
+            .unwrap_err(),
+            MlsError::CredentialValidationFailed
+        );
+
+        assert_eq!(
+            CredentialTrustPolicy::pinned_root_der(&root_der, &[0; 32]).unwrap_err(),
+            MlsError::CredentialValidationFailed
+        );
+    }
+
+    #[test]
+    fn rejects_expired_non_ca_and_non_signing_root_pins() {
+        use sha2::Digest;
+
+        use super::{CredentialTrustPolicy, MlsError, Sha256};
+
+        let identity = lattice_identity::DeviceIdentity::generate()
+            .expect("test device identity generation succeeds");
+        let valid_root = ca_certificate_for_identity(&identity);
+        let replace = |mut certificate: Vec<u8>, old: &[u8], new: &[u8]| {
+            assert_eq!(old.len(), new.len());
+            let offset = certificate
+                .windows(old.len())
+                .position(|window| window == old)
+                .expect("test certificate contains target field");
+            certificate[offset..offset + old.len()].copy_from_slice(new);
+            certificate
+        };
+        let invalid_roots = [
+            replace(valid_root.clone(), b"490101000000Z", b"100101000000Z"),
+            replace(valid_root.clone(), &[0x01, 0x01, 0xff], &[0x01, 0x01, 0x00]),
+            replace(
+                valid_root,
+                &[0x03, 0x02, 0x02, 0x04],
+                &[0x03, 0x02, 0x02, 0x80],
+            ),
+        ];
+        for root_der in invalid_roots {
+            let digest: [u8; 32] = Sha256::digest(&root_der).into();
+            assert_eq!(
+                CredentialTrustPolicy::pinned_root_der(&root_der, &digest),
+                Err(MlsError::CredentialValidationFailed)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_critical_pinned_root_extension() {
+        use super::{MlsError, parse_root_extensions};
+
+        let mut extension = der(0x06, &[0x2a, 0x03]);
+        extension.extend_from_slice(&der(0x01, &[0xff]));
+        extension.extend_from_slice(&der(0x04, &[]));
+        let extensions = der(0xa3, &der(0x30, &der(0x30, &extension)));
+        let mut basic_constraints = None;
+        let mut key_usage = None;
+
+        assert_eq!(
+            parse_root_extensions(&extensions, &mut basic_constraints, &mut key_usage),
+            Err(MlsError::CredentialValidationFailed)
+        );
     }
 
     #[test]

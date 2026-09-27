@@ -1,6 +1,10 @@
-use std::io::{Read, Seek, Write};
+use std::{
+    future::Future,
+    io::{Read, Seek, Write},
+    time::Duration,
+};
 
-use lattice_crypto::NoiseRole;
+use lattice_crypto::{EstablishedNoiseTransportSession, NoiseRole};
 use lattice_files::{
     AttachmentError, AttachmentManifest, AttachmentTransferId, CHUNK_SIZE, ChunkRange,
     StreamedAttachmentReceiver,
@@ -29,6 +33,8 @@ const FRAME_HEADER_BYTES: usize = 4 + 1 + 1 + 32;
 
 const CHUNK_FRAME_OVERHEAD: usize = FRAME_HEADER_BYTES + 4 + 4;
 
+const ATTACHMENT_PEER_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Failure while authenticating, authorizing, or resuming one attachment transfer.
 #[derive(Debug, Error)]
 pub enum AuthenticatedAttachmentError {
@@ -38,6 +44,9 @@ pub enum AuthenticatedAttachmentError {
     /// The transfer manifest or staged chunk failed its integrity or I/O checks.
     #[error(transparent)]
     Attachment(#[from] AttachmentError),
+    /// A TCP peer did not complete pinned authentication and send its offer in time.
+    #[error("attachment peer authentication timed out")]
+    PeerAuthenticationTimeout,
     /// The authenticated peer is not authorized for this event and manifest.
     #[error("authenticated peer is not authorized for this attachment")]
     PeerUnauthorized,
@@ -194,6 +203,36 @@ where
     })
 }
 
+async fn authenticate_attachment_offer<A: TransportAdapter + ?Sized>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    event_id: &[u8; 32],
+    manifest: &AttachmentManifest,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        EstablishedNoiseTransportSession,
+        AttachmentTransferId,
+        Vec<u8>,
+    ),
+    AuthenticatedAttachmentError,
+> {
+    let transfer_id = manifest.transfer_id(event_id)?;
+    let mut channel = establish_authenticated_channel_with_protocol(
+        adapter,
+        local_identity,
+        pinned_peer,
+        NoiseRole::Responder,
+        cancellation,
+        TRANSFER_PROLOGUE,
+        TRANSFER_PROOF_DOMAIN,
+    )
+    .await?;
+    let offer = receive_decrypted(adapter, &mut channel, cancellation).await?;
+    Ok((channel, transfer_id, offer))
+}
+
 /// Receives and resumes a previously authorized manifest after explicit consent.
 ///
 /// The caller supplies the manifest from its authenticated Space policy path,
@@ -209,7 +248,7 @@ where
 /// authorization or consent denial, corrupt chunks, incomplete transfer, storage,
 /// frame, transport, or Noise errors.
 #[allow(clippy::too_many_arguments)] // Keeps transport, peer, consent, and staging gates explicit.
-pub async fn receive_authenticated_attachment_once<A, S, Z, C>(
+pub async fn receive_authenticated_attachment_once<A, S, Z, C, Consent>(
     adapter: &A,
     local_identity: &DeviceIdentity,
     pinned_peer: PinnedIdentity,
@@ -224,23 +263,25 @@ where
     A: TransportAdapter + ?Sized,
     S: Read + Write + Seek,
     Z: FnMut(&PinnedIdentity, &[u8; 32], &AttachmentManifest) -> bool,
-    C: FnOnce(&PinnedIdentity, &AttachmentManifest) -> bool,
+    C: FnOnce(&PinnedIdentity, &AttachmentManifest) -> Consent,
+    Consent: Future<Output = bool>,
 {
     if receiver.manifest() != manifest {
         return Err(AuthenticatedAttachmentError::ReceiverManifestMismatch);
     }
-    let mut channel = establish_authenticated_channel_with_protocol(
-        adapter,
-        local_identity,
-        pinned_peer,
-        NoiseRole::Responder,
-        cancellation,
-        TRANSFER_PROLOGUE,
-        TRANSFER_PROOF_DOMAIN,
+    let (mut channel, transfer_id, offer) = tokio::time::timeout(
+        ATTACHMENT_PEER_AUTH_TIMEOUT,
+        authenticate_attachment_offer(
+            adapter,
+            local_identity,
+            pinned_peer,
+            &event_id,
+            manifest,
+            cancellation,
+        ),
     )
-    .await?;
-    let transfer_id = manifest.transfer_id(&event_id)?;
-    let offer = receive_decrypted(adapter, &mut channel, cancellation).await?;
+    .await
+    .map_err(|_| AuthenticatedAttachmentError::PeerAuthenticationTimeout)??;
     if offer.len() >= FRAME_HEADER_BYTES && offer[5] == REJECT {
         validate_frame(&offer, REJECT, transfer_id)?;
         return Err(AuthenticatedAttachmentError::TransferRejected);
@@ -266,7 +307,7 @@ where
         .await?;
         return Err(AuthenticatedAttachmentError::PeerUnauthorized);
     }
-    if !accept_consent(&pinned_peer, manifest) {
+    if !accept_consent(&pinned_peer, manifest).await {
         receiver.reject()?;
         send_encrypted(
             adapter,
@@ -547,7 +588,9 @@ mod tests {
                     && candidate_manifest == &manifest
             },
             |peer, candidate_manifest| {
-                peer.fingerprint() == alice_fingerprint && candidate_manifest == &manifest
+                let accepted =
+                    peer.fingerprint() == alice_fingerprint && candidate_manifest == &manifest;
+                async move { accepted }
             },
             &receiver_cancellation,
         );
@@ -627,7 +670,7 @@ mod tests {
                     &manifest,
                     &mut staging_receiver,
                     |peer, _, _| peer.fingerprint() == alice_fingerprint,
-                    |_, _| false,
+                    |_, _| async { false },
                     &receiver_cancellation,
                 ),
             )
@@ -642,5 +685,53 @@ mod tests {
             recv_result,
             Err(AuthenticatedAttachmentError::TransferRejected)
         ));
+    }
+    #[tokio::test]
+    async fn unauthenticated_peer_that_sends_nothing_times_out() {
+        let alice = DeviceIdentity::generate().expect("generate expected sender");
+        let bob = DeviceIdentity::generate().expect("generate local receiver");
+        let alice_fingerprint = alice.fingerprint();
+        let pinned_alice =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin expected sender");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind unauthenticated peer test path");
+        let endpoint = listener.local_addr().expect("read listener endpoint");
+        let (adapter_result, accepted_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let adapter = adapter_result.expect("connect silent peer");
+        let (receiver_adapter, _) = accepted_result.expect("accept silent peer");
+        let manifest =
+            AttachmentManifest::from_reader(&mut Cursor::new(b"silent peer"), "silent.bin", None)
+                .expect("build manifest");
+        let mut receiver = StreamedAttachmentReceiver::new(
+            manifest.clone(),
+            MAX_FILE_SIZE,
+            Cursor::new(Vec::new()),
+        )
+        .expect("create receiver");
+        let error = tokio::time::timeout(
+            Duration::from_secs(12),
+            receive_authenticated_attachment_once(
+                &receiver_adapter,
+                &bob,
+                pinned_alice,
+                [0x93; 32],
+                &manifest,
+                &mut receiver,
+                |_, _, _| true,
+                |_, _| async { true },
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("authentication timeout is shorter than the transfer timeout")
+        .expect_err("silent unpinned socket cannot authenticate");
+        assert!(matches!(
+            error,
+            AuthenticatedAttachmentError::PeerAuthenticationTimeout
+        ));
+        drop(adapter);
     }
 }

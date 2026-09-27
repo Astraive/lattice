@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type FormEvent, useState } from "react";
+import { LocalSyncPanel } from "./LocalSyncPanel";
 
 type LocalChannelSummary = {
   id: string;
@@ -53,6 +54,20 @@ type AttachmentCacheStatus = {
   storedBytes: number;
   storedFiles: number;
 };
+type AttachmentTransferSummary = {
+  state: "peer_integrity_verified" | "received_and_exported";
+  eventId: string;
+  authenticatedPeerFingerprint: string;
+  fileName: string;
+  fileSize: number;
+  chunksTransferred: number;
+  integrityVerified: boolean;
+  exportedLocally: boolean;
+  stagingRemoved: boolean;
+  cleanupWarning: string | null;
+  recipientDeliveryClaimed: false;
+  networkContacted: true;
+};
 
 type LocalTextMessage = {
   eventId: string;
@@ -77,13 +92,21 @@ type LocalSpaceImport = {
   networkContacted: false;
 };
 
+type LocalSpaceKeyPackage = {
+  state: "one_time_key_package_published";
+  keyPackageHex: string;
+  privateKeyPackageRetainedLocally: true;
+  networkContacted: false;
+};
+
 const MAX_BOOTSTRAP_HEX_LENGTH = 1024 * 1024 * 2;
 const INVITER_FINGERPRINT_HEX_LENGTH = 32 * 2;
+const MAX_KEY_PACKAGE_HEX_LENGTH = 1024 * 1024 * 2;
 
 function localOutboxLabel(state: LocalTextMessage["outboxState"]): string {
-  if (state === "queued") return "queued locally · no network delivery";
+  if (state === "queued") return "queued locally · event may be shared by explicit sync";
   if (state === null) return "retained locally · no outbox status";
-  return "local outbox marker recorded · transport and recipient delivery unavailable";
+  return "local outbox marker only · sync and recipient delivery are not tracked";
 }
 
 type LocalSpaceBrowserProps = {
@@ -118,6 +141,15 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
   const [attachmentCacheBytes, setAttachmentCacheBytes] = useState<number | null>(null);
   const [attachmentCacheBusy, setAttachmentCacheBusy] = useState(false);
   const [attachmentCacheError, setAttachmentCacheError] = useState<string | null>(null);
+  const [attachmentEventId, setAttachmentEventId] = useState("");
+  const [attachmentPeerFingerprint, setAttachmentPeerFingerprint] = useState("");
+  const [attachmentConnectAddress, setAttachmentConnectAddress] = useState("");
+  const [attachmentListenAddress, setAttachmentListenAddress] = useState("127.0.0.1:7332");
+  const [attachmentTransferBusy, setAttachmentTransferBusy] = useState(false);
+  const [attachmentTransferNotice, setAttachmentTransferNotice] = useState<{
+    kind: "status" | "error";
+    message: string;
+  } | null>(null);
   async function loadHistory() {
     const requestedChannel = channelId;
     setHistoryBusy(true);
@@ -209,6 +241,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
 
   async function queueFileAttachment() {
     setBusy(true);
+    setAttachmentEventId("");
     setFeedback(null);
     setEventId(null);
     try {
@@ -219,9 +252,10 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
         channelIdHex: channelId,
       });
       if (!queued) return;
+      setAttachmentEventId(queued.eventId);
       setEventId(queued.eventId);
       setFeedback(
-        `${queued.fileName} (${queued.fileSize} bytes, ${queued.chunkCount} chunks) was queued locally. Its source copy is retained for a future transfer; no network or recipient delivery was attempted.`,
+        `${queued.fileName} (${queued.fileSize} bytes, ${queued.chunkCount} chunks) was queued locally. Its content-addressed source copy is retained; use the transfer panel with the event ID and exact peer pin to send it. No network or recipient delivery was attempted yet.`,
       );
     } catch (cause) {
       setFeedback(
@@ -278,6 +312,61 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
     }
   }
 
+  async function sendAttachment() {
+    setAttachmentTransferBusy(true);
+    setAttachmentTransferNotice(null);
+    try {
+      const result = await invoke<AttachmentTransferSummary>("send_authorized_attachment_once", {
+        connectAddress: attachmentConnectAddress,
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        eventIdHex: attachmentEventId.trim(),
+        peerFingerprintHex: attachmentPeerFingerprint.trim(),
+      });
+      setAttachmentTransferNotice({
+        kind: "status",
+        message: `Pinned peer ${result.authenticatedPeerFingerprint} verified ${result.fileName} (${result.fileSize} bytes) across ${result.chunksTransferred} chunk(s). This is not recipient-delivery proof.`,
+      });
+    } catch (cause) {
+      setAttachmentTransferNotice({
+        kind: "error",
+        message: `Attachment send failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    } finally {
+      setAttachmentTransferBusy(false);
+    }
+  }
+
+  async function receiveAttachment() {
+    setAttachmentTransferBusy(true);
+    setAttachmentTransferNotice(null);
+    try {
+      const result = await invoke<AttachmentTransferSummary | null>(
+        "receive_authorized_attachment_once",
+        {
+          listenAddress: attachmentListenAddress,
+          spaceIdHex: space.spaceId,
+          groupReferenceHex: space.groupReference,
+          eventIdHex: attachmentEventId.trim(),
+          peerFingerprintHex: attachmentPeerFingerprint.trim(),
+        },
+      );
+      setAttachmentTransferNotice({
+        kind: "status",
+        message: result
+          ? `${result.fileName} (${result.fileSize} bytes) was integrity-verified and exported locally. No remote receipt or recipient delivery is claimed.${result.cleanupWarning ? ` ${result.cleanupWarning}` : ""}`
+          : "Export selection cancelled; no attachment connection was opened.",
+      });
+    } catch (cause) {
+      setAttachmentTransferNotice({
+        kind: "error",
+        message: `Attachment receive failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    } finally {
+      setAttachmentTransferBusy(false);
+    }
+  }
+
   function beginEdit(message: LocalTextMessage) {
     setEditTarget(message.eventId);
     setContent(message.content);
@@ -291,7 +380,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
       <p>
         {editTarget
           ? "The edit is a new encrypted event; the original event remains unchanged."
-          : "Local encrypted commit only. No network send or delivery claim."}
+          : "Local encrypted commit only. Explicit pinned-peer sync below exchanges event history; there is no recipient-delivery receipt."}
       </p>
       {channels.length === 0 ? (
         <p>This Space has no active text or announcement channels.</p>
@@ -343,8 +432,9 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
             </button>
           )}
           <p>
-            Attachments are capped at 128 MiB per file and 512 MiB in the local source cache.
-            Selected file bytes are retained locally; transfer is not available in this client.
+            Attachments are capped at 128 MiB per file and 512 MiB in the local source cache. The
+            selected file is retained locally; send/receive requires an exact pinned peer and an
+            already authorized manifest on both devices.
           </p>
           <section className="local-message-history" aria-label="Retained attachment source cache">
             <div>
@@ -389,6 +479,88 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               </ul>
             )}
           </section>
+          <section className="local-message-history" aria-label="Authenticated attachment transfer">
+            <h4>Authenticated attachment transfer</h4>
+            <p>
+              The sender and receiver must already have this authorized manifest in the same Space
+              generation and must pin each other’s exact device fingerprint. Run the receiver first.
+              The receiver selects an export path, authenticates the sender, then asks for consent
+              before accepting bytes. Transfers time out after 30 minutes.
+            </p>
+            <label htmlFor="attachment-transfer-event-id">Authorized attachment event ID</label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-event-id"
+              maxLength={64}
+              onChange={(event) => setAttachmentEventId(event.target.value.trim())}
+              spellCheck={false}
+              value={attachmentEventId}
+            />
+            <label htmlFor="attachment-transfer-peer-pin">
+              Exact pinned peer fingerprint (64 hex characters)
+            </label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-peer-pin"
+              maxLength={64}
+              onChange={(event) => setAttachmentPeerFingerprint(event.target.value.trim())}
+              spellCheck={false}
+              value={attachmentPeerFingerprint}
+            />
+            <label htmlFor="attachment-transfer-connect-address">Peer TCP address</label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-connect-address"
+              maxLength={128}
+              onChange={(event) => setAttachmentConnectAddress(event.target.value.trim())}
+              placeholder="192.168.1.20:7332"
+              spellCheck={false}
+              value={attachmentConnectAddress}
+            />
+            <button
+              type="button"
+              disabled={
+                attachmentTransferBusy ||
+                attachmentEventId.length !== 64 ||
+                attachmentPeerFingerprint.length !== 64 ||
+                attachmentConnectAddress.length === 0
+              }
+              onClick={() => void sendAttachment()}
+            >
+              {attachmentTransferBusy ? "Transferring…" : "Send authorized attachment"}
+            </button>
+            <label htmlFor="attachment-transfer-listen-address">Local TCP listen address</label>
+            <input
+              autoComplete="off"
+              id="attachment-transfer-listen-address"
+              maxLength={128}
+              onChange={(event) => setAttachmentListenAddress(event.target.value.trim())}
+              spellCheck={false}
+              value={attachmentListenAddress}
+            />
+            <button
+              type="button"
+              disabled={
+                attachmentTransferBusy ||
+                attachmentEventId.length !== 64 ||
+                attachmentPeerFingerprint.length !== 64 ||
+                attachmentListenAddress.length === 0
+              }
+              onClick={() => void receiveAttachment()}
+            >
+              {attachmentTransferBusy ? "Transferring…" : "Receive and export attachment"}
+            </button>
+            <p>
+              The local address must be reachable by the sender; firewall and network reachability
+              are not tested. Source bytes stay local on send; received bytes are staged privately
+              and exported only after chunk and whole-file integrity verification.
+            </p>
+            {attachmentTransferNotice && (
+              <p role={attachmentTransferNotice.kind === "status" ? "status" : "alert"}>
+                {attachmentTransferNotice.message}
+              </p>
+            )}
+          </section>
           {editTarget && (
             <button
               type="button"
@@ -407,8 +579,8 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               <h4>Recent local messages</h4>
               <p>
                 Newest 100 locally retained messages for this channel, including authorized incoming
-                messages. Outbox markers describe local state only; this client has no network
-                forwarding or recipient-delivery engine.
+                events. Events can be exchanged by explicit authenticated sync below; outbox markers
+                describe local state, not sync completion or recipient delivery.
               </p>
             </div>
             <button type="button" disabled={historyBusy} onClick={() => void loadHistory()}>
@@ -560,6 +732,54 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [imported, setImported] = useState<LocalSpaceImport | null>(null);
+  const [keyPackageCredentialHex, setKeyPackageCredentialHex] = useState("");
+  const [keyPackageBusy, setKeyPackageBusy] = useState(false);
+  const [keyPackageError, setKeyPackageError] = useState<string | null>(null);
+  const [keyPackageResult, setKeyPackageResult] = useState<LocalSpaceKeyPackage | null>(null);
+  const [keyPackageCopyStatus, setKeyPackageCopyStatus] = useState("");
+
+  async function publishKeyPackage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const credential = keyPackageCredentialHex.trim();
+    if (
+      credential.length === 0 ||
+      credential.length > MAX_CREDENTIAL_HEX_LENGTH ||
+      credential.length % 2 !== 0 ||
+      !/^[\da-f]+$/i.test(credential)
+    ) {
+      setKeyPackageError("Enter a bounded, even-length hexadecimal X.509 credential vector.");
+      setKeyPackageResult(null);
+      return;
+    }
+    setKeyPackageBusy(true);
+    setKeyPackageError(null);
+    setKeyPackageResult(null);
+    setKeyPackageCopyStatus("");
+    try {
+      const result = await invoke<LocalSpaceKeyPackage>("publish_local_space_key_package", {
+        credentialVectorHex: credential,
+      });
+      setKeyPackageResult(result);
+    } catch (cause) {
+      setKeyPackageError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setKeyPackageBusy(false);
+    }
+  }
+
+  async function copyPublishedKeyPackage() {
+    if (!keyPackageResult) return;
+    try {
+      await navigator.clipboard.writeText(keyPackageResult.keyPackageHex);
+      setKeyPackageCopyStatus("KeyPackage copied. Its private package remains in this profile.");
+    } catch (cause) {
+      setKeyPackageCopyStatus(
+        cause instanceof Error
+          ? `Copy failed: ${cause.message}. Select and copy the public KeyPackage bytes.`
+          : "Copy failed. Select and copy the public KeyPackage bytes.",
+      );
+    }
+  }
 
   async function runSpacesCommand(after: string | null = null) {
     setSpacesBusy(true);
@@ -614,7 +834,7 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
     <section
       className="space-browser"
       aria-labelledby="spaces-title"
-      aria-busy={spacesBusy || importBusy}
+      aria-busy={spacesBusy || importBusy || keyPackageBusy}
     >
       <div className="space-browser-heading">
         <div>
@@ -640,6 +860,63 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
           </button>
         )}
       </div>
+      {runtimeAvailable && (
+        <form className="identity-pin-fields" onSubmit={(event) => void publishKeyPackage(event)}>
+          <h4>Publish a one-time KeyPackage</h4>
+          <p>
+            The validated package can be given to an inviter. Its matching private material stays in
+            this protected profile; publishing it does not contact a peer or join a Space.
+          </p>
+          <label htmlFor="space-key-package-credential">Local X.509 credential vector (hex)</label>
+          <textarea
+            id="space-key-package-credential"
+            autoComplete="off"
+            maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+            disabled={keyPackageBusy}
+            value={keyPackageCredentialHex}
+            onChange={(event) => {
+              setKeyPackageCredentialHex(event.currentTarget.value);
+              setKeyPackageError(null);
+              setKeyPackageResult(null);
+            }}
+            spellCheck={false}
+          />
+          <p>Maximum credential size: 16 KiB before hex encoding.</p>
+          <button
+            type="submit"
+            disabled={
+              keyPackageBusy ||
+              keyPackageCredentialHex.trim().length === 0 ||
+              keyPackageCredentialHex.trim().length > MAX_CREDENTIAL_HEX_LENGTH ||
+              keyPackageCredentialHex.trim().length % 2 !== 0 ||
+              !/^[\da-f]+$/i.test(keyPackageCredentialHex.trim())
+            }
+          >
+            {keyPackageBusy ? "Publishing locally…" : "Publish one-time KeyPackage"}
+          </button>
+          {keyPackageError && <p role="alert">Could not publish KeyPackage: {keyPackageError}</p>}
+          {keyPackageResult && (
+            <div className="identity-status" role="status" aria-live="polite">
+              <p>
+                One-time KeyPackage published locally. Share these public bytes with the inviter; no
+                network was contacted.
+              </p>
+              <textarea
+                aria-label="Published public KeyPackage bytes in hexadecimal"
+                maxLength={MAX_KEY_PACKAGE_HEX_LENGTH}
+                onFocus={(event) => event.currentTarget.select()}
+                readOnly
+                spellCheck={false}
+                value={keyPackageResult.keyPackageHex}
+              />
+              <button type="button" onClick={() => void copyPublishedKeyPackage()}>
+                Copy KeyPackage
+              </button>
+              <p>{keyPackageCopyStatus}</p>
+            </div>
+          )}
+        </form>
+      )}
       {runtimeAvailable && (
         <form
           className="identity-pin-fields"
@@ -760,6 +1037,9 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
                 ))}
               </div>
               {runtimeAvailable && <LocalMessageComposer space={space} />}
+              {runtimeAvailable && (
+                <LocalSyncPanel spaceId={space.spaceId} groupReference={space.groupReference} />
+              )}
               {runtimeAvailable && <LocalSpaceRecovery space={space} />}
             </li>
           ))}

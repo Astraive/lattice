@@ -562,6 +562,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_exact_string_collection_and_nesting_limits() {
+        let maximum_string = Value::Bytes(vec![0; MAX_STRING_BYTES]);
+        let encoded_string = encode_canonical(&maximum_string).expect("maximum string encodes");
+        assert_eq!(decode_canonical(&encoded_string), Ok(maximum_string));
+
+        let maximum_array = Value::Array(vec![Value::Null; MAX_COLLECTION_ITEMS]);
+        let encoded_array = encode_canonical(&maximum_array).expect("maximum array encodes");
+        assert_eq!(decode_canonical(&encoded_array), Ok(maximum_array));
+
+        let mut maximum_nesting = Value::Null;
+        for _ in 0..MAX_NESTING_DEPTH {
+            maximum_nesting = Value::Array(vec![maximum_nesting]);
+        }
+        let encoded_nesting = encode_canonical(&maximum_nesting).expect("maximum nesting encodes");
+        assert_eq!(decode_canonical(&encoded_nesting), Ok(maximum_nesting));
+    }
+
+    #[test]
     fn hostile_byte_corpus_is_panic_free_and_decodes_only_canonical_values() {
         let canonical_seeds: &[&[u8]] = &[
             &[0xa1, 0x00, 0x01],

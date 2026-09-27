@@ -5,6 +5,7 @@ mod peer;
 mod relay;
 mod space;
 mod sync;
+mod web_sync;
 
 use identity::{
     IdentityCommand, certificate_request_pem, print_pinned_identity, write_certificate_request_pem,
@@ -243,6 +244,7 @@ fn error_code(error: &(dyn Error + 'static)) -> &'static str {
             relay::RelayConfigError::InvalidSettings => "LOCAL_CONFIG_INVALID",
             relay::RelayConfigError::SettingsLimit => "LIMIT_EXCEEDED",
             relay::RelayConfigError::HashCollision => "LOCAL_CONFIG_CONFLICT",
+            relay::RelayConfigError::Io(_) => "IO_ERROR",
         };
     }
     if error

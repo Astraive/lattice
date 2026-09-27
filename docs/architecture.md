@@ -2,7 +2,7 @@
 
 > **Status:** Proposed architecture, implementation baseline; not a claim of a working or audited system.
 > **Version:** 0.1 · 22 September 2026
-> **Scope:** Android, desktop, CLI, optional persistent nodes, and interoperable protocol. iOS implementation, verification and support claims are out of current delivery scope.
+> **Scope:** Android, desktop, CLI, optional persistent nodes, and interoperable protocol; an experimental browser client now implements local profiles and same-origin profile-to-profile messaging, but is not a supported or release-ready client. iOS implementation, verification and support claims are out of current delivery scope.
 > **Companion:** Lattice engineering specification (`spec.md`), versioned `protocol/specs/*`, and `docs/decisions/ADR-*.md`.
 > **Source material:** The supplied `spec (1).md` and `spec(4).md`. The first preserves fuller inline citations; the second identifies itself as the engineering source of truth. Differences and unresolved semantics are recorded here rather than silently decided.
 
@@ -21,7 +21,7 @@ The organization follows the concerns in [arc42](https://arc42.org/overview/)—
 | Status | Meaning | Example |
 | --- | --- | --- |
 | **Baseline** | Adopted architectural direction; implementation still pending | Rust core, native mobile, transport-independent event IDs |
-| **Profile draft** | Concrete candidate that needs vectors/interoperability review | Deterministic CBOR layout, BLE GATT UUIDs, Nostr relay kind |
+| **Profile draft** | Concrete candidate that needs vectors/interoperability review | Deterministic CBOR layout; experimental BLE service, discovery, and first-contact handshake values; release vectors and interoperability remain open |
 | **Open** | Cannot be treated as complete until an ADR and tests exist | MLS concurrent Commit policy, private-channel key isolation |
 | **Deferred** | Outside first interoperable release | Large-room SFU, video, public directory, multi-device user account |
 
@@ -78,13 +78,14 @@ I-03 and convergence depend on settling the MLS and policy-conflict profile in �
 
 ## 3. System shape and application topology
 
-Each in-scope product surface uses the same protocol domain. Android is the native mobile application because BLE roles, Wi-Fi peer APIs, background policy, notifications and audio are central to the product. Desktop embeds the Rust core in a Tauri v2 process and uses React/TypeScript/Vite for presentation. The Rust CLI works without a JavaScript runtime. Cargo owns Rust workspaces; Bun workspaces and Turborepo coordinate desktop/design/TypeScript scripts; Gradle owns Android builds. [UniFFI](https://mozilla.github.io/uniffi-rs/) supplies generated Kotlin bindings; [Tauri's architecture](https://v2.tauri.app/concept/architecture/) supplies the desktop boundary.
+Android is the native mobile application because BLE roles, Wi-Fi peer APIs, background policy, notifications and audio are central to the product. Desktop embeds the Rust core in a Tauri v2 process and uses React/TypeScript/Vite for presentation. The Rust CLI works without a JavaScript runtime. `apps/web` contains an experimental TypeScript UI and Rust/WASM worker with OPFS persistence, pinned-issuer enrollment, offline Welcome import and same-origin message exchange; browser-to-native networking, broad browser compatibility and release acceptance remain unimplemented. Cargo owns Rust workspaces; Bun workspaces and Turborepo coordinate desktop/design/TypeScript scripts; Gradle owns Android builds. [UniFFI](https://mozilla.github.io/uniffi-rs/) supplies generated Kotlin bindings; [Tauri's architecture](https://v2.tauri.app/concept/architecture/) supplies…
 
 ```mermaid
 flowchart TB
     A["Android Compose"] --> F["Core facade"]
     D["Tauri desktop"] --> F
     C["Rust CLI or node"] --> F
+    W["Experimental browser Worker/WASM"] --> F
     F --> P["Protocol and policy"]
     F --> S["Storage and sync"]
     F --> R["Routing and transports"]
@@ -111,6 +112,16 @@ The facade receives coarse commands and publishes state snapshots/streams. It do
 
 The dependency direction is platform/UI → facade → domain policy and services → ports → platform adapters. To avoid crate cycles, foundational `protocol`/`crypto` types do not depend on `core`, `storage`, or the apps. `voice` owns call state while native media engines own microphone, audio session, and peer connections.
 
+### Browser client boundary — implemented prototype
+
+The browser target reuses Rust protocol, event authorization and MLS semantics; canonical event rules remain in Rust rather than TypeScript. `apps/web` owns the presentation and browser lifecycle. A dedicated Web Worker owns the WASM instance, profile lock, storage connection and serialized Core operations; the UI communicates with typed coarse requests. Each browser profile has a dedicated SQLite connection in an OPFS directory derived from its profile ID. Distinct profiles can be open concurrently; browser locks exclude a second tab from the same profile. The storage contract does not support shared-memory WAL or cross-connection locking.
+
+The worker opens SQLite through the OPFS Sync Access Handle Pool VFS and uses a non-extractable Web Crypto wrapping key scoped to the origin/profile. Private signing material remains inside the worker while unlocked; the UI never receives it. This is not equivalent to Android hardware-backed storage or a desktop OS keychain. A Chromium smoke verified concurrent distinct profiles, offline issuer-pinned enrollment, Welcome import after separately pinning the inviter's full identity fingerprint, bidirectional signed MLS message exchange, and message history after page reload. That does not verify crash recovery, quota behavior, same-profile contention, supported-browser compatibility, or independent review.
+
+The Web carrier includes same-origin `BroadcastChannel` and manually signaled WebRTC between browser profiles, plus a one-session Web-to-CLI loopback WebSocket bridge. All carry canonical signed event bytes; both receiver Cores validate identity, Space generation, MLS state and authorization before projection. The browser outbox reconciliation is bounded to 256 KiB frames and 16 MiB per session; event identity makes replay idempotent. WebRTC has no default signaling or STUN/TURN service; ICE servers are optional and explicitly entered. The CLI bridge pairs with a one-time token and exact HTTP Origin, accepts only loopback peers, and binds one selected Space generation. It uses plaintext `ws://` and is unavailable to HTTPS-hosted pages. Welcome and identity artifacts still move manually and require out-of-band fingerprint verification.
+
+Managed Chromium verified both directions of the browser↔CLI loopback bridge through normal Core paths, in addition to browser-local BroadcastChannel and WebRTC smoke. This does not establish a general browser-to-native transport: there is no Desktop or Android adapter, secure WebSocket relay, HTTPS-compatible bridge, Internet NAT traversal, other browser engine, OPFS crash/quota/rollback behavior, accessibility, or release readiness. These remain required before Web can be called supported.
+
 ## 4. Repository architecture
 
 The target repository is a monorepo with independently versionable protocol documents and one Rust core. Paths describe ownership, not an assertion that they already exist.
@@ -120,6 +131,7 @@ lattice/
 ├── apps/
 │   ├── android/                 # Kotlin, Compose, Gradle, radio/audio adapters
 │   ├── ios/                     # retained future-reference tree; outside current release scope
+│   ├── web/                     # experimental browser UI and Rust/WASM worker; release gates remain
 │   ├── desktop/                 # Tauri v2, React, TypeScript, Vite
 │   └── cli/                     # CLI packaging/docs; binary in crates/
 ├── crates/

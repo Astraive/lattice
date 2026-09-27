@@ -11,6 +11,17 @@ use crate::{Client, CoreError, CreatedSpace, space, store_received_event};
 pub const MAX_SPACE_WELCOME_BOOTSTRAP_BYTES: usize = 1_048_576;
 const MAX_GROUP_ID_BYTES: usize = 256;
 const BOOTSTRAP_SIGNATURE_DOMAIN: &[u8] = b"lattice:space-welcome-bootstrap:v1\0";
+#[derive(Clone, Copy)]
+pub(crate) struct SpaceWelcomeEvidence<'a> {
+    pub(crate) welcome_wire: &'a [u8],
+    pub(crate) genesis_plaintext: &'a [u8],
+    pub(crate) invite_event: &'a VerifiedSignatureOnlyEvent,
+    pub(crate) invite_plaintext: &'a [u8],
+    pub(crate) head_events: &'a [VerifiedSignatureOnlyEvent],
+    pub(crate) last_control_event: Option<&'a VerifiedSignatureOnlyEvent>,
+    pub(crate) target: [u8; 32],
+    pub(crate) epoch: u64,
+}
 
 /// Version-one application package binding a validated MLS Welcome to a signed
 /// Space policy checkpoint.
@@ -98,6 +109,9 @@ impl SpaceWelcomeBootstrapV1 {
                 .enumerate()
                 .any(|(index, (key, _))| *key != index as u64)
         {
+            return Err(CoreError::SpaceWelcomeBootstrapInvalid);
+        }
+        if take_unsigned(fields.first().map(|(_, value)| value))? != 1 {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
         let signature = take_fixed::<64>(fields.pop().map(|(_, value)| value))?;
@@ -313,9 +327,6 @@ impl Client {
         invite_event: &VerifiedSignatureOnlyEvent,
         invite_plaintext: &[u8],
     ) -> Result<Vec<u8>, CoreError> {
-        if welcome_wire.is_empty() || welcome_wire.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
-            return Err(CoreError::SpaceWelcomeBootstrapInvalid);
-        }
         let policy = joined_space
             .reducer
             .policy()
@@ -358,7 +369,6 @@ impl Client {
             lattice_mls::unprotect_local_record(&root_context, &encrypted_state)
                 .map_err(CoreError::from)
         })?;
-
         let mut head_events = Vec::with_capacity(policy.heads.len());
         for head in &policy.heads {
             let record = self
@@ -389,59 +399,95 @@ impl Client {
         } else {
             None
         };
-        let group_id = joined_space.group_id.clone();
-        let expected_group_reference = joined_space.group_reference;
         let expected_epoch = u64::try_from(transition_snapshots.len())
             .map_err(|_| CoreError::SpaceWelcomeBootstrapInvalid)?;
-        self.with_mls_transaction(move |_, provider, _| {
-            let group = GroupState::load(provider, &group_id)?;
-            validate_group_roster(&group, policy)?;
-            if group.group_reference() != expected_group_reference
-                || group.epoch() != expected_epoch
-                || !group.contains_member_identity(&target)
-            {
-                return Err(CoreError::SpaceWelcomeBootstrapInvalid);
-            }
-            Ok(())
-        })?;
-        let snapshot_bytes = crate::bootstrap_snapshot::encode_policy_snapshot(policy)?;
-        let head_event_bytes = head_events
-            .iter()
-            .map(|event| event.encoded_bytes().to_vec())
-            .collect();
-        let last_control_bytes = last_control_event
-            .as_ref()
-            .map(|event| event.encoded_bytes().to_vec());
+        let group_id = joined_space.group_id.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        self.with_mls_transaction(move |identity, provider, _| {
+            let group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
+            Self::build_space_welcome_bootstrap(
+                identity,
+                joined_space,
+                &group,
+                &SpaceWelcomeEvidence {
+                    welcome_wire,
+                    genesis_plaintext: &genesis_plaintext,
+                    invite_event,
+                    invite_plaintext,
+                    head_events: &head_events,
+                    last_control_event: last_control_event.as_ref(),
+                    target,
+                    epoch: expected_epoch,
+                },
+            )
+        })
+    }
+
+    pub(crate) fn build_space_welcome_bootstrap(
+        identity: &DeviceIdentity,
+        joined_space: &CreatedSpace,
+        group: &GroupState,
+        evidence: &SpaceWelcomeEvidence<'_>,
+    ) -> Result<Vec<u8>, CoreError> {
+        let SpaceWelcomeEvidence {
+            welcome_wire,
+            genesis_plaintext,
+            invite_event,
+            invite_plaintext,
+            head_events,
+            last_control_event,
+            target,
+            epoch,
+        } = *evidence;
+        if welcome_wire.is_empty() || welcome_wire.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
+            return Err(CoreError::SpaceWelcomeBootstrapInvalid);
+        }
+        let policy = joined_space
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceWelcomeBootstrapInvalid)?;
+        let inviter = identity.fingerprint();
+        if group.group_reference() != joined_space.group_reference
+            || group.epoch() != epoch
+            || !group.contains_member_identity(&target)
+        {
+            return Err(CoreError::SpaceWelcomeBootstrapInvalid);
+        }
+        validate_group_roster(group, policy)?;
         let reducer = space::SpaceReducer::from_welcome_bootstrap(
             &joined_space.genesis_event,
-            &genesis_plaintext,
+            genesis_plaintext,
             policy.clone(),
             invite_event,
             invite_plaintext,
-            &head_events,
-            last_control_event.as_ref(),
+            head_events,
+            last_control_event,
             &inviter,
             &target,
-            expected_epoch,
+            epoch,
         )
         .map_err(|_| CoreError::SpaceWelcomeBootstrapInvalid)?;
         if reducer.policy() != Some(policy) {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
         let package = SpaceWelcomeBootstrapV1::sign(
-            &self.identity,
+            identity,
             joined_space.space_id,
             joined_space.group_id.clone(),
             joined_space.group_reference,
-            expected_epoch,
+            epoch,
             welcome_wire.to_vec(),
             joined_space.genesis_event.encoded_bytes().to_vec(),
-            genesis_plaintext,
-            snapshot_bytes,
+            genesis_plaintext.to_vec(),
+            crate::bootstrap_snapshot::encode_policy_snapshot(policy)?,
             invite_event.encoded_bytes().to_vec(),
             invite_plaintext.to_vec(),
-            head_event_bytes,
-            last_control_bytes,
+            head_events
+                .iter()
+                .map(|event| event.encoded_bytes().to_vec())
+                .collect(),
+            last_control_event.map(|event| event.encoded_bytes().to_vec()),
         )?;
         package.to_bytes()
     }
@@ -460,6 +506,7 @@ impl Client {
         expected_inviter: [u8; 32],
         credential: &DeviceCredentialInput,
     ) -> Result<CreatedSpace, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
         let package = SpaceWelcomeBootstrapV1::from_bytes(package_bytes)?;
         let inviter = package.inviter_fingerprint()?;
         let Some(pinned) = self.pinned_identity(&expected_inviter)? else {
@@ -619,8 +666,12 @@ impl Client {
             return Err(CoreError::SpaceCredentialInvalid);
         }
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
-            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         self.join_space_from_welcome_bootstrap(package_bytes, expected_inviter, &credential)
     }
 
@@ -760,8 +811,10 @@ impl Client {
         )
         .map_err(|_| CoreError::SpaceWelcomeBootstrapInvalid)?;
         let group_id = package.group_id.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
         let reducer = self.with_mls_transaction(move |_, provider, _| {
-            let mut group = GroupState::load(provider, &group_id)?;
+            let mut group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
             if group.group_reference() != group_reference || group.epoch() != expected_epoch {
                 return Err(CoreError::SpaceMembershipSnapshotInvalid);
             }
@@ -870,7 +923,7 @@ fn welcome_bootstrap_context(
 
 #[cfg(test)]
 mod vector_tests {
-    use super::SpaceWelcomeBootstrapV1;
+    use super::{BOOTSTRAP_SIGNATURE_DOMAIN, SpaceWelcomeBootstrapV1};
 
     #[test]
     fn version_one_package_interoperability_vector_is_canonical_and_signed() {
@@ -909,6 +962,43 @@ mod vector_tests {
         assert_eq!(package.invite_plaintext, [0x99]);
         assert_eq!(package.head_events, [vec![0xaa]]);
         assert_eq!(package.last_control_event, None);
+    }
+
+    #[test]
+    fn rejects_a_signed_unsupported_package_version() {
+        use lattice_identity::DeviceIdentity;
+        use lattice_protocol::{Value, encode_canonical};
+
+        let identity = DeviceIdentity::generate().expect("generate inviter identity");
+        let package = SpaceWelcomeBootstrapV1::sign(
+            &identity,
+            [0x11; 16],
+            b"group".to_vec(),
+            [0x22; 32],
+            0,
+            vec![1],
+            vec![2],
+            vec![3],
+            vec![4],
+            vec![5],
+            vec![6],
+            vec![vec![7]],
+            None,
+        )
+        .expect("sign version-one package");
+        let mut fields = package.unsigned_fields();
+        fields[0].1 = Value::Unsigned(2);
+        let preimage =
+            encode_canonical(&Value::Map(fields.clone())).expect("encode unsupported package");
+        let mut message = BOOTSTRAP_SIGNATURE_DOMAIN.to_vec();
+        message.extend_from_slice(&preimage);
+        fields.push((13, Value::Bytes(identity.sign(&message).to_vec())));
+        let encoded = encode_canonical(&Value::Map(fields)).expect("encode signed package");
+
+        assert!(matches!(
+            SpaceWelcomeBootstrapV1::from_bytes(&encoded),
+            Err(crate::CoreError::SpaceWelcomeBootstrapInvalid)
+        ));
     }
 
     fn decode_hex(hex: &str) -> Vec<u8> {

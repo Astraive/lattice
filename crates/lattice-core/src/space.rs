@@ -577,6 +577,70 @@ impl SpaceReducer {
         Ok(reducer)
     }
 
+    pub(crate) fn register_checkpoint_covered_membership_history(
+        &mut self,
+        policy_events: &[VerifiedSignatureOnlyEvent],
+        control: &VerifiedSignatureOnlyEvent,
+        transition: &VerifiedSignatureOnlyEvent,
+    ) -> Result<(), RejectReason> {
+        let policy = self.policy.as_ref().ok_or(RejectReason::MissingPolicy)?;
+        let inviter = *control.author_fingerprint();
+        let control_id = *control.event_id().as_bytes();
+        let transition_id = *transition.event_id().as_bytes();
+        if control.kind() != EventKind::MlsControl
+            || transition.kind() != EventKind::Membership
+            || control.channel_id().is_some()
+            || transition.channel_id().is_some()
+            || control.space_id() != &policy.space_id
+            || transition.space_id() != &policy.space_id
+            || control.mls_group_reference() != &policy.group_reference
+            || transition.mls_group_reference() != &policy.group_reference
+            || control.mls_epoch() != transition.mls_epoch()
+            || transition.author_fingerprint() != &inviter
+            || !transition
+                .parents()
+                .iter()
+                .any(|parent| parent.as_bytes() == &control_id)
+            || policy.members.iter().all(|member| {
+                member.fingerprint != inviter || member.status != MemberStatus::Active
+            })
+            || effective_space(policy, &inviter) & (SPACE_MANAGE | MEMBER_INVITE)
+                != (SPACE_MANAGE | MEMBER_INVITE)
+            || !self.bootstrap_anchors.iter().any(|anchor| {
+                self.graph.get(anchor).is_some_and(|node| {
+                    node.author == inviter && node.parents.contains(&transition_id)
+                })
+            })
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        for event in policy_events {
+            if event.kind() != EventKind::Membership
+                || event.channel_id().is_some()
+                || event.space_id() != &policy.space_id
+                || event.mls_group_reference() != &policy.group_reference
+                || event.mls_epoch() != control.mls_epoch()
+                || event.author_fingerprint() != &inviter
+                || !control
+                    .parents()
+                    .iter()
+                    .any(|parent| parent.as_bytes() == event.event_id().as_bytes())
+            {
+                return Err(RejectReason::InvalidControlRelation);
+            }
+        }
+        for event in policy_events
+            .iter()
+            .chain(std::iter::once(control))
+            .chain(std::iter::once(transition))
+        {
+            let event_id = *event.event_id().as_bytes();
+            self.register_event(event, None, false)?;
+            self.bootstrap_anchors.insert(event_id);
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_projected_message(&self, event_id: &EventReference) -> bool {
         self.graph
             .get(event_id)
