@@ -5,13 +5,31 @@ Tauri v2 embeds the same Rust core; React/TypeScript/Vite present state through 
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
 | DSK-001 | Desktop shall create/import local identity and join Spaces using Rust core. | Desktop and mobile agree on fingerprint, wire vectors and Space state. | M7 |
-| DSK-002 | Desktop shall support text, threads, local search, files and voice per the same accepted requirements. | Feature interop scenarios with Android/iOS; unsupported path shown. | M7 |
+| DSK-002 | Desktop shall support text, threads, local search, files and voice per the same accepted requirements. | Desktop search scans the full locally retained authorized channel cache offline, returns the 100 newest matches with the total count, and includes received messages; unavailable remote history is not searched. | M7 |
 | DSK-003 | Desktop shall discover local peers and expose optional configured relays. | LAN path and two relay settings tested; no project service required. | M7 |
 | DSK-004 | Desktop shall keep secrets in Rust/platform storage with minimal Tauri commands and strict CSP. | XSS/command-ACL review shows UI cannot fetch raw secret or arbitrary file. | M7 |
 | DSK-005 | Desktop shall be able to opt into persistent courier/peer behavior with quotas. | On/off toggle, restart-safe queue and no Space privilege elevation. | M7 |
 | DSK-006 | Desktop builds shall be reproducible enough to compare generated bindings and protocol vectors. | Clean build matches committed vector outputs on supported OS matrix. | M8 |
+| DSK-007 | Desktop shall export an Ed25519 PKCS#10 request bound to the full identity fingerprint without exposing private material. | Generate and display/copy the CSR as PEM; its signature, SPKI and URI SAN verify, and an issued certificate must preserve the SAN. | M7 |
+
+The desktop client protects its device identity, creates local one-member Space Genesis snapshots from a supplied RFC 9420 TLS X.509 credential vector, and imports pinned-inviter Welcome checkpoints. Its composer queues authorized events to durable storage; explicit bounded synchronization can exchange scoped history between already joined peers. It does not fetch a general transcript or claim recipient delivery. Recovery creates a new one-member generation and does not rejoin prior members.
+Offline search scans locally retained authorized projections, including messages accepted through synchronization. It returns the 100 newest matches and exact local match count without contacting the network; it does not imply that local history is complete.
+
+The Spaces browser also imports a versioned Welcome bootstrap through `import_local_space_welcome_bootstrap`. It accepts a bounded hexadecimal package, exact inviter fingerprint, and X.509 credential, and requires that inviter to be pinned in the protected profile. The result is local signed policy-checkpoint state; no relay is contacted, and general historical-event replay or delivery is not claimed.
+
+The Spaces browser also publishes a fresh one-time KeyPackage from an input X.509 credential vector through `publish_local_space_key_package`. Core validates the OS-rooted credential and persists the matching private KeyPackage material locally; the UI exposes only the bounded public package bytes for copying to an inviter. Publication makes no network request and does not create or join a Space.
+
+## Direct authenticated synchronization
+
+Each local Space card exposes `sync_local_space_once`. Both already joined, mutually pinned peers run it concurrently with the same Space generation, each providing the other's TCP listener address and a local listen address. The listener defaults to loopback and accepts the exact pinned identity. A run exchanges one bounded v2 summary/request/response round, validates the signed event's scope, author, sequence, and ID, then submits received bytes through normal Core MLS and policy acceptance and retries ready dependencies once. The operation has a 30-second stage deadline and closes its listener when the call ends. It does not claim convergence; run further rounds if needed. It does not update outbox delivery markers, change membership, or use courier/relay.
+
+The Connectivity panel reports whether the host exposes a non-loopback IP address without enumerating interfaces. A user-triggered mDNS/DNS-SD scan observes bounded Lattice endpoint candidates; it neither connects nor authenticates identity or reachability. The listener advertises a generic, temporary service only while opted-in persistent peer mode runs on a non-loopback address. No identity, Space name, or TXT data is published. Optional `wss://` relay URLs are validated and persisted in the same profile settings used by the CLI. Adding or removing a URL does not contact the relay or activate relay transport.
+
+The local file composer opens the operating-system picker, retains a profile-local content-addressed source copy (128 MiB per file, 512 MiB and 64 sources total), and queues the authorized encrypted manifest in the local outbox. The cache UI lists and removes source copies; removing one does not remove its queued manifest. Source bytes are ordinary files and are not encrypted at rest by this feature. The transfer panel sends only a Core-authorized manifest to an exact previously pinned peer over the separate pinned Noise attachment profile. Receiving requires the already authorized manifest, a matching exact pin, an explicit native consent prompt after peer authentication, private resumable staging, and an OS-selected export path after integrity verification. The panel never claims recipient delivery.
 
 Tauri security boundary and local content rendering are reviewed separately from Rust protocol correctness. A persistent desktop helps availability but never becomes mandatory for a Space.
+
+On Windows, `bun run tauri build --no-bundle` reruns the TypeScript/Vite production build and produces `target/release/lattice-desktop.exe`. Five focused Rust tests reproduce and verify the identity-bundle, MLS group-reference, canonical-CBOR, signed-event, and Space Welcome vector outputs. `bun run tauri build` produced the configured MSI and NSIS installer bundles in the earlier packaging run. End-to-end recovery submission against an initialized profile remains unverified.
 
 ## Process and security boundary
 
@@ -19,8 +37,10 @@ The React WebView receives prepared view models, not raw keys, MLS states or unr
 
 ## Persistent peer mode
 
-With user opt-in, desktop can remain online for a Space it belongs to and hold authorized history under retention, or act as courier of opaque envelopes without membership. These are different modes: courier-only holds no Space keys; member mode can decrypt according to membership and local storage policy. The operator sees byte quota, queue depth, uptime, relay connections and power/network impact. If it disappears, other peers keep valid history and reconcile on another path when available.
+Desktop persistent peer mode is courier-only. Opt-in settings persist a TCP listen address and one exact pinned peer fingerprint, and the listener resumes on application startup. It accepts authenticated opaque courier envelopes serially with bounded sessions and stores them in the existing queue under default 16 MiB/4,096-item total limits; the panel reports queue bytes and items. While the listener is active on a non-loopback address, it attempts a generic mDNS announcement without identity or Space metadata. Disabling the mode stops listening and clears retained courier envelopes. The panel can explicitly forward a selected item to a supplied endpoint after checking the exact existing pin; forwarding consumes the source copy before transfer data and reports only exact-hop acceptance. It does not join a Space, decrypt or authorize Space content, automatically forward envelopes, use configured relays, or claim recipient delivery. The default loopback address is local-only; selecting another interface does not prove reachability or bypass firewall policy.
 
 ## Desktop release matrix
 
-Test clean install, key locked, database migration, suspend/resume, network change, firewall restriction, local discovery and relay fallback on each supported desktop OS. Bundle pinning and Tauri command ACL/CSP review are separate release gates from protocol vector parity. An update must not silently run two incompatible versions against one writable SQLite database.
+The current main-window CSP blocks inline styles, base-URL changes, object embeds, framing, and form submissions; its capability grants only `core:default`. This configuration is not a substitute for the DSK-004 XSS and command-ACL review.
+
+Test clean install, key locked, database migration, suspend/resume, network change, firewall restriction, local discovery, relay fallback, and authenticated attachment consent/resume/export on each supported desktop OS. Bundle pinning and Tauri command ACL/CSP review are separate release gates from protocol vector parity. An update must not silently run two incompatible versions against one writable SQLite database.

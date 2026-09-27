@@ -6,5 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+thiserror = "=2.0.20"
+snow = "=0.10.0"
+zeroize = "=1.9.0"
 [lints]
 workspace = true

@@ -23,6 +23,8 @@ This is an engineering specification rather than a marketing description. It def
 
 The document uses the key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in the sense of RFC 2119 and RFC 8174 when written in uppercase ([rfc2119](#ref-rfc2119); [rfc8174](#ref-rfc8174)). Statements labeled *design target* are objectives rather than measured performance claims. Statements labeled *future* are intentionally outside the first interoperable protocol version.
 
+> **Current implementation scope:** Android, desktop and CLI. The iOS-specific requirements and architecture in this research draft are retained as future product-design reference only; they are not implementation, verification or release-acceptance requirements for the current project.
+
 ## Non-goals
 
 Lattice is not designed to provide anonymous networking, guaranteed censorship resistance against a global adversary, guaranteed delivery in a permanently partitioned network, or unlimited Discord-scale voice conferences without infrastructure. It does not attempt to replace the Bluetooth Mesh Profile. It uses BLE links to construct an application-specific peer overlay suitable for phones and desktops. It also does not claim that a mobile operating system will permit continuous background scanning, advertising, or audio operation under all conditions.
@@ -45,7 +47,7 @@ The system is constrained by four non-negotiable requirements:
 
 BitChat demonstrates a practical dual-transport model in which nearby peers form a BLE application mesh and distant peers may be reached using Nostr relays when Internet connectivity exists. Its 2026 whitepaper describes a common transport interface, BLE controlled flooding, store-and-forward couriers, and Nostr relay fallback ([bitchatwhitepaper](#ref-bitchatwhitepaper)). This architecture validates the broad feasibility of separating message routing from one fixed network path. Lattice adopts that architectural idea but expands the application semantics to persistent communities, role-controlled channels, replicated metadata, files, and live voice.
 
-A relevant privacy lesson is that BitChat’s current whitepaper explicitly notes linkability created by stable identity material exposed in nearby announcements ([bitchatwhitepaper](#ref-bitchatwhitepaper)). Lattice therefore does not advertise the stable account/device public key or stable device identifier in BLE advertisements. Discovery uses rotating unlinkable tokens and performs authenticated identity binding only after an encrypted session is established.
+BitChat's current whitepaper explicitly notes linkability created by stable identity material exposed in nearby announcements ([bitchatwhitepaper](#ref-bitchatwhitepaper)). Lattice therefore does not advertise the stable account/device public key or stable device identifier in BLE advertisements. The experimental `lattice-ble-exp0` direction uses rotating discovery tokens, but their unlinkability and resistance to passive correlation are not established; stable identity is disclosed only inside an authenticated encrypted session.
 
 ## Delay- and disruption-tolerant networking
 
@@ -338,25 +340,7 @@ The BLE physical layer’s nominal radio rate is not equivalent to application t
 
 ### BLE service layout
 
-The initial service contains the following logical characteristics:
-
-- `control`: authenticated handshake/control frames;
-
-- `rx`: write-with/without-response ingress selected by capability;
-
-- `tx`: notification/indication egress;
-
-- `capabilities`: compact transport/version descriptor;
-
-- `upgrade`: parameters for negotiating Wi-Fi Aware/LAN/WebRTC escalation.
-
-The exact 128-bit UUID allocation is generated once for the project and treated as wire protocol. Test UUIDs **MUST NOT** ship in release clients.
-
-### Rotating discovery beacons
-
-Advertising payloads **MUST NOT** contain a stable public key, nickname, Space identifier, or long-lived peer identifier. Instead each device periodically derives a discovery token: $$D_t = \operatorname{Trunc}_{128}(\operatorname{HMAC}_{K_d}(\lfloor t/W \rfloor \parallel r)),$$ where $K_d$ is a local discovery secret, $W$ is a rotation window, and $r$ is a boot/session randomizer. The token is used only to deduplicate observations within a short window. Stable identity is disclosed only inside an authenticated encrypted session.
-
-For pre-established trusted peers, an optional private rendezvous token may be derived from a pairwise secret so that known contacts can recognize one another without exposing that relationship to unrelated scanners. This optimization is disabled until its privacy behavior is independently reviewed.
+[`protocol/specs/10-ble.md`](../protocol/specs/10-ble.md) assigns the `lattice-ble-exp0` candidate service UUID and five characteristic UUIDs (`control`, `rx`, `tx`, `capabilities`, `upgrade`), their roles, and a three-byte capability descriptor. Its legacy advertisement is exactly a 31-octet Flags plus 128-bit Service Data packet: profile discriminator `0x00` and a fresh 72-bit random token. The token rotates every 900 monotonic seconds and is retained only in a bounded, in-memory 15-minute sighting table. It is not identity or authorization and makes no unlinkability claim; RF address, timing, signal, hardware, and OS behavior can still correlate observations. This candidate requires explicit `lattice-ble-exp0` opt-in and is not wired to the Android scanner/GATT primitives. The old scan-prototype UUID and frame codec remain `pre-profile`.
 
 ### Fragmentation and reassembly
 
@@ -378,7 +362,7 @@ These limits are required to prevent trivial memory-exhaustion attacks.
 
 ## LAN transport
 
-LAN discovery uses mDNS/DNS-SD only for a generic Lattice service and ephemeral endpoint instance name. Identity exchange occurs after secure connection establishment. Once discovered, peers prefer QUIC or TCP depending on implementation maturity. The first interoperable release may use length-prefixed TLS/TCP because it is simpler to debug; a later QUIC adapter can add stream multiplexing and migration without changing application events.
+LAN discovery uses mDNS/DNS-SD service type `_lattice._tcp.local.` only for a generic Lattice service and ephemeral endpoint instance name. The session-random instance and host labels contain no identity or Space data, and the service publishes no TXT records. An opted-in persistent listener may advertise only while bound to a non-loopback endpoint; wildcard binds use the service daemon's interface addresses. Discovery exposes only bounded socket endpoint candidates. mDNS records are unauthenticated and do not establish reachability, peer identity, or trust; applications authenticate a selected endpoint through the exact pinned identity before sensitive exchange. This LAN profile does not imply automatic connection or change the direct transport framing.
 
 ## Relay transport
 
@@ -452,27 +436,27 @@ The implementation **MUST** use platform secure-storage APIs. On iOS, sensitive 
 
 ## Pairwise session establishment
 
-Pairwise control sessions use a reviewed Noise Framework implementation rather than a custom Diffie-Hellman transcript. Noise describes authenticated handshake patterns based on Diffie-Hellman operations and symmetric transcript hashing ([noise](#ref-noise)). The initial contact profile uses a mutually authenticating pattern appropriate to previously unknown static keys; after a peer is verified/pinned, a known-key pattern may reduce round trips.
+BLE experimental profile 0 uses `Noise_XX_25519_ChaChaPoly_SHA256` with a profile-specific prologue; Noise static keys are session-only, not device identities. The 10-ble specification defines signed first-contact identity proofs after Noise enters encrypted transport mode. A completed Noise handshake alone does not authenticate a Lattice peer.
 
-The handshake transcript binds:
+The prologue and identity proofs bind:
 
-- protocol major/minor version;
+- the exp0 profile and generic GATT service UUID;
 
-- both static identity bundles;
+- the initiator and responder roles and their fixed capability descriptors;
 
-- current rotating discovery tokens;
+- the responder discovery token observed by the initiator;
 
-- supported transports and feature bits;
+- the final Noise handshake hash;
 
-- a random session nonce; and
+- both exact, canonical 65-byte identity bundles and their full fingerprints; and
 
-- optional invitation/Space context when joining.
+- the first-contact comparison string derived from the session hash and both fingerprints.
 
 Downgrade to an unsupported or weaker protocol profile must fail closed.
 
 ## Human verification
 
-Users may verify a peer by scanning a QR code or comparing a short authentication string derived from both identity fingerprints and the current session transcript. A verified relationship pins the full fingerprint, not the nickname. Nicknames are presentation metadata and are never trusted authentication labels.
+At first contact, each user compares the exp0 48-bit session authentication string through an independent channel (or verifies the full fingerprint through a trusted QR/invite flow) and explicitly pins the full fingerprint. `PinnedIdentity` checks bundle/fingerprint consistency but does not itself attest to human verification. A pin mismatch closes the path without replacement; an identity signature or Noise handshake does not grant Space membership or authorization.
 
 ## Key rotation and reset
 
@@ -504,6 +488,8 @@ The `space_id` is random and is not derived from the human-readable name, preven
 
 Space membership is cryptographic. Joining requires an invitation or an authenticated Add operation authorized under the current policy. An invitation contains enough information to locate existing peers/relays, verify the Space genesis fingerprint, and present an MLS key package or join request. Invitations may be encoded as QR, deep link, or file; they **MUST NOT** embed reusable administrator private keys.
 
+Each non-last-resort `KeyPackage` is one-use. A device records its suite-defined MLS reference and expiry alongside the protected OpenMLS private bundle; an accepted Welcome consumes the matching inventory entry in the same transaction as group import. Failed or rejected Welcomes do not consume the package. Expired packages leave available inventory; a package whose delivery is lost can be explicitly discarded, deleting its private bundle and marking the record lost so a fresh package can be issued immediately. Callers advertise only fresh packages. Implementations MUST reject reuse after consumption and MUST NOT count expired or lost entries toward replenishment.
+
 ## MLS epoch as membership-security epoch
 
 Each membership change that affects confidentiality produces a new MLS epoch. Removed members do not receive the new epoch secret. RFC 9420 specifies asynchronous group key establishment with forward secrecy and post-compromise security properties when correctly used ([rfc9420](#ref-rfc9420)). Application roles and channel permissions remain separate authorization metadata layered above MLS: cryptographic membership answers “is this device in the Space cryptographic group?” while permissions answer “may this member perform this operation?”
@@ -532,15 +518,15 @@ A channel may override a subset of Space defaults.
 
 Every privileged mutation carries the author’s identity, causal parent(s), required permission, and signature/MLS authentication. A node validates authorization against the policy projection immediately before the event’s causal context. Invalid events remain optionally quarantined for diagnostics but never enter the valid projection.
 
-Concurrent administrative actions can conflict. Lattice resolves ordinary metadata with deterministic last-writer rules over logical clocks, but membership/security conflicts use stricter semantics:
+Membership and security-sensitive actions use an authenticated causal policy and the current MLS epoch; they never use last-writer-wins to select a branch:
 
-- an owner revocation dominates later actions from the revoked administrator once the revocation is causally known;
+- a commit based on a missing parent remains pending; an invalid commit is rejected;
 
-- two concurrent valid admin actions are both accepted if they do not contradict; and
+- a valid commit based on a non-current branch is retained as conflict evidence but not applied; competing valid successors mark the Space conflicted, with no selection by timestamp, hash, arrival, or role; and
 
-- contradictory actions that cannot be safely merged surface as a policy conflict requiring an owner-authorized resolution event.
+- conflict blocks membership and authorization-sensitive mutation until an explicitly invited new MLS generation is established by a currently verified administrator. Recovery does not merge conflicting state, reissue old Welcome messages, or claim to restore omitted history.
 
-No client may silently choose a lower-security branch merely because its wall clock is newer.
+Ordinary non-security metadata may use deterministic logical ordering. The accepted [ADR-001](decisions/ADR-001-membership-commit-conflicts.md) profile intentionally sacrifices availability during membership conflicts rather than guessing a winner.
 
 ## Bans
 
@@ -609,6 +595,7 @@ For two events $a$ and $b$, the stable display order is computed from: $$O(e)=(e
 | `PIN` | Channel | Adds/removes pinned reference. |
 | `FILE_MANIFEST` | Channel/DM | Announces content-addressed attachment metadata. |
 | `VOICE_STATE` | Voice | Short-lived join/leave/mute/session signaling state. |
+| `EPHEMERAL_STATE` (kind 10) | Space | MLS-bound presence/typing hint; never durable history or courier content. |
 | `KEY_PACKAGE` | Security | Distributes MLS join material. |
 | `POLICY_RESOLVE` | Space | Resolves explicit authorization conflict. |
 
@@ -874,11 +861,13 @@ Retention policies can be `ephemeral`, `7d`, `30d`, `90d`, or `forever`, with a 
 
 ## Text messages
 
-A text message body supports UTF-8 text, mentions, reply reference, optional thread root, attachment references, and a constrained rich-text representation. Markdown-like presentation is allowed, but the wire format should represent semantic spans rather than store raw HTML.
+A text message body supports UTF-8 text, mentions, reply reference, optional thread root, attachment references, and constrained rich text. Supported inline source markers are `**strong**`, `*emphasis*`, and `` `code` ``. The authenticated wire payload carries canonical semantic spans, never HTML. Renderers consume plain text and half-open UTF-8 byte ranges; they MUST NOT interpret raw HTML. Unmatched or unsupported markup remains literal text.
+
+Message payload version 3 preserves fields `1..5` from version 2, sets field `0` to version `3`, and appends field `6`, an array of spans `[style, start, end]`. Style values are `0` strong, `1` emphasis, and `2` code. Offsets address rendered plain-text UTF-8 bytes, are half-open, and MUST exactly match a local parse of the source. At most 1,024 spans are accepted. Version 2 appends field `5`, an array of unique mention targets sorted by `(kind, identifier)`; version 1 remains accepted and implies no mentions. Each target is `[0, fingerprint]` for a full 32-byte device identity or `[1, role_id]` for a 16-byte Space role ID. Role targets must exist in the event policy and require the broad-mention permission. Display names are never encoded as mention targets. Local mute preferences are device-only protected storage, not synchronized policy; notification callers resolve role membership at the selected event context before applying mutes.
 
 ## Edits
 
-An edit references a prior message event and carries a replacement body. Only the original author, or a moderator exercising an explicit moderation capability, may create an effective edit. Moderator edits are visually distinguishable from author edits. All previous versions remain in the immutable log until retention/compaction permits removal.
+An edit references a prior message event and carries a replacement body. Edit payload version 2 appends field `3`, using the message semantic span representation; version 1 remains accepted and is parsed locally. Only the original author, or a moderator exercising an explicit moderation capability, may create an effective edit. Moderator edits are visually distinguishable from author edits. All previous versions remain in the immutable log until retention/compaction permits removal.
 
 ## Deletes
 
@@ -904,7 +893,7 @@ The UI distinguishes:
 
 - **forwarded**: at least one next hop or relay accepted an envelope;
 
-- **delivered-to-peer**: destination device acknowledged event receipt;
+- **delivered-to-device**: destination device acknowledged event receipt;
 
 - **read-local**: destination client optionally emitted a read receipt according to user privacy settings.
 
@@ -912,7 +901,7 @@ The UI distinguishes:
 
 ## Typing and presence
 
-Typing indicators and presence are lossy ephemeral events with very short expiry and no store-forward behavior. Presence means “observed recently” rather than “globally online.” A serverless partitioned system cannot know global presence with certainty.
+Ephemeral kind-10 payloads are canonical maps `{0: 1, 1: kind, 2: active, 3: ttl_ms}`, where kind `0` is presence and `1` is typing. Active updates require a positive lifetime no greater than 60 seconds for presence or 10 seconds for typing; a clear update uses `active = false` and `ttl_ms = 0`. Events have no channel or parents and are processed only after exact MLS binding and current active-member validation for the matching Space/group generation. Receivers start expiry from a local monotonic clock, not sender wall time. State is process-local, bounded to 8,192 keys by `(Space, MLS generation, author, kind)`, and is never persisted, backfilled, or routed through store-forward paths. Author sequence watermarks suppress duplicates and stale updates during their bounded in-memory lifetime. Expiry means only “not observed recently,” never a globally authoritative offline state.
 
 # Files and Attachments
 
@@ -2377,39 +2366,42 @@ Reserved bits remain zero until assigned by a protocol revision. Custom roles ar
 
 ## Invite object
 
-An invite is a signed object with a short expiration and optional single-use nonce:
-
+`SpaceInviteV1` is a signed, canonical version-one token that references one accepted, MLS-authenticated Space invite policy event:
 
 ```text
-Invite {
-  version,
+SpaceInviteV1 {
+  version: 1,
   space_id,
-  genesis_hash,
-  inviter_identity,
-  inviter_signature,
-  expires_at,
-  max_uses,
-  nonce,
-  join_policy,
-  rendezvous_hints: [
-    { type: BLE_HINT, value: ... },
-    { type: RELAY_URL, value: ... },
-    { type: LAN_HINT, value: ... }
+  genesis_event_id,
+  invite_event_id,
+  invite_id,
+  target_fingerprint,
+  key_package_hash,
+  expires_at_unix_seconds,
+  max_uses,                 // null or 1..65535
+  nonce,                    // 16 bytes
+  join_policy: 0,            // authorized member + MLS transition required
+  rendezvous_hints: [       // zero to eight bounded text values
+    { type: 0, value: ... }, // BLE
+    { type: 1, value: ... }, // relay URL
+    { type: 2, value: ... }  // LAN
   ],
-  inviter_key_package_hint,
+  inviter_identity_bundle,
+  inviter_signature,
 }
 ```
 
-*Listing: Invite structure.*
+The Ed25519 signature covers the exact canonical unsigned map with a version-specific domain separator. Version one limits each hint to 256 UTF-8 bytes and the entire token to 16 KiB. Hints are untrusted connectivity data; they do not establish inviter trust, grant membership, or override installation network policy. The inviter must be pinned and hold current `MEMBER_INVITE` permission, and the referenced invite record must match the token's Space genesis, target, KeyPackage hash, and use limit.
 
-
-Rendezvous hints are untrusted connectivity hints. A successful connection must still verify Space genesis and inviter authorization.
+Clients reject a token when its signed wall-clock expiry has passed. During peer synchronization, deterministic policy-revision expiry and the replicated use counter are authoritative; relay time and relay deletion are not. A causally ordered admission consumes one use. Concurrent offline admissions from the same policy head create sibling MLS membership Commits and enter the explicit membership-conflict state; clients accept neither branch until an authorized recovery generation is established.
 
 ## QR/deep link
 
 The QR encoding uses compressed binary-to-text representation with a checksum and a URI scheme such as `lattice://join/<payload>`. If the invite exceeds practical QR size, the app presents a file/nearby transfer or a shorter rendezvous token that requires reaching an authorized member. A public Lattice URL shortener is not required.
 
-# BLE Profile Draft
+# BLE Profile Draft — Experimental profile 0
+
+The migration label and compatibility boundary are specified in [`10-ble.md`](../protocol/specs/10-ble.md). The label is not an on-air field and does not freeze advertisement, GATT, handshake, or framing bytes. This document's remaining BLE behavior is design input, not proof of implementation or interoperability.
 
 ## Advertising
 

@@ -17,16 +17,18 @@ Adversaries include passive local radio sniffer; active frame injector/replayer;
 ## Cryptographic layers
 
 1. Device identity: Ed25519 public verification and X25519 pairwise key; profile mutable separately. Platform-protected wrapping where supported. Never reveal private material to the WebView or diagnostics.
-2. Nearby session: reviewed Noise pattern, with version/keys/discovery-token/capability transcript binding and anti-replay. Link confidentiality does not authorize Space actions.
+2. Authenticated direct sync: one-shot Snow Noise XX with the fixed `lattice:direct-sync:noise-xx:v1\0` prologue. Each side signs the final handshake hash, signer role, and exact initiator/responder identity bundles; the peer signature must match the caller's pin. Sync frames use Noise's ordered transport state, and callers must authorize scope before planning or serving it. Discovery-token binding, capability negotiation, and other nearby adapters are not connected to this path. Link confidentiality and identity proof do not authorize Space actions.
 3. Space/DM: MLS 1.0 group membership/epochs. Removed member does not receive future valid epoch keys; confidentiality of prior plaintext is not retroactively restored.
 4. Local data: protected keys plus encrypted sensitive blobs, while documenting any plaintext indexing metadata. “Encrypted database” is not claimed unless measured true for the shipped schema.
 5. Voice: WebRTC media path with current Space/session authorization. TURN routes packets but is not Space authority.
+6. MLS credential trust: RFC 9420 X.509 credential chains must validate to operating-system roots, and the leaf Ed25519 SPKI and exactly one canonical URI SAN must match the device's Ed25519 key and full identity fingerprint. The URI format is `urn:lattice:identity:v1:<64 lowercase hex characters>`. CSR generation does not issue, import, or validate a certificate.
 
 ## Non-negotiable security checks
 
 - A signature proves key possession, not `ROLE_MANAGE` or other permission. Policy evaluation is causal and client-consistent; missing prerequisites are pending, not guessed.
+- An MLS X.509 certificate is not identity proof by itself: require a valid OS-rooted path, exact device signing-key SPKI and one canonical full-fingerprint URI SAN. Do not treat a generated CSR as a trusted certificate.
 - A Space-wide MLS exporter cannot give private-channel secrecy against another member who can derive it. ADR-002 selects per-channel cryptographic isolation or explicitly restricts “private” to write/join policy.
-- Peer-to-peer MLS delivery can fork on simultaneous Commits. ADR-001 specifies tie breaking, Welcome acceptance, losing-branch content and secret deletion; [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) gives the applicable design space.
+- Peer-to-peer MLS delivery can fork on simultaneous Commits. ADR-001 accepts fail-closed handling: a non-current valid branch is not applied, conflicting successors block mutation, and recovery requires a new MLS group by explicit invitation. It does not define a winning branch, reissue Welcome messages, or promise old-branch secret deletion; [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes the applicable design space.
 - Member ban/removal and moderation are prospective. Clients can refuse new valid epoch content to removed users; they cannot erase what others already know.
 - Relay expiry hints do not imply server deletion. Relay IP/time/size/tags can remain visible despite E2EE.
 - Rotating BLE tokens avoid an obvious stable app identifier but do not prove untraceability in the presence of timing, RF or correlated handshake observations.

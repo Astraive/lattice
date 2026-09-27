@@ -1,0 +1,3 @@
+domain = lattice:mls-group-reference:v1
+group_id_hex = 746573742d67726f7570
+group_reference_hex = bfc58fc32f3a43d8f8b20ed9fa480ab8ec456d90877e486ccf3c0e0e0e344a02

@@ -2,9 +2,11 @@
 
 > **Status:** Proposed architecture, implementation baseline; not a claim of a working or audited system.
 > **Version:** 0.1 · 22 September 2026
-> **Scope:** Android, iOS, desktop, CLI, optional persistent nodes, and interoperable protocol.
+> **Scope:** Android, desktop, CLI, optional persistent nodes, and interoperable protocol; an experimental browser client now implements local profiles and same-origin profile-to-profile messaging, but is not a supported or release-ready client. iOS implementation, verification and support claims are out of current delivery scope.
 > **Companion:** Lattice engineering specification (`spec.md`), versioned `protocol/specs/*`, and `docs/decisions/ADR-*.md`.
 > **Source material:** The supplied `spec (1).md` and `spec(4).md`. The first preserves fuller inline citations; the second identifies itself as the engineering source of truth. Differences and unresolved semantics are recorded here rather than silently decided.
+
+**Scope note:** iOS-specific material retained below is legacy design reference only. It is not normative for current implementation, verification or release acceptance; the current platform and release requirements are owned by `docs/PLAN.md`, `docs/REQUIREMENTS.md` and `docs/quality/TEST_PLAN.md`.
 
 ## 1. Purpose, status, and reading guide
 
@@ -19,7 +21,7 @@ The organization follows the concerns in [arc42](https://arc42.org/overview/)—
 | Status | Meaning | Example |
 | --- | --- | --- |
 | **Baseline** | Adopted architectural direction; implementation still pending | Rust core, native mobile, transport-independent event IDs |
-| **Profile draft** | Concrete candidate that needs vectors/interoperability review | Deterministic CBOR layout, BLE GATT UUIDs, Nostr relay kind |
+| **Profile draft** | Concrete candidate that needs vectors/interoperability review | Deterministic CBOR layout; experimental BLE service, discovery, and first-contact handshake values; release vectors and interoperability remain open |
 | **Open** | Cannot be treated as complete until an ADR and tests exist | MLS concurrent Commit policy, private-channel key isolation |
 | **Deferred** | Outside first interoperable release | Large-room SFU, video, public directory, multi-device user account |
 
@@ -76,14 +78,14 @@ I-03 and convergence depend on settling the MLS and policy-conflict profile in �
 
 ## 3. System shape and application topology
 
-Each product surface uses the same protocol domain. Android and iOS are native applications because BLE roles, Wi-Fi peer APIs, background policy, notifications, and audio are central to the product. Desktop embeds the Rust core in a Tauri v2 process and uses React/TypeScript/Vite for presentation. The Rust CLI works without a JavaScript runtime. Cargo owns Rust workspaces; Bun workspaces and Turborepo coordinate desktop/design/TypeScript scripts; Gradle and Xcode own mobile builds. [UniFFI](https://mozilla.github.io/uniffi-rs/) supplies generated Kotlin/Swift bindings; [Tauri's architecture](https://v2.tauri.app/concept/architecture/) supplies the desktop boundary.
+Android is the native mobile application because BLE roles, Wi-Fi peer APIs, background policy, notifications and audio are central to the product. Desktop embeds the Rust core in a Tauri v2 process and uses React/TypeScript/Vite for presentation. The Rust CLI works without a JavaScript runtime. `apps/web` contains an experimental TypeScript UI and Rust/WASM worker with OPFS persistence, pinned-issuer enrollment, offline Welcome import and same-origin message exchange; browser-to-native networking, broad browser compatibility and release acceptance remain unimplemented. Cargo owns Rust workspaces; Bun workspaces and Turborepo coordinate desktop/design/TypeScript scripts; Gradle owns Android builds. [UniFFI](https://mozilla.github.io/uniffi-rs/) supplies generated Kotlin bindings; [Tauri's architecture](https://v2.tauri.app/concept/architecture/) supplies…
 
 ```mermaid
 flowchart TB
     A["Android Compose"] --> F["Core facade"]
-    I["iOS SwiftUI"] --> F
     D["Tauri desktop"] --> F
     C["Rust CLI or node"] --> F
+    W["Experimental browser Worker/WASM"] --> F
     F --> P["Protocol and policy"]
     F --> S["Storage and sync"]
     F --> R["Routing and transports"]
@@ -110,6 +112,16 @@ The facade receives coarse commands and publishes state snapshots/streams. It do
 
 The dependency direction is platform/UI → facade → domain policy and services → ports → platform adapters. To avoid crate cycles, foundational `protocol`/`crypto` types do not depend on `core`, `storage`, or the apps. `voice` owns call state while native media engines own microphone, audio session, and peer connections.
 
+### Browser client boundary — implemented prototype
+
+The browser target reuses Rust protocol, event authorization and MLS semantics; canonical event rules remain in Rust rather than TypeScript. `apps/web` owns the presentation and browser lifecycle. A dedicated Web Worker owns the WASM instance, profile lock, storage connection and serialized Core operations; the UI communicates with typed coarse requests. Each browser profile has a dedicated SQLite connection in an OPFS directory derived from its profile ID. Distinct profiles can be open concurrently; browser locks exclude a second tab from the same profile. The storage contract does not support shared-memory WAL or cross-connection locking.
+
+The worker opens SQLite through the OPFS Sync Access Handle Pool VFS and uses a non-extractable Web Crypto wrapping key scoped to the origin/profile. Private signing material remains inside the worker while unlocked; the UI never receives it. This is not equivalent to Android hardware-backed storage or a desktop OS keychain. A Chromium smoke verified concurrent distinct profiles, offline issuer-pinned enrollment, Welcome import after separately pinning the inviter's full identity fingerprint, bidirectional signed MLS message exchange, and message history after page reload. That does not verify crash recovery, quota behavior, same-profile contention, supported-browser compatibility, or independent review.
+
+The Web carrier includes same-origin `BroadcastChannel` and manually signaled WebRTC between browser profiles, plus a one-session Web-to-CLI loopback WebSocket bridge. All carry canonical signed event bytes; both receiver Cores validate identity, Space generation, MLS state and authorization before projection. The browser outbox reconciliation is bounded to 256 KiB frames and 16 MiB per session; event identity makes replay idempotent. WebRTC has no default signaling or STUN/TURN service; ICE servers are optional and explicitly entered. The CLI bridge pairs with a one-time token and exact HTTP Origin, accepts only loopback peers, and binds one selected Space generation. It uses plaintext `ws://` and is unavailable to HTTPS-hosted pages. Welcome and identity artifacts still move manually and require out-of-band fingerprint verification.
+
+Managed Chromium verified both directions of the browser↔CLI loopback bridge through normal Core paths, in addition to browser-local BroadcastChannel and WebRTC smoke. This does not establish a general browser-to-native transport: there is no Desktop or Android adapter, secure WebSocket relay, HTTPS-compatible bridge, Internet NAT traversal, other browser engine, OPFS crash/quota/rollback behavior, accessibility, or release readiness. These remain required before Web can be called supported.
+
 ## 4. Repository architecture
 
 The target repository is a monorepo with independently versionable protocol documents and one Rust core. Paths describe ownership, not an assertion that they already exist.
@@ -118,7 +130,8 @@ The target repository is a monorepo with independently versionable protocol docu
 lattice/
 ├── apps/
 │   ├── android/                 # Kotlin, Compose, Gradle, radio/audio adapters
-│   ├── ios/                     # Swift, SwiftUI, Xcode, radio/audio adapters
+│   ├── ios/                     # retained future-reference tree; outside current release scope
+│   ├── web/                     # experimental browser UI and Rust/WASM worker; release gates remain
 │   ├── desktop/                 # Tauri v2, React, TypeScript, Vite
 │   └── cli/                     # CLI packaging/docs; binary in crates/
 ├── crates/
@@ -242,7 +255,7 @@ For Internet mail, the first candidate adapter maps an opaque Lattice envelope i
 
 ### Identity and session layers
 
-An installation generates a long-term Ed25519 signing key, X25519 DH key, MLS leaf/KeyPackage material, and a local at-rest wrapping secret. Use OS secure storage: Keychain on Apple platforms and Android Keystore wrapping where available. Hardware-backed support varies; state the actual protection level in diagnostics. A verified contact pins the full canonical identity fingerprint, established with a QR comparison or session-bound short authentication string. Nicknames alone do not authenticate peers.
+An installation generates a long-term Ed25519 signing key, X25519 DH key, MLS leaf/KeyPackage material, and a local at-rest wrapping secret. Use Android Keystore wrapping where available and the host OS-protected storage on desktop; report actual protection level in diagnostics. A verified contact pins the full canonical identity fingerprint, established with a QR comparison or session-bound short authentication string. Nicknames alone do not authenticate peers.
 
 Pairwise nearby control uses a reviewed Noise handshake profile with explicit transcript binding to protocol version, identities, ephemeral discovery tokens, capabilities, nonces, and optional invite context. “Noise-style” is not sufficient for an interoperable release: the chosen pattern, DH/cipher/hash names, payload schedule, prologue, transcript binding, replay behavior, and test vectors must be recorded. Use [the Noise specification](https://noiseprotocol.org/noise.html) as the framework, not custom handshake arithmetic. Link encryption and Space content encryption have distinct scopes.
 
@@ -252,9 +265,9 @@ MLS 1.0 provides group key establishment; the application must define credential
 
 **Membership is not a simple convergent metadata set.** The application couples each add/remove/ban to validated MLS handshakes, permission state and causal context. An honest client that lacks a prerequisite keeps an event pending; it does not treat an apparently newer timestamp as authority. Removed members cannot be made to forget old plaintext or material they previously possessed. New members should not get earlier epoch secrets by default.
 
-**Commit conflict policy — open ADR-001.** MLS groups have a linear epoch history. Two isolated administrators can create competing Commits from the same epoch. [RFC 9750 §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes eventual-consistency strategies including delayed acceptance or retaining a previous state briefly with deterministic tie breaking, with forward-secrecy and Welcome-message considerations. Lattice must define a deterministic tie break, causal/policy validity, pending local sends, losing-branch events, Welcome acceptance, retention/deletion of fork states, and recovery after extended partitions. This is a security and availability trade-off; merely sorting events is insufficient. Until ADR-001 and its tests exist, the claimed convergence is limited to non-conflicting event histories.
+**Commit conflict policy — accepted ADR-001.** MLS groups have a linear epoch history, and two isolated administrators can create competing Commits from the same epoch. Lattice accepts only a commit based on the locally current parent epoch; missing parents remain pending, while valid competing successors are retained as conflict evidence and freeze membership-sensitive mutation. Recovery requires explicit new-group invitations; no timestamp, hash, role, or arrival-order winner is selected. This accepted policy still requires permutation, recovery, and interoperability evidence before its convergence claims are verified.
 
-**Private channels — open ADR-002.** Domain-separated keys from one Space-wide exporter prevent key reuse but do not hide channel content from a Space member who has the same group secret. If a channel permission means *send/join permission only*, one MLS group is compatible with that semantics. If it means *read confidentiality against other Space members*, the channel needs separately restricted cryptographic material, likely its own MLS group or a reviewed subordinate key distribution/rekey profile. Record exact semantics per channel type before implementing “private channel.”
+**Channel access policy — accepted ADR-002.** Domain-separated keys from one Space-wide exporter do not hide channel content from another member with the same group secret. Channel roles may restrict actions such as send, attach, moderate, and voice participation; every active MLS Space member remains within the read trust boundary. Read-private channels and equivalent confidentiality claims are unsupported and must fail closed unless a future reviewed profile adds separate cryptographic membership.
 
 Roles (`owner`, `admin`, `moderator`, `member`, custom masks) grant operation-specific capabilities: managing Space/channel/roles, invites, member removal/bans, send/attach/threads, announcements/pins, voice join/speak/moderation, retention, and relay recommendations. An administrative event binds author, permission, causal parents, and MLS epoch. Its validity is checked at the causal policy state, not at wall-clock reception time. Contradictory concurrent security events require explicit conflict/resolution semantics. Owner actions must not silently outrank an incompatible cryptographic branch unless the protocol specifies how all honest replicas agree on that authority.
 
@@ -324,7 +337,7 @@ sequenceDiagram
     B->>B: Validate, persist, project
 ```
 
-An invite rendezvous hint does not authenticate a Space. Accepting a join requires verified genesis, KeyPackage/credential handling, MLS add, and application policy. A local message is `queued` until an eligible path takes it; after next-hop/relay acceptance it is `forwarded`; destination receipt means `delivered-to-peer`; an optional authenticated read receipt means `read-local`.
+An invite rendezvous hint does not authenticate a Space. Accepting a join requires verified genesis, KeyPackage/credential handling, MLS add, and application policy. A local message is `queued` until an eligible path takes it; after next-hop/relay acceptance it is `forwarded`; destination device receipt means `delivered-to-device`; an optional authenticated read receipt means `read-local`.
 
 ### Cross a partition and change paths
 
@@ -363,9 +376,9 @@ Lattice ships self-contained clients. A fully local Space requires two active re
 | Volunteer persistent | Desktop/CLI node with optional always-on storage | Operator dependent | No special authority; opt-in quotas |
 | Internet voice | Reachable ICE pair, optional STUN/TURN | NAT and operator dependent | Media is separate from event mailbox |
 
-Android 12+ requires modern Bluetooth runtime permissions and restricts background service starts; a long-running mesh mode must be an opt-in visible foreground-service experience where supported. iOS Core Bluetooth background modes change scan/advertising behavior; suspension and platform policy are first-class states. See [Android Bluetooth permissions](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions), [Android background service limits](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start), and [Apple Core Bluetooth background behavior](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html). Version/device entitlements and App Store rules must be verified against current vendor documentation for every release.
+Android 12+ requires modern Bluetooth runtime permissions and restricts background service starts; a long-running mesh mode must be an opt-in visible foreground-service experience where supported. Android background scheduling and device-vendor policy remain first-class states. See [Android Bluetooth permissions](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions) and [Android background service limits](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start).
 
-The interface should show path class, last sync time, queued items, and degraded capability without claiming globally correct presence. Basic navigation: Spaces/channels, messages/threads, voice, transfers, invites/members/roles, network settings, identity/security, local retention, diagnostics. Compose/SwiftUI/Tauri can share design tokens and semantics while retaining native accessibility and platform conventions. The theme has no authority over protocol state.
+The interface should show path class, last sync time, queued items, and degraded capability without claiming globally correct presence. Basic navigation: Spaces/channels, messages/threads, voice, transfers, invites/members/roles, network settings, identity/security, local retention, diagnostics. Android Compose and desktop Tauri can share design tokens and semantics while retaining native accessibility and platform conventions. The theme has no authority over protocol state.
 
 ## 11. Observability, performance, and quality requirements
 
@@ -375,7 +388,7 @@ Quality targets in the supplied spec are design goals, not measured promises. Pr
 
 | Quality attribute | Scenario | Evidence required |
 | --- | --- | --- |
-| Offline function | Two devices exchange text with Internet disabled | Android/Android then Android/iOS physical tests |
+| Offline function | Two devices exchange text with Internet disabled | Android/Android physical tests |
 | Convergence | Duplicate/reorder the same valid event over three carriers | Identical canonical event store and projections |
 | Security | Forge admin event, replay expired envelope, omit MLS commit | Rejection/pending state without unauthorized projection |
 | Battery | Idle scan/advertise, active chat, courier mode | Measured power/device/OS matrix; opt-in controls |
@@ -385,7 +398,7 @@ Quality targets in the supplied spec are design goals, not measured promises. Pr
 | Files | Interrupt, change path, resume | Verified final hash and no duplicate visible attachment |
 | Voice | LAN, varied NAT, absent TURN, reconnect | Setup success/failure, audio latency/jitter, truthful status |
 
-Use deterministic simulated clocks and seeded contact traces for protocol tests. Measure on physical radios for claims about BLE/Wi-Fi availability, throughput, background behavior, battery, and cross-platform interoperability. Keep routing simulator baselines (direct-only, flood, bounded copies, anti-entropy, relay assistance) to quantify tradeoffs, not to assert novelty from intuition.
+Use deterministic simulated clocks and seeded contact traces for protocol tests. Measure on physical radios for claims about BLE/Wi-Fi availability, throughput, background behavior and battery. Keep routing simulator baselines (direct-only, flood, bounded copies, anti-entropy, relay assistance) to quantify tradeoffs, not to assert novelty from intuition.
 
 ## 12. Verification, compatibility, and release engineering
 
@@ -398,27 +411,27 @@ Use deterministic simulated clocks and seeded contact traces for protocol tests.
 | Crypto | MLS lifecycle, concurrent commits, key deletion, removed member, KeyPackage reuse, Noise test vectors |
 | Sync/mesh | Partition, churn, duplicate, loss, delayed contact, bounded copy/cache behavior |
 | Storage | Crash between steps, migration/rollback, damaged DB, key unavailable, outbox restart |
-| Interop | Rust/Kotlin/Swift parity, Android/iOS BLE and Wi-Fi path fallback |
+| Interop | Rust/Kotlin parity and Android/desktop/CLI behavior over supported shared paths |
 | Security | Fuzz all parsers, adversarial frames/relay reorder, queue and allocation limits |
 | UI/E2E | Queued/forwarded/delivered states, permission denial, voice failure, accessibility |
 
 Protocol major versions reject incompatible mandatory semantics; minor/capability additions may be negotiated if both sides understand them. Unknown required features are not silently ignored. Source schemas and test vectors are published with the implementation. Historical signed bytes are not recoded under a new canonical format during migration; the local database can add projections without rewriting identity. Releases pin Rust/Bun/mobile dependencies, generate bindings reproducibly, disclose security-relevant dependency changes, and test migration from the previous stable database.
 
-**Implementation sequence:** (0) pure Rust identity/canonical event/vector/simulator; (1) Android BLE and local SQLite text over two/three devices; (2) iOS physical interoperability; (3) MLS + roles with ADR-001/002 settled; (4) LAN/Wi-Fi Aware and resumable files; (5) optional relay; (6) small-room WebRTC voice; (7) desktop/CLI/persistent peer; (8) security review and protocol freeze. A simple Android prototype can precede the full Space/MLS feature set, but its on-wire provisional format must not be mistaken for stable v1.
+**Implementation sequence:** (0) pure Rust identity/canonical event/vector/simulator; (1) Android BLE and local SQLite text over two/three devices; (2) Android physical lifecycle acceptance; (3) MLS + roles with ADR-001/002 settled; (4) LAN/Wi-Fi Aware and resumable files; (5) optional relay; (6) small-room WebRTC voice; (7) desktop/CLI/persistent peer; (8) security review and protocol freeze. A simple Android prototype can precede the full Space/MLS feature set, but its on-wire provisional format must not be mistaken for stable v1.
 
 ## 13. Architectural decisions and open ADRs
 
 | ID | Decision | Status | Reason/next evidence |
 | --- | --- | --- | --- |
-| D-01 | Native Kotlin/Compose and Swift/SwiftUI; shared Rust/UniFFI | Baseline | Direct OS radio/audio/lifecycle integration with shared semantics |
+| D-01 | Native Kotlin/Compose Android and shared Rust/UniFFI | Baseline | Direct Android OS radio/audio/lifecycle integration with shared semantics |
 | D-02 | One immutable event identity above carriers | Baseline | Deduplication and path-independent projection |
 | D-03 | SQLite local log/projections and outbox | Baseline | Offline transaction durability, rebuildable views |
 | D-04 | BLE discovery/control; nearby IP for bulk; relays optional | Baseline | Carrier properties and absence of mandatory backend |
 | D-05 | MLS for group membership; Noise for pairwise sessions | Baseline, profile draft | Standards/reviewed libraries; exact application profile pending |
 | D-06 | Controlled flood + bounded courier copies + anti-entropy | Baseline, tuning open | Avoid unbounded amplification; measure on traces |
 | D-07 | WebRTC/Opus small-room voice, TURN optional | Baseline | No viable sustained BLE media route; NAT may require relay |
-| ADR-001 | Concurrent MLS Commit ordering and fork recovery | **Open, blocking** | Specify policy, losing-branch sends, Welcome coupling and deletion |
-| ADR-002 | Private-channel confidentiality scope and keys | **Open, blocking** | Decide whether access is policy-only or cryptographically isolated |
+| ADR-001 | Concurrent MLS Commit conflicts | Accepted fail-closed rule: reject automatic branch selection, freeze conflicted group mutations, and recover via explicit new-group membership. | See [ADR-001](decisions/ADR-001-membership-commit-conflicts.md); implementation/vector evidence pending |
+| ADR-002 | Channel read confidentiality | Accepted policy-only semantics; cryptographically read-private channels are unsupported. | See [ADR-002](decisions/ADR-002-channel-read-semantics.md); implementation evidence pending |
 | ADR-003 | Nostr relay kind, retrieval tags, outer identity and limits | Open before public relay release | Interop/privacy and relay compatibility tests |
 | ADR-004 | Snapshot/compaction validation and recovery | Open before long-lived large Spaces | Prevent history truncation from invalidating authorization |
 | ADR-005 | BLE rotating token/rendezvous privacy profile | Open before strong privacy claims | Test passive captures and correlation attacks |
@@ -431,9 +444,9 @@ ADRs record context, options, decision, consequences, status, and supersession l
 | Risk | Impact | Concrete mitigation or gate |
 | --- | --- | --- |
 | Mobile background execution differs across OS/vendors | High | Physical device matrix; user-visible availability state and opt-in modes |
-| Android/iOS BLE or Wi-Fi quirks | High | Conservative GATT framing, capability detection, interop tests, fallback |
+| Android BLE or Wi-Fi quirks | High | Conservative GATT framing, capability detection, Android device tests, fallback |
 | MLS branch divergence or bad authorization | Critical | ADR-001, model/property tests, external security review |
-| Space-wide key exposes supposedly private channels | Critical if private channels promised | ADR-002 before marketing or release |
+| Space-wide key exposes supposedly private channels | Critical | Never advertise read-private semantics; a future separate-key design requires a superseding ADR, vectors, and tests |
 | Nostr relay size/retention/policy mismatch | Medium/High | Publish relay profile, multi-relay tests, optional adapter isolation |
 | Relay/courier metadata and DoS | High | Minimal tags, quotas, no anonymity claim, security review |
 | Excessive radio/disk use | High | Power modes, bounded copies/cache/outbox, measured budgets |
@@ -441,7 +454,7 @@ ADRs record context, options, decision, consequences, status, and supersession l
 | Snapshot/history gaps | High | Explicit incomplete state, signed provenance and repair protocol |
 | FFI or desktop privilege escalation | High | Narrow API, binding parity tests, WebView command ACL |
 
-The release cannot be called interoperable v1 until independent encoding vectors agree; mixed Android/iOS offline text/sync works; add/remove/rekey and conflict cases are resolved; no Space requires a particular relay or volunteer node; public relay fallback is tested against at least two independent instances; event permutation tests converge under the defined policy; parsers are fuzzed; local data migrations pass; security review gates close high-severity findings; and product privacy/availability language matches actual network captures and OS behavior.
+The release cannot be called interoperable v1 until independent encoding vectors agree; physical Android offline text/sync works; add/remove/rekey and conflict cases are resolved; no Space requires a particular relay or volunteer node; public relay fallback is tested against at least two independent instances; event permutation tests converge under the defined policy; parsers are fuzzed; local data migrations pass; security review gates close high-severity findings; and product privacy/availability language matches actual network captures and Android behavior. iOS receives no support claim under current scope.
 
 ## 15. Glossary
 

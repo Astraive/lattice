@@ -1,6 +1,6 @@
 # Feature catalog
 
-Each feature ID is also a functional requirement. A row has desired behavior, a pass condition, and an earliest build milestone. All are proposed except where explicitly blocked. The [central register](../REQUIREMENTS.md) owns shared `LAT` requirements; files below own the domain IDs. “MVP” means a testable implementation slice, not a security claim.
+Each feature ID is a functional requirement with desired behavior, a pass condition and an earliest build milestone. Rows may be proposed, blocked, implemented, verified or retired; see the [central register](../REQUIREMENTS.md) for current release scope. The files below own domain IDs. “MVP” means a testable implementation slice, not a security claim.
 
 | Area | Prefix | Document | Scope |
 | --- | --- | --- | --- |
@@ -10,8 +10,9 @@ Each feature ID is also a functional requirement. A row has desired behavior, a 
 | Networking | NET | [networking.md](networking.md) | BLE, direct paths, mesh, sync, relays |
 | Files | FIL | [files.md](files.md) | Manifests, chunk transfer and resume |
 | Voice | VOC | [voice.md](voice.md) | Small-room live audio and failure behavior |
-| Mobile | MOB | [mobile.md](mobile.md) | Android/iOS radio, lifecycle and UI |
+| Mobile | MOB | [mobile.md](mobile.md) | Android radio, lifecycle and UI |
 | Desktop | DSK | [desktop.md](desktop.md) | Tauri app and node controls |
 | CLI | CLI | [cli.md](cli.md) | Commands, diagnostics, optional peer |
+| Web | WEB | [web.md](web.md) | Browser client, local identity/storage, secure transport |
 
-**Important distinction:** Space roles can restrict actions. A “private channel” also hiding reads from other Space members is **blocked** pending [ADR-002](../decisions/DECISIONS.md); one Space-wide MLS exporter is insufficient for that promise. Competing MLS membership commits are **blocked** pending ADR-001. Read requirements with [security model](../security/SECURITY_MODEL.md), not as standalone crypto claims.
+**Important distinction:** Space roles can restrict actions, but channel roles do not hide reads from other members of the same MLS Space. Cryptographically read-private channels are unsupported under [accepted ADR-002](../decisions/ADR-002-channel-read-semantics.md) and must fail closed if requested. The [ADR-001](../decisions/ADR-001-membership-commit-conflicts.md) fail-closed membership policy is accepted; conflict and recovery behavior still requires model/vector evidence. Read requirements with the [security model](../security/SECURITY_MODEL.md), not as standalone crypto claims.

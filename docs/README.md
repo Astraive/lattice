@@ -1,6 +1,6 @@
 # Lattice documentation
 
-**Project:** Lattice, local-first community communication. **Status:** proposed; no implementation or security audit is implied. **Updated:** 22 September 2026.
+**Project:** Lattice, local-first community communication. **Status:** draft with bounded component implementations; no interoperability release or security audit is implied. **Updated:** 24 September 2026.
 
 ## Start here
 
@@ -35,4 +35,55 @@ Devices store their own authenticated event log. BLE enables nearby text/control
 
 ## Current maturity
 
-No feature is marked implemented. Two blocking decisions are MLS concurrent Commit resolution and whether private channels have cryptographic read isolation. Treat all performance numbers in `spec.md` as design targets until measured on named devices and networks. Publication work comes after a working, measured implementation.
+Implemented code remains a set of bounded candidates, not an end-to-end
+communication product or an interoperability release. Components cover
+canonical event encoding/signatures, device identity protection and local
+storage, OpenMLS state operations, MLS-bound event identity/ciphertext checks,
+OS-rooted X.509 credential validation for incoming KeyPackages, staged Commits
+and Welcome members, bounded routing/courier accounting, attachment
+verification, voice signaling, and adapter contracts including bounded TCP
+framing. The core creates a local Space Genesis in one `SQLite` transaction
+with its MLS generation, exact signed event, and AEAD-protected initial policy
+snapshot. `restore_space` and `restore_space_page` restore that initial
+projection after restart in bounded 32-entry pages. They do not restore later
+policy events. The Space reducer has conflict checks, retained common-policy
+recovery authorization, exact MLS Commit-to-control-event binding for member
+transitions, and in-memory message/edit/tombstone/reaction/pin projections.
+Durable policy replay, transactional MLS merge after policy admission, and
+durable conflict recovery remain open.
+The relay crate validates candidate NIP-01/NIP-40 tags, expiry, envelope
+encoding, and inner-event signatures. Its bounded `RelayClient` fetches NIP-11
+and exchanges NIP-01 events over secure HTTP/WebSocket, but independent-relay
+interoperability is unverified.
+
+The CLI exposes protected identity init/show, exact peer pins, CSR export,
+local Space Genesis create/list, queue-only sync status, one-shot pinned TCP
+sync serving, local relay URL settings/NIP-11 tests, and a non-mutating storage
+doctor. The server is direct-only and does not apply remote events or claim
+recipient delivery. Desktop can create
+local one-member Genesis snapshots from a system-trusted X.509 credential
+vector, browse local snapshots, pin peers, remove local pins without revoking
+remote identities or changing Space membership, and export a CSR. Android
+exposes a protected identity snapshot, exact peer pins with local-only removal,
+CSR export, permission-aware BLE discovery/fragment framing, bounded local
+Space creation from an OS-trusted X.509 vector, and local Genesis listing.
+Space creation creates only a local
+one-member candidate; it does not establish remote membership or contact a
+network. CSR export does not issue certificates.
+
+Core now has an atomic membership-transition entry point that binds the exact
+MLS Commit to its signed parent-epoch control event and MemberTransition
+application event, applies the reducer policy, stores both events, and merges
+the Commit in one rollback-capable transaction. A focused integration test
+proves successful admission and rollback on an invalid control author. Client
+workflows do not yet integrate this API or restore the later policy reducer.
+Durable conflict recovery, durable messaging, voice authorization/media,
+native BLE GATT exchange, authenticated LAN discovery, independent-relay
+interoperability, and end-to-end app workflows remain incomplete. Certificate
+issuance and profile-wide credential installation are unavailable; the
+supplied X.509 vector is consumed only during local Space creation. Joined-group
+membership is unavailable. ADR-001 and ADR-002 record the conflict and
+channel-read decisions, but operational workflows and acceptance evidence remain
+open. Treat performance numbers in `spec.md` as design targets until measured on
+named devices and networks. No
+interoperability or secure-Space claim follows from component-level tests.

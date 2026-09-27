@@ -8,3 +8,40 @@ version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+aes-gcm = "=0.10.3"
+lattice-identity = { path = "../lattice-identity" }
+openmls = "=0.9.0"
+openmls_rust_crypto = "=0.6.0"
+openmls_sqlite_storage = { path = "../openmls-sqlite-storage" }
+openmls_traits = "=0.6.0"
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
+serde = "1"
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+rustls-pki-types = "=1.15.1"
+webpki = { package = "rustls-webpki", version = "=0.103.15", features = ["ring"] }
+zeroize = "=1.9.0"
+
+# Enable browser CSPRNG backends only for browser targets.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "=0.4.3", features = ["wasm_js"] }
+getrandom_02 = { package = "getrandom", version = "=0.2.17", features = ["js"] }
+rustls-pki-types = { version = "=1.15.1", features = ["web"] }
+sqlite-wasm-vfs = { version = "=0.2.0" }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+getrandom = "=0.4.3"
+
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
+rustls-native-certs = "=0.8.4"
+
+[features]
+# Explicitly enabled only by tests that need to exercise MLS with untrusted fixtures.
+test-utils = []
+
+[dev-dependencies]
+openmls = { version = "=0.9.0", features = ["test-utils"] }
+openmls_basic_credential = "=0.6.0"
+serde = { version = "1", features = ["derive"] }

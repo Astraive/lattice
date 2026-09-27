@@ -1,0 +1,6 @@
+{
+  "profile": "lattice-device-identity-bundle-v1",
+  "status": "candidate test vector, not interoperability proof",
+  "bundle_hex": "01d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+  "fingerprint_hex": "5f7e15d6a462c18997358f8934ac2d0c53556bce94ed7d031b7c9813da55c02a"
+}

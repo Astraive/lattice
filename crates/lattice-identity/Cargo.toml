@@ -6,5 +6,20 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["alloc", "fast", "std", "zeroize"] }
+getrandom = "=0.3.4"
+sha2 = "=0.10.9"
+zeroize = "=1.9.0"
+thiserror = "=2.0.20"
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "=0.3.4", features = ["wasm_js"] }
+
+[dev-dependencies]
+serde_json = "=1.0.151"
+
 [lints]
 workspace = true

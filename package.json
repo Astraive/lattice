@@ -13,7 +13,7 @@
     "dev": "turbo run dev",
     "format": "biome check --write . && cargo fmt --all",
     "format:check": "biome check . && cargo fmt --all -- --check",
-    "lint": "turbo run lint && markdownlint-cli2 && cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "lint": "turbo run lint && markdownlint-cli2 \"docs/**/*.md\" \"!docs/spec.md\" \"!docs/spec2.md\" --config .github/markdownlint-ci.jsonc && cargo clippy --workspace --all-targets --locked -- -D warnings",
     "test": "turbo run test && cargo test --workspace --locked"
   },
   "devDependencies": {
