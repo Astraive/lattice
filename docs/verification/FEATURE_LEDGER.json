@@ -108,7 +108,7 @@
       "id": "desktop-client",
       "capability": "Desktop identity, Space/message UI, local paths and bounded sync",
       "status": "FAILED",
-      "acceptance_boundary": "A real Tauri Desktop profile accepted and projected one CLI-authored signed MLS event, and CLI accepted one Desktop-authored event in the same authenticated v2 round. A later membership event was rejected as WrongEventKind; Desktop-to-Desktop, membership convergence and restart acceptance remain unmet."
+      "acceptance_boundary": "A real Tauri Desktop profile accepted and projected one CLI-authored signed MLS event, and CLI accepted one Desktop-authored event in the same authenticated v2 round. The pre-fix Desktop path rejected a later membership event as WrongEventKind. Current code bundles policy/MLS-control/transition events and the targeted Core regression passes, but Desktop-to-Desktop, real membership-event exchange, convergence and restart acceptance remain unmet."
     },
     {
       "id": "desktop-theme",
@@ -197,12 +197,12 @@
       "requirements": ["desktop", "sync"],
       "implementation_files": ["apps/desktop"],
       "clients": ["Desktop", "Desktop"],
-      "tested_path": "A same-Space two-Desktop attempt did not complete an event exchange: after a later CLI membership transition, the earlier Desktop Core profile rejected the synchronized event as WrongEventKind.",
-      "command_or_scenario": "Two isolated Tauri profiles joined from CLI-issued Welcomes; `sync_local_space_once` after the second join returned `Core rejected synchronized event: Space message rejected: Rejected(WrongEventKind)`.",
-      "result": "No Desktop-to-Desktop application event exchange; membership-event propagation failed before reciprocal peer acceptance.",
-      "evidence": ["docs/verification/INTEROP_MATRIX.md", "docs/verification/KNOWN_BLOCKERS.md"],
+      "tested_path": "A same-Space two-Desktop attempt did not complete an event exchange: the pre-fix Desktop receiver rejected a later CLI membership transition as WrongEventKind. Current code adds authenticated membership-bundle handling, covered by a targeted Core regression, but the two-Desktop process scenario has not been rerun.",
+      "command_or_scenario": "Before the fix, two isolated Tauri profiles joined from CLI-issued Welcomes; `sync_local_space_once` after the second join returned `Core rejected synchronized event: Space message rejected: Rejected(WrongEventKind)`. Post-fix evidence is limited to `cargo test -p lattice-core --lib membership_commit_policy_and_events_commit_atomically --locked` and a Desktop release check.",
+      "result": "No post-fix Desktop-to-Desktop application event exchange has been verified; the Core bundle acceptance and duplicate behavior pass, but process-level membership propagation remains unverified.",
+      "evidence": ["docs/verification/INTEROP_MATRIX.md", "docs/verification/KNOWN_BLOCKERS.md", "apps/desktop/src-tauri/src/sync.rs", "crates/lattice-core/src/lib.rs"],
       "status": "FAILED",
-      "scope_note": "This failure is distinct from the verified one-round Desktop↔CLI text exchange; the two Desktop profiles did not reach a shared current MLS state."
+      "scope_note": "The pre-fix failure is distinct from the verified one-round Desktop↔CLI text exchange; the post-fix two-Desktop flow has not been exercised."
     },
     {
       "id": "interop-desktop-cli",

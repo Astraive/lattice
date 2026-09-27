@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::Path, time::Duration};
 
 use lattice_core::{Client, CreatedSpace, SyncedApplicationOutcome};
-use lattice_events::VerifiedSignatureOnlyEvent;
+use lattice_events::{EventKind, VerifiedSignatureOnlyEvent};
 use lattice_node::sync::{
     StoreSyncEventSource, StoreSyncSummarySource, SyncSummarySource, ValidatedSyncEvent,
     execute_authenticated_sync_v2_once, serve_authenticated_sync_v2_once,
@@ -233,17 +233,134 @@ fn connect_sync_adapters(
     Ok((bound, outbound, inbound))
 }
 
+struct MembershipEventBundles {
+    transition_for_control: Vec<Option<usize>>,
+    policy_for_control: Vec<Option<usize>>,
+    paired_transition: Vec<bool>,
+    bundled_policy: Vec<bool>,
+    ambiguous: Vec<bool>,
+}
+
+fn pair_membership_events(
+    events: &[(ValidatedSyncEvent, VerifiedSignatureOnlyEvent)],
+) -> MembershipEventBundles {
+    let mut bundles = MembershipEventBundles {
+        transition_for_control: vec![None; events.len()],
+        policy_for_control: vec![None; events.len()],
+        paired_transition: vec![false; events.len()],
+        bundled_policy: vec![false; events.len()],
+        ambiguous: vec![false; events.len()],
+    };
+    for (control_index, (_, control)) in events.iter().enumerate() {
+        if control.kind() != EventKind::MlsControl {
+            continue;
+        }
+        let control_id = *control.event_id().as_bytes();
+        let mut transitions = events.iter().enumerate().filter_map(|(index, (_, event))| {
+            (event.kind() == EventKind::Membership
+                && event
+                    .parents()
+                    .iter()
+                    .any(|parent| parent.as_bytes() == &control_id))
+            .then_some(index)
+        });
+        let Some(transition_index) = transitions.next() else {
+            continue;
+        };
+        if transitions.next().is_some() {
+            bundles.ambiguous[control_index] = true;
+            continue;
+        }
+        bundles.transition_for_control[control_index] = Some(transition_index);
+        bundles.paired_transition[transition_index] = true;
+
+        let mut policy_parents = control.parents().iter().filter_map(|parent| {
+            events.iter().enumerate().find_map(|(index, (_, event))| {
+                (event.kind() == EventKind::Membership
+                    && event.event_id().as_bytes() == parent.as_bytes())
+                .then_some(index)
+            })
+        });
+        if let Some(policy_index) = policy_parents.next() {
+            if policy_parents.next().is_some() {
+                bundles.ambiguous[control_index] = true;
+                continue;
+            }
+            bundles.policy_for_control[control_index] = Some(policy_index);
+            bundles.bundled_policy[policy_index] = true;
+        }
+    }
+    bundles
+}
+
 fn apply_synced_events(
     client: &mut Client,
     created: &mut CreatedSpace,
     events: Vec<ValidatedSyncEvent>,
 ) -> Result<(usize, usize, usize), String> {
+    let mut events = events
+        .into_iter()
+        .map(|event| {
+            let verified = VerifiedSignatureOnlyEvent::decode_verify(&event.bytes)
+                .map_err(|error| format!("verify synchronized event: {error}"))?;
+            Ok((event, verified))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    events.sort_unstable_by_key(|(event, verified)| {
+        (
+            verified.mls_epoch(),
+            *verified.author_fingerprint(),
+            event.sequence,
+        )
+    });
+
+    let bundles = pair_membership_events(&events);
+
     let mut counts = (0, 0, 0);
-    for event in events {
-        let outcome = client
-            .accept_synced_application_event(created, &event.bytes)
-            .map_err(|error| format!("Core rejected synchronized event: {error}"))?;
-        count_sync_outcome(&mut counts, &outcome);
+    for (index, (received, event)) in events.iter().enumerate() {
+        match event.kind() {
+            EventKind::MlsControl => {
+                let Some(transition_index) = bundles.transition_for_control[index] else {
+                    counts.1 += 1;
+                    continue;
+                };
+                if bundles.ambiguous[index] {
+                    counts.1 += 1;
+                    continue;
+                }
+                let policy_bytes = bundles.policy_for_control[index]
+                    .map(|parent| events[parent].0.bytes.as_slice());
+                let accepted = client
+                    .accept_synced_space_membership_transition(
+                        created,
+                        policy_bytes,
+                        &received.bytes,
+                        &events[transition_index].0.bytes,
+                    )
+                    .map_err(|error| {
+                        format!("Core rejected synchronized membership transition: {error}")
+                    })?;
+                let bundle_size = 2 + usize::from(policy_bytes.is_some());
+                if accepted {
+                    counts.0 += bundle_size;
+                } else {
+                    counts.2 += bundle_size;
+                }
+            }
+            EventKind::Membership | EventKind::Ephemeral => counts.1 += 1,
+            EventKind::Message
+            | EventKind::Edit
+            | EventKind::Tombstone
+            | EventKind::Reaction
+            | EventKind::Pin
+            | EventKind::FileManifest
+            | EventKind::VoiceSignal => {
+                let outcome = client
+                    .accept_synced_application_event(created, &received.bytes)
+                    .map_err(|error| format!("Core rejected synchronized event: {error}"))?;
+                count_sync_outcome(&mut counts, &outcome);
+            }
+        }
     }
     for outcome in client
         .retry_ready_synced_application_events(created)

@@ -3143,11 +3143,122 @@ impl Client {
     /// either event does not match its authenticated MLS result, policy rejects
     /// the transition, an author sequence equivocates, or any MLS/storage
     /// operation fails. The transaction rolls back on every error.
-    #[allow(clippy::too_many_lines)] // One membership transition is an atomic authenticated boundary.
     pub fn accept_space_membership_transition(
         &mut self,
         group_id: &[u8],
         reducer: &space::SpaceReducer,
+        control_event: VerifiedSignatureOnlyEvent,
+        transition_event: VerifiedSignatureOnlyEvent,
+    ) -> Result<space::SpaceReducer, CoreError> {
+        self.accept_space_membership_transition_with_policy_events(
+            group_id,
+            reducer,
+            Vec::new(),
+            control_event,
+            transition_event,
+        )
+    }
+    /// Accepts one synchronized MLS membership transition with its policy parent.
+    ///
+    /// The policy event, Commit, transition, reducer replay state, and MLS group
+    /// update commit in one transaction. `Ok(false)` means the exact bundle was
+    /// already accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the events are not a bound membership transition,
+    /// their author sequence equivocates, policy rejects the operation, or
+    /// MLS/storage validation fails.
+    pub fn accept_synced_space_membership_transition(
+        &mut self,
+        created: &mut CreatedSpace,
+        policy_event_bytes: Option<&[u8]>,
+        control_event_bytes: &[u8],
+        transition_event_bytes: &[u8],
+    ) -> Result<bool, CoreError> {
+        let control_event = VerifiedSignatureOnlyEvent::decode_verify(control_event_bytes)?;
+        let transition_event = VerifiedSignatureOnlyEvent::decode_verify(transition_event_bytes)?;
+        let mut policy_event = policy_event_bytes
+            .map(VerifiedSignatureOnlyEvent::decode_verify)
+            .transpose()?;
+        let control_event_id = *control_event.event_id().as_bytes();
+        if control_event.kind() != EventKind::MlsControl
+            || transition_event.kind() != EventKind::Membership
+            || control_event.channel_id().is_some()
+            || transition_event.channel_id().is_some()
+            || control_event.space_id() != &created.space_id
+            || transition_event.space_id() != &created.space_id
+            || control_event.mls_group_reference() != &created.group_reference
+            || transition_event.mls_group_reference() != &created.group_reference
+            || control_event.mls_epoch() != transition_event.mls_epoch()
+            || !transition_event
+                .parents()
+                .iter()
+                .any(|parent| parent.as_bytes() == &control_event_id)
+            || policy_event.as_ref().is_some_and(|event| {
+                event.kind() != EventKind::Membership
+                    || event.channel_id().is_some()
+                    || event.space_id() != &created.space_id
+                    || event.mls_group_reference() != &created.group_reference
+                    || event.mls_epoch() != control_event.mls_epoch()
+                    || !control_event
+                        .parents()
+                        .iter()
+                        .any(|parent| parent.as_bytes() == event.event_id().as_bytes())
+            })
+        {
+            return Err(CoreError::MlsEventBindingFailed);
+        }
+
+        if let Some(bytes) = policy_event_bytes {
+            let event = policy_event
+                .as_ref()
+                .ok_or(CoreError::MlsEventBindingFailed)?;
+            if let Some(record) = self.store.load_event(event.event_id().as_bytes())? {
+                if record.canonical_bytes != bytes {
+                    return Err(CoreError::Storage(StoreError::EventIdConflict));
+                }
+                policy_event = None;
+            }
+        }
+        let control_record = self.store.load_event(control_event.event_id().as_bytes())?;
+        let transition_record = self
+            .store
+            .load_event(transition_event.event_id().as_bytes())?;
+        for (record, bytes) in [
+            (control_record.as_ref(), control_event_bytes),
+            (transition_record.as_ref(), transition_event_bytes),
+        ] {
+            if record.is_some_and(|record| record.canonical_bytes != bytes) {
+                return Err(CoreError::Storage(StoreError::EventIdConflict));
+            }
+        }
+        let control_exists = control_record.is_some();
+        let transition_exists = transition_record.is_some();
+        if control_exists != transition_exists {
+            return Err(CoreError::SpaceMembershipSnapshotInvalid);
+        }
+        if control_exists {
+            return Ok(false);
+        }
+
+        let reducer = self.accept_space_membership_transition_with_policy_events(
+            &created.group_id,
+            &created.reducer,
+            policy_event.into_iter().collect(),
+            control_event,
+            transition_event,
+        )?;
+        created.reducer = reducer;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_lines)] // One membership transition is an atomic authenticated boundary.
+    fn accept_space_membership_transition_with_policy_events(
+        &mut self,
+        group_id: &[u8],
+        reducer: &space::SpaceReducer,
+        incoming_policy_events: Vec<VerifiedSignatureOnlyEvent>,
         control_event: VerifiedSignatureOnlyEvent,
         transition_event: VerifiedSignatureOnlyEvent,
     ) -> Result<space::SpaceReducer, CoreError> {
@@ -3170,11 +3281,6 @@ impl Client {
                 CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
             })?,
         };
-        let policy_events = reducer
-            .policy_replay_events_after(replay_base_revision)
-            .map_err(|reason| {
-                CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
-            })?;
         let mut staged_reducer = reducer.clone();
         let credential_trust_policy = self.credential_trust_policy.clone();
         self.with_mls_transaction(move |_identity, provider, transaction| {
@@ -3185,6 +3291,22 @@ impl Client {
                     space::ApplyResult::Rejected(space::RejectReason::WrongGeneration),
                 ));
             }
+            for event in incoming_policy_events {
+                let IncomingResult::Application(application) =
+                    group.process_incoming(provider, event.protected_body())?
+                else {
+                    return Err(CoreError::MlsEventBindingFailed);
+                };
+                let bound = bind_mls_application(event, application)?;
+                if !matches!(
+                    staged_reducer.apply(&bound, None),
+                    space::ApplyResult::Applied { .. }
+                ) {
+                    return Err(CoreError::SpaceMembershipSnapshotInvalid);
+                }
+                store_received_event(transaction, bound.event())?;
+            }
+
             let commit_wire = control_event.protected_body();
             if !matches!(
                 group.process_incoming(provider, commit_wire)?,
@@ -3203,6 +3325,11 @@ impl Client {
                 .observe_validated_control_event(&control_event, proof)
                 .map_err(CoreError::SpaceControlRejected)?;
 
+            let policy_events = staged_reducer
+                .policy_replay_events_after(replay_base_revision)
+                .map_err(|reason| {
+                    CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
+                })?;
             let IncomingResult::Application(application) =
                 group.process_incoming(provider, transition_event.protected_body())?
             else {
@@ -5604,7 +5731,7 @@ mod tests {
         let group_id = created.group_id().to_vec();
         let space_id = *created.space_id();
         let group_reference = *created.group_reference();
-        let mut reducer = created.reducer().clone();
+        let reducer = created.reducer().clone();
         let genesis_reducer = reducer.clone();
         let genesis_id = *created.genesis_event().event_id().as_bytes();
 
@@ -5678,21 +5805,6 @@ mod tests {
                 mls_group_reference: group_reference,
                 mls_epoch: 1,
             },
-        );
-        let invite_application = bob
-            .with_mls_transaction(|_, provider, _transaction| {
-                let mut group = GroupState::load(provider, &group_id)?;
-                match group.process_incoming(provider, invite.protected_body())? {
-                    IncomingResult::Application(application) => Ok(application),
-                    _ => Err(CoreError::MlsEventBindingFailed),
-                }
-            })
-            .expect("authenticate invite application with Bob's group");
-        let bound_invite = bind_mls_application(invite.clone(), invite_application)
-            .expect("bind exact invite ciphertext");
-        assert_eq!(
-            reducer.apply(&bound_invite, None),
-            super::space::ApplyResult::Applied { revision: 1 }
         );
         let invite_event_id = *invite.event_id().as_bytes();
 
@@ -5919,15 +6031,25 @@ mod tests {
             } if missing_dependencies.len() == 2
                 && missing_dependencies.contains(&control_event_id)
         ));
-        let updated = bob
-            .accept_space_membership_transition(
-                &group_id,
-                &reducer,
-                received_control,
-                received_transition,
+        assert!(
+            bob.accept_synced_space_membership_transition(
+                &mut bob_joined,
+                Some(invite.encoded_bytes()),
+                received_control.encoded_bytes(),
+                received_transition.encoded_bytes(),
             )
-            .expect("commit MLS merge and admitted policy transition atomically");
-        bob_joined.reducer = updated.clone();
+            .expect("atomically accept synchronized invite, Commit, and transition")
+        );
+        assert!(
+            !bob.accept_synced_space_membership_transition(
+                &mut bob_joined,
+                Some(invite.encoded_bytes()),
+                received_control.encoded_bytes(),
+                received_transition.encoded_bytes(),
+            )
+            .expect("recognize duplicate synchronized membership bundle")
+        );
+        let updated = bob_joined.reducer.clone();
         assert_eq!(
             bob.accept_synced_application_event(
                 &mut bob_joined,
@@ -6012,7 +6134,7 @@ mod tests {
             EventDraft {
                 space_id,
                 channel_id: None,
-                author_sequence: alice.next_author_sequence().expect("Alice sequence"),
+                author_sequence: 6,
                 lamport: 5,
                 wall_time_hint: 0,
                 parents: vec![policy_parent],
