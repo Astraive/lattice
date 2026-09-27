@@ -11,6 +11,7 @@ mod profile;
 mod relay_settings;
 
 mod spaces;
+mod sync;
 
 /// Starts the native Lattice desktop process.
 ///
@@ -40,6 +41,7 @@ pub fn run() {
             spaces::list_local_spaces,
             spaces::recover_local_space_generation,
             spaces::create_local_space,
+            spaces::publish_local_space_key_package,
             spaces::import_local_space_welcome_bootstrap,
             spaces::queue_local_text_message,
             spaces::queue_local_text_message_edit,
@@ -61,6 +63,7 @@ pub fn run() {
             peer_mode::get_persistent_peer_mode_status,
             peer_mode::configure_persistent_peer_mode,
             peer_mode::list_retained_courier_items,
+            sync::sync_local_space_once,
             peer_mode::forward_queued_courier_item
         ])
         .build(tauri::generate_context!())

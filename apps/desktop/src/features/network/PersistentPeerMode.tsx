@@ -183,8 +183,9 @@ export function PersistentPeerMode({ runtimeAvailable }: Props) {
       try {
         await loadPeerState();
       } catch (cause) {
-        setError((current) =>
-          `${current ? `${current} ` : ""}Courier queue status could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        setError(
+          (current) =>
+            `${current ? `${current} ` : ""}Courier queue status could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
         );
       }
       setBusy(false);
@@ -228,8 +229,8 @@ export function PersistentPeerMode({ runtimeAvailable }: Props) {
               Space content, and queue retention is not recipient delivery.
             </span>
             <span>
-              A non-loopback listener attempts a temporary generic mDNS announcement without peer
-              or Space identity; discovery does not prove reachability.
+              A non-loopback listener attempts a temporary generic mDNS announcement without peer or
+              Space identity; discovery does not prove reachability.
             </span>
           </div>
           <form className="relay-settings-form" onSubmit={(event) => void configure(true, event)}>
@@ -278,8 +279,8 @@ export function PersistentPeerMode({ runtimeAvailable }: Props) {
               <div>
                 <h4>Forward a retained item</h4>
                 <p>
-                  Send one queued envelope to a TCP listener you choose. The destination
-                  fingerprint must already be pinned in this profile.
+                  Send one queued envelope to a TCP listener you choose. The destination fingerprint
+                  must already be pinned in this profile.
                 </p>
               </div>
             </div>
