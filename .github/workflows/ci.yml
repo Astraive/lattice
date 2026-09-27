@@ -102,3 +102,21 @@ jobs:
       - name: Validate Android application
         run: ./gradlew lintDebug testDebugUnitTest assembleDebug
 
+      - name: Upload Android validation reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: android-validation-reports
+          path: |
+            apps/android/app/build/reports/
+            apps/android/app/build/test-results/testDebugUnitTest/
+          if-no-files-found: warn
+
+      - name: Upload Android debug APK
+        uses: actions/upload-artifact@v7
+        if: success()
+        with:
+          name: android-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
