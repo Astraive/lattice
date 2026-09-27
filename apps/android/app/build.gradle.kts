@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.astraive.lattice"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.astraive.lattice"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
     }
 

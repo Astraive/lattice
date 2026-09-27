@@ -35,6 +35,10 @@ jobs:
         with:
           toolchain: 1.95.0
           components: clippy,rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
 
       - name: Install JavaScript dependencies
         run: bun install --frozen-lockfile
@@ -76,7 +80,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+        run: sdkmanager --channel=3 "platforms;android-37.2" "build-tools;37.0.0" "ndk;28.2.13676358"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
