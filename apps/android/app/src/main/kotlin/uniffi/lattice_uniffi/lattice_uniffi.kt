@@ -4845,6 +4845,75 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
 
 
 
+/**
+ * Durable delivery state of one Core-authored outbox envelope.
+ */
+
+enum class MobileOutboxState {
+    
+    QUEUED,
+    FORWARDED,
+    DELIVERED,
+    FAILED;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOutboxState: FfiConverterRustBuffer<MobileOutboxState> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileOutboxState.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileOutboxState) = 4UL
+
+    override fun write(value: MobileOutboxState, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Outcome class from Core's authenticated sync-event acceptance path.
+ */
+
+enum class MobileSyncEventState {
+    
+    ACCEPTED,
+    DUPLICATE,
+    PENDING;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSyncEventState: FfiConverterRustBuffer<MobileSyncEventState> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileSyncEventState.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileSyncEventState) = 4UL
+
+    override fun write(value: MobileSyncEventState, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 
 
 /**
@@ -4852,7 +4921,7 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
  * profile-bound platform key and must fail closed when that key is unavailable.
  */
 sealed class ProtectorException: kotlin.Exception() {
-
+    
     /**
      * The native keystore denied access or could not protect the bytes.
      */
@@ -4861,13 +4930,13 @@ sealed class ProtectorException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ProtectorException> {
         override fun lift(error_buf: RustBuffer.ByValue): ProtectorException = FfiConverterTypeProtectorError.lift(error_buf)
     }
 
-
+    
 }
 
 /**
@@ -4875,7 +4944,7 @@ sealed class ProtectorException: kotlin.Exception() {
  */
 public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorException> {
     override fun read(buf: ByteBuffer): ProtectorException {
-
+        
 
         return when(buf.getInt()) {
             1 -> ProtectorException.Failure()
@@ -4941,6 +5010,38 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
 /**
  * @suppress
  */
+public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteArray?> {
+    override fun read(buf: ByteBuffer): kotlin.ByteArray? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterByteArray.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ByteArray?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterByteArray.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ByteArray?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterByteArray.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeMobilePinnedIdentity: FfiConverterRustBuffer<MobilePinnedIdentity?> {
     override fun read(buf: ByteBuffer): MobilePinnedIdentity? {
         if (buf.get().toInt() == 0) {
@@ -4995,6 +5096,34 @@ public object FfiConverterOptionalTypeMobileSpaceCursor: FfiConverterRustBuffer<
         } else {
             buf.put(1)
             FfiConverterTypeMobileSpaceCursor.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceByteArray: FfiConverterRustBuffer<List<kotlin.ByteArray>> {
+    override fun read(buf: ByteBuffer): List<kotlin.ByteArray> {
+        val len = buf.getInt()
+        return List<kotlin.ByteArray>(len) {
+            FfiConverterByteArray.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.ByteArray>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterByteArray.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.ByteArray>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterByteArray.write(it, buf)
         }
     }
 }
@@ -5079,6 +5208,34 @@ public object FfiConverterSequenceTypeMobileLocalTextMessage: FfiConverterRustBu
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileLocalTextMessage.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileOutboxEntry: FfiConverterRustBuffer<List<MobileOutboxEntry>> {
+    override fun read(buf: ByteBuffer): List<MobileOutboxEntry> {
+        val len = buf.getInt()
+        return List<MobileOutboxEntry>(len) {
+            FfiConverterTypeMobileOutboxEntry.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileOutboxEntry>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileOutboxEntry.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileOutboxEntry>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileOutboxEntry.write(it, buf)
         }
     }
 }
