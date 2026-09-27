@@ -468,6 +468,18 @@ fn accept_reconciliation_events(
     Ok(counts)
 }
 
+fn fetch_result_state(counts: &FetchEventCounts, rejected_events: usize) -> &'static str {
+    if rejected_events > 0 {
+        "event_rejected"
+    } else if counts.pending > 0 {
+        "pending_dependencies"
+    } else if counts.accepted + counts.duplicates + counts.checkpoint_excluded > 0 {
+        "event_received"
+    } else {
+        "unresolved"
+    }
+}
+
 fn print_fetch_result(
     target: FetchOnceTarget,
     counts: &FetchEventCounts,
@@ -497,15 +509,7 @@ fn print_fetch_result(
         .map(|dependency| super::hex(dependency.as_bytes()))
         .collect::<Vec<_>>();
     if json {
-        let state = if rejected_events > 0 {
-            "event_rejected"
-        } else if counts.pending > 0 {
-            "pending_dependencies"
-        } else if counts.accepted + counts.duplicates + counts.checkpoint_excluded > 0 {
-            "event_received"
-        } else {
-            "unresolved"
-        };
+        let state = fetch_result_state(counts, rejected_events);
         println!(
             "{}",
             serde_json::json!({

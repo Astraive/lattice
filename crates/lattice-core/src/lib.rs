@@ -2062,6 +2062,31 @@ impl Client {
         self.accept_verified_synced_application_event(&mut created, canonical_bytes, event)
     }
 
+    fn missing_synced_event_dependencies(
+        &self,
+        created: &CreatedSpace,
+        event: &VerifiedSignatureOnlyEvent,
+    ) -> Result<Vec<[u8; 32]>, CoreError> {
+        let mut missing = Vec::new();
+        for parent in event.parents() {
+            let parent_id = *parent.as_bytes();
+            match self.store.load_event(&parent_id)? {
+                None => missing.push(parent_id),
+                Some(record) => {
+                    let parent_event =
+                        VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+                    if parent_event.event_id().as_bytes() != &parent_id
+                        || parent_event.space_id() != &created.space_id
+                        || parent_event.mls_group_reference() != &created.group_reference
+                    {
+                        return Err(CoreError::SpaceParentEventMissing);
+                    }
+                }
+            }
+        }
+        Ok(missing)
+    }
+
     fn accept_verified_synced_application_event(
         &mut self,
         created: &mut CreatedSpace,
@@ -2083,23 +2108,7 @@ impl Client {
             return Ok(SyncedApplicationOutcome::Duplicate { event_id });
         }
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
-        let mut missing_dependencies = Vec::new();
-        for parent in event.parents() {
-            let parent_id = *parent.as_bytes();
-            match self.store.load_event(&parent_id)? {
-                None => missing_dependencies.push(parent_id),
-                Some(record) => {
-                    let parent_event =
-                        VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
-                    if parent_event.event_id().as_bytes() != &parent_id
-                        || parent_event.space_id() != &created.space_id
-                        || parent_event.mls_group_reference() != &created.group_reference
-                    {
-                        return Err(CoreError::SpaceParentEventMissing);
-                    }
-                }
-            }
-        }
+        let missing_dependencies = self.missing_synced_event_dependencies(created, &event)?;
         if !missing_dependencies.is_empty() {
             self.store
                 .store_pending(event_id, canonical_bytes, &missing_dependencies)?;
