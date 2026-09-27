@@ -2643,9 +2643,34 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
+    
+    /**
+     * Sends one opaque signed event through Rust's signature, MLS, dependency,
+     * and local Space authorization gates.
+     *
+     * `Pending` means the event was retained for missing parents; it is not
+     * authorized application content and must not be projected to the UI.
+     *
+     * # Errors
+     *
+     * Returns `SyncIngestFailed` unless Core accepts, recognizes a duplicate,
+     * or safely retains the event as pending.
+     */
+    @Throws(MobileException::class)override fun `ingestSyncedApplicationEvent`(`canonicalBytes`: kotlin.ByteArray): MobileSyncEventResult {
+            return FfiConverterTypeMobileSyncEventResult.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(
+        it, FfiConverterByteArray.lower(`canonicalBytes`),_status)
+}
+    }
+    )
+    }
+    
 
-
+    
     /**
      * Joins one validated MLS Welcome using a signed policy checkpoint from
      * an explicitly pinned inviter.
@@ -2671,9 +2696,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Restores one bounded page of local Genesis snapshots.
      *
@@ -2695,9 +2720,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Returns the newest bounded history of locally retained authorized text messages.
      *
@@ -2720,9 +2745,29 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
+    
+    /**
+     * Persists a forwarding attempt before its envelope is placed on transport.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId`, `InvalidOutboxSchedule`, or
+     * `OutboxTransitionRejected`.
+     */
+    @Throws(MobileException::class)override fun `markOutboxForwarded`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_forwarded(
+        it, FfiConverterByteArray.lower(`eventId`),FfiConverterLong.lower(`nextAttemptMs`),_status)
+}
+    }
+    
+    
 
-
+    
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -2740,9 +2785,34 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
+    
+    /**
+     * Returns a bounded keyset page of exact durable opaque envelopes.
+     *
+     * Entries are not delivery confirmations; the router owns retry and
+     * forwarding transitions. The caller must preserve the envelope bytes.
+     *
+     * # Errors
+     *
+     * `InvalidOutboxCursor` for a non-32-byte cursor,
+     * `InvalidOutboxPage` for a zero or oversized page, and
+     * `OutboxUnavailable` for storage failures.
+     */
+    @Throws(MobileException::class)override fun `outboxPage`(`afterEventId`: kotlin.ByteArray?, `limit`: kotlin.Int): List<MobileOutboxEntry> {
+            return FfiConverterSequenceTypeMobileOutboxEntry.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(
+        it, FfiConverterOptionalByteArray.lower(`afterEventId`),FfiConverterInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
-
+    
     /**
      * Stores one exact identity bundle after checking its caller-supplied full
      * fingerprint.
@@ -2769,9 +2839,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Loads and revalidates one pinned peer by its full fingerprint.
      *
@@ -2791,9 +2861,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Validates and commits a text event to this device's local durable outbox.
      *
@@ -2819,9 +2889,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Queues a locally authorized immutable Edit event and updates the
      * encrypted local message cache.
@@ -2845,9 +2915,28 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
+    
+    /**
+     * Records destination acceptance from the authenticated peer's completion record.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` or `OutboxTransitionRejected`.
+     */
+    @Throws(MobileException::class)override fun `recordDestinationReceipt`(`eventId`: kotlin.ByteArray)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_record_destination_receipt(
+        it, FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    
+    
 
-
+    
     /**
      * Restores a named local generation, then creates its authorized one-member recovery generation.
      *
@@ -2872,9 +2961,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Searches all locally retained authorized messages in one channel offline.
      *
@@ -2898,9 +2987,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
-
-
+    
     /**
      * Removes one full-fingerprint peer pin from this local profile.
      *
@@ -2922,13 +3011,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
+    
 
+    
 
-
-
-
+    
     companion object {
-
+        
     /**
      * Opens a durable profile using a caller-provided OS keystore bridge.
      *
@@ -2949,11 +3038,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 }
     )
     }
+    
 
-
-
+        
     }
-
+    
 }
 
 /**
@@ -3084,7 +3173,7 @@ public object FfiConverterTypeMobileClient: FfiConverter<MobileClient, Pointer> 
 
 
 public interface PlatformKeyProtector {
-
+    
     /**
      * Wraps private material for the exact profile identifier.
      *
@@ -3093,7 +3182,7 @@ public interface PlatformKeyProtector {
      * Returns `ProtectorError` when the native keystore refuses protection.
      */
     fun `wrap`(`profileId`: kotlin.String, `clearMaterial`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     /**
      * Unwraps ciphertext only for the exact profile identifier.
      *
@@ -3103,7 +3192,7 @@ public interface PlatformKeyProtector {
      * authenticate the ciphertext.
      */
     fun `unwrap`(`profileId`: kotlin.String, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     companion object
 }
 
@@ -3189,7 +3278,7 @@ open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProte
         }
     }
 
-
+    
     /**
      * Wraps private material for the exact profile identifier.
      *
@@ -3207,9 +3296,9 @@ open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProte
     }
     )
     }
+    
 
-
-
+    
     /**
      * Unwraps ciphertext only for the exact profile identifier.
      *
@@ -3228,14 +3317,14 @@ open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProte
     }
     )
     }
+    
 
+    
 
-
-
-
-
+    
+    
     companion object
-
+    
 }
 
 
@@ -3268,13 +3357,7 @@ internal object uniffiCallbackInterfacePlatformKeyProtector {
                     FfiConverterByteArray.lift(`ciphertext`),
                 )
             }
-            val writeReturn = { value: kotlin.ByteArray ->
-                try {
-                    uniffiOutReturn.setValue(FfiConverterByteArray.lower(value))
-                } finally {
-                    value.fill(0)
-                }
-            }
+            val writeReturn = { value: kotlin.ByteArray -> uniffiOutReturn.setValue(FfiConverterByteArray.lower(value)) }
             uniffiTraitInterfaceCallWithError(
                 uniffiCallStatus,
                 makeCall,
@@ -3335,27 +3418,70 @@ public object FfiConverterTypePlatformKeyProtector: FfiConverter<PlatformKeyProt
 
 
 /**
+ * Public peer identity and comparison string from a transcript-verified proof.
+ */
+data class MobileBlePeerInfo (
+    var `identityBundle`: kotlin.ByteArray, 
+    var `fingerprint`: kotlin.ByteArray, 
+    var `safetyNumber`: kotlin.String, 
+    var `alreadyPinned`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileBlePeerInfo: FfiConverterRustBuffer<MobileBlePeerInfo> {
+    override fun read(buf: ByteBuffer): MobileBlePeerInfo {
+        return MobileBlePeerInfo(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileBlePeerInfo) = (
+            FfiConverterByteArray.allocationSize(value.`identityBundle`) +
+            FfiConverterByteArray.allocationSize(value.`fingerprint`) +
+            FfiConverterString.allocationSize(value.`safetyNumber`) +
+            FfiConverterBoolean.allocationSize(value.`alreadyPinned`)
+    )
+
+    override fun write(value: MobileBlePeerInfo, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`identityBundle`, buf)
+            FfiConverterByteArray.write(value.`fingerprint`, buf)
+            FfiConverterString.write(value.`safetyNumber`, buf)
+            FfiConverterBoolean.write(value.`alreadyPinned`, buf)
+    }
+}
+
+
+
+/**
  * Non-secret projection of one channel in the local Genesis policy.
  */
 data class MobileChannelSummary (
     /**
      * Random channel identifier bytes.
      */
-    var `id`: kotlin.ByteArray,
+    var `id`: kotlin.ByteArray, 
     /**
      * Display name.
      */
-    var `name`: kotlin.String,
+    var `name`: kotlin.String, 
     /**
      * Channel type.
      */
-    var `channelType`: MobileChannelType,
+    var `channelType`: MobileChannelType, 
     /**
      * Whether the channel was archived in Genesis.
      */
     var `archived`: kotlin.Boolean
 ) {
-
+    
     companion object
 }
 
@@ -3396,21 +3522,21 @@ data class MobileCreatedSpace (
     /**
      * Randomly generated Space identifier.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray, 
     /**
      * Event-visible MLS group reference.
      */
-    var `groupReference`: kotlin.ByteArray,
+    var `groupReference`: kotlin.ByteArray, 
     /**
      * Identifier of the committed signed Genesis event.
      */
-    var `genesisEventId`: kotlin.ByteArray,
+    var `genesisEventId`: kotlin.ByteArray, 
     /**
      * Initial channels committed in Genesis.
      */
     var `channels`: List<MobileChannelSummary>
 ) {
-
+    
     companion object
 }
 
@@ -3451,13 +3577,13 @@ data class MobileIdentityInfo (
     /**
      * Versioned public identity bundle.
      */
-    var `publicBundle`: kotlin.ByteArray,
+    var `publicBundle`: kotlin.ByteArray, 
     /**
      * Domain-separated fingerprint of the exact public bundle.
      */
     var `fingerprint`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -3492,21 +3618,21 @@ data class MobileInitialChannel (
     /**
      * Candidate channel type.
      */
-    var `channelType`: MobileChannelType,
+    var `channelType`: MobileChannelType, 
     /**
      * Display-only channel name, limited to 128 UTF-8 bytes.
      */
-    var `name`: kotlin.String,
+    var `name`: kotlin.String, 
     /**
      * Initial channel-level permission allow mask.
      */
-    var `defaultAllow`: kotlin.ULong,
+    var `defaultAllow`: kotlin.ULong, 
     /**
      * Initial channel-level permission deny mask.
      */
     var `defaultDeny`: kotlin.ULong
 ) {
-
+    
     companion object
 }
 
@@ -3547,29 +3673,29 @@ data class MobileLocalTextMessage (
     /**
      * Immutable signed message event identifier.
      */
-    var `eventId`: kotlin.ByteArray,
+    var `eventId`: kotlin.ByteArray, 
     /**
      * Stable author fingerprint.
      */
-    var `authorId`: kotlin.ByteArray,
+    var `authorId`: kotlin.ByteArray, 
     /**
      * Author sequence for detecting local gaps.
      */
-    var `authorSequence`: kotlin.ULong,
+    var `authorSequence`: kotlin.ULong, 
     /**
      * Causal Lamport value.
      */
-    var `lamport`: kotlin.ULong,
+    var `lamport`: kotlin.ULong, 
     /**
      * Decrypted text retained by the local encrypted cache.
      */
-    var `content`: kotlin.String,
+    var `content`: kotlin.String, 
     /**
      * Local outbox state, when the envelope remains queued.
      */
     var `outboxState`: kotlin.String?
 ) {
-
+    
     companion object
 }
 
@@ -3616,17 +3742,17 @@ data class MobileLocalTextMessageSearch (
     /**
      * Up to 100 newest matching messages in chronological order.
      */
-    var `messages`: List<MobileLocalTextMessage>,
+    var `messages`: List<MobileLocalTextMessage>, 
     /**
      * Exact number of matches in the local channel cache.
      */
-    var `totalMatches`: kotlin.ULong,
+    var `totalMatches`: kotlin.ULong, 
     /**
      * Number of local messages scanned.
      */
     var `scannedMessages`: kotlin.ULong
 ) {
-
+    
     companion object
 }
 
@@ -3658,6 +3784,68 @@ public object FfiConverterTypeMobileLocalTextMessageSearch: FfiConverterRustBuff
 
 
 /**
+ * Exact persisted envelope and retry metadata for native transport owners.
+ */
+data class MobileOutboxEntry (
+    /**
+     * Immutable signed-event identifier.
+     */
+    var `eventId`: kotlin.ByteArray, 
+    /**
+     * Opaque envelope bytes; transport code must not reinterpret them.
+     */
+    var `envelopeBytes`: kotlin.ByteArray, 
+    /**
+     * Persisted retry schedule in Unix milliseconds.
+     */
+    var `nextAttemptMs`: kotlin.Long, 
+    /**
+     * Number of recorded forwarding attempts.
+     */
+    var `attemptCount`: kotlin.UInt, 
+    /**
+     * Local outbox state; this is not proof of destination receipt.
+     */
+    var `state`: MobileOutboxState
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOutboxEntry: FfiConverterRustBuffer<MobileOutboxEntry> {
+    override fun read(buf: ByteBuffer): MobileOutboxEntry {
+        return MobileOutboxEntry(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterTypeMobileOutboxState.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOutboxEntry) = (
+            FfiConverterByteArray.allocationSize(value.`eventId`) +
+            FfiConverterByteArray.allocationSize(value.`envelopeBytes`) +
+            FfiConverterLong.allocationSize(value.`nextAttemptMs`) +
+            FfiConverterUInt.allocationSize(value.`attemptCount`) +
+            FfiConverterTypeMobileOutboxState.allocationSize(value.`state`)
+    )
+
+    override fun write(value: MobileOutboxEntry, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`envelopeBytes`, buf)
+            FfiConverterLong.write(value.`nextAttemptMs`, buf)
+            FfiConverterUInt.write(value.`attemptCount`, buf)
+            FfiConverterTypeMobileOutboxState.write(value.`state`, buf)
+    }
+}
+
+
+
+/**
  * A durable local match between a public bundle and its full fingerprint.
  *
  * This record does not attest human comparison, authenticate a session, or
@@ -3667,13 +3855,13 @@ data class MobilePinnedIdentity (
     /**
      * Exact versioned public identity bundle.
      */
-    var `publicBundle`: kotlin.ByteArray,
+    var `publicBundle`: kotlin.ByteArray, 
     /**
      * Full fingerprint of the exact bundle bytes.
      */
     var `fingerprint`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -3710,7 +3898,7 @@ data class MobileQueuedMessage (
      */
     var `eventId`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -3742,13 +3930,13 @@ data class MobileSpaceCursor (
     /**
      * Space identifier bytes.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray, 
     /**
      * MLS group reference bytes.
      */
     var `groupReference`: kotlin.ByteArray
 ) {
-
+    
     companion object
 }
 
@@ -3783,13 +3971,13 @@ data class MobileSpacePage (
     /**
      * Restored generations in this page.
      */
-    var `spaces`: List<MobileSpaceSummary>,
+    var `spaces`: List<MobileSpaceSummary>, 
     /**
      * Exclusive cursor to request the next page.
      */
     var `nextCursor`: MobileSpaceCursor?
 ) {
-
+    
     companion object
 }
 
@@ -3824,17 +4012,17 @@ data class MobileSpaceSummary (
     /**
      * Space identifier bytes.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray, 
     /**
      * MLS group reference bytes.
      */
-    var `groupReference`: kotlin.ByteArray,
+    var `groupReference`: kotlin.ByteArray, 
     /**
      * Channels in the locally restored Genesis policy.
      */
     var `channels`: List<MobileChannelSummary>
 ) {
-
+    
     companion object
 }
 
@@ -3866,11 +4054,80 @@ public object FfiConverterTypeMobileSpaceSummary: FfiConverterRustBuffer<MobileS
 
 
 /**
+ * Result of handing one signed application event to Rust Core.
+ */
+data class MobileSyncEventResult (
+    var `eventId`: kotlin.ByteArray, 
+    var `state`: MobileSyncEventState, 
+    var `missingDependencies`: List<kotlin.ByteArray>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSyncEventResult: FfiConverterRustBuffer<MobileSyncEventResult> {
+    override fun read(buf: ByteBuffer): MobileSyncEventResult {
+        return MobileSyncEventResult(
+            FfiConverterByteArray.read(buf),
+            FfiConverterTypeMobileSyncEventState.read(buf),
+            FfiConverterSequenceByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSyncEventResult) = (
+            FfiConverterByteArray.allocationSize(value.`eventId`) +
+            FfiConverterTypeMobileSyncEventState.allocationSize(value.`state`) +
+            FfiConverterSequenceByteArray.allocationSize(value.`missingDependencies`)
+    )
+
+    override fun write(value: MobileSyncEventResult, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterTypeMobileSyncEventState.write(value.`state`, buf)
+            FfiConverterSequenceByteArray.write(value.`missingDependencies`, buf)
+    }
+}
+
+
+
+
+enum class MobileBleRole {
+    
+    INITIATOR,
+    RESPONDER;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileBleRole: FfiConverterRustBuffer<MobileBleRole> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileBleRole.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileBleRole) = 4UL
+
+    override fun write(value: MobileBleRole, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * Supported candidate channel types for local Space creation.
  */
 
 enum class MobileChannelType {
-
+    
     TEXT,
     ANNOUNCEMENT,
     VOICE;
@@ -3905,7 +4162,7 @@ public object FfiConverterTypeMobileChannelType: FfiConverterRustBuffer<MobileCh
  * Stable mobile-safe failures that do not disclose key material or SQL details.
  */
 sealed class MobileException: kotlin.Exception() {
-
+    
     /**
      * Profile identifiers must be 1–128 printable ASCII characters.
      */
@@ -3914,7 +4171,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local profile could not be opened with its OS-protected keys.
      */
@@ -3923,7 +4180,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The native key protector failed or denied access.
      */
@@ -3932,7 +4189,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The profile lock was poisoned by a prior Rust panic.
      */
@@ -3941,7 +4198,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The protected device key could not create a certificate signing request.
      */
@@ -3950,7 +4207,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The caller supplied a Space cursor with an invalid identifier length.
      */
@@ -3959,7 +4216,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The public identity bundle is malformed or uses unsupported keys.
      */
@@ -3968,7 +4225,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The caller supplied a fingerprint with a length other than 32 bytes.
      */
@@ -3977,7 +4234,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The supplied full fingerprint does not match the exact bundle.
      */
@@ -3986,7 +4243,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A previously stored fingerprint is mapped to different bundle bytes.
      */
@@ -3995,7 +4252,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The supplied RFC 9420 X.509 credential is malformed, untrusted, or mismatched.
      */
@@ -4004,7 +4261,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Initial channel inputs exceed bounds or violate Space policy.
      */
@@ -4013,7 +4270,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local Space transaction could not be committed.
      */
@@ -4022,7 +4279,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A local Space generation could not be restored or recovered.
      */
@@ -4031,7 +4288,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Bootstrap package bytes are empty, oversized, or invalid.
      */
@@ -4040,7 +4297,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The Welcome inviter's complete identity bundle is not pinned.
      */
@@ -4049,7 +4306,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A validated Welcome could not be imported into the local profile.
      */
@@ -4058,7 +4315,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A supplied Space, group, or channel identifier has the wrong byte length.
      */
@@ -4067,7 +4324,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Text exceeds the bounded Space application payload size.
      */
@@ -4076,7 +4333,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local message-search query is empty or exceeds its byte limit.
      */
@@ -4085,7 +4342,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The valid message was not authorized by the locally restored policy.
      */
@@ -4094,7 +4351,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A local message could not be committed to the durable outbox.
      */
@@ -4103,7 +4360,7 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Local encrypted message history could not be authenticated or restored.
      */
@@ -4112,13 +4369,130 @@ sealed class MobileException: kotlin.Exception() {
         override val message
             get() = ""
     }
-
+    
+    /**
+     * Invalid signed-event identifier supplied for an outbox transition.
+     */
+    class InvalidOutboxEventId(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * Negative retry timestamp supplied for a forwarding attempt.
+     */
+    class InvalidOutboxSchedule(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * An outbox state transition could not be applied.
+     */
+    class OutboxTransitionRejected(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * Invalid event-ID cursor supplied to the bounded outbox page API.
+     */
+    class InvalidOutboxCursor(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * Requested outbox page size is outside the supported bound.
+     */
+    class InvalidOutboxPage(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The durable outbox could not be read.
+     */
+    class OutboxUnavailable(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * Signed event failed verification, MLS binding, local policy, or storage.
+     */
+    class SyncIngestFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The advertised exp0 token has an invalid width.
+     */
+    class InvalidBleDiscoveryToken(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The authenticated exp0 session could not advance safely.
+     */
+    class BleSessionFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * An exp0 control or identity record failed its exact encoding or signature.
+     */
+    class BleRecordRejected(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The remote identity has not been explicitly pinned on this device.
+     */
+    class BlePeerNotPinned(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The remote identity differs from this device's existing pin.
+     */
+    class BlePeerIdentityMismatch(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * Application records are forbidden before transcript confirmation.
+     */
+    class BlePeerNotAuthenticated(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileException> {
         override fun lift(error_buf: RustBuffer.ByValue): MobileException = FfiConverterTypeMobileError.lift(error_buf)
     }
 
-
+    
 }
 
 /**
@@ -4126,7 +4500,7 @@ sealed class MobileException: kotlin.Exception() {
  */
 public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileException> {
     override fun read(buf: ByteBuffer): MobileException {
-
+        
 
         return when(buf.getInt()) {
             1 -> MobileException.InvalidProfileId()
@@ -4152,6 +4526,19 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             21 -> MobileException.MessageRejected()
             22 -> MobileException.MessageQueueFailed()
             23 -> MobileException.MessageHistoryUnavailable()
+            24 -> MobileException.InvalidOutboxEventId()
+            25 -> MobileException.InvalidOutboxSchedule()
+            26 -> MobileException.OutboxTransitionRejected()
+            27 -> MobileException.InvalidOutboxCursor()
+            28 -> MobileException.InvalidOutboxPage()
+            29 -> MobileException.OutboxUnavailable()
+            30 -> MobileException.SyncIngestFailed()
+            31 -> MobileException.InvalidBleDiscoveryToken()
+            32 -> MobileException.BleSessionFailed()
+            33 -> MobileException.BleRecordRejected()
+            34 -> MobileException.BlePeerNotPinned()
+            35 -> MobileException.BlePeerIdentityMismatch()
+            36 -> MobileException.BlePeerNotAuthenticated()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -4250,6 +4637,58 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
+            is MobileException.InvalidOutboxEventId -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidOutboxSchedule -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.OutboxTransitionRejected -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidOutboxCursor -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidOutboxPage -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.OutboxUnavailable -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.SyncIngestFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidBleDiscoveryToken -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.BleSessionFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.BleRecordRejected -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.BlePeerNotPinned -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.BlePeerIdentityMismatch -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.BlePeerNotAuthenticated -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
         }
     }
 
@@ -4345,6 +4784,58 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             }
             is MobileException.MessageHistoryUnavailable -> {
                 buf.putInt(23)
+                Unit
+            }
+            is MobileException.InvalidOutboxEventId -> {
+                buf.putInt(24)
+                Unit
+            }
+            is MobileException.InvalidOutboxSchedule -> {
+                buf.putInt(25)
+                Unit
+            }
+            is MobileException.OutboxTransitionRejected -> {
+                buf.putInt(26)
+                Unit
+            }
+            is MobileException.InvalidOutboxCursor -> {
+                buf.putInt(27)
+                Unit
+            }
+            is MobileException.InvalidOutboxPage -> {
+                buf.putInt(28)
+                Unit
+            }
+            is MobileException.OutboxUnavailable -> {
+                buf.putInt(29)
+                Unit
+            }
+            is MobileException.SyncIngestFailed -> {
+                buf.putInt(30)
+                Unit
+            }
+            is MobileException.InvalidBleDiscoveryToken -> {
+                buf.putInt(31)
+                Unit
+            }
+            is MobileException.BleSessionFailed -> {
+                buf.putInt(32)
+                Unit
+            }
+            is MobileException.BleRecordRejected -> {
+                buf.putInt(33)
+                Unit
+            }
+            is MobileException.BlePeerNotPinned -> {
+                buf.putInt(34)
+                Unit
+            }
+            is MobileException.BlePeerIdentityMismatch -> {
+                buf.putInt(35)
+                Unit
+            }
+            is MobileException.BlePeerNotAuthenticated -> {
+                buf.putInt(36)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
