@@ -12,6 +12,30 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+lattice-core = { path = "../../crates/lattice-core" }
+lattice-events = { path = "../../crates/lattice-events" }
+lattice-platform = { path = "../../crates/lattice-platform" }
+directories = "=6.0.0"
+base64 = "=0.22.1"
+serde_json = "1"
+lattice-identity = { path = "../../crates/lattice-identity" }
+lattice-mls = { path = "../../crates/lattice-mls" }
+lattice-relay = { path = "../../crates/lattice-relay" }
+lattice-storage = { path = "../../crates/lattice-storage" }
+lattice-node = { path = "../../crates/lattice-node" }
+lattice-transport = { path = "../../crates/lattice-transport" }
+lattice-router = { path = "../../crates/lattice-router" }
+lattice-sync = { path = "../../crates/lattice-sync" }
+lattice-mesh = { path = "../../crates/lattice-mesh" }
+openmls = "=0.9.0"
+tokio = { version = "=1.53.1", features = ["net", "rt", "time"] }
+tokio-util = { version = "=0.7.19", features = ["rt"] }
+if-addrs = "=0.13.4"
+futures-util = "=0.3.34"
+tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
+url = "=2.5.8"
+serde = { version = "1", features = ["derive"] }
+
 
 [lints]
 workspace = true

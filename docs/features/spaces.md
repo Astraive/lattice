@@ -9,18 +9,22 @@ A Space is a replicated membership and policy domain with authenticated genesis 
 | SPC-003 | A joining device shall verify genesis/inviter and be explicitly added by authorized member. | Forged invite or unapproved KeyPackage cannot produce visible member. | M2/M3 |
 | SPC-004 | Roles shall include owner/admin/moderator/member plus custom permission masks. | Effective permission computed consistently on two replicas. | M3 |
 | SPC-005 | Channel overrides shall gate send/attach/voice actions without bypassing Space rules. | Denied author event is rejected after sync, including from a stale UI. | M3 |
-| SPC-006 | Add/remove/ban shall bind an authorized event to a valid MLS transition. | Removed device cannot decrypt later valid epoch messages; earlier data remains accessible. | M3 |
+| SPC-006 | Add/remove/ban shall bind an authorized event to a valid MLS transition. | Removal and ban require one exact MLS Remove Commit and an authenticated parent-epoch policy event; the accepted Commit rekeys remaining members and excludes the removed device from future epochs. | M3 |
 | SPC-007 | Concurrent privileged operations shall use agreed causal policy and explicit conflict state. | Partition permutation tests converge or show a defined conflict; no timestamp winner. | M3; ADR-001 |
 | SPC-008 | Moderators shall tombstone content and record distinguishable moderation action. | Authorized moderation hides normal view; invalid moderator cannot. | M3 |
 | SPC-009 | Invite policy shall support expiry and optional use limits without relying on relay truth. | Expired/wrong-policy invitations fail on peer sync; offline simultaneous uses defined. | M3 |
 | SPC-010 | Member lists shall distinguish active member, pending join, removed, banned and unsynchronized state. | Two partitions show honest local status and resolve after synchronization. | M3 |
-| SPC-011 | Channels advertised as read-private shall have keys unavailable to other Space members. | Non-member Space device cannot derive channel content key; blocked until ADR-002. | M3; ADR-002 |
+| SPC-011 | Channels shall never claim read confidentiality from other Space members without separate cryptographic membership. | Read-private channel types and unknown required read-isolation capabilities fail closed; ordinary channel metadata makes no confidentiality claim. | M3; ADR-002 |
 
 Representative permissions: Space/channel/role manage; invite/remove/ban; message send/attach/moderate; thread create; mention everyone; pin; join/speak/moderate voice; retention; relay recommendation. Custom roles are bitsets over versioned permission identifiers, not arbitrary scripts. Space relay recommendations never override an installation’s network policy. See [architecture.md](../architecture.md#7-security-membership-and-authorization) and [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750) for application access-control responsibilities.
 
 ## Space state model
 
 `unseen → invited → join pending → active → leaving/removed/banned` is the local membership view. A join request can be pending while an inviter is offline. A removal can be valid in one partition while another member still operates on an older epoch; clients represent this as unsynchronized or conflicting, never universal instantaneous revocation. Each installation is a distinct cryptographic leaf. The Space genesis binds random ID, protocol version, creator, policy baseline, channel baseline and MLS group parameters. Changes occur through authenticated immutable events, not direct row edits.
+
+`SpaceInviteV1` is a canonical, domain-separated Ed25519-signed token bound to one accepted invite event, Space genesis, target fingerprint, and exact KeyPackage hash. The token has a wall-clock expiry, optional use limit, nonce, and up to eight untrusted BLE/relay/LAN rendezvous hints. A receiver must verify the inviter's pinned identity and current `MEMBER_INVITE` authority, then match the token to the current reducer policy before accepting it; hints never override local network policy. During synchronization, the policy revision expiry and replicated use counter are authoritative, not a relay or wall clock. Sequential admission increments the use counter. Concurrent offline admissions from one policy head form sibling membership Commits and are quarantined as a membership conflict; neither branch is silently selected.
+
+The current Rust core creates a one-member candidate generation, atomically persists its signed Genesis event and encrypted initial-policy snapshot, lists snapshots in bounded 32-entry keyset pages, and restores each generation after rechecking its event, protected MLS group, and snapshot authentication. `SpaceReducer::authorize_recovery_genesis` authorizes a new group root from the prior generation's retained common policy when its creator has `SPACE_MANAGE` and `MEMBER_INVITE`; the proof is bound to that exact MLS-authenticated root event. The core can atomically validate a parent-epoch MemberTransition against the exact staged Commit and MLS-authenticated KeyPackage digest, merge that Commit, and store both exact signed event records with AEAD-protected replay evidence. Restore replays accepted transitions and their intervening policy events when every MLS epoch from Genesis has a recorded transition. Distinct valid sibling Commits are durably recorded with their exact signed controls and revalidated on restore; neither branch is applied, and the conflicted generation blocks message and membership mutations. An authorized owner can create and restore a one-member recovery generation from retained common policy. It preserves channel descriptors supported by the recovery schema, drops custom-role definitions, resets membership to the owner, and rejects restoration chains deeper than 32 generations. Existing members do not automatically rejoin; new invitations/Welcome joins, standalone policy history, and epochs committed outside the accepted-transition path remain unsupported.
 
 ## Authorization algorithm
 
@@ -32,16 +36,20 @@ For each privileged event, load its declared causal dependencies and relevant ac
 | Define or edit role | `ROLE_MANAGE` | Prevent policy self-escalation under stale state; protect owner invariant. |
 | Invite/add member | `MEMBER_INVITE` | Validate invite/genesis/credential/KeyPackage and corresponding MLS Commit. |
 | Remove/ban member | `MEMBER_REMOVE`/`MEMBER_BAN` | MLS epoch transition and prospective-key exclusion. |
+
 | Publish message/attachment | `MESSAGE_SEND`/`MESSAGE_ATTACH` | Apply channel override, membership and retention bounds. |
-| Moderate/tombstone | `MESSAGE_MODERATE` | Preserve distinguishable moderator event and audit lineage. |
+| Author delete | `MESSAGE_SEND` | Tombstone the author's own message. |
+| Moderator removal | `MESSAGE_MODERATE` | Preserve a reason-bearing moderator event and audit lineage. |
 | Join/speak in voice | `VOICE_JOIN`/`VOICE_SPEAK` | Evaluate current room incarnation and membership state. |
+
+Remove and ban use the same authenticated MLS Remove proof but distinct policy results: removal marks the member `removed` and permits a later authorized invitation; ban marks the fingerprint `banned` and rejects later invitations or admissions. The event-log transaction merges the exact Commit, stores its signed control and transition events, and persists protected replay evidence together.
 
 ## Channel types and privacy semantics
 
 - **Text:** durable events, replies and threads, ordered view over event IDs.
 - **Announcement:** ordinary members may read, selected roles may publish; this is an authorization rule, not necessarily separate encryption.
 - **Voice:** durable channel metadata with ephemeral call/session state and separate media path.
-- **Read-private (blocked):** requires ADR-002 to choose per-channel MLS group or another reviewed restricted-key profile. A visual lock icon must not imply cryptographic privacy while every Space member can derive its exporter key.
+- **Read-private:** unsupported by accepted ADR-002; the protocol rejects this channel type and required read-isolation capabilities until a separately reviewed cryptographic membership profile is adopted.
 
 ## Moderation and conflict examples
 

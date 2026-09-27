@@ -31,7 +31,7 @@ Pin protocol major and tested dependencies. Upgrades preserve canonical event by
 - Phone background restricted: forwarding availability is marked degraded.
 - Volunteer node removed: no Space state becomes invalid solely because that node is gone.
 
-Primary references: [Apple background BLE](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html), [Android foreground service restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start), [TURN RFC 8656](https://www.rfc-editor.org/rfc/rfc8656).
+Primary references: [Android foreground service restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start) and [TURN RFC 8656](https://www.rfc-editor.org/rfc/rfc8656). iOS deployment is outside current delivery scope.
 
 ## First installation and network modes
 

@@ -6,5 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+
+[dependencies]
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
+lattice-mesh = { path = "../lattice-mesh" }
 [lints]
 workspace = true

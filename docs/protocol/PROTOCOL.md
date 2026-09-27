@@ -1,6 +1,10 @@
 # Protocol profile and interoperability boundaries
 
-**Status:** draft. `spec.md` contains longer examples; exact v1 bytes are not frozen. This document defines the responsibilities of the future versioned `protocol/specs/*` documents. Do not ship independent client implementations from this summary alone.
+**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. Bounded executable candidates cover canonical CBOR, event-ID hashing, local identity, and NIP-01/NIP-11 relay networking; [`10-ble.md`](../../protocol/specs/10-ble.md) assigns experimental BLE labels and candidate service/discovery values, not a frozen interoperable profile. Do not ship independent client implementations from this summary alone.
+
+## Current executable candidate
+
+The Rust workspace has bounded candidates for canonical CBOR, signed event framing, event authorization, protected OpenMLS state operations, signature-to-ciphertext binding, delivery envelopes, NIP-01/NIP-11 relay profile validation, a secure WebSocket relay client, and bounded direct TCP framing. These do not establish interoperable or end-to-end behavior: credential trust, durable reducer recovery, authenticated native path integration, two-relay interoperability, and app wiring remain incomplete.
 
 ## Layer map
 
@@ -29,19 +33,25 @@ Identity bundle candidate fields: Ed25519 verify key, X25519 DH key, version, cr
 
 ## Transport handshakes and BLE
 
-Nearby paths perform a reviewed Noise handshake with explicit pattern, prologue, transcript identity/version/capability/token binding and replay window. Advertising carries a generic service UUID and rotating app token, never static key or Space name. BLE GATT `control`, `rx`, `tx`, `capabilities`, and `upgrade` characteristics are candidates. Fragment after envelope encryption; per-peer aggregate reassembly bytes, object count, deadline, fragment count and pacing credits are mandatory. Adapter “queued to OS” is not remote receipt.
+Nearby BLE exp0 now specifies candidate service/advertisement/token values and a first-contact `Noise_XX_25519_ChaChaPoly_SHA256` exchange with role-separated Ed25519 identity proofs, full-fingerprint pin checks, and a session comparison string in [`10-ble.md`](../../protocol/specs/10-ble.md). It remains an experimental candidate: exact vectors, framing/flow-control, Android wiring, and interoperability are still open. Envelopes are fragmented only after authenticated link protection; an adapter “queued to OS” is not remote receipt.
 
 ## Sync state
 
 Per authorized scope, exchange `{author_id, contiguous_seq, gap_digest}`, recent-event summary, snapshot floor and capabilities. Request missing range/dependencies in bounded batches; authenticate all events before projection. MLS proposals/Commits and policy dependencies are requested before ciphertext needing those epochs. A Bloom/Golomb-type recent summary may have false positives, so a later exact reconciliation path must repair gaps. Never reveal unrelated Space membership merely by sending every known scope.
 
+The Rust node exposes a one-shot authenticated direct-sync path over a caller-owned connected transport. Its fixed Noise prologue is `lattice:direct-sync:noise-xx:v1\0` (Noise XX, empty handshake payloads); no Noise-generated static key is treated as a Lattice identity. After Noise completes, each side sends a Noise-encrypted fixed-width 70-byte identity proof: `LIDP || 0x01 || role || Ed25519_signature`, where role is `1` for initiator and `2` for responder. The signature input is the exact concatenation `lattice:direct-sync-identity-proof:v1\0 || role || final_noise_handshake_hash[32] || initiator_bundle[65] || responder_bundle[65]`. The remote proof must verify with the caller's exact pinned Ed25519 key; the role and both byte-exact v1 identity bundles are bound to this session transcript.
+
+Subsequent `LSYN` request/response frames are wholly encrypted with Snow's directional Noise transport state. Its sequential nonces reject replay/out-of-order packets; any transport authentication error poisons that state and the one-shot API returns an error without accepted events. The requester's and responder's callbacks must each authorize the exact peer/scope before planning or event-source access. An exact-hop receipt is not peer delivery.
+
+`Client::with_pinned_identity` can load and revalidate the exact persisted pin before lending the live local `DeviceIdentity` to an async operation; it does not export private bytes or prove how a pin was human-verified. The caller still supplies authorized summaries, event validation, and scope policy. Sync summaries/checkpoints and accepted events are not persisted by this exchange; MLS epoch, membership, and event permission checks remain the caller's responsibility. Each encrypted application frame is bounded to one Noise message (65,519 plaintext bytes maximum, further reduced by the adapter cap). Route planning is not connected to this already-selected adapter: `plan_forward` returns candidate `PathId`s but no adapter mapping, and its forwarding expiry/hop/copy inputs are not supplied by this session API.
+
 ## Membership and conflict
 
-An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes peer delivery and simultaneous Commit strategies. ADR-001 must specify deterministic acceptance/wait period, losing-branch messages, Welcome handling, fork-state retention/deletion, and explicit recovery. ADR-002 fixes channel confidentiality semantics. Generic Lamport sorting is only for presentation. Until those decisions are implemented, secure concurrent-admin operation is not supported.
+An MLS group has a linear epoch history. [MLS architecture §5.2](https://www.rfc-editor.org/rfc/rfc9750#section-5.2) describes peer delivery and simultaneous Commit strategies. [ADR-001](../decisions/ADR-001-membership-commit-conflicts.md) accepts fail-closed conflict handling and explicit new-group recovery; [ADR-002](../decisions/ADR-002-channel-read-semantics.md) makes channels policy-only. [`06-spaces.md`](../../protocol/specs/06-spaces.md) and [`07-permissions.md`](../../protocol/specs/07-permissions.md) specify candidate payload, causal and permission rules, and a candidate reducer exists. Credential trust, group-reference/membership proof, durable conflict recovery, and complete membership tests remain incomplete. Generic Lamport sorting is only for presentation; secure concurrent-admin operation is not enabled.
 
 ## Relay and files
 
-Nostr is an optional opaque-envelope carrier following a versioned profile: event kind, outer key policy, retrieval tags, expiration hint, size/duplicate handling, relay set, and backfill window. [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) defines basic events/subscriptions, not Lattice's group authorization. Never claim NIP-17 or Bitchat interoperability from similar wrapping. File manifests/chunks have independent hashes and transfer quotas; general event relays are not assumed to store file payloads.
+Nostr is an optional opaque-envelope carrier defined by the local candidate [`13-relay.md`](../../protocol/specs/13-relay.md) and [ADR-003](../decisions/ADR-003-nostr-envelope-relay-profile.md). It uses NIP-01 kind `39001`, a relay-only key, an MLS-protected opaque mailbox tag, NIP-40 expiry, and bounded best-effort backfill; [`09-envelope.md`](../../protocol/specs/09-envelope.md) defines the carrier object. A bounded Rust `wss://` client now fetches compatible NIP-11 metadata, publishes only with a positive matching NIP-01 `OK`, and retrieves an exact mailbox filter. This implementation and its unit tests do not establish two-relay interoperability or app integration. [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) defines events/subscriptions, not Lattice authorization. Never claim NIP-17 or Bitchat interoperability from similar wrapping. File manifests/chunks have independent hashes and transfer quotas; general event relays are not file stores.
 
 ## Compatibility, error classes and vectors
 
@@ -56,14 +66,13 @@ References: [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), [RFC 9750](https
 | `00-overview` | Version/capability matrix, normative language and scopes |
 | `01-identifiers`, `02-encoding` | Field widths, byte order/CBOR profile, domain strings, canonical hashes |
 | `03-identity`, `04-sessions` | Identity bundle, credential verification, Noise pattern/prologue/replay |
-| `05-events`, `06-spaces`, `07-permissions` | Event kinds, causal references, authorization context, role bit registry |
-| `08-mls` | Ciphersuite, KeyPackages, Welcome, Commit ordering/fork profile, exporter labels |
-| `09-envelope`, `10-ble` | Delivery classes, hop/copy budget, fragmentation, GATT UUIDs, flow control |
+| `05-events`, `06-spaces`, `07-permissions` | Signed event framing, Space/membership payloads, permission registry and causal conflicts; candidate specs exist, reducers remain incomplete |
+| `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts and delivery class/TTL/copy budget remain candidates; `10-ble` specifies an experimental service/discovery/first-contact candidate, with frame/flow-control and interoperable GATT evidence still open |
 | `11-sync`, `12-routing` | Gap summaries, snapshots, path metrics, retry and courier rules |
-| `13-relay`, `14-files`, `15-voice` | Mailbox profile, manifest/chunks, room incarnation and signaling |
+| `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; bounded Rust relay networking exists, while app integration and independent-relay interoperability remain unimplemented |
 | `16-versioning` | Required/optional feature bits, downgrade prevention and migration |
 
-Each document defines maxima for strings, arrays, event body, parent list, fragments, pending dependencies and queue bytes, and contains byte-exact positive/negative vectors. A field marked “future” in the integrated spec does not silently become required for v1. No implementer may derive a byte limit from a UI placeholder or radio MTU alone.
+Before a document freezes, it must define maxima for strings, arrays, event bodies, parent lists, fragments, pending dependencies, and queue bytes, and include byte-exact positive and negative vectors. Candidate bounds are not proof of implementation conformance. A field marked “future” in the integrated spec does not silently become required for v1. No implementer may derive a byte limit from a UI placeholder or radio MTU alone.
 
 ## Validation pipeline with failure classes
 

@@ -1,6 +1,6 @@
 # Attachments and transfer — FIL
 
-Files are authenticated manifests plus bounded, independently verified chunks. The application displays the transfer status and never assumes a Nostr event relay accepts arbitrary binary objects.
+The local transfer crate models attachments as bounded manifests and independently verified chunks. This is not itself a sender-authentication, authorization, or network-transport layer.
 
 | ID | Requirement | Acceptance criterion | Gate |
 | --- | --- | --- | --- |
@@ -12,20 +12,17 @@ Files are authenticated manifests plus bounded, independently verified chunks. T
 | FIL-006 | Filenames and MIME claims shall be sanitized and treated as untrusted. | Traversal/HTML/executable-name cases cannot overwrite arbitrary paths or execute. | M4 |
 | FIL-007 | Storage and transfer queues shall enforce per-file/global limits and clean partial state. | Oversized manifest rejected; interrupted chunks expire under policy. | M4 |
 
-Whole-file SHA-256 and chunk hashes protect integrity. Encryption and membership use the same approved application profile as channel data, with key retention for resumed transfers. Uploading an attachment to a volunteer blob service is a separate, explicit transport profile, never a hidden mandatory dependency.
+## Implemented local behavior
 
-## Manifest and transfer flow
+`lattice-files` streams a source reader through a fixed-size chunk buffer and produces a bounded manifest with ordered chunk hashes and a whole-file SHA-256 digest. A seekable source can later serve individual chunks through `read_verified_chunk_into`, which checks the manifest-declared size and digest before exposing each chunk to a transport caller. Manifests enforce the crate file/chunk/metadata limits, and incoming filename hints must already be safe display names. MIME hints remain untrusted.
 
-The author selects a local file, checks role, size and local policy, streams hashes without loading the whole file into memory, creates a protected manifest containing opaque file ID, filename/MIME hints, length, whole-file digest, ordered chunk digests and channel/Space association, then commits a message referencing that manifest. A recipient sees size/source/accept action before durable export. The transfer planner compares chunk bitmaps and requests only missing pieces. A path can switch mid-transfer; chunk identity stays constant. Chunks received out of order are placed in bounded temporary storage and verified before the bitmap advances. Completion requires matching whole-file hash and an atomic move to a sanitized export destination.
+Both receiver types require an explicit accept decision before chunk submission, validate each chunk before staging it, expose missing ranges, and gate completion on the whole-file digest. The seekable `StreamedAttachmentReceiver` uses a caller-owned store and rebuilds resume state by rechecking stored chunks; it holds only a chunk buffer and bitmap in memory. `copy_verified_to` rechecks the whole-file digest before streaming verified content to a caller-selected writer. The in-memory receiver provides the same acceptance and integrity gates but stages the entire file, bounded by the caller's quota.
+`AttachmentStagingStore` reserves each event-bound manifest's full declared size before opening a writable staging file. Callers choose per-file bytes, global reserved bytes, retained transfer count, and inactivity retention. It uses an advisory cross-process quota lock, an exclusive per-transfer file lock, and transfer-ID-derived filenames; Unix-created staging directories/files use owner-only permissions. The same private directory restores verified chunks after restart. `cleanup_expired` removes idle records (and runs before a new reservation); callers should also run it periodically and call `remove` after export or rejection. Construct the store and reserve bytes only after the user has reviewed the authenticated source and manifest size.
 
-| Failure | Required behavior |
-| --- | --- |
-| Manifest signature/permission invalid | Reject file reference and all following chunks. |
-| Claimed length or chunk count exceeds quota | Reject before allocation or write. |
-| One corrupt chunk | Discard only that chunk; request replacement; never mark full file complete. |
-| Sender disappears | Keep permitted partial state with expiry and clear resume status. |
-| Storage becomes full | Pause safely, clean temporary writes and preserve already verified state. |
-| Filename contains `../`, reserved path or misleading extension | Sanitize display/export and require explicit user choice as needed. |
-| Sender removed during transfer | Define epoch/key access according to manifest authorization and retention; no automatic old-key access. |
+## Integration limits
 
-Small BLE transfers are a policy exception, not the normal path. Relays carry manifest/event references only unless an explicitly compatible encrypted blob transport exists. A volunteer cache should not receive arbitrary large content by default. Device-local file cache and export have separate retention, so deleting a message projection does not silently claim that all previously exported copies vanished.
+`lattice-core` retains a manifest only after authenticating its MLS-bound event and authorizing `MESSAGE_SEND | MESSAGE_ATTACH`. For local sending, `Client::queue_file_manifest` validates the bounded manifest, encrypts it as an MLS application, authorizes it through the same reducer, and atomically stores the signed event and outbox envelope. Attachment bytes remain in caller-owned staging storage; the queue receipt means only `queued`. Callers can request an opaque, event-specific attachment capability from an authorized reducer node and create the existing receivers from its retained manifest. A deterministic transfer ID binds the exact event ID and manifest metadata but is not an authorization proof; receivers still require explicit acceptance.
+
+`lattice-files` does not encrypt content, enforce membership, choose export paths, or provide a platform workflow by itself. The desktop now supports OS-picker-based outbound selection, local source caching with 128 MiB/file and 512 MiB/64-source quotas, and authorized manifest queueing. Its cached source bytes are not encrypted at rest. Desktop send requires the Core-authorized manifest and a previously pinned peer; receive requires an exact pin, explicit consent after authentication, a 128 MiB limit, private resumable staging, and verified export to a user-selected new file. The transfer does not synchronize the manifest, guarantee a path, or claim recipient delivery. Android transfer UI and cross-path resume remain unimplemented, so the full FIL acceptance criteria are not complete.
+
+The requirements table above records the intended FIL acceptance criteria; it is not a claim that the integrations listed here are implemented.

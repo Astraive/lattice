@@ -11,12 +11,12 @@
 - [ ] Create Android BLE GATT spike with physical hardware and no Internet. (MOB-002–003, NET-001–002; M1)
 - [ ] Decide ADR-001 competing MLS Commit ordering, Welcome coupling and losing-branch behavior before secure Spaces. (SPC-006–007; M3)
 - [ ] Decide ADR-002 whether channel privacy restricts reads, and choose independent keying if so. (SPC-011; M3)
+- [ ] Specify signed Space genesis, membership/policy payloads, permission-bit IDs, causal conflicts, and MLS credential/group transaction binding. (SPC-001–010, LAT-003, LAT-007; M3)
 
 ## P1 — functional build sequence
 
 - [ ] Wire Android Compose → UniFFI → Rust core with local SQLite outbox. (MOB-001, MSG-001–003; M1)
 - [ ] Test three-device Android store/carry/sync under app restart. (NET-004–005; M1/M2)
-- [ ] Implement SwiftUI/Core Bluetooth and run mixed-device captures. (MOB-004–005; M2)
 - [ ] Implement signed invite, verification, KeyPackage lifecycle and member rekey. (IDN-004–008, SPC-003,006; M3)
 - [ ] Implement role/policy reducer and adversarial concurrency tests. (SPC-004–010, LAT-007; M3)
 - [ ] Implement DMs, edits, tombstones, threads, reactions, mentions and local search. (MSG-004–012; M3)
@@ -24,7 +24,8 @@
 - [ ] Freeze relay kind, retrieval tags and outer identity profile in ADR-003 before public interop claims. (NET-010; M5)
 - [ ] Implement two-relay encrypted mailbox tests with drop/reorder and metadata capture. (NET-009–013; M5)
 - [ ] Implement WebRTC signaling, direct/TURN matrix and room-size gate. (VOC-001–008; M6)
-- [ ] Build Tauri and Rust CLI atop core, plus opt-in bounded node mode. (DSK-001–006, CLI-001–008; M7)
+- [ ] Build Tauri and Rust CLI atop core, plus opt-in bounded node mode. (DSK-001–006, CLI-001–009; M7)
+- [x] Add bounded read-only local Space Genesis pages to the CLI. (CLI-009)
 - [ ] Perform mobile power/background, parser fuzzing, migration, security and accessibility gates. (LAT-006,009–020; M8)
 
 ## P2 — tracked later or conditional
@@ -37,7 +38,7 @@
 
 ## Update rule
 
-When completing an item, link its code revision, device/test result, protocol vector or ADR in the issue tracker. Keep this backlog concise; detailed implementation subtasks belong in issues. Do not mark M3/M8 complete while ADR-001 or ADR-002 is open.
+When completing an item, link its code revision, device/test result, protocol vector or ADR in the issue tracker. Keep this backlog concise; detailed implementation subtasks belong in issues. ADR-001 and ADR-002 policies are accepted; keep M3/M8 open until required conflict, recovery, channel-capability, and release evidence passes.
 
 ## Subsystem completion checklists
 
@@ -45,7 +46,7 @@ When completing an item, link its code revision, device/test result, protocol ve
 
 **Storage:** authored sequence reservation; atomic local event/outbox commit; receive insert/projection; pending dependency queue; key/DB crash journal; migrations; history retention; file temp cleanup; search-index purge.
 
-**Mobile:** Android central/peripheral GATT and permissions; iOS Core Bluetooth modes; radio duty cycle and battery capture; mixed-platform vectors; supported/unsupported Wi-Fi Aware; foreground/background UI; secure-storage behavior; audio interruptions.
+**Mobile:** Android central/peripheral GATT and permissions; radio duty cycle and battery capture; Android device matrix; supported/unsupported Wi-Fi Aware; foreground/background UI; secure-storage behavior; audio interruptions. iOS-specific design material is not a current implementation or acceptance task.
 
 **Community:** signed genesis and invite; KeyPackage/Welcome; role hierarchy; channel overrides; moderation, bans and removal; message editing/tombstones/threads; DMs; protected private-channel key semantics.
 

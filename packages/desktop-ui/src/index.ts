@@ -1,1 +1,2 @@
-export const desktopUiPackage = "@lattice/desktop-ui" as const;
+export type { DeliveryState } from "./components";
+export { DeliveryStatus, PlainText } from "./components";
