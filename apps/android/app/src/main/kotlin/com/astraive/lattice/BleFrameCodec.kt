@@ -4,25 +4,27 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Bounded framing for opaque exp0 envelope bytes. This codec performs no
- * encryption, authentication, peer validation, or replay protection; its caller
- * must use an authenticated session and validate the completed envelope.
+ * Bounded framing for an already-encrypted opaque envelope. This codec performs no
+ * encryption, authentication, peer validation, or replay protection; callers must
+ * provide ciphertext and validate the completed envelope at the protocol layer.
  */
 class BleFrameCodec(
     private val limits: Limits = Limits(),
 ) {
     data class Limits(
-        val maxEnvelopeBytes: Int = MAX_EXP0_ENVELOPE_BYTES,
-        val maxFrameBytes: Int = MAX_FRAME_BYTES,
-        val maxFrameCount: Int = MAX_EXP0_FRAME_COUNT,
-        val maxAggregateBufferedBytes: Int = MAX_EXP0_ENVELOPE_BYTES,
+        val maxEnvelopeBytes: Int = 256 * 1024,
+        val maxFrameBytes: Int = 512,
+        val maxFrameCount: Int = 1024,
+        val maxAssemblies: Int = 16,
+        val maxAggregateBufferedBytes: Int = 1024 * 1024,
         val assemblyTtlMillis: Long = 30_000,
     ) {
         init {
-            require(maxEnvelopeBytes in 1..MAX_EXP0_ENVELOPE_BYTES)
-            require(maxFrameBytes in (HEADER_BYTES + 1)..MAX_FRAME_BYTES)
-            require(maxFrameCount in 1..MAX_EXP0_FRAME_COUNT)
-            require(maxAggregateBufferedBytes in 1..MAX_EXP0_ENVELOPE_BYTES)
+            require(maxEnvelopeBytes > 0)
+            require(maxFrameBytes > HEADER_BYTES && maxFrameBytes <= MAX_FRAME_BYTES)
+            require(maxFrameCount in 1..MAX_WIRE_FRAME_COUNT)
+            require(maxAssemblies > 0)
+            require(maxAggregateBufferedBytes > 0)
             require(assemblyTtlMillis > 0)
         }
     }
@@ -36,26 +38,19 @@ class BleFrameCodec(
         var bufferedBytes: Int = 0,
     )
 
-    private data class ParsedFrame(
-        val transferId: Long,
-        val index: Int,
-        val frameCount: Int,
-        val totalLength: Int,
-        val payload: ByteArray,
-    )
-
     private val assemblies = LinkedHashMap<Long, Assembly>()
     private var aggregateBufferedBytes = 0
     private var lastNowMillis = Long.MIN_VALUE
     private val payloadCapacity = limits.maxFrameBytes - HEADER_BYTES
 
-    /** Splits one envelope into canonical frames no larger than the negotiated value bound. */
+    /** Split ciphertext into canonical frames, each no larger than [Limits.maxFrameBytes]. */
     fun fragment(ciphertext: ByteArray, transferId: Long): List<ByteArray> {
-        require(transferId != 0L) { "Transfer ID must be non-zero" }
         require(ciphertext.isNotEmpty()) { "Envelope must not be empty" }
         require(ciphertext.size <= limits.maxEnvelopeBytes) { "Envelope exceeds configured limit" }
         val count = (ciphertext.size.toLong() + payloadCapacity - 1) / payloadCapacity
-        require(count <= limits.maxFrameCount) { "Envelope requires too many frames" }
+        require(count <= limits.maxFrameCount && count <= MAX_WIRE_FRAME_COUNT) {
+            "Envelope requires too many frames"
+        }
 
         return List(count.toInt()) { index ->
             val start = index * payloadCapacity
@@ -76,9 +71,20 @@ class BleFrameCodec(
         }
     }
 
-    /** Returns the completed envelope exactly once, or null while fragments remain. */
+    /**
+     * Accept one frame at caller-supplied monotonic time. Returns the completed
+     * ciphertext exactly once, or null while more fragments are needed.
+     * Identical duplicate frames are idempotent. A conflicting duplicate or
+     * inconsistent frame set discards that transfer and throws.
+     */
     fun accept(frame: ByteArray, nowMillis: Long): ByteArray? {
+        require(nowMillis >= 0) { "Monotonic time must be non-negative" }
+        require(lastNowMillis == Long.MIN_VALUE || nowMillis >= lastNowMillis) {
+            "Monotonic time moved backwards"
+        }
+        lastNowMillis = nowMillis
         expire(nowMillis)
+
         val parsed = parse(frame)
         val existing = assemblies[parsed.transferId]
         if (existing != null &&
@@ -89,13 +95,16 @@ class BleFrameCodec(
         }
 
         val assembly = existing ?: run {
-            require(assemblies.size < MAX_ASSEMBLIES) { "Too many concurrent transfers" }
-            Assembly(
+            require(assemblies.size < limits.maxAssemblies) { "Too many concurrent transfers" }
+            // parse() has already checked this arithmetic and canonical count/length relationship.
+            val created = Assembly(
                 totalLength = parsed.totalLength,
                 frameCount = parsed.frameCount,
                 createdAtMillis = nowMillis,
                 chunks = arrayOfNulls(parsed.frameCount),
-            ).also { assemblies[parsed.transferId] = it }
+            )
+            assemblies[parsed.transferId] = created
+            created
         }
 
         val prior = assembly.chunks[parsed.index]
@@ -104,9 +113,9 @@ class BleFrameCodec(
             discard(parsed.transferId)
             throw IllegalArgumentException("Conflicting duplicate fragment")
         }
-        if (parsed.payload.size > limits.maxAggregateBufferedBytes - aggregateBufferedBytes) {
+        require(parsed.payload.size <= limits.maxAggregateBufferedBytes - aggregateBufferedBytes) {
             discard(parsed.transferId)
-            throw IllegalArgumentException("Aggregate buffered fragment limit exceeded")
+            "Aggregate buffered fragment limit exceeded"
         }
 
         assembly.chunks[parsed.index] = parsed.payload
@@ -127,53 +136,62 @@ class BleFrameCodec(
         return completed
     }
 
-    /** Expires the single in-progress assembly at the configured monotonic-time boundary. */
+    /** Expire assemblies whose age has reached the configured lifetime. */
     fun expire(nowMillis: Long): Int {
         require(nowMillis >= 0) { "Monotonic time must be non-negative" }
         require(lastNowMillis == Long.MIN_VALUE || nowMillis >= lastNowMillis) {
             "Monotonic time moved backwards"
         }
         lastNowMillis = nowMillis
-        val entry = assemblies.entries.firstOrNull() ?: return 0
-        if (nowMillis - entry.value.createdAtMillis < limits.assemblyTtlMillis) return 0
-        discard(entry.key)
-        return 1
+        val expired = assemblies.entries
+            .filter { nowMillis - it.value.createdAtMillis >= limits.assemblyTtlMillis }
+            .map { it.key }
+        expired.forEach(::discard)
+        return expired.size
     }
+
+    private data class ParsedFrame(
+        val transferId: Long,
+        val index: Int,
+        val frameCount: Int,
+        val totalLength: Int,
+        val payload: ByteArray,
+    )
 
     private fun parse(frame: ByteArray): ParsedFrame {
         require(frame.size in (HEADER_BYTES + 1)..limits.maxFrameBytes) { "Invalid frame size" }
         val buffer = ByteBuffer.wrap(frame).order(ByteOrder.BIG_ENDIAN)
         require(buffer.get() == MAGIC_0 && buffer.get() == MAGIC_1) { "Invalid frame magic" }
-        require(buffer.get() == VERSION) { "Unsupported frame version" }
+        require(buffer.get() == VERSION.toByte()) { "Unsupported frame version" }
         require(buffer.get().toInt() == 0) { "Reserved header bits must be zero" }
         val transferId = buffer.long
-        require(transferId != 0L) { "Transfer ID must be non-zero" }
         val sequence = buffer.short.toInt() and 0xffff
         val index = buffer.short.toInt() and 0xffff
-        val frameCount = buffer.short.toInt() and 0xffff
+        val count = buffer.short.toInt() and 0xffff
         val totalLength = buffer.int
         val payloadLength = buffer.short.toInt() and 0xffff
-        require(sequence == index) { "Invalid frame sequence/index" }
         require(payloadLength == buffer.remaining() && payloadLength > 0) { "Invalid payload length" }
-        require(frameCount in 1..limits.maxFrameCount && frameCount == frameCountFor(totalLength)) {
+        require(count in 1..limits.maxFrameCount && count == frameCountFor(totalLength)) {
             "Invalid frame count or envelope length"
         }
-        require(index < frameCount) { "Invalid fragment index" }
-        val expectedPayloadLength = if (index == frameCount - 1) {
-            totalLength - payloadCapacity * (frameCount - 1)
+        require(index < count && sequence == index) { "Invalid frame sequence/index" }
+        val expectedPayloadLength = if (index == count - 1) {
+            totalLength - payloadCapacity * (count - 1)
         } else {
             payloadCapacity
         }
         require(payloadLength == expectedPayloadLength) { "Non-canonical fragment length" }
         val payload = ByteArray(payloadLength)
         buffer.get(payload)
-        return ParsedFrame(transferId, index, frameCount, totalLength, payload)
+        return ParsedFrame(transferId, index, count, totalLength, payload)
     }
 
     private fun frameCountFor(totalLength: Int): Int {
         require(totalLength in 1..limits.maxEnvelopeBytes) { "Invalid envelope length" }
         val count = (totalLength.toLong() + payloadCapacity - 1) / payloadCapacity
-        require(count <= limits.maxFrameCount) { "Envelope requires too many frames" }
+        require(count <= limits.maxFrameCount && count <= MAX_WIRE_FRAME_COUNT) {
+            "Envelope requires too many frames"
+        }
         return count.toInt()
     }
 
@@ -182,14 +200,12 @@ class BleFrameCodec(
         aggregateBufferedBytes -= removed.bufferedBytes
     }
 
-    internal companion object {
-        const val MAGIC_0: Byte = 0x4c
-        const val MAGIC_1: Byte = 0x46
-        const val VERSION: Byte = 1
-        internal const val HEADER_BYTES = 24
-        const val MAX_FRAME_BYTES = 512
-        const val MAX_EXP0_FRAME_COUNT = 1024
-        const val MAX_EXP0_ENVELOPE_BYTES = 110 * 1024
-        const val MAX_ASSEMBLIES = 1
+    companion object {
+        private const val MAGIC_0: Byte = 0x4c
+        private const val MAGIC_1: Byte = 0x46
+        private const val VERSION: Byte = 1
+        private const val HEADER_BYTES = 24
+        private const val MAX_FRAME_BYTES = 0xffff
+        private const val MAX_WIRE_FRAME_COUNT = 0xffff
     }
 }

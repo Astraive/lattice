@@ -11,17 +11,6 @@ use crate::{Client, CoreError, CreatedSpace, space, store_received_event};
 pub const MAX_SPACE_WELCOME_BOOTSTRAP_BYTES: usize = 1_048_576;
 const MAX_GROUP_ID_BYTES: usize = 256;
 const BOOTSTRAP_SIGNATURE_DOMAIN: &[u8] = b"lattice:space-welcome-bootstrap:v1\0";
-#[derive(Clone, Copy)]
-pub(crate) struct SpaceWelcomeEvidence<'a> {
-    pub(crate) welcome_wire: &'a [u8],
-    pub(crate) genesis_plaintext: &'a [u8],
-    pub(crate) invite_event: &'a VerifiedSignatureOnlyEvent,
-    pub(crate) invite_plaintext: &'a [u8],
-    pub(crate) head_events: &'a [VerifiedSignatureOnlyEvent],
-    pub(crate) last_control_event: Option<&'a VerifiedSignatureOnlyEvent>,
-    pub(crate) target: [u8; 32],
-    pub(crate) epoch: u64,
-}
 
 /// Version-one application package binding a validated MLS Welcome to a signed
 /// Space policy checkpoint.
@@ -402,24 +391,20 @@ impl Client {
         let expected_epoch = u64::try_from(transition_snapshots.len())
             .map_err(|_| CoreError::SpaceWelcomeBootstrapInvalid)?;
         let group_id = joined_space.group_id.clone();
-        let credential_trust_policy = self.credential_trust_policy.clone();
         self.with_mls_transaction(move |identity, provider, _| {
-            let group =
-                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
+            let group = GroupState::load(provider, &group_id)?;
             Self::build_space_welcome_bootstrap(
                 identity,
                 joined_space,
                 &group,
-                &SpaceWelcomeEvidence {
-                    welcome_wire,
-                    genesis_plaintext: &genesis_plaintext,
-                    invite_event,
-                    invite_plaintext,
-                    head_events: &head_events,
-                    last_control_event: last_control_event.as_ref(),
-                    target,
-                    epoch: expected_epoch,
-                },
+                welcome_wire,
+                &genesis_plaintext,
+                invite_event,
+                invite_plaintext,
+                &head_events,
+                last_control_event.as_ref(),
+                target,
+                expected_epoch,
             )
         })
     }
@@ -428,18 +413,15 @@ impl Client {
         identity: &DeviceIdentity,
         joined_space: &CreatedSpace,
         group: &GroupState,
-        evidence: &SpaceWelcomeEvidence<'_>,
+        welcome_wire: &[u8],
+        genesis_plaintext: &[u8],
+        invite_event: &VerifiedSignatureOnlyEvent,
+        invite_plaintext: &[u8],
+        head_events: &[VerifiedSignatureOnlyEvent],
+        last_control_event: Option<&VerifiedSignatureOnlyEvent>,
+        target: [u8; 32],
+        epoch: u64,
     ) -> Result<Vec<u8>, CoreError> {
-        let SpaceWelcomeEvidence {
-            welcome_wire,
-            genesis_plaintext,
-            invite_event,
-            invite_plaintext,
-            head_events,
-            last_control_event,
-            target,
-            epoch,
-        } = *evidence;
         if welcome_wire.is_empty() || welcome_wire.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES {
             return Err(CoreError::SpaceWelcomeBootstrapInvalid);
         }
@@ -506,7 +488,6 @@ impl Client {
         expected_inviter: [u8; 32],
         credential: &DeviceCredentialInput,
     ) -> Result<CreatedSpace, CoreError> {
-        self.ensure_credential_trust_policy(credential)?;
         let package = SpaceWelcomeBootstrapV1::from_bytes(package_bytes)?;
         let inviter = package.inviter_fingerprint()?;
         let Some(pinned) = self.pinned_identity(&expected_inviter)? else {
@@ -666,12 +647,8 @@ impl Client {
             return Err(CoreError::SpaceCredentialInvalid);
         }
         let credential = Credential::new(CredentialType::X509, credential_content);
-        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
-            &self.identity,
-            credential,
-            &self.credential_trust_policy,
-        )
-        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let credential = DeviceCredentialInput::from_x509_credential(&self.identity, credential)
+            .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         self.join_space_from_welcome_bootstrap(package_bytes, expected_inviter, &credential)
     }
 
@@ -811,10 +788,8 @@ impl Client {
         )
         .map_err(|_| CoreError::SpaceWelcomeBootstrapInvalid)?;
         let group_id = package.group_id.clone();
-        let credential_trust_policy = self.credential_trust_policy.clone();
         let reducer = self.with_mls_transaction(move |_, provider, _| {
-            let mut group =
-                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
+            let mut group = GroupState::load(provider, &group_id)?;
             if group.group_reference() != group_reference || group.epoch() != expected_epoch {
                 return Err(CoreError::SpaceMembershipSnapshotInvalid);
             }

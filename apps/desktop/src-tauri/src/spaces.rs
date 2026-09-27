@@ -1,12 +1,8 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use lattice_core::{
     Client, CoreError, CreatedSpace, InitialChannel, LocalTextMessageRecord,
     MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
     space::{Channel, ChannelType},
 };
-use lattice_mls::api::{DeviceCredentialInput, MAX_MLS_WIRE_BYTES};
-use openmls::credentials::{Credential, CredentialType};
 use serde::Serialize;
 
 use super::{encoding, profile};
@@ -170,54 +166,6 @@ pub(crate) fn create_local_space(
         channels: project_channels(&created)?,
         local_snapshot_persisted: true,
         membership_claimed: false,
-        network_contacted: false,
-    })
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LocalSpaceKeyPackage {
-    state: &'static str,
-    key_package_hex: String,
-    private_key_package_retained_locally: bool,
-    network_contacted: bool,
-}
-
-// Tauri decodes command arguments into owned strings.
-#[allow(clippy::needless_pass_by_value)]
-#[tauri::command]
-pub(crate) fn publish_local_space_key_package(
-    credential_vector_hex: String,
-) -> Result<LocalSpaceKeyPackage, String> {
-    let credential_vector = encoding::parse_hex_bytes(
-        &credential_vector_hex,
-        "RFC 9420 X.509 credential vector",
-        MAX_SPACE_CREDENTIAL_BYTES,
-    )?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("read system time: {error}"))?
-        .as_secs();
-    let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
-    let credential = Credential::new(CredentialType::X509, credential_vector);
-    let credential = client
-        .with_mls_transaction(|identity, _, _| {
-            DeviceCredentialInput::from_x509_credential(identity, credential)
-                .map_err(CoreError::Mls)
-        })
-        .map_err(|error| error.to_string())?;
-    let wire = client
-        .publish_key_package(&credential, now)
-        .map_err(|error| error.to_string())?;
-    if wire.is_empty() || wire.len() > MAX_MLS_WIRE_BYTES {
-        return Err("generated KeyPackage exceeds the MLS wire bound".to_owned());
-    }
-    Ok(LocalSpaceKeyPackage {
-        state: "one_time_key_package_published",
-        key_package_hex: encoding::hex(&wire),
-        private_key_package_retained_locally: true,
         network_contacted: false,
     })
 }

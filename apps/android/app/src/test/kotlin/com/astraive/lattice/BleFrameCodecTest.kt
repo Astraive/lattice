@@ -59,33 +59,16 @@ class BleFrameCodecTest {
     }
 
     @Test
-    fun enforcesTheSingleExp0InboundAssemblyLimit() {
-        val codec = BleFrameCodec(BleFrameCodec.Limits(maxFrameBytes = 28))
+    fun enforcesConcurrentAssemblyLimit() {
+        val codec = BleFrameCodec(
+            BleFrameCodec.Limits(maxFrameBytes = 28, maxAssemblies = 1),
+        )
         val first = codec.fragment(byteArrayOf(1, 2, 3, 4, 5), 13)
         val second = codec.fragment(byteArrayOf(6, 7, 8, 9, 10), 14)
         check(codec.accept(first.first(), 0) == null)
         expectIllegalArgument { codec.accept(second.first(), 1) }
         check(codec.expire(30_000) == 1)
         check(codec.accept(second.first(), 30_000) == null)
-    }
-
-    @Test
-    fun defaultLimitsEnforceExp0EnvelopeAndTransferIdBounds() {
-        val codec = BleFrameCodec()
-        expectIllegalArgument { codec.fragment(byteArrayOf(1), 0) }
-        expectIllegalArgument { codec.fragment(ByteArray(110 * 1024 + 1), 1) }
-
-        val frames = codec.fragment(ByteArray(110 * 1024), 1)
-        check(frames.isNotEmpty())
-        check(frames.all { it.size <= 512 })
-    }
-
-    @Test
-    fun rejectsZeroTransferIdFromWire() {
-        val codec = BleFrameCodec(BleFrameCodec.Limits(maxFrameBytes = 28))
-        val frame = codec.fragment(byteArrayOf(1), 1).single().copyOf()
-        frame.fill(0, 4, 12)
-        expectIllegalArgument { codec.accept(frame, 0) }
     }
 
     @Test

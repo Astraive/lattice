@@ -1,6 +1,6 @@
 # Lattice implementation plan
 
-**Status:** planned; dates are intentionally absent until staffing and device availability are known. Each milestone has an exit gate, and later work depends on earlier evidence. Prototype wire choices may change before v1 freeze. **Current implementation scope:** Android, desktop and CLI; browser Web is an additional required target whose acceptance is gated by approved credential trust and browser-compatible shared-core storage. iOS is excluded from implementation, verification and release claims. Existing iOS design material is retained as future reference only.
+**Status:** planned; dates are intentionally absent until staffing and device availability are known. Each milestone has an exit gate, and later work depends on earlier evidence. Prototype wire choices may change before v1 freeze. **Current release scope:** Android, desktop and CLI; iOS is excluded from implementation, verification and release claims. Existing iOS design material is retained as future reference only.
 
 | Milestone | Build slice | Depends on | Exit gate | IDs |
 | --- | --- | --- | --- | --- |
@@ -11,8 +11,8 @@
 | M4 — Fast local/files | Capability probe, Wi-Fi Aware/LAN, routing, couriers, content hashes | M3 | Mixed-device direct file resumes across path change | NET-006–008, FIL-001–007 |
 | M5 — Optional relays | Versioned mailbox/Nostr adapter, subscriptions, relay privacy settings | M3; ADR-003 | Two remote peers sync through two independent relays; offline nearby still works | NET-009–011,013 |
 | M6 — Voice | Signaling, WebRTC/Opus, direct ICE, optional TURN, controls | M3; M4 for local upgrade | Small room direct and relay cases, clean no-route failure | VOC-001–007, LAT-017 |
-| M7 — Desktop/CLI/node and Web | Tauri UI, CLI, optional persistent peer, browser/WASM client and browser storage/transport adapters | M3; M5 for relay control; approved Web trust profile | Interoperability across mobile, desktop, CLI and Web; browser profiles preserve local state and exchange authorized events without special node authority | DSK-001–005, CLI-001–009, WEB-001–009 |
-| M8 — Stable release | Fuzzing, interop vectors, migrations, privacy/battery/security review | All required earlier gates | Every v1 acceptance gate in TEST_PLAN passes; open blockers closed, including Web trust/storage/browser interop gates | LAT-006–020, VOC-008, DSK-006, WEB-001–009 |
+| M7 — Desktop/CLI/node | Tauri UI, CLI, optional persistent peer | M3; M5 for relay control | Interoperability across mobile, desktop, CLI; no special node authority | DSK-001–005, CLI-001–009 |
+| M8 — Stable release | Fuzzing, interop vectors, migrations, privacy/battery/security review | All required earlier gates | Every v1 acceptance gate in TEST_PLAN passes; open blockers closed | LAT-006–020, VOC-008, DSK-006 |
 
 ## Critical path
 
@@ -52,7 +52,7 @@ See [TODO.md](TODO.md) for actionable items and [TEST_PLAN.md](quality/TEST_PLAN
 
 **M4/M5** independently add high-bandwidth direct paths/files and optional relays. Both reuse event IDs; neither introduces a second state authority. File manifests must be hash-checked and resumable. Relay profile is frozen under ADR-003 and tested against independently operated compatible services.
 
-**M6/M7** add a small-room WebRTC call, broader desktop/CLI surfaces, and the proposed browser client using the same protocol and authorization rules. Web release acceptance depends on a browser-safe credential trust profile and durable storage adapter; architecture documentation alone does not make the browser client supported. Media tests require actual NAT/LAN cases and report lack of TURN. Desktop node mode is explicitly optional and quota bounded.
+**M6/M7** add a small-room WebRTC call and broader desktop/CLI surfaces using the same Rust core. Media tests require actual NAT/LAN cases and report lack of TURN. Desktop node mode is explicitly optional and quota bounded.
 
 **M8** is not a polish sprint: it includes external security review, fuzzing, migration, privacy captures, power and interoperability measurements, accessibility, stable wire freeze and published known limitations. A v1 release waits for those artifacts; a design document alone is not release evidence.
 

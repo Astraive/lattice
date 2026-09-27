@@ -178,14 +178,12 @@ internal fun SpaceMessageComposer(
                     enabled = profileReady && !state.loadingHistory,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (state.loadingHistory) "Loading history…" else "Refresh recent history")
+                    Text(if (state.loadingHistory) "Loading history…" else "Load recent history")
                 }
                 state.historyStatus?.let { status ->
                     Text(status, style = MaterialTheme.typography.bodySmall)
                 }
-                val historyChannelId = state.selectedChannelIdHex
-                    ?: availableChannels.firstOrNull()?.id?.toLowerHex()
-                if (state.historyChannelIdHex != null && state.historyChannelIdHex == historyChannelId) {
+                if (state.historyChannelIdHex == (state.selectedChannelIdHex ?: availableChannels.first().id.toLowerHex())) {
                     state.history.forEach { message ->
                         Surface(
                             modifier = Modifier.fillMaxWidth(),

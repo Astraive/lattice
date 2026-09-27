@@ -13,6 +13,5 @@ Each feature ID is a functional requirement with desired behavior, a pass condit
 | Mobile | MOB | [mobile.md](mobile.md) | Android radio, lifecycle and UI |
 | Desktop | DSK | [desktop.md](desktop.md) | Tauri app and node controls |
 | CLI | CLI | [cli.md](cli.md) | Commands, diagnostics, optional peer |
-| Web | WEB | [web.md](web.md) | Browser client, local identity/storage, secure transport |
 
 **Important distinction:** Space roles can restrict actions, but channel roles do not hide reads from other members of the same MLS Space. Cryptographically read-private channels are unsupported under [accepted ADR-002](../decisions/ADR-002-channel-read-semantics.md) and must fail closed if requested. The [ADR-001](../decisions/ADR-001-membership-commit-conflicts.md) fail-closed membership policy is accepted; conflict and recovery behavior still requires model/vector evidence. Read requirements with the [security model](../security/SECURITY_MODEL.md), not as standalone crypto claims.

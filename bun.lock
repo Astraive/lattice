@@ -28,23 +28,6 @@
         "vite": "8.3.0",
       },
     },
-    "apps/web": {
-      "name": "@lattice/web",
-      "version": "0.1.0",
-      "dependencies": {
-        "@lattice/theme": "workspace:*",
-        "react": "19.3.0",
-        "react-dom": "19.3.0",
-      },
-      "devDependencies": {
-        "@lattice/config": "workspace:*",
-        "@types/react": "19.3.0",
-        "@types/react-dom": "19.3.0",
-        "@vitejs/plugin-react": "6.1.1",
-        "typescript": "7.0.2",
-        "vite": "8.3.0",
-      },
-    },
     "packages/config": {
       "name": "@lattice/config",
       "version": "0.1.0",
@@ -107,8 +90,6 @@
     "@lattice/protocol-inspector": ["@lattice/protocol-inspector@workspace:packages/protocol-inspector"],
 
     "@lattice/theme": ["@lattice/theme@workspace:packages/theme"],
-
-    "@lattice/web": ["@lattice/web@workspace:apps/web"],
 
     "@nodelib/fs.scandir": ["@nodelib/fs.scandir@2.1.5", "", { "dependencies": { "@nodelib/fs.stat": "2.0.5", "run-parallel": "^1.1.9" } }, "sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g=="],
 

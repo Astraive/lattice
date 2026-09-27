@@ -19,8 +19,6 @@ required-features = ["cli"]
 
 [dependencies]
 lattice-core = { path = "../lattice-core" }
-lattice-crypto = { path = "../lattice-crypto" }
-sha2 = "=0.10.9"
 lattice-identity = { path = "../lattice-identity" }
 thiserror = "2"
 uniffi = "=0.29.4"

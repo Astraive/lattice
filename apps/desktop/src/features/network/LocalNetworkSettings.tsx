@@ -133,7 +133,7 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
             </button>
           </div>
           {lanDiscovery && (
-            <section className="relay-settings" aria-labelledby="lan-discovery-title">
+            <div className="relay-settings" aria-labelledby="lan-discovery-title">
               <h4 id="lan-discovery-title">LAN endpoint observations</h4>
               <p>
                 {lanDiscovery.state === "endpoint_observed"
@@ -155,7 +155,7 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
                 verified: {lanDiscovery.reachabilityVerified ? "yes" : "no"}. No connection was
                 attempted; verify a peer pin before connecting.
               </p>
-            </section>
+            </div>
           )}
           <div className="relay-settings">
             <div className="relay-settings-heading">

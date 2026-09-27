@@ -4,10 +4,8 @@ use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use sha2::{Digest as Sha2Digest, Sha256};
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod staging;
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use staging::{
     AttachmentStagingLimits, AttachmentStagingStore, ManagedAttachmentFile, StagingCleanupSummary,
 };

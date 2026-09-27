@@ -1,6 +1,6 @@
 # Technology and integration specification
 
-**Status:** proposed. Technology choice is a boundary decision; a library is selected only after compatibility, maintenance, license and security review. **Current delivery scope:** Android, desktop and CLI; a browser Web client is a required proposed target but remains unsupported until the shared-core, credential-trust and storage gates pass. iOS is excluded from implementation, verification and support claims.
+**Status:** proposed. Technology choice is a boundary decision; a library is selected only after compatibility, maintenance, license and security review. **Current delivery scope:** Android, desktop and CLI; iOS is excluded from implementation, verification and support claims.
 
 | Layer | Technology | Role and constraint |
 | --- | --- | --- |
@@ -8,7 +8,6 @@
 | Shared domain | Rust Cargo workspace | Canonical encoding, events, identity, MLS integration, policy, routing, sync, storage |
 | Mobile bindings | Mozilla UniFFI | Coarse Kotlin command/query interface; batched notifications |
 | Desktop | Tauri v2, React, TypeScript, Vite | Local WebView UI; Rust core in native process |
-| Web client | TypeScript UI, dedicated Web Worker, Rust/WASM protocol core | Candidate browser target; browser storage, credential trust and transports require adapters and security review |
 | CLI and optional node | Rust | Headless diagnostics, local client commands and volunteer peer |
 | JS workspaces | Bun, Turborepo | Desktop/design package dependency management and script orchestration |
 | Local persistence | SQLite | Transactional event log, outbox and projections; encrypted sensitive blobs |

@@ -9,7 +9,6 @@ members = [
     "crates/lattice-identity",
     "crates/lattice-mesh",
     "crates/lattice-mls",
-    "crates/openmls-sqlite-storage",
     "crates/lattice-node",
     "crates/lattice-platform",
     "crates/lattice-protocol",
@@ -21,7 +20,6 @@ members = [
     "crates/lattice-transport",
     "crates/lattice-uniffi",
     "crates/lattice-voice",
-    "crates/lattice-web-wasm",
 ]
 resolver = "3"
 

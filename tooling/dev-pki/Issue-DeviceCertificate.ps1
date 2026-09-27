@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { throw 'OpenSSL failed to issue the development device
 if ($LASTEXITCODE -ne 0) { throw 'OpenSSL failed to encode the issued certificate.' }
 
 $derBytes = [System.IO.File]::ReadAllBytes($leafDer)
-function Get-TlsVarIntBytes([System.UInt64] $Value) {
+function Get-TlsVarIntBytes([ulong] $Value) {
     if ($Value -le 0x3f) {
         return [byte[]] @([byte] $Value)
     }
@@ -61,9 +61,9 @@ function Get-TlsVarIntBytes([System.UInt64] $Value) {
     $encoded[0] = [byte] (0xc0 -bor ($encoded[0] -band 0x3f))
     return $encoded
 }
-[byte[]] $certificateLengthPrefix = Get-TlsVarIntBytes ([System.UInt64] $derBytes.Length)
+[byte[]] $certificateLengthPrefix = Get-TlsVarIntBytes ([ulong] $derBytes.Length)
 $certificateVectorLength = $certificateLengthPrefix.Length + $derBytes.Length
-[byte[]] $credentialLengthPrefix = Get-TlsVarIntBytes ([System.UInt64] $certificateVectorLength)
+[byte[]] $credentialLengthPrefix = Get-TlsVarIntBytes ([ulong] $certificateVectorLength)
 $credentialVector = [System.Collections.Generic.List[byte]]::new()
 $credentialVector.AddRange($credentialLengthPrefix)
 $credentialVector.AddRange($certificateLengthPrefix)

@@ -32,13 +32,8 @@ serde = { version = "1", features = ["derive"] }
 directories = "=6.0.0"
 base64 = "=0.22.1"
 lattice-files = { path = "../../../crates/lattice-files" }
-lattice-events = { path = "../../../crates/lattice-events" }
-lattice-router = { path = "../../../crates/lattice-router" }
-lattice-sync = { path = "../../../crates/lattice-sync" }
-lattice-mls = { path = "../../../crates/lattice-mls" }
-openmls = "=0.9.0"
 fs4 = "=0.13.1"
-tauri-plugin-dialog = { version = "=2.7.3", default-features = false, features = ["gtk3"] }
+tauri-plugin-dialog = { version = "=2.7.3", default-features = false }
 
 
 [lints]
