@@ -37,6 +37,7 @@ pub(crate) struct DesktopSyncResult {
     accepted_events: usize,
     pending_events: usize,
     duplicate_events: usize,
+    checkpoint_excluded_events: usize,
     offered_events: usize,
     network_contacted: bool,
     converged: bool,
@@ -171,7 +172,7 @@ fn run_sync_once(
         .map_err(|error| format!("authenticated Desktop sync failed: {error}"))?;
 
     let (outbound, inbound) = authenticated;
-    let (accepted_events, pending_events, duplicate_events) =
+    let (accepted_events, pending_events, duplicate_events, checkpoint_excluded_events) =
         apply_synced_events(&mut client, &mut created, outbound.exchange.events)?;
 
     Ok(DesktopSyncResult {
@@ -181,6 +182,7 @@ fn run_sync_once(
         accepted_events,
         pending_events,
         duplicate_events,
+        checkpoint_excluded_events,
         offered_events: inbound.exchange.included_events,
         network_contacted: true,
         converged: false,
@@ -297,7 +299,7 @@ fn apply_synced_events(
     client: &mut Client,
     created: &mut CreatedSpace,
     events: Vec<ValidatedSyncEvent>,
-) -> Result<(usize, usize, usize), String> {
+) -> Result<(usize, usize, usize, usize), String> {
     let mut events = events
         .into_iter()
         .map(|event| {
@@ -316,7 +318,7 @@ fn apply_synced_events(
 
     let bundles = pair_membership_events(&events);
 
-    let mut counts = (0, 0, 0);
+    let mut counts = (0, 0, 0, 0);
     for (index, (received, event)) in events.iter().enumerate() {
         match event.kind() {
             EventKind::MlsControl => {
@@ -371,11 +373,15 @@ fn apply_synced_events(
     Ok(counts)
 }
 
-fn count_sync_outcome(counts: &mut (usize, usize, usize), outcome: &SyncedApplicationOutcome) {
+fn count_sync_outcome(
+    counts: &mut (usize, usize, usize, usize),
+    outcome: &SyncedApplicationOutcome,
+) {
     match outcome {
         SyncedApplicationOutcome::Accepted { .. } => counts.0 += 1,
         SyncedApplicationOutcome::Pending { .. } => counts.1 += 1,
         SyncedApplicationOutcome::Duplicate { .. } => counts.2 += 1,
+        SyncedApplicationOutcome::CheckpointExcluded { .. } => counts.3 += 1,
     }
 }
 

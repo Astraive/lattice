@@ -455,16 +455,17 @@ impl MobileClient {
             .map_err(|_| MobileError::OutboxTransitionRejected)
     }
 
-    /// Sends one opaque signed event through Rust's signature, MLS, dependency,
-    /// and local Space authorization gates.
+    /// Sends one signed event through Rust's signature, MLS, dependency, and
+    /// local Space authorization gates.
     ///
-    /// `Pending` means the event was retained for missing parents; it is not
-    /// authorized application content and must not be projected to the UI.
+    /// `Pending` means missing parents were retained. `CheckpointExcluded`
+    /// means signed ciphertext predates the local MLS checkpoint and is retained
+    /// only to preserve DAG ancestry; neither outcome is authorized content.
     ///
     /// # Errors
     ///
-    /// Returns `SyncIngestFailed` unless Core accepts, recognizes a duplicate,
-    /// or safely retains the event as pending.
+    /// Returns `SyncIngestFailed` unless Core accepts, recognizes, excludes, or
+    /// safely retains the event as pending.
     #[allow(clippy::needless_pass_by_value)]
     pub fn ingest_synced_application_event(
         &self,
@@ -481,6 +482,11 @@ impl MobileClient {
             SyncedApplicationOutcome::Duplicate { event_id } => {
                 (event_id, MobileSyncEventState::Duplicate, Vec::new())
             }
+            SyncedApplicationOutcome::CheckpointExcluded { event_id } => (
+                event_id,
+                MobileSyncEventState::CheckpointExcluded,
+                Vec::new(),
+            ),
             SyncedApplicationOutcome::Pending {
                 event_id,
                 missing_dependencies,

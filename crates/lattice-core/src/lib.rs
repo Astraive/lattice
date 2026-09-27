@@ -185,7 +185,7 @@ pub struct LocalTextMessageSearchResult {
     pub scanned_messages: usize,
 }
 
-/// Result of accepting one signature-verified, MLS-protected application event.
+/// Result of handling one signature-verified application event for sync.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyncedApplicationOutcome {
     /// The event passed MLS binding and Space authorization and was committed.
@@ -197,6 +197,8 @@ pub enum SyncedApplicationOutcome {
         event_id: [u8; 32],
         missing_dependencies: Vec<[u8; 32]>,
     },
+    /// Signed ciphertext predates the local MLS checkpoint; retained only as DAG ancestry.
+    CheckpointExcluded { event_id: [u8; 32] },
 }
 
 impl CreatedSpace {
@@ -488,6 +490,9 @@ pub enum CoreError {
     /// A membership control event did not bind to the staged MLS proof.
     #[error("Space membership control relation rejected: {0:?}")]
     SpaceControlRejected(space::RejectReason),
+    /// A signed event could not join the local reducer graph.
+    #[error("Space event graph rejected: {0:?}")]
+    SpaceGraphEventRejected(space::RejectReason),
     /// The policy membership transition was not applied.
     #[error("Space membership policy transition not applied: {0:?}")]
     SpaceMembershipNotApplied(space::ApplyResult),
@@ -2017,7 +2022,9 @@ impl Client {
     ///
     /// Missing signed parents are retained in the bounded pending store without
     /// advancing MLS state. Accepted events update the MLS state, reducer, exact
-    /// signed event row, and any message-text cache projection atomically.
+    /// signed event row, and any message-text cache projection atomically. Signed
+    /// ciphertext older than the local MLS epoch is retained only as graph ancestry
+    /// and reported as `CheckpointExcluded`; its plaintext is never projected.
     ///
     /// # Errors
     ///
@@ -2037,7 +2044,8 @@ impl Client {
     /// This is the transport-facing entry point for an opaque signed event.
     /// The event is signature-verified before its identifiers select a local
     /// generation; normal MLS binding, dependency, and authorization checks
-    /// determine whether it is accepted.
+    /// determine whether it is accepted. Ciphertext older than the local MLS epoch
+    /// is retained only as graph ancestry and reported as `CheckpointExcluded`.
     ///
     /// # Errors
     ///
@@ -2106,7 +2114,7 @@ impl Client {
         let group_reference = created.group_reference;
         let reducer = created.reducer.clone();
         let credential_trust_policy = self.credential_trust_policy.clone();
-        let staged_reducer =
+        let (staged_reducer, checkpoint_excluded) =
             self.with_mls_transaction(move |_identity, provider, transaction| {
                 let mut group = GroupState::load_with_trust_policy(
                     provider,
@@ -2115,6 +2123,37 @@ impl Client {
                 )?;
                 if group.group_reference() != group_reference {
                     return Err(CoreError::MlsEventBindingFailed);
+                }
+                if event.mls_epoch() < group.epoch() {
+                    if !matches!(
+                        event.kind(),
+                        EventKind::Message
+                            | EventKind::Edit
+                            | EventKind::Tombstone
+                            | EventKind::Reaction
+                            | EventKind::Pin
+                            | EventKind::FileManifest
+                            | EventKind::VoiceSignal
+                    ) {
+                        return Err(CoreError::MlsEventBindingFailed);
+                    }
+                    let active_channel_author = event.channel_id().is_some_and(|channel_id| {
+                        reducer
+                            .effective_channel_permissions(event.author_fingerprint(), channel_id)
+                            .is_some()
+                    });
+                    if !active_channel_author {
+                        return Err(CoreError::SpaceMessageRejected(
+                            space::EventAuthorization::Rejected(space::RejectReason::Unauthorized),
+                        ));
+                    }
+                    let mut staged_reducer = reducer.clone();
+                    staged_reducer
+                        .observe_graph_event(&event)
+                        .map_err(CoreError::SpaceGraphEventRejected)?;
+                    store_received_event(transaction, &event)?;
+                    Store::resolve_pending_in_transaction(transaction, event_id)?;
+                    return Ok((staged_reducer, true));
                 }
                 let IncomingResult::Application(application) =
                     group.process_incoming(provider, event.protected_body())?
@@ -2129,10 +2168,13 @@ impl Client {
                 }
                 persist_received_text_projection(transaction, &bound, space_id, group_reference)?;
                 Store::resolve_pending_in_transaction(transaction, event_id)?;
-                Ok(staged_reducer)
+                Ok((staged_reducer, false))
             })?;
         created.reducer = staged_reducer;
         self.store.resolve_dependency(event_id)?;
+        if checkpoint_excluded {
+            return Ok(SyncedApplicationOutcome::CheckpointExcluded { event_id });
+        }
         Ok(SyncedApplicationOutcome::Accepted { event_id })
     }
 
@@ -2180,6 +2222,7 @@ impl Client {
                     outcome,
                     SyncedApplicationOutcome::Accepted { .. }
                         | SyncedApplicationOutcome::Duplicate { .. }
+                        | SyncedApplicationOutcome::CheckpointExcluded { .. }
                 ) {
                     made_progress = true;
                 }
@@ -3290,6 +3333,42 @@ impl Client {
                 return Err(CoreError::SpaceMembershipNotApplied(
                     space::ApplyResult::Rejected(space::RejectReason::WrongGeneration),
                 ));
+            }
+            let policy = staged_reducer
+                .policy()
+                .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?;
+            let active_member_count = policy
+                .members
+                .iter()
+                .filter(|member| member.status == space::MemberStatus::Active)
+                .count();
+            let checkpoint_roster_matches = active_member_count == group.member_count()
+                && policy
+                    .members
+                    .iter()
+                    .filter(|member| member.status == space::MemberStatus::Active)
+                    .all(|member| group.contains_member_identity(&member.fingerprint));
+            if control_event.mls_epoch() < group.epoch() && checkpoint_roster_matches {
+                let mut checkpointed_reducer = reducer.clone();
+                if checkpointed_reducer
+                    .register_checkpoint_covered_membership_history(
+                        &incoming_policy_events,
+                        &control_event,
+                        &transition_event,
+                    )
+                    .is_ok()
+                {
+                    // The signed Welcome checkpoint already attests this
+                    // earlier transition. Preserve its signed ancestry without
+                    // replaying an MLS commit older than the joined epoch.
+                    for event in &incoming_policy_events {
+                        store_received_event(transaction, event)?;
+                    }
+                    store_received_event(transaction, &control_event)?;
+                    store_received_event(transaction, &transition_event)?;
+                    staged_reducer = checkpointed_reducer;
+                    return Ok(staged_reducer);
+                }
             }
             for event in incoming_policy_events {
                 let IncomingResult::Application(application) =
@@ -6572,6 +6651,145 @@ mod tests {
                     && member.status == super::space::MemberStatus::Active
             })
         }));
+        let space_id = *created.space_id();
+        let group_reference = *created.group_reference();
+        drop(created);
+        drop(alice);
+        let mut alice = Client::open_existing(&alice_database.0, &protector)
+            .expect("reopen inviter profile between member additions");
+        let mut created = alice
+            .restore_space(&space_id, &group_reference)
+            .expect("restore inviter Space before second invitation");
+        let charlie_database = TestDatabase::new();
+        let mut charlie = Client::open_or_create(&charlie_database.0, &protector)
+            .expect("initialize second invitee");
+        let charlie_credential = test_credential(&charlie.identity);
+        let charlie_fingerprint = charlie.identity.fingerprint();
+        let charlie_key_package = charlie
+            .publish_key_package(&charlie_credential, 101)
+            .expect("publish second invitee KeyPackage");
+        let second_invitation = alice
+            .create_space_invite(
+                &mut created,
+                &alice_credential,
+                &charlie_key_package,
+                None,
+                2_001,
+                Some(1),
+            )
+            .expect("commit second invitation after first member add");
+        charlie
+            .pin_identity(
+                &alice.identity.public_bundle().to_bytes(),
+                alice_fingerprint,
+            )
+            .expect("pin inviter for second invitee");
+        let mut second_joined = charlie
+            .join_space_from_welcome_bootstrap(
+                second_invitation.welcome_bootstrap(),
+                alice_fingerprint,
+                &charlie_credential,
+            )
+            .expect("import Welcome after prior membership transition");
+        assert!(second_joined.reducer().policy().is_some_and(|policy| {
+            policy.members.iter().any(|member| {
+                member.fingerprint == charlie_fingerprint
+                    && member.status == super::space::MemberStatus::Active
+            })
+        }));
+        let outbox = alice
+            .store
+            .list_outbox_page(None, 32)
+            .expect("load invitation history for checkpoint replay");
+        let signed_events = outbox
+            .iter()
+            .map(|record| {
+                let stored = alice
+                    .store
+                    .load_event(&record.event_id)
+                    .expect("load inviter history event")
+                    .expect("outbox event is stored");
+                VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)
+                    .expect("verify inviter event")
+            })
+            .collect::<Vec<_>>();
+        let first_invite_id = *invitation.invite_event_id();
+        let first_control = signed_events
+            .iter()
+            .find(|event| {
+                event.kind() == EventKind::MlsControl
+                    && event
+                        .parents()
+                        .iter()
+                        .any(|parent| parent.as_bytes() == &first_invite_id)
+            })
+            .expect("first membership control");
+        let first_control_id = *first_control.event_id().as_bytes();
+        let first_transition = signed_events
+            .iter()
+            .find(|event| {
+                event.kind() == EventKind::Membership
+                    && event
+                        .parents()
+                        .iter()
+                        .any(|parent| parent.as_bytes() == &first_control_id)
+            })
+            .expect("first membership transition");
+        let first_policy_event = signed_events
+            .iter()
+            .find(|event| event.event_id().as_bytes() == &first_invite_id)
+            .expect("first invitation policy event");
+        charlie
+            .accept_synced_space_membership_transition(
+                &mut second_joined,
+                Some(first_policy_event.encoded_bytes()),
+                first_control.encoded_bytes(),
+                first_transition.encoded_bytes(),
+            )
+            .expect("checkpoint-covered historical transition does not replay stale MLS");
+        assert_eq!(
+            charlie
+                .accept_synced_application_event(&mut second_joined, event.encoded_bytes())
+                .expect("retain pre-checkpoint event only as signed ancestry"),
+            super::SyncedApplicationOutcome::CheckpointExcluded {
+                event_id: *event.event_id().as_bytes(),
+            }
+        );
+        let post_checkpoint_message = alice
+            .queue_text_message(
+                &mut created,
+                &alice_credential,
+                channel_id,
+                "message after later Welcome checkpoint",
+            )
+            .expect("queue message at the later MLS epoch");
+        let post_checkpoint_record = alice
+            .store
+            .load_event(post_checkpoint_message.event_id())
+            .expect("load later-epoch message")
+            .expect("later-epoch message is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(
+                    &mut second_joined,
+                    &post_checkpoint_record.canonical_bytes
+                )
+                .expect("accept message after checkpoint-covered ancestry"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let history = charlie
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("load only authorized text history");
+        assert!(
+            history
+                .iter()
+                .any(|message| message.content == "message after later Welcome checkpoint")
+        );
+        assert!(
+            history
+                .iter()
+                .all(|message| message.content != "message after verified membership transition")
+        );
     }
 
     #[allow(clippy::too_many_lines)] // Covers the accepted join and durable history replay path.

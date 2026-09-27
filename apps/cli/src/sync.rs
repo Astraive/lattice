@@ -258,6 +258,7 @@ struct FetchEventCounts {
     pending: usize,
     pending_dependency_ids: Vec<String>,
     duplicates: usize,
+    checkpoint_excluded: usize,
     retried_accepted: usize,
     retried_pending: usize,
     retried_duplicates: usize,
@@ -422,6 +423,9 @@ fn accept_fetched_events(
                 );
             }
             lattice_core::SyncedApplicationOutcome::Duplicate { .. } => counts.duplicates += 1,
+            lattice_core::SyncedApplicationOutcome::CheckpointExcluded { .. } => {
+                counts.checkpoint_excluded += 1;
+            }
         }
     }
     Ok(counts)
@@ -455,6 +459,9 @@ fn accept_reconciliation_events(
             lattice_core::SyncedApplicationOutcome::Duplicate { .. } => {
                 counts.duplicates += 1;
                 counts.retried_duplicates += 1;
+            }
+            lattice_core::SyncedApplicationOutcome::CheckpointExcluded { .. } => {
+                counts.checkpoint_excluded += 1;
             }
         }
     }
@@ -494,7 +501,7 @@ fn print_fetch_result(
             "event_rejected"
         } else if counts.pending > 0 {
             "pending_dependencies"
-        } else if counts.accepted + counts.duplicates > 0 {
+        } else if counts.accepted + counts.duplicates + counts.checkpoint_excluded > 0 {
             "event_received"
         } else {
             "unresolved"
@@ -520,19 +527,21 @@ fn print_fetch_result(
                 "pending_dependency_ids": counts.pending_dependency_ids,
                 "pending_events": counts.pending,
                 "duplicate_events": counts.duplicates,
+                "checkpoint_excluded_events": counts.checkpoint_excluded,
                 "rejected_events": rejected_events,
                 "recipient_delivery_claimed": false,
             })
         );
     } else {
         println!(
-            "Scoped sync plan for Space {} group {}: {}; received {} event(s), retained {} pending, recognized {} duplicates, rejected {rejected_events}.",
+            "Scoped sync plan for Space {} group {}: {}; received {} event(s), retained {} pending, recognized {} duplicates, excluded {} pre-checkpoint ciphertext event(s), rejected {rejected_events}.",
             super::hex(&target.space_id),
             super::hex(&target.group_reference),
             sync_status_name(exchange.plan.status),
             counts.accepted,
             counts.pending,
             counts.duplicates,
+            counts.checkpoint_excluded,
         );
         for requested in &exchange.plan.request_ranges {
             println!(

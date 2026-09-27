@@ -160,6 +160,7 @@ pub enum MobileSyncEventState {
     Accepted,
     Duplicate,
     Pending,
+    CheckpointExcluded,
 }
 
 /// Result of handing one signed application event to Rust Core.

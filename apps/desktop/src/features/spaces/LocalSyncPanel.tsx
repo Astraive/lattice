@@ -8,6 +8,7 @@ type DesktopSyncResult = {
   acceptedEvents: number;
   pendingEvents: number;
   duplicateEvents: number;
+  checkpointExcludedEvents: number;
   offeredEvents: number;
   networkContacted: true;
   converged: false;
@@ -108,8 +109,9 @@ export function LocalSyncPanel({ spaceId, groupReference }: Props) {
         <p role="status" aria-live="polite">
           Round completed with {result.peerFingerprint} via {result.listenAddress}: accepted{" "}
           {result.acceptedEvents}, pending {result.pendingEvents}, duplicates{" "}
-          {result.duplicateEvents}, offered {result.offeredEvents}. Run additional rounds if history
-          remains incomplete. Load recent history to view accepted events.
+          {result.duplicateEvents}, checkpoint-excluded {result.checkpointExcludedEvents}, offered{" "}
+          {result.offeredEvents}. Run additional rounds if history remains incomplete. Load recent
+          history to view accepted events.
         </p>
       )}
     </section>

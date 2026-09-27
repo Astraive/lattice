@@ -94,7 +94,7 @@ pub(super) fn run(
         space_id,
         group_reference,
     };
-    let (downloaded, accepted, duplicates, pending) =
+    let (downloaded, accepted, duplicates, pending, checkpoint_excluded) =
         runtime.block_on(accept_and_sync(&listener, &mut session))?;
     if json {
         println!(
@@ -107,11 +107,12 @@ pub(super) fn run(
                 "accepted": accepted,
                 "duplicates": duplicates,
                 "pending": pending,
+                "checkpoint_excluded": checkpoint_excluded,
             })
         );
     } else {
         eprintln!(
-            "Web bridge session completed: downloaded {downloaded}, accepted {accepted}, deduplicated {duplicates}, pending {pending}."
+            "Web bridge session completed: downloaded {downloaded}, accepted {accepted}, deduplicated {duplicates}, pending {pending}, checkpoint-excluded {checkpoint_excluded}."
         );
     }
     Ok(())
@@ -130,7 +131,7 @@ struct BridgeSession<'a> {
 async fn accept_and_sync(
     listener: &TcpListener,
     session: &mut BridgeSession<'_>,
-) -> Result<(usize, usize, usize, usize), Box<dyn Error>> {
+) -> Result<(usize, usize, usize, usize, usize), Box<dyn Error>> {
     let (stream, remote) = listener.accept().await?;
     if !remote.ip().is_loopback() {
         return Err(io::Error::new(
@@ -198,7 +199,7 @@ async fn accept_and_sync(
             format!(r#"{{"type":"download-complete","events":{downloaded}}}"#).into(),
         ))
         .await?;
-    let (accepted, duplicates, pending) = receive_browser_events(
+    let (accepted, duplicates, pending, checkpoint_excluded) = receive_browser_events(
         &mut socket,
         session.client,
         session.created,
@@ -209,13 +210,19 @@ async fn accept_and_sync(
     socket
         .send(Message::Text(
             format!(
-                r#"{{"type":"complete","accepted":{accepted},"duplicates":{duplicates},"pending":{pending}}}"#
+                r#"{{"type":"complete","accepted":{accepted},"duplicates":{duplicates},"pending":{pending},"checkpoint_excluded":{checkpoint_excluded}}}"#
             )
             .into(),
         ))
         .await?;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), socket.close(None)).await;
-    Ok((downloaded, accepted, duplicates, pending))
+    Ok((
+        downloaded,
+        accepted,
+        duplicates,
+        pending,
+        checkpoint_excluded,
+    ))
 }
 
 #[allow(clippy::result_large_err)] // Tungstenite requires this concrete handshake error type.
@@ -335,11 +342,12 @@ async fn receive_browser_events(
     created: &mut lattice_core::CreatedSpace,
     space_id: [u8; 16],
     group_reference: [u8; 32],
-) -> Result<(usize, usize, usize), Box<dyn Error>> {
+) -> Result<(usize, usize, usize, usize), Box<dyn Error>> {
     let mut received_bytes = 0usize;
     let mut accepted = 0;
     let mut duplicates = 0;
     let mut pending = 0;
+    let mut checkpoint_excluded = 0;
     loop {
         let message = tokio::time::timeout(std::time::Duration::from_secs(30), socket.next())
             .await
@@ -376,6 +384,9 @@ async fn receive_browser_events(
                     SyncedApplicationOutcome::Accepted { .. } => accepted += 1,
                     SyncedApplicationOutcome::Duplicate { .. } => duplicates += 1,
                     SyncedApplicationOutcome::Pending { .. } => pending += 1,
+                    SyncedApplicationOutcome::CheckpointExcluded { .. } => {
+                        checkpoint_excluded += 1;
+                    }
                 }
             }
             Message::Text(text) if text.as_str() == r#"{"type":"upload-complete"}"# => break,
@@ -396,7 +407,7 @@ async fn receive_browser_events(
             }
         }
     }
-    Ok((accepted, duplicates, pending))
+    Ok((accepted, duplicates, pending, checkpoint_excluded))
 }
 
 #[cfg(test)]
