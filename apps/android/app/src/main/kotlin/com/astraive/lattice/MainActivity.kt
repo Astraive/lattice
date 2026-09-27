@@ -1,5 +1,9 @@
 package com.astraive.lattice
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.content.ClipData
@@ -86,6 +90,11 @@ internal data class NearbyScreenState(
     val bluetooth: BluetoothReadiness = BluetoothReadiness.PERMISSION_REQUIRED,
     val scanning: Boolean = false,
     val sightings: Int = 0,
+    val nearbyCandidates: List<BleExp0PeerCandidate> = emptyList(),
+    val bleConnectionStatus: String = "No authenticated BLE session.",
+    val pendingIdentitySafetyNumber: String? = null,
+    val pendingIdentityFingerprint: String? = null,
+    val pendingRouteConsent: Boolean = false,
     val persistentNearbyEnabled: Boolean = false,
     val persistentNearbyStatus: String = "Persistent nearby mode is off.",
     val wifiCapabilities: AndroidWifiCapabilities = AndroidWifiCapabilities(),
@@ -123,6 +132,14 @@ class MainActivity : ComponentActivity() {
     private var persistentReceiverRegistered = false
     private var permissionHistoryBeforePrompt = false
     private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var peripheralSession: BleExp0PeripheralSession? = null
+    private var centralSession: BleExp0CentralSession? = null
+    private var pendingBleIdentityDecision: ((Boolean) -> Unit)? = null
+    private var pendingBleRouteDecision: ((Boolean) -> Unit)? = null
+    private var activityStarted = false
+    private var projectionSubscription: AutoCloseable? = null
+    private val pendingHistoryRefreshes = mutableMapOf<String, Boolean>()
+    private var pendingSpaceRefresh = false
 
     private val permissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -219,21 +236,16 @@ class MainActivity : ComponentActivity() {
             },
             onFailure = { failure ->
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) {
-                        if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
-                        screenState = screenState.copy(scanning = false, sightings = 0, message = failure)
-                    }
+                    if (!isFinishing && !isDestroyed) stopScanning(failure)
                 }
             },
+            onCandidatesChanged = ::onNearbyCandidatesChanged,
         )
         nearbyAdvertiser = NearbyBleAdvertiser(
             context = this,
             onFailure = { failure ->
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) {
-                        nearbyScanner.stop()
-                        screenState = screenState.copy(scanning = false, sightings = 0, message = failure)
-                    }
+                    if (!isFinishing && !isDestroyed) stopScanning(failure)
                 }
             },
         )
@@ -250,8 +262,14 @@ class MainActivity : ComponentActivity() {
                     },
                     onOpenLocalSpace = { spaceKey ->
                         screenState = screenState.copy(selectedSpaceKey = spaceKey)
+                        if (spaceKey != null) loadLocalMessageHistory(spaceKey)
                     },
                     onPrimaryAction = ::onPrimaryAction,
+                    onConnectCandidate = ::connectNearbyCandidate,
+                    onApproveBleIdentity = { resolveBleIdentity(true) },
+                    onRejectBleIdentity = { resolveBleIdentity(false) },
+                    onApproveRoute = { resolveBleRoute(true) },
+                    onRejectRoute = { resolveBleRoute(false) },
                     onPersistentNearbyAction = ::onPersistentNearbyAction,
                     onDismissRationale = { screenState = screenState.copy(showPermissionRationale = false) },
                     onContinuePermission = ::continuePermissionFlow,
@@ -329,6 +347,7 @@ class MainActivity : ComponentActivity() {
                     localSpacesStatus = localSpacesStatus(firstSpacePage.spaces.size, firstSpacePage.nextCursor != null),
                     nextSpaceCursor = firstSpacePage.nextCursor,
                 )
+                attachCoreProjectionSubscription()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: MobileException) {
@@ -361,21 +380,65 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private fun attachCoreProjectionSubscription() {
+        if (!activityStarted || projectionSubscription != null) return
+        val profile = mobileProfile ?: return
+        projectionSubscription = profile.subscribeProjectionChanges { change ->
+            runOnUiThread {
+                if (!activityStarted || isFinishing || isDestroyed || mobileProfile !== profile) return@runOnUiThread
+                when (change) {
+                    CoreProjectionChange.SPACES -> refreshLocalSpaces()
+                    CoreProjectionChange.MESSAGES -> refreshLoadedMessageHistories()
+                    CoreProjectionChange.ALL -> {
+                        refreshLocalSpaces()
+                        refreshLoadedMessageHistories()
+                    }
+                    CoreProjectionChange.SYNCED_EVENTS -> {
+                        refreshLocalSpaces()
+                        refreshLoadedMessageHistories(notifyIncomingMessages = true)
+                    }
+                }
+            }
+        }
+        refreshLocalSpaces()
+        refreshLoadedMessageHistories()
+    }
+
+    private fun refreshLoadedMessageHistories(notifyIncomingMessages: Boolean = false) {
+        screenState.messageComposers
+            .filterValues { it.historyChannelIdHex != null }
+            .keys
+            .forEach { loadLocalMessageHistory(it, notifyIncomingMessages) }
+    }
+
 
     private fun refreshLocalSpaces() {
         val profile = mobileProfile ?: return
-        if (screenState.loadingSpacePage) return
+        if (screenState.loadingSpacePage) {
+            pendingSpaceRefresh = true
+            return
+        }
         screenState = screenState.copy(loadingSpacePage = true)
         lifecycleScope.launch {
             try {
-                val page = withContext(Dispatchers.IO) {
-                    profile.localSpaces()
+                val loadedCount = screenState.localSpaces.size.coerceAtLeast(1)
+                val (spaces, nextCursor) = withContext(Dispatchers.IO) {
+                    val spaces = ArrayList<MobileSpaceSummary>()
+                    var cursor: MobileSpaceCursor? = null
+                    var nextCursor: MobileSpaceCursor? = null
+                    do {
+                        val page = profile.localSpaces(cursor)
+                        spaces.addAll(page.spaces)
+                        cursor = page.nextCursor
+                        nextCursor = page.nextCursor
+                    } while (cursor != null && spaces.size < loadedCount)
+                    spaces to nextCursor
                 }
                 if (!isFinishing && !isDestroyed) {
                     screenState = screenState.copy(
-                        localSpaces = page.spaces,
-                        localSpacesStatus = localSpacesStatus(page.spaces.size, page.nextCursor != null),
-                        nextSpaceCursor = page.nextCursor,
+                        localSpaces = spaces,
+                        localSpacesStatus = localSpacesStatus(spaces.size, nextCursor != null),
+                        nextSpaceCursor = nextCursor,
                         loadingSpacePage = false,
                     )
                 }
@@ -387,6 +450,12 @@ class MainActivity : ComponentActivity() {
                         localSpacesStatus = "Local Space snapshots could not be restored.",
                         loadingSpacePage = false,
                     )
+                }
+            }
+            finally {
+                if (activityStarted && pendingSpaceRefresh && !isFinishing && !isDestroyed) {
+                    pendingSpaceRefresh = false
+                    refreshLocalSpaces()
                 }
             }
         }
@@ -420,6 +489,12 @@ class MainActivity : ComponentActivity() {
                         localSpacesStatus = "The next local Space page could not be restored.",
                         loadingSpacePage = false,
                     )
+                }
+            }
+            finally {
+                if (activityStarted && pendingSpaceRefresh && !isFinishing && !isDestroyed) {
+                    pendingSpaceRefresh = false
+                    refreshLocalSpaces()
                 }
             }
         }
@@ -466,6 +541,7 @@ class MainActivity : ComponentActivity() {
                 status = "Channel selected; message not yet queued.",
             )
         }
+        loadLocalMessageHistory(spaceKey)
     }
 
     private fun editLocalMessage(spaceKey: String, message: MobileLocalTextMessage) {
@@ -491,7 +567,7 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
-    private fun loadLocalMessageHistory(spaceKey: String) {
+    private fun loadLocalMessageHistory(spaceKey: String, notifyIncomingMessages: Boolean = false) {
         val profile = mobileProfile ?: run {
             updateMessageComposer(spaceKey) {
                 it.copy(historyStatus = "The protected profile is not ready.")
@@ -505,7 +581,11 @@ class MainActivity : ComponentActivity() {
             return
         }
         val composer = screenState.messageComposers[spaceKey] ?: LocalMessageComposerState()
-        if (composer.loadingHistory) return
+        if (composer.loadingHistory) {
+            pendingHistoryRefreshes[spaceKey] =
+                pendingHistoryRefreshes[spaceKey] == true || notifyIncomingMessages
+            return
+        }
         val channels = space.channels.filter {
             !it.archived &&
                 (it.channelType == MobileChannelType.TEXT ||
@@ -529,6 +609,16 @@ class MainActivity : ComponentActivity() {
                 val history = withContext(Dispatchers.IO) {
                     profile.localTextMessages(space.spaceId, space.groupReference, channel.id)
                 }
+                if (
+                    (notifyIncomingMessages || pendingHistoryRefreshes[spaceKey] == true) &&
+                    composer.historyChannelIdHex == channelIdHex
+                ) {
+                    newlyProjectedIncomingMessages(
+                        previous = composer.history,
+                        current = history,
+                        localFingerprintHex = screenState.identityFingerprint,
+                    ).forEach(::notifyAuthorizedMessage)
+                }
                 if (!isFinishing && !isDestroyed) {
                     updateMessageComposer(spaceKey) {
                         it.copy(
@@ -536,9 +626,9 @@ class MainActivity : ComponentActivity() {
                             history = history,
                             historyChannelIdHex = channelIdHex,
                             historyStatus = if (history.isEmpty()) {
-                                "No locally retained outgoing messages for this channel."
+                                "No locally retained authorized messages for this channel."
                             } else {
-                                "Showing ${history.size} recent locally retained outgoing message(s)."
+                                "Showing ${history.size} recent locally retained authorized message(s)."
                             },
                         )
                     }
@@ -564,6 +654,62 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            finally {
+                val refreshAsNotificationEligible = pendingHistoryRefreshes.remove(spaceKey)
+                if (
+                    activityStarted &&
+                    refreshAsNotificationEligible != null &&
+                    !isFinishing &&
+                    !isDestroyed
+                ) {
+                    loadLocalMessageHistory(spaceKey, refreshAsNotificationEligible)
+                }
+            }
+        }
+    }
+    private fun notifyAuthorizedMessage(message: MobileLocalTextMessage) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(MESSAGE_NOTIFICATION_CHANNEL_ID) == null
+        ) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    MESSAGE_NOTIFICATION_CHANNEL_ID,
+                    MESSAGE_NOTIFICATION_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+        }
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(this, MESSAGE_NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle("New Lattice message")
+            .setContentText(message.content)
+            .setStyle(Notification.BigTextStyle().bigText(message.content))
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+            .build()
+        try {
+            manager.notify(message.eventId.toLowerHex(), 0, notification)
+        } catch (_: SecurityException) {
+            // Notification permission can be revoked after the runtime check.
         }
     }
 
@@ -674,7 +820,6 @@ class MainActivity : ComponentActivity() {
             } finally {
                 credentialVector.fill(0)
                 contentBytes.fill(0)
-                if (!isFinishing && !isDestroyed) loadLocalMessageHistory(spaceKey)
             }
         }
     }
@@ -1412,10 +1557,23 @@ class MainActivity : ComponentActivity() {
         is MobileException.MessageQueueFailed -> "The local message could not be durably queued."
         is MobileException.MessageHistoryUnavailable -> "The locally retained message history is unavailable or failed authentication."
         is MobileException.InvalidMessageSearch -> "Enter a non-empty search phrase of at most 256 UTF-8 bytes."
+        is MobileException.InvalidOutboxCursor -> "The durable outbox cursor is invalid."
+        is MobileException.InvalidOutboxPage -> "The durable outbox page limit is invalid."
+        is MobileException.OutboxUnavailable -> "The durable outbox could not be read."
+        is MobileException.InvalidOutboxEventId -> "The durable outbox event identifier is invalid."
+        is MobileException.InvalidOutboxSchedule -> "The outbox retry time must be a nonnegative Unix timestamp."
+        is MobileException.OutboxTransitionRejected -> "The durable outbox rejected the forwarding or receipt transition."
+        is MobileException.SyncIngestFailed -> "Rust Core rejected or could not store the received event."
         is MobileException.SpaceRecoveryFailed -> "The prior local generation could not be restored or authorized for recovery."
         is MobileException.InvalidSpaceBootstrap -> "The Welcome bootstrap package is invalid or exceeds its size bound."
         is MobileException.UntrustedSpaceInviter -> "The inviter identity is not pinned to the exact expected bundle."
         is MobileException.SpaceJoinFailed -> "The signed Welcome or policy checkpoint could not be imported."
+        is MobileException.InvalidBleDiscoveryToken -> "The BLE discovery token is invalid; no session was started."
+        is MobileException.BleSessionFailed -> "BLE authentication or transport failed; delivery is not confirmed."
+        is MobileException.BleRecordRejected -> "The BLE peer sent an unexpected or malformed record."
+        is MobileException.BlePeerNotPinned -> "Verify the BLE safety number and pin the full peer fingerprint first."
+        is MobileException.BlePeerIdentityMismatch -> "The BLE peer differs from the saved identity pin; the pin was not replaced."
+        is MobileException.BlePeerNotAuthenticated -> "BLE application data is blocked until identity confirmation completes."
     }
 
     private fun pinPeerIdentity() {
@@ -1647,6 +1805,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        activityStarted = true
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(bluetoothReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -1667,6 +1826,7 @@ class MainActivity : ComponentActivity() {
         refreshWifiCapabilities()
         startWifiCapabilityMonitoring()
         restorePersistentNearbyMode()
+        attachCoreProjectionSubscription()
     }
 
     override fun onResume() {
@@ -1682,6 +1842,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        activityStarted = false
+        projectionSubscription?.close()
+        projectionSubscription = null
         stopScanning("BLE discovery stopped because the app left the foreground. No sightings are retained.")
         if (receiverRegistered) {
             unregisterReceiver(bluetoothReceiver)
@@ -1696,8 +1859,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (::nearbyScanner.isInitialized) nearbyScanner.stop()
-        if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
+        stopScanning("BLE session closed with the activity.")
+        projectionSubscription?.close()
+        projectionSubscription = null
         mobileProfile?.close()
         mobileProfile = null
         super.onDestroy()
@@ -1742,6 +1906,150 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun onNearbyCandidatesChanged(candidates: List<BleExp0PeerCandidate>) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) {
+                candidates.forEach { it.responderToken.fill(0) }
+                return@runOnUiThread
+            }
+            screenState.nearbyCandidates.forEach { it.responderToken.fill(0) }
+            screenState = screenState.copy(nearbyCandidates = candidates)
+        }
+    }
+
+    private fun connectNearbyCandidate(selectionId: Int) {
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(bleConnectionStatus = "The protected identity profile is not ready.")
+            return
+        }
+        val candidate = screenState.nearbyCandidates.firstOrNull { it.selectionId == selectionId } ?: run {
+            screenState = screenState.copy(bleConnectionStatus = "This token sighting expired. Scan again before connecting.")
+            return
+        }
+        centralSession?.close()
+        pendingBleRouteDecision?.invoke(false)
+        pendingBleRouteDecision = null
+        val connection = BleExp0CentralSession(
+            context = applicationContext,
+            profile = profile,
+            device = candidate.device,
+            observedResponderToken = candidate.responderToken,
+            isRoutedToPeer = { true },
+            retryAt = ::bleRetryAt,
+            onPeerVerificationRequired = ::requestBlePeerApproval,
+            onAuthenticated = ::onBleAuthenticated,
+            onFailure = { failure ->
+                runOnUiThread {
+                    screenState = screenState.copy(
+                        bleConnectionStatus = failure,
+                        pendingRouteConsent = false,
+                    )
+                }
+            },
+        )
+        candidate.responderToken.fill(0)
+        centralSession = connection
+        screenState.nearbyCandidates.forEach { it.responderToken.fill(0) }
+        screenState = screenState.copy(
+            nearbyCandidates = emptyList(),
+            bleConnectionStatus = "Connecting to the selected exp0 peer; identity is not yet authenticated.",
+        )
+        connection.connect()
+    }
+
+    private fun startPeripheralGattSession() {
+        if (peripheralSession != null) return
+        val profile = mobileProfile ?: run {
+            screenState = screenState.copy(
+                bleConnectionStatus = "GATT server unavailable until the protected identity profile is ready.",
+            )
+            return
+        }
+        val server = BleExp0PeripheralSession(
+            context = applicationContext,
+            profile = profile,
+            activeResponderToken = nearbyAdvertiser::activeTokenSnapshot,
+            isRoutedToPeer = { true },
+            retryAt = ::bleRetryAt,
+            onPeerVerificationRequired = ::requestBlePeerApproval,
+            onAuthenticated = ::onBleAuthenticated,
+            onFailure = { failure ->
+                runOnUiThread {
+                    screenState = screenState.copy(
+                        bleConnectionStatus = failure,
+                        pendingRouteConsent = false,
+                    )
+                }
+            },
+        )
+        peripheralSession = server
+        when (server.start()) {
+            BleGattStatus.STARTED -> screenState = screenState.copy(
+                bleConnectionStatus = "Experimental GATT service is listening; peers remain unauthenticated until verified.",
+            )
+            else -> {
+                peripheralSession = null
+                server.close()
+            }
+        }
+    }
+
+    private fun requestBlePeerApproval(
+        peer: uniffi.lattice_uniffi.MobileBlePeerInfo,
+        respond: (Boolean) -> Unit,
+    ) {
+        runOnUiThread {
+            pendingBleIdentityDecision?.invoke(false)
+            pendingBleIdentityDecision = respond
+            screenState = screenState.copy(
+                pendingIdentitySafetyNumber = peer.safetyNumber,
+                pendingIdentityFingerprint = peer.fingerprint.toLowerHex(),
+                bleConnectionStatus = "Compare the safety number before trusting this first-contact peer.",
+            )
+        }
+    }
+
+    private fun onBleAuthenticated(pump: BleExp0OutboxPump, decideRoute: (Boolean) -> Unit) {
+        runOnUiThread {
+            pendingBleRouteDecision?.invoke(false)
+            pendingBleRouteDecision = decideRoute
+            screenState = screenState.copy(
+                pendingRouteConsent = true,
+                bleConnectionStatus = "Peer identity authenticated. Encrypted outbox forwarding is disabled pending consent.",
+            )
+        }
+    }
+
+    private fun resolveBleIdentity(approved: Boolean) {
+        val decision = pendingBleIdentityDecision
+        pendingBleIdentityDecision = null
+        screenState = screenState.copy(
+            pendingIdentitySafetyNumber = null,
+            pendingIdentityFingerprint = null,
+        )
+        decision?.invoke(approved)
+    }
+
+    private fun resolveBleRoute(allowed: Boolean) {
+        val decision = pendingBleRouteDecision
+        pendingBleRouteDecision = null
+        screenState = screenState.copy(
+            pendingRouteConsent = false,
+            bleConnectionStatus = if (allowed) {
+                "Authenticated BLE peer approved to carry opaque encrypted envelopes; destination receipts remain separate."
+            } else {
+                "Peer remains authenticated; encrypted outbox forwarding was not approved."
+            },
+        )
+        decision?.invoke(allowed)
+    }
+
+    private fun bleRetryAt(attemptCount: UInt, nowUnixMillis: Long): Long {
+        val exponent = attemptCount.coerceAtMost(10u).toInt()
+        val delayMillis = (BASE_BLE_RETRY_MS shl exponent).coerceAtMost(MAX_BLE_RETRY_MS)
+        return nowUnixMillis + delayMillis
+    }
+
     private fun startScanning() {
         when (nearbyScanner.start()) {
             NearbyServiceScanner.StartResult.STARTED -> {
@@ -1752,8 +2060,9 @@ class MainActivity : ComponentActivity() {
                 screenState = screenState.copy(
                     scanning = true,
                     sightings = 0,
-                    message = "Scanning for and advertising exp0 discovery tokens. Sightings are unauthenticated; no GATT connection or message exchange is available.",
+                    message = "Scanning and advertising exp0 discovery tokens. Token matches are unverified until a GATT handshake completes.",
                 )
+                startPeripheralGattSession()
             }
             NearbyServiceScanner.StartResult.PERMISSION_MISSING -> {
                 if (refreshReadiness() == DiscoveryPermissionState.GRANTED) {
@@ -1822,8 +2131,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setBluetoothFailure(readiness: BluetoothReadiness, message: String) {
-        nearbyScanner.stop()
-        nearbyAdvertiser.stop()
+        stopScanning(message)
         screenState = screenState.copy(
             bluetooth = readiness,
             scanning = false,
@@ -1835,7 +2143,24 @@ class MainActivity : ComponentActivity() {
     private fun stopScanning(message: String) {
         if (::nearbyScanner.isInitialized) nearbyScanner.stop()
         if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
-        screenState = screenState.copy(scanning = false, sightings = 0, message = message)
+        centralSession?.close()
+        centralSession = null
+        peripheralSession?.close()
+        peripheralSession = null
+        pendingBleIdentityDecision?.invoke(false)
+        pendingBleIdentityDecision = null
+        pendingBleRouteDecision?.invoke(false)
+        pendingBleRouteDecision = null
+        screenState.nearbyCandidates.forEach { it.responderToken.fill(0) }
+        screenState = screenState.copy(
+            scanning = false,
+            sightings = 0,
+            nearbyCandidates = emptyList(),
+            pendingIdentitySafetyNumber = null,
+            pendingIdentityFingerprint = null,
+            pendingRouteConsent = false,
+            message = message,
+        )
     }
 
     /** Updates permission and radio state without starting or resuming a scan. */
@@ -1847,9 +2172,8 @@ class MainActivity : ComponentActivity() {
         }
 
         if (permission != DiscoveryPermissionState.GRANTED) {
-            if (screenState.scanning) {
-                nearbyScanner.stop()
-                nearbyAdvertiser.stop()
+            if (screenState.scanning || centralSession != null || peripheralSession != null) {
+                stopScanning("Nearby BLE stopped because a required permission is unavailable.")
             }
             screenState = screenState.copy(
                 permission = permission,
@@ -1874,8 +2198,7 @@ class MainActivity : ComponentActivity() {
             BluetoothReadiness.ACCESS_UNAVAILABLE
         }
         if (screenState.scanning && bluetooth != BluetoothReadiness.READY) {
-            nearbyScanner.stop()
-            nearbyAdvertiser.stop()
+            stopScanning("Nearby BLE stopped because Bluetooth is unavailable.")
         }
         val stillScanning = screenState.scanning && bluetooth == BluetoothReadiness.READY
         screenState = screenState.copy(
@@ -1945,6 +2268,10 @@ class MainActivity : ComponentActivity() {
         const val PREFERENCES_NAME = "nearby_discovery_permissions"
         const val KEY_REQUESTED_BEFORE = "permission_requested_before"
         const val KEY_PREVIOUSLY_GRANTED = "permission_previously_granted"
+        const val BASE_BLE_RETRY_MS = 5_000L
+        const val MAX_BLE_RETRY_MS = 60 * 60 * 1_000L
+        const val MESSAGE_NOTIFICATION_CHANNEL_ID = "authorized_messages"
+        const val MESSAGE_NOTIFICATION_CHANNEL_NAME = "Authorized messages"
     }
 }
 internal fun ByteArray.toLowerHex(): String {
@@ -1968,6 +2295,11 @@ private fun NearbyReadinessScreen(
     onDestinationSelected: (NearbyDestination) -> Unit,
     onOpenLocalSpace: (String?) -> Unit,
     onPrimaryAction: () -> Unit,
+    onConnectCandidate: (Int) -> Unit,
+    onApproveBleIdentity: () -> Unit,
+    onRejectBleIdentity: () -> Unit,
+    onApproveRoute: () -> Unit,
+    onRejectRoute: () -> Unit,
     onPersistentNearbyAction: () -> Unit,
     onDismissRationale: () -> Unit,
     onContinuePermission: () -> Unit,
@@ -2300,6 +2632,23 @@ private fun NearbyReadinessScreen(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
+                    Text(
+                        state.bleConnectionStatus,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    state.nearbyCandidates.forEach { candidate ->
+                        Text(
+                            "Nearby peer ${candidate.selectionId}: rotating token match only; identity remains unverified.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Button(
+                            onClick = { onConnectCandidate(candidate.selectionId) },
+                            enabled = state.profileStatus == "Protected local identity is available on this device.",
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Connect and verify peer ${candidate.selectionId}")
+                        }
+                    }
                     Spacer(Modifier.height(4.dp))
                     Button(onClick = onPrimaryAction, modifier = Modifier.fillMaxWidth()) {
                         Text(if (state.scanning) "Stop nearby scan" else primaryLabel(state))
@@ -2334,7 +2683,7 @@ private fun NearbyReadinessScreen(
             }
             Spacer(Modifier.height(20.dp))
             Text(
-                "Nearby sightings remain unverified and no peer connection or transport is available. Space messages can be queued locally only; forwarding and recipient delivery are unknown.",
+                "A selected peer is not trusted until its Noise identity proof is verified and pinned. Encrypted outbox forwarding requires separate consent; a destination receipt is recorded only after Core accepts the event.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -2355,6 +2704,47 @@ private fun NearbyReadinessScreen(
                 }
             },
             dismissButton = { TextButton(onClick = onDismissRationale) { Text("Not now") } },
+        )
+    }
+    state.pendingIdentitySafetyNumber?.let { safetyNumber ->
+        AlertDialog(
+            onDismissRequest = onRejectBleIdentity,
+            title = { Text("Verify first-contact BLE peer") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Compare this safety number with the peer through a separate trusted channel before approving the identity.")
+                    SelectionContainer {
+                        Column {
+                            Text("Safety number: $safetyNumber")
+                            Text("Fingerprint: ${state.pendingIdentityFingerprint.orEmpty()}")
+                        }
+                    }
+                    Text("Approval pins this exact Lattice identity. It does not authorize forwarding messages.")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onApproveBleIdentity) { Text("I verified this identity") }
+            },
+            dismissButton = {
+                TextButton(onClick = onRejectBleIdentity) { Text("Reject") }
+            },
+        )
+    }
+    if (state.pendingRouteConsent) {
+        AlertDialog(
+            onDismissRequest = onRejectRoute,
+            title = { Text("Allow encrypted event forwarding?") },
+            text = {
+                Text(
+                    "This authenticated peer may carry opaque encrypted outbox envelopes over this BLE session. It does not prove shared Space membership or recipient delivery; the receiving Core must still validate each event.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onApproveRoute) { Text("Allow forwarding") }
+            },
+            dismissButton = {
+                TextButton(onClick = onRejectRoute) { Text("Keep forwarding off") }
+            },
         )
     }
 }
