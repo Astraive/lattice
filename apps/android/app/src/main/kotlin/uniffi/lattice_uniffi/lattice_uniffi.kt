@@ -778,26 +778,92 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
-// N.B. the name of the extension is very misleading, since it is
-// rather `InterfaceTooLargeException`, caused by too many methods
+// N.B. the name of the extension is very misleading, since it is 
+// rather `InterfaceTooLargeException`, caused by too many methods 
 // in the interface for large crates.
 //
 // By splitting the otherwise huge interface into two parts
-// * UniffiLib
+// * UniffiLib 
 // * IntegrityCheckingUniffiLib (this)
 // we allow for ~2x as many methods in the UniffiLib interface.
-//
-// The `ffi_uniffi_contract_version` method and all checksum methods are put
+// 
+// The `ffi_uniffi_contract_version` method and all checksum methods are put 
 // into `IntegrityCheckingUniffiLib` and these methods are called only once,
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request(
+    fun uniffi_lattice_uniffi_checksum_method_mobileblesession_confirmation_write_succeeded(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_decrypt_record(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_encrypt_record(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_identity_proof(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_terminate(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_validate_active_responder_token(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_confirmation(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_message(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap(
 ): Short
@@ -805,7 +871,11 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_forwarded(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(
 ): Short
@@ -814,6 +884,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_destination_receipt(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(
 ): Short
@@ -824,6 +896,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_unpin_identity(
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_unwrap(
+): Short
+fun uniffi_lattice_uniffi_checksum_constructor_mobileblesession_new(
 ): Short
 fun uniffi_lattice_uniffi_checksum_constructor_mobileclient_open_or_create(
 ): Short
@@ -839,8 +913,8 @@ internal interface UniffiLib : Library {
         internal val INSTANCE: UniffiLib by lazy {
             val componentName = "lattice_uniffi"
             // For large crates we prevent `MethodTooLargeException` (see #2340)
-            // N.B. the name of the extension is very misleading, since it is
-            // rather `InterfaceTooLargeException`, caused by too many methods
+            // N.B. the name of the extension is very misleading, since it is 
+            // rather `InterfaceTooLargeException`, caused by too many methods 
             // in the interface for large crates.
             //
             // By splitting the otherwise huge interface into two parts
@@ -848,7 +922,7 @@ internal interface UniffiLib : Library {
             // * IntegrityCheckingUniffiLib
             // And all checksum methods are put into `IntegrityCheckingUniffiLib`
             // we allow for ~2x as many methods in the UniffiLib interface.
-            //
+            // 
             // Thus we first load the library with `loadIndirect` as `IntegrityCheckingUniffiLib`
             // so that we can (optionally!) call `uniffiCheckApiChecksums`...
             loadIndirect<IntegrityCheckingUniffiLib>(componentName)
@@ -863,13 +937,13 @@ internal interface UniffiLib : Library {
             // to trigger this issue, the performance impact is negligible, running on
             // a macOS M1 machine the `loadIndirect` call takes ~50ms.
             val lib = loadIndirect<UniffiLib>(componentName)
-            // No need to check the contract version and checksums, since
+            // No need to check the contract version and checksums, since 
             // we already did that with `IntegrityCheckingUniffiLib` above.
             uniffiCallbackInterfacePlatformKeyProtector.register(lib)
             // Loading of library with integrity check done.
             lib
         }
-
+        
         // The Cleaner for the whole library
         internal val CLEANER: UniffiCleaner by lazy {
             UniffiCleaner.create()
@@ -877,57 +951,97 @@ internal interface UniffiLib : Library {
     }
 
     // FFI functions
-    fun uniffi_lattice_uniffi_fn_clone_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+    fun uniffi_lattice_uniffi_fn_clone_mobileblesession(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_lattice_uniffi_fn_free_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_free_mobileblesession(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_constructor_mobileblesession_new(`client`: Pointer,`role`: RustBuffer.ByValue,`responderToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_confirmation_write_succeeded(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_decrypt_record(`ptr`: Pointer,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`channels`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_encrypt_record(`ptr`: Pointer,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(`ptr`: Pointer,`bootstrapPackage`: RustBuffer.ByValue,`expectedInviterFingerprint`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointer,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
-): Long
-fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Pointer,`publicBundle`: RustBuffer.ByValue,`expectedFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
-): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_handshake_complete(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
-fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_confirmation(`ptr`: Pointer,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_handshake_message(`ptr`: Pointer,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_identity_proof(`ptr`: Pointer,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_terminate(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_validate_active_responder_token(`ptr`: Pointer,`activeToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_confirmation(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_handshake_message(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_identity_proof(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_clone_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_free_mobileclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`channels`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(`ptr`: Pointer,`canonicalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(`ptr`: Pointer,`bootstrapPackage`: RustBuffer.ByValue,`expectedInviterFingerprint`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointer,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_forwarded(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+fun uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(`ptr`: Pointer,`afterEventId`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Pointer,`publicBundle`: RustBuffer.ByValue,`expectedFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_record_destination_receipt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_init_callback_vtable_platformkeyprotector(`vtable`: UniffiVTableCallbackInterfacePlatformKeyProtector,
 ): Unit
-fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(`ptr`: Pointer,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_lattice_uniffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_lattice_uniffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_lattice_uniffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun ffi_lattice_uniffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_lattice_uniffi_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -935,7 +1049,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u8(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u8(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun ffi_lattice_uniffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -943,7 +1057,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i8(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i8(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun ffi_lattice_uniffi_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -951,7 +1065,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u16(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u16(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Short
 fun ffi_lattice_uniffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -959,7 +1073,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i16(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i16(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Short
 fun ffi_lattice_uniffi_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -967,7 +1081,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u32(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u32(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
 fun ffi_lattice_uniffi_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -975,7 +1089,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i32(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i32(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
 fun ffi_lattice_uniffi_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -983,7 +1097,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_u64(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_u64(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun ffi_lattice_uniffi_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -991,7 +1105,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_i64(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_i64(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun ffi_lattice_uniffi_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -999,7 +1113,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_f32(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_f32(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Float
 fun ffi_lattice_uniffi_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1007,7 +1121,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_f64(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_f64(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Double
 fun ffi_lattice_uniffi_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1015,7 +1129,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_pointer(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_pointer(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun ffi_lattice_uniffi_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1023,7 +1137,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_rust_buffer(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_rust_buffer(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_lattice_uniffi_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1031,7 +1145,7 @@ fun ffi_lattice_uniffi_rust_future_cancel_void(`handle`: Long,
 ): Unit
 fun ffi_lattice_uniffi_rust_future_free_void(`handle`: Long,
 ): Unit
-fun ffi_lattice_uniffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_lattice_uniffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 
 }
@@ -1047,6 +1161,45 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_confirmation_write_succeeded() != 57107.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_decrypt_record() != 43481.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_encrypt_record() != 26020.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete() != 16809.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated() != 2483.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation() != 64748.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message() != 3458.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_identity_proof() != 45392.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_terminate() != 57755.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_validate_active_responder_token() != 41552.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_confirmation() != 43769.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_message() != 15290.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof() != 35450.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request() != 35576.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1054,6 +1207,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event() != 7136.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap() != 17509.toShort()) {
@@ -1065,7 +1221,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages() != 10804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_forwarded() != 60134.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence() != 50784.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page() != 15966.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity() != 30926.toShort()) {
@@ -1078,6 +1240,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit() != 5149.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_destination_receipt() != 41558.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation() != 15281.toShort()) {
@@ -1093,6 +1258,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_unwrap() != 24564.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_constructor_mobileblesession_new() != 15307.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_constructor_mobileclient_open_or_create() != 13017.toShort()) {
@@ -1170,7 +1338,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/**
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
@@ -1275,6 +1443,52 @@ private class AndroidSystemCleanable(
 /**
  * @suppress
  */
+public object FfiConverterUInt: FfiConverter<UInt, Int> {
+    override fun lift(value: Int): UInt {
+        return value.toUInt()
+    }
+
+    override fun read(buf: ByteBuffer): UInt {
+        return lift(buf.getInt())
+    }
+
+    override fun lower(value: UInt): Int {
+        return value.toInt()
+    }
+
+    override fun allocationSize(value: UInt) = 4UL
+
+    override fun write(value: UInt, buf: ByteBuffer) {
+        buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterInt: FfiConverter<Int, Int> {
+    override fun lift(value: Int): Int {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Int {
+        return buf.getInt()
+    }
+
+    override fun lower(value: Int): Int {
+        return value
+    }
+
+    override fun allocationSize(value: Int) = 4UL
+
+    override fun write(value: Int, buf: ByteBuffer) {
+        buf.putInt(value)
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterULong: FfiConverter<ULong, Long> {
     override fun lift(value: Long): ULong {
         return value.toULong()
@@ -1292,6 +1506,29 @@ public object FfiConverterULong: FfiConverter<ULong, Long> {
 
     override fun write(value: ULong, buf: ByteBuffer) {
         buf.putLong(value.toLong())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterLong: FfiConverter<Long, Long> {
+    override fun lift(value: Long): Long {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Long {
+        return buf.getLong()
+    }
+
+    override fun lower(value: Long): Long {
+        return value
+    }
+
+    override fun allocationSize(value: Long) = 8UL
+
+    override fun write(value: Long, buf: ByteBuffer) {
+        buf.putLong(value)
     }
 }
 
