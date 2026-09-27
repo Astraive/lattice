@@ -8,5 +8,8 @@ version.workspace = true
 [dependencies]
 sha2 = "=0.10.9"
 
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+fs4 = "=0.13.1"
+
 [lints]
 workspace = true

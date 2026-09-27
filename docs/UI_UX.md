@@ -1,6 +1,6 @@
 # Lattice interaction and interface architecture
 
-**Status:** proposed product behavior. Native clients share semantic states and design tokens, while respecting each platform’s controls and accessibility APIs. This is not a fixed visual theme or pixel spec.
+**Status:** proposed product behavior. Android and desktop clients share semantic states and design tokens, while respecting each shipped surface’s controls and accessibility APIs. iOS is out of current delivery scope and is not a design or acceptance target. This is not a fixed visual theme or pixel spec.
 
 ## Navigation and screens
 
@@ -29,7 +29,7 @@ Message history may be partial; use an explicit gap indicator. Presence is a rec
 
 ## Accessibility and design tokens
 
-Source design tokens for color, type scale, spacing, radius, elevation and motion live in `design/tokens/` and can generate mobile/desktop representations. Respect system dark/light mode and text scaling; no color-only delivery or mute state. VoiceOver/TalkBack, keyboard focus, reduced motion, semantic labels and announcement of call state are release gates. Changes in theme cannot bypass security/protocol states.
+Source design tokens for color, type scale, spacing, radius, elevation and motion live in `design/tokens/` and can generate mobile/desktop representations. Respect system dark/light mode and text scaling; no color-only delivery or mute state. TalkBack and desktop screen-reader/keyboard behavior, reduced motion, semantic labels and announcement of call state are release gates. Changes in theme cannot bypass security/protocol states.
 
 ## Edge-case interactions
 

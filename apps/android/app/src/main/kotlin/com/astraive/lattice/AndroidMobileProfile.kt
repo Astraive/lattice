@@ -2,17 +2,85 @@ package com.astraive.lattice
 
 import android.content.Context
 import java.io.File
+import uniffi.lattice_uniffi.MobileQueuedMessage
 import uniffi.lattice_uniffi.MobileClient
 import uniffi.lattice_uniffi.MobileIdentityInfo
+import uniffi.lattice_uniffi.MobileCreatedSpace
+import uniffi.lattice_uniffi.MobileInitialChannel
 import uniffi.lattice_uniffi.MobilePinnedIdentity
 import uniffi.lattice_uniffi.MobileSpaceCursor
 import uniffi.lattice_uniffi.MobileSpacePage
 import uniffi.lattice_uniffi.PlatformKeyProtector
 import uniffi.lattice_uniffi.ProtectorException
+import uniffi.lattice_uniffi.MobileLocalTextMessage
+import uniffi.lattice_uniffi.MobileBleRole
+import uniffi.lattice_uniffi.MobileBleSession
+import uniffi.lattice_uniffi.MobileOutboxEntry
+import uniffi.lattice_uniffi.MobileSyncEventResult
 
+
+import java.util.concurrent.atomic.AtomicBoolean
+import uniffi.lattice_uniffi.MobileSyncEventState
+
+internal enum class CoreProjectionChange { SPACES, MESSAGES, ALL, SYNCED_EVENTS }
+
+internal class CoreProjectionSubscriptionHub : AutoCloseable {
+    private class Subscription(private val observer: (CoreProjectionChange) -> Unit) : AutoCloseable {
+        private val active = AtomicBoolean(true)
+
+        fun notifyChanged(change: CoreProjectionChange) {
+            if (active.get()) {
+                try {
+                    observer(change)
+                } catch (_: RuntimeException) {
+                    // A projection observer cannot fail the Core mutation that published it.
+                }
+            }
+        }
+
+        override fun close() {
+            active.set(false)
+        }
+    }
+
+    private val lock = Any()
+    private val subscriptions = LinkedHashSet<Subscription>()
+    private var closed = false
+
+    fun subscribe(observer: (CoreProjectionChange) -> Unit): AutoCloseable {
+        val subscription = Subscription(observer)
+        synchronized(lock) {
+            check(!closed) { "Core projection subscriptions are closed" }
+            subscriptions.add(subscription)
+        }
+        return AutoCloseable {
+            synchronized(lock) { subscriptions.remove(subscription) }
+            subscription.close()
+        }
+    }
+
+    fun publishChanged(change: CoreProjectionChange) {
+        val current = synchronized(lock) {
+            if (closed) return
+            subscriptions.toList()
+        }
+        current.forEach { it.notifyChanged(change) }
+    }
+
+    override fun close() {
+        val current = synchronized(lock) {
+            if (closed) return
+            closed = true
+            subscriptions.toList().also { subscriptions.clear() }
+        }
+        current.forEach(Subscription::close)
+    }
+}
 /** AndroidKeyStore-backed callback required by the shared Rust profile. */
 internal class AndroidPlatformKeyProtector : PlatformKeyProtector {
     private val delegate = AndroidPrivateKeyProtector()
+
+    fun protectionLevel(profileId: String): AndroidKeyProtectionLevel = delegate.protectionLevel(profileId)
 
     override fun wrap(profileId: String, clearMaterial: ByteArray): ByteArray = try {
         delegate.wrap(profileId, clearMaterial)
@@ -32,9 +100,49 @@ internal class AndroidPlatformKeyProtector : PlatformKeyProtector {
 /** Owns a Rust profile and the callback that bridges to AndroidKeyStore. */
 internal class AndroidMobileProfile private constructor(
     private val client: MobileClient,
-    @Suppress("unused") private val keyProtector: AndroidPlatformKeyProtector,
+    private val keyProtector: AndroidPlatformKeyProtector,
+    private val profileId: String,
 ) : AutoCloseable {
+    private val projectionSubscriptions = CoreProjectionSubscriptionHub()
+    private val closed = AtomicBoolean(false)
+
+    fun subscribeProjectionChanges(observer: (CoreProjectionChange) -> Unit): AutoCloseable =
+        projectionSubscriptions.subscribe(observer)
+    fun keyProtectionLevel(): AndroidKeyProtectionLevel = keyProtector.protectionLevel(profileId)
     fun identityInfo(): MobileIdentityInfo = client.identityInfo()
+
+    fun certificateSigningRequest(): ByteArray = client.certificateSigningRequest()
+
+    fun createLocalSpace(
+        credentialVector: ByteArray,
+        channels: List<MobileInitialChannel>,
+    ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels).also {
+        projectionSubscriptions.publishChanged(CoreProjectionChange.SPACES)
+    }
+
+    fun joinSpaceFromWelcomeBootstrap(
+        bootstrapPackage: ByteArray,
+        expectedInviterFingerprint: ByteArray,
+        credentialVector: ByteArray,
+    ): MobileCreatedSpace = client.joinSpaceFromWelcomeBootstrap(
+        bootstrapPackage,
+        expectedInviterFingerprint,
+        credentialVector,
+    ).also {
+        projectionSubscriptions.publishChanged(CoreProjectionChange.ALL)
+    }
+
+    fun recoverLocalSpaceGeneration(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+    ): MobileCreatedSpace = client.recoverLocalSpaceGeneration(
+        spaceId,
+        groupReference,
+        credentialVector,
+    ).also {
+        projectionSubscriptions.publishChanged(CoreProjectionChange.ALL)
+    }
 
     fun pinIdentity(publicBundle: ByteArray, expectedFingerprint: ByteArray): MobilePinnedIdentity =
         client.pinIdentity(publicBundle, expectedFingerprint)
@@ -42,10 +150,71 @@ internal class AndroidMobileProfile private constructor(
     fun pinnedIdentity(fingerprint: ByteArray): MobilePinnedIdentity? =
         client.pinnedIdentity(fingerprint)
 
+    fun unpinIdentity(fingerprint: ByteArray): Boolean = client.unpinIdentity(fingerprint)
+    fun newBleSession(role: MobileBleRole, responderToken: ByteArray): MobileBleSession =
+        MobileBleSession(client, role, responderToken)
+
     fun localSpaces(after: MobileSpaceCursor? = null): MobileSpacePage =
         client.listLocalSpaces(after)
 
+    fun outboxPage(afterEventId: ByteArray? = null, limit: Int = 64): List<MobileOutboxEntry> =
+        client.outboxPage(afterEventId, limit)
+
+    fun markOutboxForwarded(eventId: ByteArray, nextAttemptMs: Long) =
+        client.markOutboxForwarded(eventId, nextAttemptMs)
+
+    fun recordDestinationReceipt(eventId: ByteArray) =
+        client.recordDestinationReceipt(eventId)
+
+    fun localTextMessages(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        channelId: ByteArray,
+    ): List<MobileLocalTextMessage> = client.listLocalTextMessages(spaceId, groupReference, channelId)
+
+    fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult =
+        client.ingestSyncedApplicationEvent(canonicalBytes).also { result ->
+            if (result.state == MobileSyncEventState.ACCEPTED) {
+                projectionSubscriptions.publishChanged(CoreProjectionChange.SYNCED_EVENTS)
+            }
+        }
+    fun queueLocalTextMessage(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        content: String,
+    ): MobileQueuedMessage = client.queueLocalTextMessage(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        content,
+    ).also {
+        projectionSubscriptions.publishChanged(CoreProjectionChange.MESSAGES)
+    }
+
+
+    fun queueLocalTextMessageEdit(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        targetMessageId: ByteArray,
+        content: String,
+    ): MobileQueuedMessage = client.queueLocalTextMessageEdit(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        targetMessageId,
+        content,
+    ).also {
+        projectionSubscriptions.publishChanged(CoreProjectionChange.MESSAGES)
+    }
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        projectionSubscriptions.close()
         client.close()
     }
 
@@ -66,7 +235,7 @@ internal class AndroidMobileProfile private constructor(
                 context.packageName,
                 keyProtector,
             )
-            return AndroidMobileProfile(client, keyProtector)
+            return AndroidMobileProfile(client, keyProtector, context.packageName)
         }
     }
 }

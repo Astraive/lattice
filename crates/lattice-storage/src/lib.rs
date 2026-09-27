@@ -6,8 +6,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+mod courier_queue;
 mod trusted_identities;
+pub use courier_queue::{
+    CourierQueueEntry, CourierQueueError, CourierQueueReceipt, CourierQueueStatus,
+    DEFAULT_COURIER_LIMITS, MAX_COURIER_QUEUE_PAGE_SIZE,
+};
+
 pub use trusted_identities::TrustedIdentityRecord;
 
 /// Largest canonical event byte string accepted by the local store.
@@ -26,15 +32,45 @@ pub const MAX_OUTBOX_EVENTS: usize = 1024;
 pub const MAX_OUTBOX_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum entries returned by one outbox page.
 pub const MAX_OUTBOX_PAGE_SIZE: usize = 256;
+/// Maximum committed events returned by one sync-source page.
+pub const MAX_EVENT_PAGE_SIZE: usize = 16;
 /// Maximum locally created Space Genesis records returned by one page.
 pub const MAX_SPACE_GENESIS_PAGE_SIZE: usize = 32;
+/// Maximum locally retained text-message rows.
+pub const MAX_LOCAL_SPACE_MESSAGES: usize = 4096;
+/// Maximum locally retained encrypted text-message bytes.
+pub const MAX_LOCAL_SPACE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum locally retained messages returned by one query.
+pub const MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE: usize = 100;
 
+/// Maximum locally accepted membership transitions per generation.
+pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
+/// Maximum locally recorded generation conflict rows.
+pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
-const SCHEMA_VERSION: i64 = 6;
+/// Latest `SQLite` schema version understood by this crate.
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
 const MAX_SPACE_GENESIS_GROUP_ID_BYTES: usize = 256;
 const MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
+const MAX_CACHED_SPACE_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
+const MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES: usize = 1024 * 1024;
+/// Encrypted local message content and signed-event routing metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CachedSpaceMessage {
+    pub event_id: [u8; ID_BYTES],
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub channel_id: [u8; 16],
+    pub author_id: [u8; ID_BYTES],
+    pub author_seq: u64,
+    pub lamport: u64,
+    pub encrypted_content: Vec<u8>,
+    pub outbox_state: Option<OutboxState>,
+}
 
 /// A committed event and its parent references.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,6 +118,38 @@ pub struct SpaceGenesisSnapshot {
     pub event_id: [u8; 32],
     pub encrypted_state: Vec<u8>,
 }
+
+/// AEAD-protected evidence needed to replay one accepted local MLS membership transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceMembershipTransitionSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub parent_epoch: u64,
+    pub policy_revision: u64,
+    pub control_event_id: [u8; ID_BYTES],
+    pub transition_event_id: [u8; ID_BYTES],
+    pub encrypted_state: Vec<u8>,
+}
+
+/// Encrypted package retained from an accepted Welcome for durable Space bootstrap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceWelcomeBootstrapSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub root_event_id: [u8; ID_BYTES],
+    pub encrypted_package: Vec<u8>,
+}
+
+/// Exact signed control events that established two valid sibling MLS commits.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceMembershipConflictSnapshot {
+    pub space_id: [u8; 16],
+    pub group_reference: [u8; 32],
+    pub parent_epoch: u64,
+    pub first_control_event_id: [u8; ID_BYTES],
+    pub second_control_event_id: [u8; ID_BYTES],
+}
+
 /// Exclusive keyset cursor for bounded local Space Genesis enumeration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SpaceGenesisCursor {
@@ -120,6 +188,7 @@ pub enum StoreError {
     OutboxEventLimit,
     OutboxByteLimit,
     OutboxPageLimit,
+    EventPageLimit,
     OutboxConflict,
     OutboxMissing,
     InvalidOutboxSchedule,
@@ -127,6 +196,16 @@ pub enum StoreError {
     InvalidProtectedIdentity,
     InvalidProtectedMlsKey,
     InvalidSpaceGenesisSnapshot,
+    InvalidSpaceWelcomeBootstrapSnapshot,
+    InvalidSpaceMembershipTransitionSnapshot,
+    SpaceMembershipTransitionLimit,
+    InvalidSpaceMembershipConflictSnapshot,
+    SpaceMembershipConflictLimit,
+    CachedSpaceMessageLimit,
+    CachedSpaceMessageByteLimit,
+    CachedSpaceMessagePageLimit,
+    CachedSpaceMessageMissing,
+    InvalidCachedSpaceMessage,
     TrustedIdentityConflict,
     CorruptData(&'static str),
 }
@@ -170,6 +249,7 @@ impl std::fmt::Display for StoreError {
             }
             Self::OutboxMissing => formatter.write_str("existing event has no outbox envelope"),
             Self::OutboxPageLimit => formatter.write_str("outbox page limit exceeded"),
+            Self::EventPageLimit => formatter.write_str("event page limit exceeded"),
             Self::InvalidOutboxSchedule => formatter.write_str("outbox schedule time is invalid"),
             Self::InvalidOutboxTransition => formatter.write_str("invalid outbox state transition"),
             Self::InvalidProtectedIdentity => {
@@ -180,6 +260,36 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidSpaceGenesisSnapshot => {
                 formatter.write_str("space Genesis snapshot has an invalid length")
+            }
+            Self::InvalidSpaceMembershipTransitionSnapshot => {
+                formatter.write_str("space membership transition snapshot is invalid")
+            }
+            Self::SpaceMembershipTransitionLimit => {
+                formatter.write_str("space membership transition limit exceeded")
+            }
+            Self::InvalidSpaceMembershipConflictSnapshot => {
+                formatter.write_str("space membership conflict snapshot is invalid")
+            }
+            Self::InvalidSpaceWelcomeBootstrapSnapshot => {
+                formatter.write_str("space Welcome bootstrap snapshot is invalid")
+            }
+            Self::SpaceMembershipConflictLimit => {
+                formatter.write_str("space membership conflict limit exceeded")
+            }
+            Self::CachedSpaceMessageLimit => {
+                formatter.write_str("cached Space message count limit exceeded")
+            }
+            Self::CachedSpaceMessageByteLimit => {
+                formatter.write_str("cached Space message byte limit exceeded")
+            }
+            Self::CachedSpaceMessagePageLimit => {
+                formatter.write_str("cached Space message page limit exceeded")
+            }
+            Self::InvalidCachedSpaceMessage => {
+                formatter.write_str("cached Space message is invalid")
+            }
+            Self::CachedSpaceMessageMissing => {
+                formatter.write_str("cached Space message to update was not found")
             }
             Self::TrustedIdentityConflict => formatter.write_str(
                 "trusted identity fingerprint is already associated with different bundle bytes",
@@ -201,6 +311,20 @@ impl std::error::Error for StoreError {
 impl From<rusqlite::Error> for StoreError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+fn classify_database_error(error: rusqlite::Error) -> StoreError {
+    match error {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ) =>
+        {
+            StoreError::CorruptData("SQLite database image is malformed or unsupported")
+        }
+        error => StoreError::Sqlite(error),
     }
 }
 
@@ -361,8 +485,281 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 7 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE cached_space_messages (
+                    event_id BLOB PRIMARY KEY NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32),
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    channel_id BLOB NOT NULL
+                        CHECK(typeof(channel_id) = 'blob' AND length(channel_id) = 16),
+                    author_id BLOB NOT NULL
+                        CHECK(typeof(author_id) = 'blob' AND length(author_id) = 32),
+                    author_seq INTEGER NOT NULL CHECK(author_seq > 0),
+                    lamport INTEGER NOT NULL CHECK(lamport >= 0),
+                    encrypted_content BLOB NOT NULL
+                        CHECK(typeof(encrypted_content) = 'blob'
+                            AND length(encrypted_content) BETWEEN 1 AND 1048576)
+                );
+                CREATE INDEX cached_space_messages_by_channel
+                    ON cached_space_messages(
+                        space_id, group_reference, channel_id, lamport,
+                        author_id, author_seq, event_id
+                    );
+                PRAGMA user_version = 7;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 8 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_membership_transition_snapshots (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    parent_epoch INTEGER NOT NULL CHECK(parent_epoch >= 0),
+                    control_event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(control_event_id) = 'blob'
+                            AND length(control_event_id) = 32),
+                    transition_event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(transition_event_id) = 'blob'
+                            AND length(transition_event_id) = 32),
+                    policy_revision INTEGER NOT NULL CHECK(policy_revision >= 0),
+                    encrypted_state BLOB NOT NULL
+                        CHECK(typeof(encrypted_state) = 'blob'
+                            AND length(encrypted_state) BETWEEN 1 AND 1048576),
+                    PRIMARY KEY(space_id, group_reference, parent_epoch),
+                    CHECK(control_event_id <> transition_event_id)
+                );
+                PRAGMA user_version = 8;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 9 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_membership_conflicts (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    parent_epoch INTEGER NOT NULL CHECK(parent_epoch >= 0),
+                    first_control_event_id BLOB NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(first_control_event_id) = 'blob'
+                            AND length(first_control_event_id) = 32),
+                    second_control_event_id BLOB NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(second_control_event_id) = 'blob'
+                            AND length(second_control_event_id) = 32),
+                    PRIMARY KEY(space_id, group_reference),
+                    CHECK(first_control_event_id <> second_control_event_id)
+                );
+                PRAGMA user_version = 9;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 10 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_welcome_bootstrap_snapshots (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob'
+                            AND length(group_reference) = 32),
+                    root_event_id BLOB NOT NULL UNIQUE
+                        REFERENCES events(event_id) ON DELETE CASCADE
+                        CHECK(typeof(root_event_id) = 'blob' AND length(root_event_id) = 32),
+                    encrypted_package BLOB NOT NULL
+                        CHECK(typeof(encrypted_package) = 'blob'
+                            AND length(encrypted_package) BETWEEN 1 AND 1048576),
+                    PRIMARY KEY(space_id, group_reference)
+                );
+                PRAGMA user_version = 10;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 11 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE courier_configuration (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                    max_object_bytes INTEGER NOT NULL CHECK(max_object_bytes BETWEEN 0 AND 16777216),
+                    max_peer_bytes INTEGER NOT NULL CHECK(max_peer_bytes BETWEEN 0 AND 16777216),
+                    max_peer_items INTEGER NOT NULL CHECK(max_peer_items BETWEEN 0 AND 4096),
+                    max_total_bytes INTEGER NOT NULL CHECK(max_total_bytes BETWEEN 0 AND 67108864),
+                    max_total_items INTEGER NOT NULL CHECK(max_total_items BETWEEN 0 AND 65536)
+                );
+                INSERT INTO courier_configuration
+                    (singleton, enabled, max_object_bytes, max_peer_bytes,
+                     max_peer_items, max_total_bytes, max_total_items)
+                    VALUES (1, 0, 1048576, 4194304, 256, 16777216, 4096);
+                CREATE TABLE courier_queue (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    peer_id BLOB NOT NULL
+                        CHECK(typeof(peer_id) = 'blob' AND length(peer_id) = 16),
+                    envelope_id BLOB NOT NULL UNIQUE
+                        CHECK(typeof(envelope_id) = 'blob' AND length(envelope_id) = 16),
+                    event_id BLOB NOT NULL UNIQUE
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32),
+                    expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms >= 0),
+                    hop_limit INTEGER NOT NULL CHECK(hop_limit BETWEEN 1 AND 65535),
+                    remaining_copy_budget INTEGER NOT NULL
+                        CHECK(remaining_copy_budget BETWEEN 0 AND hop_limit),
+                    traffic_class INTEGER NOT NULL CHECK(traffic_class BETWEEN 0 AND 2),
+                    encrypted_opaque_bytes BLOB NOT NULL
+                        CHECK(typeof(encrypted_opaque_bytes) = 'blob'
+                            AND length(encrypted_opaque_bytes) BETWEEN 1 AND 16777216)
+                );
+                CREATE INDEX courier_queue_peer_sequence
+                    ON courier_queue(peer_id, sequence);
+                CREATE INDEX courier_queue_expiry
+                    ON courier_queue(expires_at_ms);
+                PRAGMA user_version = 11;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 12 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE key_package_lifecycle (
+                    key_package_ref BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(key_package_ref) = 'blob' AND length(key_package_ref) = 32),
+                    expires_at INTEGER NOT NULL CHECK(expires_at >= 0),
+                    state TEXT NOT NULL CHECK(state IN ('available', 'consumed', 'expired', 'lost'))
+                );
+                CREATE INDEX key_package_lifecycle_available
+                    ON key_package_lifecycle(state, expires_at);
+                PRAGMA user_version = 12;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 13 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS local_mention_preferences (
+                    singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+                    encrypted_targets BLOB NOT NULL
+                        CHECK(typeof(encrypted_targets) = 'blob'
+                            AND length(encrypted_targets) BETWEEN 1 AND 262144)
+                );
+                PRAGMA user_version = 13;",
+            )?;
+            transaction.commit()?;
+        }
 
         Ok(Self { connection })
+    }
+
+    /// Reads the protected opaque local mention-preference record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored blob is oversized, malformed at the
+    /// storage boundary, or `SQLite` cannot read it.
+    pub fn load_local_mention_preferences(&self) -> Result<Option<Vec<u8>>> {
+        let encrypted = self
+            .connection
+            .query_row(
+                "SELECT encrypted_targets FROM local_mention_preferences WHERE singleton = 1",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(classify_database_error)?;
+        if encrypted
+            .as_ref()
+            .is_some_and(|blob| blob.is_empty() || blob.len() > 262_144)
+        {
+            return Err(StoreError::CorruptData(
+                "local mention preferences exceed storage bounds",
+            ));
+        }
+        Ok(encrypted)
+    }
+
+    /// Replaces the encrypted local mention-preference record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or oversized record or a `SQLite` write
+    /// failure.
+    pub fn save_local_mention_preferences(&mut self, encrypted_targets: &[u8]) -> Result<()> {
+        if encrypted_targets.is_empty() || encrypted_targets.len() > 262_144 {
+            return Err(StoreError::CorruptData(
+                "local mention preferences exceed storage bounds",
+            ));
+        }
+        self.connection
+            .execute(
+                "INSERT INTO local_mention_preferences (singleton, encrypted_targets)
+                 VALUES (1, ?1)
+                 ON CONFLICT(singleton) DO UPDATE
+                 SET encrypted_targets = excluded.encrypted_targets",
+                [encrypted_targets],
+            )
+            .map_err(classify_database_error)?;
+        Ok(())
+    }
+
+    /// Opens an existing database without applying migrations or changing
+    /// persistent settings.
+    ///
+    /// Use this for diagnostic or inspection commands that must not upgrade
+    /// user data as a side effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened read-only.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(Self { connection })
+    }
+
+    /// Reports the `SQLite` application schema version without changing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `PRAGMA user_version` cannot be read.
+    pub fn schema_version(&self) -> Result<i64> {
+        self.connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(classify_database_error)
+    }
+
+    /// Runs `SQLite`'s bounded quick integrity check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot perform the check.
+    pub fn integrity_check(&self) -> Result<bool> {
+        let status: String = self
+            .connection
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+            .map_err(classify_database_error)?;
+        Ok(status == "ok")
     }
     /// Gives a platform provider exclusive access to the `SQLite` connection.
     ///
@@ -621,6 +1018,90 @@ impl Store {
             .map_err(E::from)?;
         Ok(value)
     }
+    /// Records a locally published MLS `KeyPackage` in the same transaction as
+    /// its `OpenMLS` private key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference or expiry is invalid, the reference
+    /// was already tracked, or `SQLite` rejects the write.
+    pub fn record_key_package_in_transaction(
+        transaction: &Transaction<'_>,
+        key_package_ref: &[u8; ID_BYTES],
+        expires_at: u64,
+    ) -> Result<()> {
+        let expires_at = i64::try_from(expires_at)
+            .map_err(|_| StoreError::CorruptData("KeyPackage expiry exceeds SQLite range"))?;
+        transaction.execute(
+            "INSERT INTO key_package_lifecycle(key_package_ref, expires_at, state)
+             VALUES (?1, ?2, 'available')",
+            params![&key_package_ref[..], expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a matching locally published `KeyPackage` as consumed.
+    ///
+    /// A `KeyPackage` supplied by a prior application version may not have an
+    /// inventory row; in that case `OpenMLS` remains authoritative and no row is
+    /// created.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` rejects the update.
+    pub fn consume_key_package_in_transaction(
+        transaction: &Transaction<'_>,
+        key_package_ref: &[u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.execute(
+            "UPDATE key_package_lifecycle SET state = 'consumed'
+             WHERE key_package_ref = ?1 AND state = 'available'",
+            params![&key_package_ref[..]],
+        )? > 0)
+    }
+    /// Removes a package that can no longer be delivered from the available
+    /// inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` rejects the update.
+    pub fn lose_key_package_in_transaction(
+        transaction: &Transaction<'_>,
+        key_package_ref: &[u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.execute(
+            "UPDATE key_package_lifecycle SET state = 'lost'
+             WHERE key_package_ref = ?1 AND state = 'available'",
+            params![&key_package_ref[..]],
+        )? > 0)
+    }
+
+    /// Counts unexpired locally published packages available for one-time use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub fn available_key_package_count(&mut self, now: u64) -> Result<usize> {
+        let now = i64::try_from(now)
+            .map_err(|_| StoreError::CorruptData("current time exceeds SQLite range"))?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE key_package_lifecycle SET state = 'expired'
+             WHERE state = 'available' AND expires_at <= ?1",
+            params![now],
+        )?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM key_package_lifecycle
+             WHERE state = 'available' AND expires_at > ?1",
+            params![now],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        usize::try_from(count)
+            .map_err(|_| StoreError::CorruptData("invalid KeyPackage inventory count"))
+    }
 
     /// Saves an encrypted space Genesis snapshot inside its event's transaction.
     ///
@@ -655,6 +1136,437 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+    /// Saves an accepted Welcome bootstrap package in the event transaction.
+    ///
+    /// The referenced root event must already exist in this transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is outside its permitted bounds, the
+    /// root event row is missing, a key or root event is already stored, or
+    /// the database write fails.
+    pub fn save_space_welcome_bootstrap_snapshot_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceWelcomeBootstrapSnapshot,
+    ) -> Result<()> {
+        if snapshot.encrypted_package.is_empty()
+            || snapshot.encrypted_package.len() > MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES
+        {
+            return Err(StoreError::InvalidSpaceWelcomeBootstrapSnapshot);
+        }
+        transaction.execute(
+            "INSERT INTO space_welcome_bootstrap_snapshots(
+                space_id, group_reference, root_event_id, encrypted_package
+            ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                &snapshot.root_event_id[..],
+                &snapshot.encrypted_package,
+            ],
+        )?;
+        Ok(())
+    }
+    /// Persists one AEAD-protected accepted membership transition atomically
+    /// with the signed control and policy events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid bounds, a missing event row, the per-space
+    /// transition limit, a duplicate epoch, or a `SQLite` failure.
+    pub fn save_space_membership_transition_snapshot_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceMembershipTransitionSnapshot,
+    ) -> Result<()> {
+        if snapshot.control_event_id == snapshot.transition_event_id
+            || snapshot.encrypted_state.is_empty()
+            || snapshot.encrypted_state.len() > MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES
+        {
+            return Err(StoreError::InvalidSpaceMembershipTransitionSnapshot);
+        }
+        let parent_epoch = i64::try_from(snapshot.parent_epoch)
+            .map_err(|_| StoreError::InvalidSpaceMembershipTransitionSnapshot)?;
+        let policy_revision = i64::try_from(snapshot.policy_revision)
+            .map_err(|_| StoreError::InvalidSpaceMembershipTransitionSnapshot)?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM space_membership_transition_snapshots
+             WHERE space_id = ?1 AND group_reference = ?2",
+            params![&snapshot.space_id[..], &snapshot.group_reference[..]],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_SPACE_MEMBERSHIP_TRANSITIONS {
+            return Err(StoreError::SpaceMembershipTransitionLimit);
+        }
+        transaction.execute(
+            "INSERT INTO space_membership_transition_snapshots(
+                space_id, group_reference, parent_epoch, control_event_id,
+                transition_event_id, policy_revision, encrypted_state
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                parent_epoch,
+                &snapshot.control_event_id[..],
+                &snapshot.transition_event_id[..],
+                policy_revision,
+                &snapshot.encrypted_state,
+            ],
+        )?;
+        Ok(())
+    }
+    /// Saves one verified competing-Commit record with both signed controls.
+    ///
+    /// Callers must have validated both exact MLS Commits against the same
+    /// locally current parent before invoking this transaction helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid metadata, missing control events, duplicate
+    /// generation state, the global row limit, or a `SQLite` write failure.
+    pub fn save_space_membership_conflict_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        snapshot: &SpaceMembershipConflictSnapshot,
+    ) -> Result<()> {
+        if snapshot.first_control_event_id == snapshot.second_control_event_id {
+            return Err(StoreError::InvalidSpaceMembershipConflictSnapshot);
+        }
+        let parent_epoch = i64::try_from(snapshot.parent_epoch)
+            .map_err(|_| StoreError::InvalidSpaceMembershipConflictSnapshot)?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM space_membership_conflicts",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_SPACE_MEMBERSHIP_CONFLICTS {
+            return Err(StoreError::SpaceMembershipConflictLimit);
+        }
+        transaction.execute(
+            "INSERT INTO space_membership_conflicts(
+                space_id, group_reference, parent_epoch,
+                first_control_event_id, second_control_event_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                &snapshot.space_id[..],
+                &snapshot.group_reference[..],
+                parent_epoch,
+                &snapshot.first_control_event_id[..],
+                &snapshot.second_control_event_id[..],
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Saves one locally encrypted text message in its authored-event transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when message metadata, total cache bounds, foreign keys,
+    /// or `SQLite` writes are invalid.
+    pub fn save_cached_space_message_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        message: &CachedSpaceMessage,
+    ) -> Result<()> {
+        if message.encrypted_content.is_empty()
+            || message.encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+            || message.author_seq == 0
+            || message.author_seq > i64::MAX as u64
+            || message.lamport > i64::MAX as u64
+        {
+            return Err(StoreError::InvalidCachedSpaceMessage);
+        }
+        let count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM cached_space_messages", [], |row| {
+                row.get(0)
+            })?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_LOCAL_SPACE_MESSAGES {
+            return Err(StoreError::CachedSpaceMessageLimit);
+        }
+        let bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(encrypted_content)), 0)
+             FROM cached_space_messages",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_add(message.encrypted_content.len())
+            > MAX_LOCAL_SPACE_MESSAGE_BYTES
+        {
+            return Err(StoreError::CachedSpaceMessageByteLimit);
+        }
+        transaction.execute(
+            "INSERT INTO cached_space_messages(
+                event_id, space_id, group_reference, channel_id, author_id,
+                author_seq, lamport, encrypted_content
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &message.event_id[..],
+                &message.space_id[..],
+                &message.group_reference[..],
+                &message.channel_id[..],
+                &message.author_id[..],
+                i64::try_from(message.author_seq)
+                    .map_err(|_| StoreError::InvalidCachedSpaceMessage)?,
+                i64::try_from(message.lamport)
+                    .map_err(|_| StoreError::InvalidCachedSpaceMessage)?,
+                &message.encrypted_content
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Replaces one cached message projection while retaining its immutable
+    /// source event metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source row does not match this Space/channel,
+    /// the encrypted content exceeds cache bounds, or the update fails.
+    pub fn replace_cached_space_message_content_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        event_id: &[u8; ID_BYTES],
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+        encrypted_content: &[u8],
+    ) -> Result<()> {
+        if encrypted_content.is_empty() || encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+        {
+            return Err(StoreError::InvalidCachedSpaceMessage);
+        }
+        let old_bytes: Option<i64> = transaction
+            .query_row(
+                "SELECT length(encrypted_content) FROM cached_space_messages
+                 WHERE event_id = ?1 AND space_id = ?2
+                   AND group_reference = ?3 AND channel_id = ?4",
+                params![
+                    &event_id[..],
+                    &space_id[..],
+                    &group_reference[..],
+                    &channel_id[..],
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let old_bytes = old_bytes.ok_or(StoreError::CachedSpaceMessageMissing)?;
+        let total_bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(encrypted_content)), 0)
+             FROM cached_space_messages",
+            [],
+            |row| row.get(0),
+        )?;
+        let retained = usize::try_from(total_bytes.checked_sub(old_bytes).ok_or(
+            StoreError::CorruptData("cached Space message byte total is inconsistent"),
+        )?)
+        .map_err(|_| StoreError::CorruptData("cached Space message byte total is negative"))?;
+        if retained.saturating_add(encrypted_content.len()) > MAX_LOCAL_SPACE_MESSAGE_BYTES {
+            return Err(StoreError::CachedSpaceMessageByteLimit);
+        }
+        let changed = transaction.execute(
+            "UPDATE cached_space_messages SET encrypted_content = ?1
+             WHERE event_id = ?2 AND space_id = ?3
+               AND group_reference = ?4 AND channel_id = ?5",
+            params![
+                encrypted_content,
+                &event_id[..],
+                &space_id[..],
+                &group_reference[..],
+                &channel_id[..],
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::CachedSpaceMessageMissing);
+        }
+        Ok(())
+    }
+
+    /// Removes one cached text projection in the same transaction as a
+    /// tombstone event.
+    ///
+    /// A missing row is valid: the target may not have been cached locally.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delete fails.
+    pub fn delete_cached_space_message_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        event_id: &[u8; ID_BYTES],
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+    ) -> Result<()> {
+        transaction.execute(
+            "DELETE FROM cached_space_messages
+             WHERE event_id = ?1 AND space_id = ?2
+               AND group_reference = ?3 AND channel_id = ?4",
+            params![
+                &event_id[..],
+                &space_id[..],
+                &group_reference[..],
+                &channel_id[..],
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Checks whether one generation/channel retains a text projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lookup fails.
+    pub fn has_cached_space_message_in_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        event_id: &[u8; ID_BYTES],
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+    ) -> Result<bool> {
+        transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM cached_space_messages
+                    WHERE event_id = ?1 AND space_id = ?2
+                      AND group_reference = ?3 AND channel_id = ?4
+                )",
+                params![
+                    &event_id[..],
+                    &space_id[..],
+                    &group_reference[..],
+                    &channel_id[..],
+                ],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
+    /// Returns the newest bounded local message cache for one channel, oldest first.
+    ///
+    /// This is a local text projection, not a synchronized transcript. It may
+    /// contain locally authored and received messages, and is limited to the
+    /// latest bounded page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested page is invalid or stored metadata
+    /// is malformed.
+    pub fn list_cached_space_messages(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+        limit: usize,
+    ) -> Result<Vec<CachedSpaceMessage>> {
+        if limit == 0 || limit > MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE {
+            return Err(StoreError::CachedSpaceMessagePageLimit);
+        }
+        self.list_cached_space_messages_with_limit(space_id, group_reference, channel_id, limit)
+    }
+    /// Lists every cached message in one channel for bounded offline search.
+    ///
+    /// The result is capped by the store-wide [`MAX_LOCAL_SPACE_MESSAGES`] row
+    /// limit and encrypted-content byte quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails, stored metadata is malformed, or
+    /// `SQLite` cannot represent the bounded result limit.
+    pub fn list_all_cached_space_messages(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+    ) -> Result<Vec<CachedSpaceMessage>> {
+        self.list_cached_space_messages_with_limit(
+            space_id,
+            group_reference,
+            channel_id,
+            MAX_LOCAL_SPACE_MESSAGES,
+        )
+    }
+    fn list_cached_space_messages_with_limit(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+        channel_id: &[u8; 16],
+        limit: usize,
+    ) -> Result<Vec<CachedSpaceMessage>> {
+        let limit = i64::try_from(limit).map_err(|_| StoreError::CachedSpaceMessagePageLimit)?;
+        let mut statement = self.connection.prepare(
+            "SELECT m.event_id, m.space_id, m.group_reference, m.channel_id,
+                    m.author_id, m.author_seq, m.lamport, m.encrypted_content, o.state
+             FROM cached_space_messages AS m
+             LEFT JOIN outbox AS o ON o.event_id = m.event_id
+             WHERE m.space_id = ?1 AND m.group_reference = ?2 AND m.channel_id = ?3
+             ORDER BY m.lamport DESC, m.author_id DESC, m.author_seq DESC, m.event_id DESC
+             LIMIT ?4",
+        )?;
+        let rows = statement.query_map(
+            params![&space_id[..], &group_reference[..], &channel_id[..], limit],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )?;
+        let mut messages = rows
+            .map(|row| {
+                let (
+                    event_id,
+                    space_id,
+                    group_reference,
+                    channel_id,
+                    author_id,
+                    author_seq,
+                    lamport,
+                    encrypted_content,
+                    outbox_state,
+                ) = row?;
+                if encrypted_content.is_empty()
+                    || encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+                    || author_seq <= 0
+                    || lamport < 0
+                {
+                    return Err(StoreError::CorruptData("invalid cached Space message"));
+                }
+                Ok(CachedSpaceMessage {
+                    event_id: event_id
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("invalid cached message event ID"))?,
+                    space_id: space_id
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("invalid cached message Space ID"))?,
+                    group_reference: group_reference.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid cached message group reference")
+                    })?,
+                    channel_id: channel_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid cached message channel ID")
+                    })?,
+                    author_id: author_id
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("invalid cached message author ID"))?,
+                    author_seq: u64::try_from(author_seq)
+                        .map_err(|_| StoreError::CorruptData("invalid cached message sequence"))?,
+                    lamport: u64::try_from(lamport)
+                        .map_err(|_| StoreError::CorruptData("invalid cached message Lamport"))?,
+                    encrypted_content,
+                    outbox_state: outbox_state
+                        .as_deref()
+                        .map(decode_outbox_state)
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        messages.reverse();
+        Ok(messages)
     }
 
     /// Lists local Space Genesis keys in bounded, stable keyset pages.
@@ -767,6 +1679,203 @@ impl Store {
             encrypted_state,
         }))
     }
+    /// Loads and validates a saved Welcome bootstrap package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or the stored row is
+    /// malformed.
+    pub fn load_space_welcome_bootstrap_snapshot(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Option<SpaceWelcomeBootstrapSnapshot>> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT space_id, group_reference, root_event_id, encrypted_package
+                 FROM space_welcome_bootstrap_snapshots
+                 WHERE space_id = ?1 AND group_reference = ?2",
+                params![&space_id[..], &group_reference[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((space_id, group_reference, root_event_id, encrypted_package)) = stored else {
+            return Ok(None);
+        };
+        let space_id = space_id
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid Welcome bootstrap space ID"))?;
+        let group_reference = group_reference
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid Welcome bootstrap group reference"))?;
+        let root_event_id = root_event_id
+            .try_into()
+            .map_err(|_| StoreError::CorruptData("invalid Welcome bootstrap root event ID"))?;
+        if encrypted_package.is_empty()
+            || encrypted_package.len() > MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES
+        {
+            return Err(StoreError::CorruptData(
+                "invalid Welcome bootstrap encrypted package",
+            ));
+        }
+        Ok(Some(SpaceWelcomeBootstrapSnapshot {
+            space_id,
+            group_reference,
+            root_event_id,
+            encrypted_package,
+        }))
+    }
+
+    /// Loads the bounded ordered membership transition evidence for one local
+    /// Space generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database query fails, stored row limits are
+    /// exceeded, or any field is malformed.
+    pub fn list_space_membership_transition_snapshots(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Vec<SpaceMembershipTransitionSnapshot>> {
+        let mut statement = self.connection.prepare(
+            "SELECT space_id, group_reference, parent_epoch, control_event_id,
+                    transition_event_id, policy_revision, encrypted_state
+             FROM space_membership_transition_snapshots
+             WHERE space_id = ?1 AND group_reference = ?2
+             ORDER BY parent_epoch
+             LIMIT ?3",
+        )?;
+        let limit = i64::try_from(MAX_SPACE_MEMBERSHIP_TRANSITIONS + 1)
+            .map_err(|_| StoreError::CorruptData("invalid membership transition limit"))?;
+        let rows =
+            statement.query_map(params![&space_id[..], &group_reference[..], limit], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                ))
+            })?;
+        let stored = rows.collect::<Result<Vec<_>, _>>()?;
+        if stored.len() > MAX_SPACE_MEMBERSHIP_TRANSITIONS {
+            return Err(StoreError::CorruptData(
+                "too many membership transition snapshots",
+            ));
+        }
+        stored
+            .into_iter()
+            .map(
+                |(
+                    stored_space_id,
+                    stored_group_reference,
+                    parent_epoch,
+                    control_event_id,
+                    transition_event_id,
+                    policy_revision,
+                    encrypted_state,
+                )| {
+                    if parent_epoch < 0
+                        || policy_revision < 0
+                        || encrypted_state.is_empty()
+                        || encrypted_state.len() > MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES
+                    {
+                        return Err(StoreError::CorruptData(
+                            "invalid membership transition snapshot",
+                        ));
+                    }
+                    let space_id = stored_space_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership transition Space ID")
+                    })?;
+                    let group_reference = stored_group_reference.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership transition group reference")
+                    })?;
+                    let control_event_id = control_event_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership control event ID")
+                    })?;
+                    let transition_event_id = transition_event_id.try_into().map_err(|_| {
+                        StoreError::CorruptData("invalid membership policy event ID")
+                    })?;
+                    if control_event_id == transition_event_id {
+                        return Err(StoreError::CorruptData(
+                            "membership transition references one event twice",
+                        ));
+                    }
+                    Ok(SpaceMembershipTransitionSnapshot {
+                        space_id,
+                        group_reference,
+                        parent_epoch: u64::try_from(parent_epoch).map_err(|_| {
+                            StoreError::CorruptData("invalid membership parent epoch")
+                        })?,
+                        policy_revision: u64::try_from(policy_revision).map_err(|_| {
+                            StoreError::CorruptData("invalid membership policy revision")
+                        })?,
+                        control_event_id,
+                        transition_event_id,
+                        encrypted_state,
+                    })
+                },
+            )
+            .collect()
+    }
+    /// Loads durable competing-Commit markers for one generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the row is malformed or storage cannot be read.
+    pub fn load_space_membership_conflict(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; 32],
+    ) -> Result<Option<SpaceMembershipConflictSnapshot>> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT parent_epoch, first_control_event_id, second_control_event_id
+                 FROM space_membership_conflicts
+                 WHERE space_id = ?1 AND group_reference = ?2",
+                params![&space_id[..], &group_reference[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((parent_epoch, first_control_event_id, second_control_event_id)) = stored else {
+            return Ok(None);
+        };
+        if parent_epoch < 0 || first_control_event_id == second_control_event_id {
+            return Err(StoreError::CorruptData(
+                "invalid membership conflict snapshot",
+            ));
+        }
+        Ok(Some(SpaceMembershipConflictSnapshot {
+            space_id: *space_id,
+            group_reference: *group_reference,
+            parent_epoch: u64::try_from(parent_epoch)
+                .map_err(|_| StoreError::CorruptData("invalid membership conflict epoch"))?,
+            first_control_event_id: first_control_event_id.try_into().map_err(|_| {
+                StoreError::CorruptData("invalid first membership conflict event ID")
+            })?,
+            second_control_event_id: second_control_event_id.try_into().map_err(|_| {
+                StoreError::CorruptData("invalid second membership conflict event ID")
+            })?,
+        }))
+    }
 
     /// Loads one event, including its ordered parent references.
     ///
@@ -775,6 +1884,74 @@ impl Store {
     /// Returns an error if the query fails or stored event data is invalid.
     pub fn load_event(&self, id: &[u8; ID_BYTES]) -> Result<Option<EventRecord>> {
         load_event_with_connection(&self.connection, id)
+    }
+    /// Loads the event occupying one author's exact one-based sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for sequence zero, malformed stored data, or database
+    /// failures.
+    pub fn load_event_by_author_sequence(
+        &self,
+        author_id: &[u8; ID_BYTES],
+        sequence: u64,
+    ) -> Result<Option<EventRecord>> {
+        let sequence = i64::try_from(sequence).map_err(|_| StoreError::InvalidSequence)?;
+        if sequence <= 0 {
+            return Err(StoreError::InvalidSequence);
+        }
+        let event_id: Option<Vec<u8>> = self
+            .connection
+            .query_row(
+                "SELECT event_id FROM events WHERE author_id = ?1 AND author_seq = ?2",
+                params![&author_id[..], sequence],
+                |row| row.get(0),
+            )
+            .optional()?;
+        event_id
+            .map(|event_id| {
+                let event_id = decode_id(event_id)?;
+                self.load_event(&event_id)?.ok_or(StoreError::CorruptData(
+                    "event disappeared during author-sequence lookup",
+                ))
+            })
+            .transpose()
+    }
+
+    /// Returns committed events in event-ID order using a bounded keyset page.
+    ///
+    /// This exposes accepted event bytes to sync callers without requiring an
+    /// unbounded full-store read. Pending records are not included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid page size, malformed stored event data,
+    /// or database failures.
+    pub fn list_event_page(
+        &self,
+        after_event_id: Option<[u8; ID_BYTES]>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>> {
+        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
+            return Err(StoreError::EventPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT event_id FROM events
+             WHERE (?1 IS NULL OR event_id > ?1)
+             ORDER BY event_id LIMIT ?2",
+        )?;
+        let after = after_event_id.map(|id| id.to_vec());
+        let rows = statement.query_map(
+            params![after, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        rows.map(|row| {
+            let event_id = decode_id(row?)?;
+            self.load_event(&event_id)?.ok_or(StoreError::CorruptData(
+                "event disappeared during page read",
+            ))
+        })
+        .collect()
     }
 
     /// Returns the next sequence for a local author, starting at one.
@@ -1176,12 +2353,24 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let removed = transaction.execute(
-            "DELETE FROM pending_events WHERE event_id = ?1",
-            params![&id[..]],
-        )? > 0;
+        let removed = Self::resolve_pending_in_transaction(&transaction, id)?;
         transaction.commit()?;
         Ok(removed)
+    }
+
+    /// Removes one retained event from a caller-owned transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database update fails.
+    pub fn resolve_pending_in_transaction(
+        transaction: &Transaction<'_>,
+        id: [u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.execute(
+            "DELETE FROM pending_events WHERE event_id = ?1",
+            params![&id[..]],
+        )? > 0)
     }
 }
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1420,9 +2609,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
-        CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_OUTBOX_EVENTS,
-        MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot, Store, StoreError,
-        TrustedIdentityRecord,
+        CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_EVENT_PAGE_SIZE,
+        MAX_OUTBOX_EVENTS, MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot,
+        SpaceMembershipConflictSnapshot, SpaceMembershipTransitionSnapshot,
+        SpaceWelcomeBootstrapSnapshot, Store, StoreError, TrustedIdentityRecord,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1453,6 +2643,41 @@ mod tests {
             let _ = std::fs::remove_file(format!("{}-wal", self.0.display()));
             let _ = std::fs::remove_file(format!("{}-shm", self.0.display()));
         }
+    }
+
+    #[test]
+    fn read_only_store_open_does_not_apply_old_schema_migrations() {
+        let database = TempDatabase::new();
+        let connection = rusqlite::Connection::open(database.path()).expect("create database");
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("set old schema version");
+        drop(connection);
+
+        let store = Store::open_read_only(database.path()).expect("open read-only store");
+        assert_eq!(store.schema_version().expect("read schema version"), 2);
+        assert!(store.integrity_check().expect("check database integrity"));
+        drop(store);
+
+        let connection = rusqlite::Connection::open_with_flags(
+            database.path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("reopen database read-only");
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("confirm unchanged version"),
+            2
+        );
+        let identity_table_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'protected_identity'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("check protected identity table");
+        assert_eq!(identity_table_count, 0);
     }
 
     fn id(value: u8) -> [u8; 32] {
@@ -1486,6 +2711,61 @@ mod tests {
             .expect("event exists");
         assert_eq!(stored.canonical_bytes, bytes);
         assert_eq!(stored.parents, [parent]);
+    }
+
+    #[test]
+    fn committed_event_pages_are_ordered_and_bounded() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        for (event, sequence) in [(id(5), 1), (id(8), 2), (id(2), 3)] {
+            store
+                .commit_authored(id(1), event, sequence, &[0xA1, 0x01, 0x02], &[])
+                .expect("commit event");
+        }
+        assert_eq!(
+            store
+                .load_event_by_author_sequence(&id(1), 3)
+                .expect("load exact author sequence")
+                .expect("sequence is committed")
+                .event_id,
+            id(2)
+        );
+        assert!(
+            store
+                .load_event_by_author_sequence(&id(1), 4)
+                .expect("load absent author sequence")
+                .is_none()
+        );
+        assert!(matches!(
+            store.load_event_by_author_sequence(&id(1), 0),
+            Err(StoreError::InvalidSequence)
+        ));
+
+        let first = store
+            .list_event_page(None, 2)
+            .expect("load first event page");
+        assert_eq!(
+            first.iter().map(|event| event.event_id).collect::<Vec<_>>(),
+            [id(2), id(5)]
+        );
+        let second = store
+            .list_event_page(Some(id(5)), 2)
+            .expect("load second event page");
+        assert_eq!(
+            second
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            [id(8)]
+        );
+        assert!(matches!(
+            store.list_event_page(None, 0),
+            Err(StoreError::EventPageLimit)
+        ));
+        assert!(matches!(
+            store.list_event_page(None, MAX_EVENT_PAGE_SIZE + 1),
+            Err(StoreError::EventPageLimit)
+        ));
     }
 
     #[test]
@@ -1557,7 +2837,14 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE protected_identity;
+                    "DROP TABLE courier_queue;
+                     DROP TABLE courier_configuration;
+                     DROP TABLE space_welcome_bootstrap_snapshots;
+                     DROP TABLE space_membership_conflicts;
+                     DROP TABLE space_membership_transition_snapshots;
+                     DROP TABLE cached_space_messages;
+                     DROP TABLE key_package_lifecycle;
+                     DROP TABLE protected_identity;
                      DROP TABLE protected_mls_storage_key;
                      DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
@@ -1613,7 +2900,14 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE space_genesis_snapshots;
+                    "DROP TABLE courier_queue;
+                     DROP TABLE courier_configuration;
+                     DROP TABLE space_welcome_bootstrap_snapshots;
+                     DROP TABLE space_membership_conflicts;
+                     DROP TABLE space_membership_transition_snapshots;
+                     DROP TABLE cached_space_messages;
+                     DROP TABLE key_package_lifecycle;
+                     DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
                      PRAGMA user_version = 4;",
                 )
@@ -1625,7 +2919,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 13);
         assert_eq!(
             store
                 .load_event(&event)
@@ -1656,7 +2950,14 @@ mod tests {
                 rusqlite::Connection::open(database.path()).expect("open schema for fixture");
             connection
                 .execute_batch(
-                    "DROP TABLE trusted_identities;
+                    "DROP TABLE courier_queue;
+                     DROP TABLE courier_configuration;
+                     DROP TABLE space_welcome_bootstrap_snapshots;
+                     DROP TABLE space_membership_conflicts;
+                     DROP TABLE space_membership_transition_snapshots;
+                     DROP TABLE cached_space_messages;
+                     DROP TABLE key_package_lifecycle;
+                     DROP TABLE trusted_identities;
                      PRAGMA user_version = 5;",
                 )
                 .expect("restore v5 schema fixture");
@@ -1666,7 +2967,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 13);
         assert_eq!(
             store
                 .load_event(&event)
@@ -1783,6 +3084,245 @@ mod tests {
             store
                 .load_space_genesis_snapshot(&snapshot.space_id, &snapshot.group_reference)
                 .expect("load saved snapshot"),
+            Some(snapshot)
+        );
+    }
+
+    #[test]
+    fn welcome_bootstrap_snapshot_round_trips_transactionally_and_enforces_bounds() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        assert_eq!(store.schema_version().expect("read schema version"), 13);
+        let snapshot = SpaceWelcomeBootstrapSnapshot {
+            space_id: [0x11; 16],
+            group_reference: [0x22; 32],
+            root_event_id: id(112),
+            encrypted_package: vec![0xD3, 0x5A, 0x00, 0xC7],
+        };
+        assert_eq!(
+            store
+                .load_space_welcome_bootstrap_snapshot(
+                    &snapshot.space_id,
+                    &snapshot.group_reference,
+                )
+                .expect("query absent bootstrap package"),
+            None
+        );
+
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(113),
+                    snapshot.root_event_id,
+                    1,
+                    &[0xB1],
+                    &[],
+                )?;
+                Store::save_space_welcome_bootstrap_snapshot_in_transaction(transaction, &snapshot)
+            })
+            .expect("commit root event and bootstrap package");
+        assert_eq!(
+            store
+                .load_space_welcome_bootstrap_snapshot(
+                    &snapshot.space_id,
+                    &snapshot.group_reference,
+                )
+                .expect("load saved bootstrap package"),
+            Some(snapshot.clone())
+        );
+
+        for encrypted_package in [Vec::new(), vec![0xA4; 1_048_577]] {
+            let invalid = SpaceWelcomeBootstrapSnapshot {
+                encrypted_package,
+                ..snapshot.clone()
+            };
+            assert!(matches!(
+                store.with_transaction(|transaction| {
+                    Store::save_space_welcome_bootstrap_snapshot_in_transaction(
+                        transaction,
+                        &invalid,
+                    )
+                }),
+                Err(StoreError::InvalidSpaceWelcomeBootstrapSnapshot)
+            ));
+        }
+        let malformed_root = id(114);
+        store
+            .commit_authored(id(115), malformed_root, 1, &[0xB2], &[])
+            .expect("commit malformed fixture root event");
+
+        store
+            .connection
+            .pragma_update(None, "ignore_check_constraints", true)
+            .expect("allow malformed fixture row");
+        store
+            .connection
+            .execute(
+                "INSERT INTO space_welcome_bootstrap_snapshots(
+                    space_id, group_reference, root_event_id, encrypted_package
+                ) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    [0x31_u8; 16].as_slice(),
+                    [0x42_u8; 32].as_slice(),
+                    &malformed_root[..],
+                    Vec::<u8>::new(),
+                ],
+            )
+            .expect("insert malformed fixture row");
+        store
+            .connection
+            .pragma_update(None, "ignore_check_constraints", false)
+            .expect("restore SQL checks");
+        assert!(matches!(
+            store.load_space_welcome_bootstrap_snapshot(&[0x31; 16], &[0x42; 32]),
+            Err(StoreError::CorruptData(_))
+        ));
+    }
+
+    #[test]
+    fn key_package_inventory_persists_consumption_and_expiry_transitions() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let unexpired = [0xA1; 32];
+        let expiring = [0xB2; 32];
+        store
+            .with_transaction(|transaction| {
+                Store::record_key_package_in_transaction(transaction, &unexpired, 100)?;
+                Store::record_key_package_in_transaction(transaction, &expiring, 10)
+            })
+            .expect("persist package inventory");
+        assert_eq!(
+            store
+                .available_key_package_count(9)
+                .expect("count available packages"),
+            2
+        );
+        store
+            .with_transaction(|transaction| {
+                assert!(Store::consume_key_package_in_transaction(
+                    transaction,
+                    &unexpired
+                )?);
+                assert!(!Store::consume_key_package_in_transaction(
+                    transaction,
+                    &unexpired
+                )?);
+                Ok::<_, StoreError>(())
+            })
+            .expect("consume package once");
+        assert_eq!(
+            store
+                .available_key_package_count(10)
+                .expect("expire stale package"),
+            0
+        );
+        drop(store);
+
+        let mut reopened = Store::open(database.path()).expect("reopen inventory");
+        assert_eq!(
+            reopened
+                .available_key_package_count(0)
+                .expect("consumed state survives reopen"),
+            0
+        );
+        let state: String = reopened
+            .connection
+            .query_row(
+                "SELECT state FROM key_package_lifecycle WHERE key_package_ref = ?1",
+                rusqlite::params![&expiring[..]],
+                |row| row.get(0),
+            )
+            .expect("read persisted expiry state");
+        assert_eq!(state, "expired");
+    }
+
+    #[test]
+    fn membership_transition_snapshot_round_trips_with_both_event_rows() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let snapshot = SpaceMembershipTransitionSnapshot {
+            space_id: [0x11; 16],
+            group_reference: [0x22; 32],
+            parent_epoch: 3,
+            policy_revision: 5,
+            control_event_id: id(96),
+            transition_event_id: id(97),
+            encrypted_state: vec![0xD3, 0x5A, 0x00, 0xC7],
+        };
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(98),
+                    snapshot.control_event_id,
+                    1,
+                    &[0xA1],
+                    &[],
+                )?;
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(98),
+                    snapshot.transition_event_id,
+                    2,
+                    &[0xA2],
+                    &[],
+                )?;
+                Store::save_space_membership_transition_snapshot_in_transaction(
+                    transaction,
+                    &snapshot,
+                )
+            })
+            .expect("commit event rows and transition evidence together");
+
+        assert_eq!(
+            store
+                .list_space_membership_transition_snapshots(
+                    &snapshot.space_id,
+                    &snapshot.group_reference,
+                )
+                .expect("read membership transition evidence"),
+            vec![snapshot]
+        );
+    }
+
+    #[test]
+    fn membership_conflict_snapshot_round_trips_with_both_control_rows() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let snapshot = SpaceMembershipConflictSnapshot {
+            space_id: [0x31; 16],
+            group_reference: [0x42; 32],
+            parent_epoch: 7,
+            first_control_event_id: id(101),
+            second_control_event_id: id(102),
+        };
+        store
+            .with_transaction(|transaction| {
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(103),
+                    snapshot.first_control_event_id,
+                    1,
+                    &[0xA1],
+                    &[],
+                )?;
+                Store::commit_authored_in_transaction(
+                    transaction,
+                    id(103),
+                    snapshot.second_control_event_id,
+                    2,
+                    &[0xA2],
+                    &[],
+                )?;
+                Store::save_space_membership_conflict_in_transaction(transaction, &snapshot)
+            })
+            .expect("commit controls and conflict marker together");
+
+        assert_eq!(
+            store
+                .load_space_membership_conflict(&snapshot.space_id, &snapshot.group_reference)
+                .expect("load conflict marker"),
             Some(snapshot)
         );
     }

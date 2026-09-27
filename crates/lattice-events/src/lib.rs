@@ -14,6 +14,9 @@
 //! caller-supplied protected-body bytes; `10` 32-byte opaque MLS group
 //! reference; and `11` MLS epoch.
 //!
+//! Event kind `10` is reserved for encrypted ephemeral presence/typing hints;
+//! callers must keep those records out of durable history and store-forward.
+//!
 //! The outer canonical CBOR map uses exact ascending keys: `0` outer format
 //! version (`1`); `1` the exact encoded unsigned preimage as a byte string;
 //! `2` the exact versioned 65-byte `IdentityPublicBundle`; and `3` the
@@ -73,6 +76,8 @@ pub enum EventKind {
     FileManifest = 8,
     /// Encrypted voice-signaling content.
     VoiceSignal = 9,
+    /// Encrypted, non-persistent presence or typing state.
+    Ephemeral = 10,
 }
 
 impl TryFrom<u64> for EventKind {
@@ -89,6 +94,7 @@ impl TryFrom<u64> for EventKind {
             7 => Ok(Self::MlsControl),
             8 => Ok(Self::FileManifest),
             9 => Ok(Self::VoiceSignal),
+            10 => Ok(Self::Ephemeral),
             unknown => Err(EventError::UnknownMandatoryEventKind(unknown)),
         }
     }
@@ -715,6 +721,15 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_event_kind_is_recognized_as_mandatory() {
+        assert_eq!(EventKind::try_from(10), Ok(EventKind::Ephemeral));
+        assert_eq!(
+            EventKind::try_from(11),
+            Err(EventError::UnknownMandatoryEventKind(11))
+        );
+    }
+
+    #[test]
     fn published_signed_event_vector_verifies_exact_bytes_and_id() {
         let encoded = decode_hex(
             "a40001015878ac00010150000102030405060708090a0b0c0d0e0f02f60358205f7e15d6a462c18997358f8934ac2d0c53556bce94ed7d031b7c9813da55c02a040105182a061b0000018bcfe56800078008010944010203040a5820a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50b0002584101d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a035840deaa1abf700921011df559747f6aacb464bccf5cc5458d107153f6cb1c5dd5de24eb78003c8f25ef81165a099a3798ca6908c4832374f853648f35fa9fa68b0e",
@@ -743,6 +758,34 @@ mod tests {
                 .expect("32-byte event ID vector");
         assert_eq!(event.event_id().as_bytes(), &expected_id);
     }
+    #[test]
+    fn published_ephemeral_signed_event_vector_verifies_exact_bytes_and_id() {
+        let preimage = decode_hex(concat!(
+            "ac00010150000102030405060708090a0b0c0d0e0f02f60358205f7e15d6",
+            "a462c18997358f8934ac2d0c53556bce94ed7d031b7c9813da55c02a0401",
+            "05182a061b0000018bcfe568000780080a0944010203040a5820a5a5a5a5",
+            "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50b00",
+        ));
+        let identity_bundle = decode_hex(
+            "01d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+        );
+        let signature = decode_hex(
+            "45a8dace07b85a5579c289c521ee88abb077cd78a67aed5f5a20f548ed68fad5ed448668d4778cfdac1b17bb896ad482b78232d93f557905cf73d70bef6ebf04",
+        );
+        let encoded = encode_canonical(&outer_value(&preimage, &identity_bundle, &signature))
+            .expect("canonical outer ephemeral event vector");
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&encoded)
+            .expect("published ephemeral event vector");
+        assert_eq!(event.encode(), encoded);
+        assert_eq!(event.kind(), EventKind::Ephemeral);
+        assert_eq!(event.preimage_bytes(), preimage);
+        let expected_id: [u8; 32] =
+            decode_hex("1175bb986226c266df335a01d47b82cf148d765e5dfc828451f8d2cc2fda77f1")
+                .try_into()
+                .expect("32-byte event ID vector");
+        assert_eq!(event.event_id().as_bytes(), &expected_id);
+    }
+
     fn signed_outer(
         identity: &DeviceIdentity,
         author_fingerprint: [u8; 32],
@@ -953,6 +996,40 @@ mod tests {
             VerifiedSignatureOnlyEvent::decode_verify(&encoded),
             Err(EventError::EmptyProtectedBody)
         );
+    }
+
+    #[test]
+    fn hostile_event_byte_corpus_never_bypasses_signature_validation() {
+        let signer = identity();
+        let event = VerifiedSignatureOnlyEvent::create(&signer, draft(vec![0x42; 32]))
+            .expect("valid signed seed");
+        let encoded = event.encode();
+        for index in 0..encoded.len() {
+            for mask in [0x01, 0x80] {
+                let mut mutated = encoded.to_vec();
+                mutated[index] ^= mask;
+                if let Ok(decoded) = VerifiedSignatureOnlyEvent::decode_verify(&mutated) {
+                    assert_eq!(decoded.encode(), mutated);
+                    assert_eq!(decoded.event_id(), event.event_id());
+                }
+            }
+        }
+
+        let mut state = 0xa409_3822_299f_31d0_u64;
+        for _ in 0..2_048 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            let _ = VerifiedSignatureOnlyEvent::decode_verify(&input);
+        }
     }
     fn replace_kind(fields: &EventFields, author_fingerprint: [u8; 32], kind: u64) -> Vec<u8> {
         let mut value = fields.to_preimage_value(author_fingerprint);

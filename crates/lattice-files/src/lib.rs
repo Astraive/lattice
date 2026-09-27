@@ -1,12 +1,22 @@
 //! Lattice attachment manifests and transfer state.
 
 use std::fmt;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use sha2::{Digest as Sha2Digest, Sha256};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+mod staging;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub use staging::{
+    AttachmentStagingLimits, AttachmentStagingStore, ManagedAttachmentFile, StagingCleanupSummary,
+};
 
 /// SHA-256 digest bytes.
 pub type Sha256Hash = [u8; 32];
+/// Deterministic identity for one manifest attached to one signed event.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AttachmentTransferId(pub Sha256Hash);
 
 /// Fixed chunk size used for every attachment manifest.
 pub const CHUNK_SIZE: usize = 64 * 1024;
@@ -54,6 +64,26 @@ pub enum AttachmentError {
     TransferRejected,
     /// The manifest exceeds the caller's staging quota.
     StagingQuotaExceeded { file_size: u64, limit: u64 },
+    /// A staging store contains bytes beyond the declared file size.
+    StagingStoreTooLarge { actual: u64, maximum: u64 },
+    /// The requested transfer would exceed the persistent global byte quota.
+    GlobalStagingQuotaExceeded {
+        requested: u64,
+        reserved: u64,
+        limit: u64,
+    },
+    /// The requested transfer would exceed the retained transfer count.
+    StagingTransferLimitExceeded { limit: usize },
+    /// A requested staging operation conflicts with an active transfer or store lock.
+    StagingBusy,
+    /// The staging root contains unsafe or invalid transfer metadata.
+    StagingMetadataInvalid,
+    /// The staging directory contains more entries than the scanner permits.
+    StagingDirectoryTooLarge { limit: usize },
+    /// The requested staging root is not a private regular directory.
+    UnsafeStagingDirectory,
+    /// A staging policy contains a zero or out-of-range limit.
+    InvalidStagingLimits,
     /// The requested transfer has missing chunks.
     TransferIncomplete,
     /// This chunk was already received and verified.
@@ -69,7 +99,7 @@ pub enum AttachmentError {
 impl fmt::Display for AttachmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "attachment stream read failed: {error}"),
+            Self::Io(error) => write!(formatter, "attachment staging I/O failed: {error}"),
             Self::FileTooLarge => write!(formatter, "attachment exceeds the maximum file size"),
             Self::TooManyChunks => write!(formatter, "attachment exceeds the maximum chunk count"),
             Self::FilenameTooLong => write!(formatter, "filename hint exceeds the maximum length"),
@@ -86,10 +116,16 @@ impl fmt::Display for AttachmentError {
                     "manifest has {actual} chunk hashes; expected {expected}"
                 )
             }
-            Self::InvalidChunkIndex => write!(formatter, "chunk index is outside the manifest"),
             Self::ChunkLengthMismatch { expected, actual } => {
                 write!(formatter, "chunk has {actual} bytes; expected {expected}")
             }
+            Self::StagingStoreTooLarge { actual, maximum } => {
+                write!(
+                    formatter,
+                    "staging store has {actual} bytes; maximum is {maximum}"
+                )
+            }
+            Self::InvalidChunkIndex => write!(formatter, "chunk index is outside the manifest"),
             Self::ChunkHashMismatch => write!(formatter, "chunk SHA-256 digest does not match"),
             Self::InvalidBitmapLength { expected, actual } => {
                 write!(formatter, "bitmap has {actual} bytes; expected {expected}")
@@ -107,6 +143,39 @@ impl fmt::Display for AttachmentError {
                     formatter,
                     "attachment size {file_size} exceeds staging quota {limit}"
                 )
+            }
+            Self::GlobalStagingQuotaExceeded {
+                requested,
+                reserved,
+                limit,
+            } => write!(
+                formatter,
+                "attachment reservation {requested} with {reserved} already reserved exceeds global quota {limit}"
+            ),
+            Self::StagingTransferLimitExceeded { limit } => {
+                write!(
+                    formatter,
+                    "attachment staging reached transfer limit {limit}"
+                )
+            }
+            Self::StagingBusy => write!(formatter, "attachment staging store is busy"),
+            Self::StagingMetadataInvalid => {
+                write!(formatter, "attachment staging metadata is invalid")
+            }
+            Self::StagingDirectoryTooLarge { limit } => {
+                write!(
+                    formatter,
+                    "attachment staging directory exceeds {limit} entries"
+                )
+            }
+            Self::UnsafeStagingDirectory => {
+                write!(
+                    formatter,
+                    "attachment staging root must be a non-symlink directory"
+                )
+            }
+            Self::InvalidStagingLimits => {
+                write!(formatter, "attachment staging limits are invalid")
             }
             Self::StagingAllocationFailed => {
                 write!(formatter, "attachment staging allocation failed")
@@ -168,6 +237,43 @@ pub struct ChunkRange {
 }
 
 impl AttachmentManifest {
+    /// Bind this manifest's bounded metadata and integrity digests to an event ID.
+    ///
+    /// This identity is deterministic, not an authorization proof. Callers
+    /// must obtain the event ID and manifest from their authenticated policy
+    /// boundary before using it to route a transfer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the manifest is not valid within this
+    /// crate's size, metadata, and digest bounds.
+    pub fn transfer_id(
+        &self,
+        event_id: &[u8; 32],
+    ) -> Result<AttachmentTransferId, AttachmentError> {
+        self.validate()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"lattice-attachment-transfer-v1\0");
+        hasher.update(event_id);
+        hasher.update(self.file_size.to_le_bytes());
+        hasher.update(self.file_hash);
+        hasher.update((self.filename.len() as u64).to_le_bytes());
+        hasher.update(self.filename.as_bytes());
+        match &self.mime_type {
+            Some(mime_type) => {
+                hasher.update([1]);
+                hasher.update((mime_type.len() as u64).to_le_bytes());
+                hasher.update(mime_type.as_bytes());
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update((self.chunk_hashes.len() as u64).to_le_bytes());
+        for hash in &self.chunk_hashes {
+            hasher.update(hash);
+        }
+        Ok(AttachmentTransferId(hasher.finalize().into()))
+    }
+
     /// Hash a reader incrementally and construct a bounded manifest.
     ///
     /// At most one fixed-size chunk is held in memory at a time. The filename
@@ -198,13 +304,17 @@ impl AttachmentManifest {
         loop {
             if file_size == MAX_FILE_SIZE {
                 let mut probe = [0_u8; 1];
-                if reader.read(&mut probe)? != 0 {
+                let bytes_read = read_chunk(reader, &mut probe)?;
+                if bytes_read != 0 {
                     return Err(AttachmentError::FileTooLarge);
                 }
                 break;
             }
 
-            let bytes_read = read_chunk(reader, &mut buffer)?;
+            let remaining = MAX_FILE_SIZE - file_size;
+            let read_length = usize::try_from(remaining.min(CHUNK_SIZE as u64))
+                .map_err(|_| AttachmentError::ArithmeticOverflow)?;
+            let bytes_read = read_chunk(reader, &mut buffer[..read_length])?;
             if bytes_read == 0 {
                 break;
             }
@@ -274,6 +384,38 @@ impl AttachmentManifest {
         Ok(())
     }
 
+    /// Read one manifest chunk from a seekable source and verify it before
+    /// returning it to a transport caller.
+    ///
+    /// The caller supplies the output buffer so repeated reads can reuse a
+    /// single chunk-sized allocation. The buffer must exactly match the
+    /// manifest-declared length for `index`; source contents are checked
+    /// against the chunk digest before success.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` for an invalid manifest, index, output
+    /// length, source read/seek failure, or changed source content.
+    pub fn read_verified_chunk_into<R: Read + Seek>(
+        &self,
+        source: &mut R,
+        index: usize,
+        output: &mut [u8],
+    ) -> Result<(), AttachmentError> {
+        self.validate()?;
+        let expected_length = self.expected_chunk_size(index)?;
+        if output.len() != expected_length {
+            return Err(AttachmentError::ChunkLengthMismatch {
+                expected: expected_length,
+                actual: output.len(),
+            });
+        }
+        let offset = chunk_offset(index)?;
+        source.seek(SeekFrom::Start(offset))?;
+        source.read_exact(output)?;
+        self.verify_chunk_validated(index, output)
+    }
+
     /// Verify a chunk's expected index, exact length, and SHA-256 digest.
     ///
     /// # Errors
@@ -282,6 +424,10 @@ impl AttachmentManifest {
     /// chunk length is wrong, or the chunk digest does not match.
     pub fn verify_chunk(&self, index: usize, bytes: &[u8]) -> Result<(), AttachmentError> {
         self.validate()?;
+        self.verify_chunk_validated(index, bytes)
+    }
+
+    fn verify_chunk_validated(&self, index: usize, bytes: &[u8]) -> Result<(), AttachmentError> {
         let expected_hash = self
             .chunk_hashes
             .get(index)
@@ -576,6 +722,341 @@ impl AttachmentReceiver {
     }
 }
 
+/// Streamed receiver backed by a caller-owned seekable staging store.
+///
+/// Only one fixed-size chunk and the bounded presence bitmap are held in
+/// memory. The store is not opened, truncated, named, or exported by this
+/// type; callers choose a private staging destination and enforce its
+/// persistence and retention policy. After restart, construct a new receiver
+/// with the same store and call `accept` to rebuild the bitmap from verified
+/// chunk contents. Chunk integrity is checked before writes, and the whole-file
+/// digest is checked before completion and again before copying to an output.
+pub struct StreamedAttachmentReceiver<S> {
+    manifest: AttachmentManifest,
+    presence: Vec<u8>,
+    staging_limit: u64,
+    state: ReceiverState,
+    storage: S,
+}
+
+impl<S: Read + Write + Seek> StreamedAttachmentReceiver<S> {
+    /// Create a pending receiver around caller-owned staging storage.
+    ///
+    /// `storage` should be a private temporary store, not a chosen export
+    /// destination. The store is not modified until `accept` or
+    /// `submit_chunk`; its existing contents can be verified for resumption.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` for invalid metadata, quota excess, or a
+    /// checked-size or bitmap-allocation failure.
+    pub fn new(
+        manifest: AttachmentManifest,
+        staging_limit: u64,
+        storage: S,
+    ) -> Result<Self, AttachmentError> {
+        manifest.validate()?;
+        if manifest.file_size > staging_limit {
+            return Err(AttachmentError::StagingQuotaExceeded {
+                file_size: manifest.file_size,
+                limit: staging_limit,
+            });
+        }
+        let bitmap_length = manifest
+            .chunk_hashes
+            .len()
+            .checked_add(7)
+            .ok_or(AttachmentError::ArithmeticOverflow)?
+            / 8;
+        let mut presence = Vec::new();
+        presence
+            .try_reserve_exact(bitmap_length)
+            .map_err(|_| AttachmentError::StagingAllocationFailed)?;
+        presence.resize(bitmap_length, 0);
+        Ok(Self {
+            manifest,
+            presence,
+            staging_limit,
+            state: ReceiverState::Pending,
+            storage,
+        })
+    }
+
+    /// Return the validated manifest for the caller's pre-transfer consent UI.
+    #[must_use]
+    pub fn manifest(&self) -> &AttachmentManifest {
+        &self.manifest
+    }
+
+    /// Accept the transfer and reconstruct verified presence from staging.
+    ///
+    /// Existing chunks are checked individually, so corrupted or incomplete
+    /// chunks remain missing and may be replaced. This allows callers to
+    /// reopen a persistent staging store and resume without trusting a saved
+    /// bitmap.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` for a state/quota violation, an oversized
+    /// staging store, I/O failure, allocation failure, or a whole-file digest
+    /// mismatch.
+    pub fn accept(&mut self) -> Result<(), AttachmentError> {
+        self.ensure_pending()?;
+        let stored_length = self.storage.seek(SeekFrom::End(0))?;
+        if stored_length > self.manifest.file_size {
+            return Err(AttachmentError::StagingStoreTooLarge {
+                actual: stored_length,
+                maximum: self.manifest.file_size,
+            });
+        }
+
+        self.presence.fill(0);
+        let mut buffer = allocate_chunk_buffer()?;
+        for index in 0..self.manifest.chunk_hashes.len() {
+            let chunk_length = self.manifest.expected_chunk_size(index)?;
+            let offset = chunk_offset(index)?;
+            let end = offset
+                .checked_add(
+                    u64::try_from(chunk_length).map_err(|_| AttachmentError::ArithmeticOverflow)?,
+                )
+                .ok_or(AttachmentError::ArithmeticOverflow)?;
+            if end > stored_length {
+                continue;
+            }
+            self.storage.seek(SeekFrom::Start(offset))?;
+            self.storage.read_exact(&mut buffer[..chunk_length])?;
+            match self
+                .manifest
+                .verify_chunk_validated(index, &buffer[..chunk_length])
+            {
+                Ok(()) => self.set_present(index),
+                Err(AttachmentError::ChunkHashMismatch) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        if self.all_present() {
+            let file_hash = hash_seekable(&mut self.storage, self.manifest.file_size, &mut buffer)?;
+            if file_hash != self.manifest.file_hash {
+                self.state = ReceiverState::IntegrityFailed;
+                return Err(AttachmentError::FileHashMismatch);
+            }
+            self.state = ReceiverState::Complete;
+        } else {
+            self.state = ReceiverState::Accepted;
+        }
+        Ok(())
+    }
+
+    /// Decline a pending transfer without deleting caller-owned staging.
+    ///
+    /// The caller retains responsibility for cleanup or retention of the
+    /// staging store; this method never removes a path or file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransferNotAccepted` if the transfer has already been decided.
+    pub fn reject(&mut self) -> Result<(), AttachmentError> {
+        self.ensure_pending()?;
+        self.state = ReceiverState::Rejected;
+        Ok(())
+    }
+
+    /// Verify and write one chunk at its deterministic offset.
+    ///
+    /// Only the chunk-sized input is buffered. A write or flush failure leaves
+    /// the chunk marked missing so the caller can retry it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the transfer is not accepted, chunk
+    /// metadata or digest is invalid, the chunk is already present, storage
+    /// I/O fails, or the completed whole-file digest does not match.
+    pub fn submit_chunk(&mut self, index: usize, bytes: &[u8]) -> Result<(), AttachmentError> {
+        self.ensure_accepted()?;
+        self.manifest.verify_chunk_validated(index, bytes)?;
+        if self.is_present(index) {
+            return Err(AttachmentError::ChunkAlreadyPresent);
+        }
+
+        let offset = chunk_offset(index)?;
+        self.storage.seek(SeekFrom::Start(offset))?;
+        self.storage.write_all(bytes)?;
+        self.storage.flush()?;
+        self.set_present(index);
+
+        if self.all_present() {
+            let mut buffer = match allocate_chunk_buffer() {
+                Ok(buffer) => buffer,
+                Err(error) => {
+                    self.clear_present(index);
+                    return Err(error);
+                }
+            };
+            let file_hash =
+                match hash_seekable(&mut self.storage, self.manifest.file_size, &mut buffer) {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        self.clear_present(index);
+                        return Err(error);
+                    }
+                };
+            if file_hash != self.manifest.file_hash {
+                self.state = ReceiverState::IntegrityFailed;
+                return Err(AttachmentError::FileHashMismatch);
+            }
+            self.state = ReceiverState::Complete;
+        }
+        Ok(())
+    }
+
+    /// Return missing ranges suitable for resume requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the manifest or bitmap is invalid.
+    pub fn missing_ranges(&self) -> Result<Vec<ChunkRange>, AttachmentError> {
+        self.manifest.missing_chunk_ranges(&self.presence)
+    }
+
+    /// Whether every chunk and the whole-file digest have passed verification.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        matches!(self.state, ReceiverState::Complete)
+    }
+
+    /// Copy verified content to a caller-selected writer using a chunk buffer.
+    ///
+    /// The source digest is rechecked immediately before copying. If the
+    /// destination writer fails, it may contain a partial file; callers should
+    /// use a private temporary output and only commit it after this method
+    /// succeeds. No path is created or selected here.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransferRejected`, `TransferIntegrityFailure`,
+    /// `TransferNotAccepted`, `TransferIncomplete`, `FileHashMismatch`,
+    /// `StagingAllocationFailed`, or an I/O error.
+    pub fn copy_verified_to<W: Write>(&mut self, output: &mut W) -> Result<(), AttachmentError> {
+        match self.state {
+            ReceiverState::Rejected => return Err(AttachmentError::TransferRejected),
+            ReceiverState::IntegrityFailed => {
+                return Err(AttachmentError::TransferIntegrityFailure);
+            }
+            ReceiverState::Pending => return Err(AttachmentError::TransferNotAccepted),
+            ReceiverState::Accepted => return Err(AttachmentError::TransferIncomplete),
+            ReceiverState::Complete => {}
+        }
+
+        let mut buffer = allocate_chunk_buffer()?;
+        let file_hash = hash_seekable(&mut self.storage, self.manifest.file_size, &mut buffer)?;
+        if file_hash != self.manifest.file_hash {
+            self.state = ReceiverState::IntegrityFailed;
+            return Err(AttachmentError::FileHashMismatch);
+        }
+
+        self.storage.seek(SeekFrom::Start(0))?;
+        let mut remaining = self.manifest.file_size;
+        while remaining != 0 {
+            let chunk_length = usize::try_from(remaining.min(CHUNK_SIZE as u64))
+                .map_err(|_| AttachmentError::ArithmeticOverflow)?;
+            self.storage.read_exact(&mut buffer[..chunk_length])?;
+            output.write_all(&buffer[..chunk_length])?;
+            remaining -=
+                u64::try_from(chunk_length).map_err(|_| AttachmentError::ArithmeticOverflow)?;
+        }
+        Ok(())
+    }
+    /// Return the caller-owned staging store without asserting transfer completion.
+    #[must_use]
+    pub fn into_storage(self) -> S {
+        self.storage
+    }
+
+    fn ensure_pending(&self) -> Result<(), AttachmentError> {
+        match self.state {
+            ReceiverState::Rejected => return Err(AttachmentError::TransferRejected),
+            ReceiverState::Pending => {}
+            _ => return Err(AttachmentError::TransferNotAccepted),
+        }
+        if self.manifest.file_size > self.staging_limit {
+            return Err(AttachmentError::StagingQuotaExceeded {
+                file_size: self.manifest.file_size,
+                limit: self.staging_limit,
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_accepted(&self) -> Result<(), AttachmentError> {
+        match self.state {
+            ReceiverState::Rejected => Err(AttachmentError::TransferRejected),
+            ReceiverState::IntegrityFailed => Err(AttachmentError::TransferIntegrityFailure),
+            ReceiverState::Pending => Err(AttachmentError::TransferNotAccepted),
+            ReceiverState::Accepted | ReceiverState::Complete => Ok(()),
+        }
+    }
+
+    fn is_present(&self, index: usize) -> bool {
+        self.presence[index / 8] & (1 << (index % 8)) != 0
+    }
+
+    fn set_present(&mut self, index: usize) {
+        self.presence[index / 8] |= 1 << (index % 8);
+    }
+
+    fn clear_present(&mut self, index: usize) {
+        self.presence[index / 8] &= !(1 << (index % 8));
+    }
+
+    fn all_present(&self) -> bool {
+        self.presence.iter().enumerate().all(|(byte_index, byte)| {
+            let remaining = self.manifest.chunk_hashes.len() - byte_index * 8;
+            let mask = if remaining >= 8 {
+                u8::MAX
+            } else {
+                (1_u8 << remaining) - 1
+            };
+            byte & mask == mask
+        })
+    }
+}
+
+fn allocate_chunk_buffer() -> Result<Vec<u8>, AttachmentError> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(CHUNK_SIZE)
+        .map_err(|_| AttachmentError::StagingAllocationFailed)?;
+    buffer.resize(CHUNK_SIZE, 0);
+    Ok(buffer)
+}
+
+fn chunk_offset(index: usize) -> Result<u64, AttachmentError> {
+    u64::try_from(index)
+        .map_err(|_| AttachmentError::ArithmeticOverflow)?
+        .checked_mul(CHUNK_SIZE as u64)
+        .ok_or(AttachmentError::ArithmeticOverflow)
+}
+
+fn hash_seekable<S: Read + Seek>(
+    storage: &mut S,
+    file_size: u64,
+    buffer: &mut [u8],
+) -> Result<Sha256Hash, AttachmentError> {
+    storage.seek(SeekFrom::Start(0))?;
+    let mut remaining = file_size;
+    let mut hasher = Sha256::new();
+    while remaining != 0 {
+        let chunk_length = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| AttachmentError::ArithmeticOverflow)?;
+        storage.read_exact(&mut buffer[..chunk_length])?;
+        hasher.update(&buffer[..chunk_length]);
+        remaining -=
+            u64::try_from(chunk_length).map_err(|_| AttachmentError::ArithmeticOverflow)?;
+    }
+    Ok(hasher.finalize().into())
+}
+
 /// Produce a display-only filename without path separators, controls, or
 /// common platform filename metacharacters. This does not create an export
 /// path and UI consumers must still render the returned text safely.
@@ -659,7 +1140,10 @@ fn expected_chunk_count(file_size: u64) -> Result<usize, AttachmentError> {
 fn read_chunk<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize, AttachmentError> {
     let mut filled = 0;
     while filled < buffer.len() {
-        let bytes_read = reader.read(&mut buffer[filled..])?;
+        let bytes_read = match reader.read(&mut buffer[filled..]) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
         if bytes_read == 0 {
             break;
         }
@@ -676,11 +1160,26 @@ fn sha256(bytes: &[u8]) -> Sha256Hash {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
+
+    struct InterruptedOnce<R> {
+        inner: R,
+        interrupted: bool,
+    }
+
+    impl<R: Read> Read for InterruptedOnce<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.inner.read(buffer)
+        }
+    }
 
     use super::{
         AttachmentError, AttachmentManifest, AttachmentReceiver, CHUNK_SIZE, ChunkRange,
-        MAX_CHUNKS, MAX_FILE_SIZE, MAX_FILENAME_BYTES,
+        MAX_CHUNKS, MAX_FILE_SIZE, MAX_FILENAME_BYTES, StreamedAttachmentReceiver,
     };
 
     #[test]
@@ -700,6 +1199,52 @@ mod tests {
             ]
         );
         assert!(manifest.missing_chunk_ranges(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn source_stream_retries_interrupted_reads() {
+        let content = b"streaming survives interruption";
+        let mut reader = InterruptedOnce {
+            inner: Cursor::new(content),
+            interrupted: false,
+        };
+
+        let manifest = AttachmentManifest::from_reader(&mut reader, "retry.bin", None).unwrap();
+
+        assert_eq!(manifest.file_size, content.len() as u64);
+        assert_eq!(manifest.file_hash, super::sha256(content));
+    }
+
+    #[test]
+    fn source_chunks_are_seeked_and_checked_against_manifest() {
+        let mut content = vec![0x47; CHUNK_SIZE + 3];
+        let manifest =
+            AttachmentManifest::from_reader(&mut Cursor::new(&content), "source.bin", None)
+                .unwrap();
+        let mut source = Cursor::new(content.clone());
+        let mut last_chunk = [0; 3];
+
+        manifest
+            .read_verified_chunk_into(&mut source, 1, &mut last_chunk)
+            .unwrap();
+        assert_eq!(last_chunk, [0x47; 3]);
+
+        let mut wrong_size = [0; 2];
+        assert!(matches!(
+            manifest.read_verified_chunk_into(&mut source, 1, &mut wrong_size),
+            Err(AttachmentError::ChunkLengthMismatch {
+                expected: 3,
+                actual: 2
+            })
+        ));
+
+        content[0] ^= 0xff;
+        source = Cursor::new(content);
+        let mut first_chunk = vec![0; CHUNK_SIZE];
+        assert!(matches!(
+            manifest.read_verified_chunk_into(&mut source, 0, &mut first_chunk),
+            Err(AttachmentError::ChunkHashMismatch)
+        ));
     }
 
     #[test]
@@ -883,5 +1428,72 @@ mod tests {
             receiver.verified_bytes(),
             Err(AttachmentError::TransferIntegrityFailure)
         ));
+    }
+    #[test]
+    fn streamed_receiver_rechecks_persisted_chunks_before_resuming() {
+        let content = vec![0x63; CHUNK_SIZE + 9];
+        let manifest =
+            AttachmentManifest::from_reader(&mut Cursor::new(&content), "resume.bin", None)
+                .unwrap();
+        let mut receiver = StreamedAttachmentReceiver::new(
+            manifest.clone(),
+            content.len() as u64,
+            Cursor::new(Vec::new()),
+        )
+        .unwrap();
+        receiver.accept().unwrap();
+        assert_eq!(
+            receiver.missing_ranges().unwrap(),
+            vec![ChunkRange {
+                start: 0,
+                end_exclusive: 2
+            }]
+        );
+        receiver.submit_chunk(0, &content[..CHUNK_SIZE]).unwrap();
+        let mut staging = receiver.into_storage();
+        staging.get_mut()[0] ^= 1;
+
+        let mut resumed =
+            StreamedAttachmentReceiver::new(manifest, content.len() as u64, staging).unwrap();
+        resumed.accept().unwrap();
+        assert_eq!(
+            resumed.missing_ranges().unwrap(),
+            vec![ChunkRange {
+                start: 0,
+                end_exclusive: 2
+            }]
+        );
+        let invalid_chunk = vec![0; CHUNK_SIZE];
+        assert!(matches!(
+            resumed.submit_chunk(0, &invalid_chunk),
+            Err(AttachmentError::ChunkHashMismatch)
+        ));
+        resumed.submit_chunk(1, &content[CHUNK_SIZE..]).unwrap();
+        resumed.submit_chunk(0, &content[..CHUNK_SIZE]).unwrap();
+        assert!(resumed.is_complete());
+        let mut output = Vec::new();
+        resumed.copy_verified_to(&mut output).unwrap();
+        assert_eq!(output, content);
+    }
+
+    #[test]
+    fn streamed_receiver_rejects_staging_beyond_manifest_size() {
+        let content = b"bounded";
+        let manifest =
+            AttachmentManifest::from_reader(&mut Cursor::new(content), "small.bin", None).unwrap();
+        let mut receiver = StreamedAttachmentReceiver::new(
+            manifest,
+            content.len() as u64,
+            Cursor::new(vec![0; content.len() + 1]),
+        )
+        .unwrap();
+        assert!(matches!(
+            receiver.accept(),
+            Err(AttachmentError::StagingStoreTooLarge {
+                actual,
+                maximum
+            }) if actual == content.len() as u64 + 1 && maximum == content.len() as u64
+        ));
+        assert!(!receiver.is_complete());
     }
 }

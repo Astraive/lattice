@@ -1,6 +1,6 @@
 # Candidate 1 — signed immutable event framing
 
-**Status:** candidate; outer framing and signature verification are implemented in `crates/lattice-events`. Event bodies remain opaque to that layer. The core has a fail-closed candidate authorization gate for kinds 1–5 and 8 using the plaintext maps in [`07-permissions.md`](07-permissions.md); it does not implement their message-state projections. Voice authorization remains unsupported.
+**Status:** candidate; outer framing and signature verification are implemented in `crates/lattice-events`. Event bodies remain opaque at that layer. `lattice-core` has fail-closed candidate authorization for kinds 1–5 and 8, plus in-memory projections for messages, edits, tombstones, reactions and pins. Durable replay and voice authorization remain incomplete.
 
 ## Candidate canonical preimage
 
@@ -36,6 +36,7 @@ The complete map encoding is the signed preimage. A zero sequence, duplicate/uns
 | 7 | MLS control | MLS engine validates its TLS message separately |
 | 8 | File manifest | Exact candidate metadata validation and authorization in `07-permissions.md`; chunk transfer and file projection external |
 | 9 | Voice signal | Authorization is unsupported until session/action schema is specified |
+| 10 | Ephemeral | Reserved encrypted presence/typing hints; not durably stored or store-forwarded, and Core authorization is not defined |
 
 ## Candidate signed outer object
 

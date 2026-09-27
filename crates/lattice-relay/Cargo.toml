@@ -19,6 +19,8 @@ sha2 = "=0.10.9"
 tokio = { version = "=1.53.1", features = ["macros", "rt", "time"] }
 tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "=0.7.19", features = ["rt"] }
+url = "=2.5.8"
+
 
 [dev-dependencies]
 lattice-identity = { path = "../lattice-identity", version = "=0.1.0" }

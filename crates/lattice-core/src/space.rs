@@ -1,32 +1,38 @@
-//! Candidate-only Space policy reduction for the executable contracts in
+//! Candidate Space policy reduction for the executable contracts in
 //! `protocol/specs/06-spaces.md` and `07-permissions.md`.
 //!
-//! This module is a policy projection and candidate authorization gate, not an
-//! MLS engine. Kind-6 policy messages enter through [`crate::MlsBoundEvent`];
+//! This module is a policy projection and authorization gate, not an MLS
+//! engine. Kind-6 policy messages enter through [`crate::MlsBoundEvent`];
 //! kind-1–5 and kind-8 actions use event fields and exact MLS-produced plaintext.
 //! Authorized message, edit, tombstone, reaction, and pin actions have a
 //! deterministic in-memory projection. Durable projection storage and voice
 //! authorization are not implemented.
 //!
-//! The binding does not validate credential trust, MLS group-reference mapping,
-//! group membership deltas, or durable recovery. Accepted member transitions do
-//! not merge an `OpenMLS` commit. Current core/MLS APIs expose no opaque
-//! recovery-trust or validated-control proof, so those operations fail closed.
-//! Each [`SpaceReducer`] is one candidate generation. Callers must keep
-//! generations separate by MLS group reference; they must not treat a
-//! candidate-only permission result as a complete authorization decision until
-//! credential trust, membership proof, durable reducer restore, and MLS control
-//! integration are complete. Authorized application bytes can be staged in one
-//! caller transaction with a reducer copy that is installed only after commit.
+//! MLS admission validates credential trust and group references before
+//! producing [`crate::MlsBoundEvent`]. The core transaction path stages the
+//! exact MLS Commit, validates its parent-epoch transition against policy, and
+//! atomically merges the Commit with both durable signed event records. Each
+//! [`SpaceReducer`] remains a candidate generation; callers keep generations
+//! separate by MLS group reference. Recovery authorization uses the prior
+//! reducer's retained common policy and binds one exact MLS-authenticated
+//! recovery Genesis.
+//! Accepted membership transitions replay their protected policy history.
+//! Welcome bootstrap import restores one pinned-inviter checkpoint; general
+//! event-history replay and user-facing invitation delivery remain incomplete.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use lattice_events::{EventKind, VerifiedSignatureOnlyEvent};
 use lattice_files::AttachmentManifest;
 use lattice_protocol::{Value, decode_canonical};
 
 use crate::MlsBoundEvent;
+pub mod ephemeral;
 pub mod message_projection;
+pub mod rich_text;
 
 pub const MAX_SPACE_PAYLOAD_BYTES: usize = 262_144;
 pub const MAX_CHANNELS: usize = 256;
@@ -49,6 +55,7 @@ const SPACE_MANAGE: u64 = 1 << 0;
 const CHANNEL_MANAGE: u64 = 1 << 1;
 const ROLE_MANAGE: u64 = 1 << 2;
 const MEMBER_INVITE: u64 = 1 << 3;
+pub(crate) const INVITE_PERMISSION_REQUIREMENTS: u64 = SPACE_MANAGE | MEMBER_INVITE;
 const MEMBER_REMOVE: u64 = 1 << 4;
 const MEMBER_BAN: u64 = 1 << 5;
 const MESSAGE_SEND: u64 = 1 << 6;
@@ -73,6 +80,18 @@ pub type GroupReference = [u8; 32];
 pub type EventReference = [u8; 32];
 pub type Fingerprint = [u8; 32];
 pub type EntityId = [u8; 16];
+
+/// Stable encrypted-payload target for a message mention.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum MentionTarget {
+    /// Full device identity fingerprint; display names are never resolved on wire.
+    Identity(Fingerprint),
+    /// Stable Space role identifier.
+    Role(EntityId),
+}
+
+/// Maximum distinct identity/role references on one message.
+pub const MAX_MESSAGE_MENTIONS: usize = 64;
 
 /// The fixed channel type registry in candidate protocol version 1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,12 +253,12 @@ pub enum RejectReason {
     UnsupportedAction,
 }
 
-/// Opaque input reserved for the future local recovery-gate integration.
+/// Opaque authorization derived from an active prior Space policy and one exact
+/// MLS-bound recovery Genesis event.
 ///
-/// Its fields and constructor are private: the current core/MLS APIs do not
-/// produce a proof that can safely create this value. Recovery genesis is
-/// therefore rejected until that typed integration exists. It does not claim
-/// credential-chain validation or recovery trust.
+/// Only [`SpaceReducer::authorize_recovery_genesis`] can construct this value.
+/// It proves the old generation's current invite permission and binds recovery
+/// to one event and one new group reference.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryAuthorization {
     prior_space_id: SpaceId,
@@ -248,6 +267,67 @@ pub struct RecoveryAuthorization {
     trusted_administrator: Fingerprint,
     recovery_id: EntityId,
     new_group_reference: GroupReference,
+    recovery_event_id: EventReference,
+}
+
+/// Attachment manifest admitted by this reducer for one exact signed event.
+///
+/// Only [`SpaceReducer::authorized_attachment_manifest`] can construct this
+/// capability. It binds receiver creation to the reducer-retained manifest;
+/// filenames and MIME hints remain untrusted display metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedAttachmentManifest {
+    event_id: EventReference,
+    manifest: AttachmentManifest,
+}
+
+impl AuthorizedAttachmentManifest {
+    #[must_use]
+    pub fn event_id(&self) -> &EventReference {
+        &self.event_id
+    }
+
+    #[must_use]
+    pub fn manifest(&self) -> &AttachmentManifest {
+        &self.manifest
+    }
+
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the retained manifest fails its bounds
+    /// validation.
+    pub fn transfer_id(
+        &self,
+    ) -> Result<lattice_files::AttachmentTransferId, lattice_files::AttachmentError> {
+        self.manifest.transfer_id(&self.event_id)
+    }
+
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the staging limit is smaller than the
+    /// manifest size or the retained manifest fails validation.
+    pub fn new_receiver(
+        &self,
+        staging_limit: u64,
+    ) -> Result<lattice_files::AttachmentReceiver, lattice_files::AttachmentError> {
+        lattice_files::AttachmentReceiver::new(self.manifest.clone(), staging_limit)
+    }
+
+    /// # Errors
+    ///
+    /// Returns `AttachmentError` if the staging limit is insufficient, the
+    /// manifest is invalid, or the supplied store cannot be initialized.
+    pub fn new_streamed_receiver<S: std::io::Read + std::io::Write + std::io::Seek>(
+        &self,
+        staging_limit: u64,
+        storage: S,
+    ) -> Result<lattice_files::StreamedAttachmentReceiver<S>, lattice_files::AttachmentError> {
+        lattice_files::StreamedAttachmentReceiver::new(
+            self.manifest.clone(),
+            staging_limit,
+            storage,
+        )
+    }
 }
 
 /// Member action recorded by an admitted kind-6 policy transition.
@@ -258,19 +338,15 @@ pub enum MemberAction {
     Ban,
 }
 
-/// Opaque input reserved for a future typed MLS commit-validation result.
-///
-/// Fields and constructor are private because the current MLS API does not
-/// expose the proof required to create one. Member transitions fail closed
-/// until this integration boundary exists.
+/// Internal relation tying one signed control event to an MLS proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ValidatedMlsControlRelation {
+struct ValidatedMlsControlRelation {
     space_id: SpaceId,
     group_reference: GroupReference,
     control_event_id: EventReference,
     author: Fingerprint,
     parent_epoch: u64,
-    action: MemberAction,
+    mls_action: lattice_mls::api::MlsMembershipAction,
     target: Fingerprint,
     key_package_hash: Option<[u8; 32]>,
 }
@@ -286,6 +362,7 @@ pub struct SpaceReducer {
     history_base: Option<SpacePolicy>,
     root_signed_event: Option<Arc<[u8]>>,
     graph: BTreeMap<EventReference, GraphNode>,
+    bootstrap_anchors: BTreeSet<EventReference>,
     pending: Vec<PendingPolicy>,
     history: Vec<AcceptedPolicyEvent>,
     conflicted: bool,
@@ -317,6 +394,324 @@ impl SpaceReducer {
     pub fn policy(&self) -> Option<&SpacePolicy> {
         self.policy.as_ref()
     }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Keeps signed checkpoint validation together.
+    /// Reconstructs a joined generation from an inviter-signed bootstrap checkpoint.
+    ///
+    /// Historical policy/MLS acceptance is attested by the pinned inviter;
+    /// this method validates the signed root, snapshot consistency, invite,
+    /// signed head anchors, inviter authority in the attested snapshot, and
+    /// recipient's active membership without claiming historical MLS replay.
+    pub(crate) fn from_welcome_bootstrap(
+        root: &VerifiedSignatureOnlyEvent,
+        genesis_plaintext: &[u8],
+        snapshot: SpacePolicy,
+        invite_event: &VerifiedSignatureOnlyEvent,
+        invite_plaintext: &[u8],
+        head_events: &[VerifiedSignatureOnlyEvent],
+        last_control_event: Option<&VerifiedSignatureOnlyEvent>,
+        inviter: &Fingerprint,
+        target: &Fingerprint,
+        current_epoch: u64,
+    ) -> Result<Self, RejectReason> {
+        if root.kind() != EventKind::Membership
+            || root.channel_id().is_some()
+            || !root.parents().is_empty()
+            || root.mls_epoch() != 0
+            || root.space_id() != &snapshot.space_id
+            || root.mls_group_reference() != &snapshot.group_reference
+            || root.event_id().as_bytes() != &snapshot.root_event_id
+            || root.author_fingerprint() != &snapshot.root_author
+            || genesis_plaintext.len() > MAX_SPACE_PAYLOAD_BYTES
+        {
+            return Err(RejectReason::InvalidGenesisContext);
+        }
+        let payload = decode_canonical(genesis_plaintext)
+            .map_err(|_| RejectReason::InvalidCanonicalPayload)?;
+        let (creator, baseline_channels) = match parse_operation(&payload)? {
+            Operation::Genesis { creator, channels } => (creator, channels),
+            Operation::RecoveryGenesis {
+                creator, channels, ..
+            } if creator == *inviter => (creator, channels),
+            _ => return Err(RejectReason::InvalidGenesisContext),
+        };
+        if creator != *root.author_fingerprint()
+            || snapshot.root_author != creator
+            || snapshot.heads.is_empty()
+            || snapshot.heads.len() != head_events.len()
+            || snapshot.heads.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(RejectReason::CreatorMismatch);
+        }
+
+        let baseline_ids = baseline_channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect::<BTreeSet<_>>();
+        if baseline_ids.len() != baseline_channels.len()
+            || baseline_channels.iter().any(|baseline| {
+                !snapshot.channels.iter().any(|current| {
+                    current.id == baseline.id && current.channel_type == baseline.channel_type
+                })
+            })
+        {
+            return Err(RejectReason::InvalidValue);
+        }
+        let mut reducer = Self::new();
+        reducer.register_event(root, None, false)?;
+        let channel_order = baseline_channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect::<Vec<_>>();
+        let baseline = SpacePolicy {
+            space_id: *root.space_id(),
+            group_reference: *root.mls_group_reference(),
+            root_event_id: *root.event_id().as_bytes(),
+            root_author: creator,
+            revision: 0,
+            heads: vec![*root.event_id().as_bytes()],
+            channels: baseline_channels,
+            channel_order,
+            custom_roles: Vec::new(),
+            members: vec![Member {
+                fingerprint: creator,
+                status: MemberStatus::Active,
+                assigned_roles: vec![BUILTIN_ROLE_IDS[0]],
+            }],
+            invites: Vec::new(),
+        };
+        reducer.history_base = Some(baseline);
+        reducer.root_signed_event = Some(Arc::from(root.encoded_bytes()));
+
+        if snapshot.space_id != *root.space_id()
+            || snapshot.group_reference != *root.mls_group_reference()
+            || snapshot.root_event_id != *root.event_id().as_bytes()
+            || snapshot.root_author != creator
+            || snapshot.revision == 0 && snapshot.heads != [snapshot.root_event_id]
+            || snapshot
+                .members
+                .iter()
+                .find(|member| member.fingerprint == *target)
+                .is_none_or(|member| member.status != MemberStatus::Active)
+            || snapshot
+                .members
+                .iter()
+                .find(|member| member.fingerprint == *inviter)
+                .is_none_or(|member| member.status != MemberStatus::Active)
+            || effective_space(&snapshot, inviter) & (SPACE_MANAGE | MEMBER_INVITE)
+                != (SPACE_MANAGE | MEMBER_INVITE)
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+
+        if invite_event.kind() != EventKind::Membership
+            || invite_event.channel_id().is_some()
+            || invite_event.space_id() != root.space_id()
+            || invite_event.mls_group_reference() != root.mls_group_reference()
+            || invite_event.author_fingerprint() != inviter
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        let invite_payload = decode_canonical(invite_plaintext)
+            .map_err(|_| RejectReason::InvalidCanonicalPayload)?;
+        let Operation::Invite {
+            id,
+            target: invite_target,
+            key_package_hash,
+            expires_at_revision,
+            max_uses,
+        } = parse_operation(&invite_payload)?
+        else {
+            return Err(RejectReason::InvalidTransition);
+        };
+        let invite_id = *invite_event.event_id().as_bytes();
+        if invite_target != *target
+            || snapshot.invites.iter().all(|invite| {
+                invite.id != id
+                    || invite.event_id != invite_id
+                    || invite.target != invite_target
+                    || invite.key_package_hash != key_package_hash
+                    || invite.expires_at_revision != expires_at_revision
+                    || invite.max_uses != max_uses
+                    || invite.uses == 0
+            })
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        reducer.register_event(invite_event, None, false)?;
+        reducer.bootstrap_anchors.insert(invite_id);
+
+        for (expected_id, head) in snapshot.heads.iter().zip(head_events) {
+            if head.kind() != EventKind::Membership
+                || head.channel_id().is_some()
+                || head.space_id() != root.space_id()
+                || head.mls_group_reference() != root.mls_group_reference()
+                || head.event_id().as_bytes() != expected_id
+            {
+                return Err(RejectReason::IncompletePolicyHeads);
+            }
+            reducer.register_event(head, None, false)?;
+            reducer.bootstrap_anchors.insert(*expected_id);
+        }
+        match last_control_event {
+            Some(event)
+                if event.kind() == EventKind::MlsControl
+                    && event.channel_id().is_none()
+                    && event.space_id() == root.space_id()
+                    && event.mls_group_reference() == root.mls_group_reference()
+                    && current_epoch > 0
+                    && event.mls_epoch().checked_add(1) == Some(current_epoch) =>
+            {
+                let event_id = *event.event_id().as_bytes();
+                reducer.register_event(event, None, false)?;
+                reducer.bootstrap_anchors.insert(event_id);
+            }
+            None if current_epoch == 0 => {}
+            _ => return Err(RejectReason::InvalidControlRelation),
+        }
+        if current_epoch > 0 && last_control_event.is_none() {
+            return Err(RejectReason::InvalidControlRelation);
+        }
+        reducer.policy = Some(snapshot.clone());
+        reducer.history_base = Some(snapshot);
+        Ok(reducer)
+    }
+
+    pub(crate) fn register_checkpoint_covered_membership_history(
+        &mut self,
+        policy_events: &[VerifiedSignatureOnlyEvent],
+        control: &VerifiedSignatureOnlyEvent,
+        transition: &VerifiedSignatureOnlyEvent,
+    ) -> Result<(), RejectReason> {
+        let policy = self.policy.as_ref().ok_or(RejectReason::MissingPolicy)?;
+        let inviter = *control.author_fingerprint();
+        let control_id = *control.event_id().as_bytes();
+        let transition_id = *transition.event_id().as_bytes();
+        if control.kind() != EventKind::MlsControl
+            || transition.kind() != EventKind::Membership
+            || control.channel_id().is_some()
+            || transition.channel_id().is_some()
+            || control.space_id() != &policy.space_id
+            || transition.space_id() != &policy.space_id
+            || control.mls_group_reference() != &policy.group_reference
+            || transition.mls_group_reference() != &policy.group_reference
+            || control.mls_epoch() != transition.mls_epoch()
+            || transition.author_fingerprint() != &inviter
+            || !transition
+                .parents()
+                .iter()
+                .any(|parent| parent.as_bytes() == &control_id)
+            || policy.members.iter().all(|member| {
+                member.fingerprint != inviter || member.status != MemberStatus::Active
+            })
+            || effective_space(policy, &inviter) & (SPACE_MANAGE | MEMBER_INVITE)
+                != (SPACE_MANAGE | MEMBER_INVITE)
+            || !self.bootstrap_anchors.iter().any(|anchor| {
+                self.graph.get(anchor).is_some_and(|node| {
+                    node.author == inviter && node.parents.contains(&transition_id)
+                })
+            })
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        for event in policy_events {
+            if event.kind() != EventKind::Membership
+                || event.channel_id().is_some()
+                || event.space_id() != &policy.space_id
+                || event.mls_group_reference() != &policy.group_reference
+                || event.mls_epoch() != control.mls_epoch()
+                || event.author_fingerprint() != &inviter
+                || !control
+                    .parents()
+                    .iter()
+                    .any(|parent| parent.as_bytes() == event.event_id().as_bytes())
+            {
+                return Err(RejectReason::InvalidControlRelation);
+            }
+        }
+        for event in policy_events
+            .iter()
+            .chain(std::iter::once(control))
+            .chain(std::iter::once(transition))
+        {
+            let event_id = *event.event_id().as_bytes();
+            self.register_event(event, None, false)?;
+            self.bootstrap_anchors.insert(event_id);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_projected_message(&self, event_id: &EventReference) -> bool {
+        self.graph
+            .get(event_id)
+            .is_some_and(|node| node.kind == EventKind::Message && node.application_authorized)
+    }
+    pub(crate) fn mark_membership_conflicted(
+        &mut self,
+        first: &VerifiedSignatureOnlyEvent,
+        second: &VerifiedSignatureOnlyEvent,
+    ) {
+        self.conflicted = true;
+        for event in [first, second] {
+            let event_id = *event.event_id().as_bytes();
+            self.insert_conflict_evidence(ConflictEvidence {
+                event_id,
+                signed_event: Arc::from(event.encoded_bytes()),
+            });
+            self.quarantined_event_ids.push(event_id);
+        }
+        self.sort_quarantined();
+    }
+
+    /// Returns the exact accepted policy events after a previously checkpointed
+    /// revision. Replay is refused when this reducer has unresolved or conflicted
+    /// state, or when retained history does not begin at its checkpoint.
+    pub(crate) fn policy_replay_events_after(
+        &self,
+        base_revision: u64,
+    ) -> Result<Vec<SpacePolicyReplayEvent>, RejectReason> {
+        let policy = self.policy.as_ref().ok_or(RejectReason::MissingPolicy)?;
+        if self.conflicted
+            || !self.pending.is_empty()
+            || !self.conflict_evidence.is_empty()
+            || !self.quarantined_event_ids.is_empty()
+            || self
+                .history_base
+                .as_ref()
+                .is_none_or(|base| base_revision < base.revision)
+            || base_revision > policy.revision
+        {
+            return Err(RejectReason::InvalidTransition);
+        }
+        let mut expected_revision = base_revision;
+        let mut events = Vec::new();
+        for event in self
+            .history
+            .iter()
+            .filter(|event| event.base_revision >= base_revision)
+        {
+            if event.base_revision != expected_revision {
+                return Err(RejectReason::InvalidTransition);
+            }
+            events.push(SpacePolicyReplayEvent {
+                event_bytes: event.signed_event.to_vec(),
+                plaintext: event.plaintext.to_vec(),
+            });
+            expected_revision = expected_revision
+                .checked_add(1)
+                .ok_or(RejectReason::RevisionOverflow)?;
+        }
+        if expected_revision != policy.revision {
+            return Err(RejectReason::InvalidTransition);
+        }
+        Ok(events)
+    }
+    pub(crate) fn policy_replay_base_revision(&self) -> Result<u64, RejectReason> {
+        self.history_base
+            .as_ref()
+            .map(|base| base.revision)
+            .ok_or(RejectReason::MissingPolicy)
+    }
     /// Materializes the authorized message actions retained by this reducer.
     ///
     /// This in-memory projection preserves every edit/tombstone, applies
@@ -324,6 +719,23 @@ impl SpaceReducer {
     #[must_use]
     pub fn message_history(&self, channel_id: &EntityId) -> message_projection::MessageHistory {
         message_projection::project_channel(&self.graph, channel_id)
+    }
+    /// Return a receiver capability only for a manifest authorized from an
+    /// MLS-bound event retained by this reducer.
+    #[must_use]
+    pub fn authorized_attachment_manifest(
+        &self,
+        event_id: &EventReference,
+    ) -> Option<AuthorizedAttachmentManifest> {
+        let node = self.graph.get(event_id)?;
+        if !node.mls_bound || !node.application_authorized || node.kind != EventKind::FileManifest {
+            return None;
+        }
+        let manifest = node.attachment_manifest.as_ref()?;
+        Some(AuthorizedAttachmentManifest {
+            event_id: *event_id,
+            manifest: manifest.clone(),
+        })
     }
     /// Returns a candidate Space mask unless this generation is conflicted.
     /// A returned mask is not an authorization grant until integration gates
@@ -384,20 +796,141 @@ impl SpaceReducer {
         self.register_event(event, None, false)
     }
 
-    /// Records a kind-7 event with a typed MLS commit-validation result.
-    /// The current MLS API cannot produce this opaque value, so callers cannot
-    /// use this path until that proof-producing integration is added.
+    /// Records a signed kind-7 event only when a staged MLS proof matches it.
+    ///
+    /// The proof binds the exact TLS Commit bytes, group, parent epoch, author,
+    /// changed member, and (for an Add) exact `KeyPackage` hash. It is produced by
+    /// `GroupState::take_staged_membership_change`; passing it consumes the
+    /// one-shot proof, which exists only while that Commit is staged.
     ///
     /// # Errors
     ///
-    /// Returns an error when the event and opaque typed relation disagree, or
-    /// the generation graph reaches its bound.
+    /// Returns an error when the signed event does not exactly match the MLS
+    /// proof, or the generation graph reaches its bound.
     pub fn observe_validated_control_event(
         &mut self,
         event: &VerifiedSignatureOnlyEvent,
-        relation: ValidatedMlsControlRelation,
+        proof: lattice_mls::api::ValidatedMlsMembershipChange,
     ) -> Result<(), RejectReason> {
+        let binding = proof
+            .into_control_binding(
+                event.mls_group_reference(),
+                event.mls_epoch(),
+                event.author_fingerprint(),
+                event.protected_body(),
+            )
+            .ok_or(RejectReason::InvalidControlRelation)?;
+        if event.kind() != EventKind::MlsControl || event.channel_id().is_some() {
+            return Err(RejectReason::InvalidControlRelation);
+        }
+        let relation = ValidatedMlsControlRelation {
+            space_id: *event.space_id(),
+            group_reference: *event.mls_group_reference(),
+            control_event_id: *event.event_id().as_bytes(),
+            author: *event.author_fingerprint(),
+            parent_epoch: event.mls_epoch(),
+            mls_action: binding.action(),
+            target: *binding.target(),
+            key_package_hash: binding.key_package_hash().copied(),
+        };
         self.register_event(event, Some(relation), true)
+    }
+
+    /// Reconstructs a previously validated relation from AEAD-protected local
+    /// evidence. Callers must authenticate the evidence with the device-local
+    /// storage key before invoking this method.
+    pub(crate) fn observe_persisted_control_event(
+        &mut self,
+        event: &VerifiedSignatureOnlyEvent,
+        action: lattice_mls::api::MlsMembershipAction,
+        target: Fingerprint,
+        key_package_hash: Option<[u8; 32]>,
+    ) -> Result<(), RejectReason> {
+        if event.kind() != EventKind::MlsControl
+            || event.channel_id().is_some()
+            || (action == lattice_mls::api::MlsMembershipAction::Add) != key_package_hash.is_some()
+        {
+            return Err(RejectReason::InvalidControlRelation);
+        }
+        self.register_event(
+            event,
+            Some(ValidatedMlsControlRelation {
+                space_id: *event.space_id(),
+                group_reference: *event.mls_group_reference(),
+                control_event_id: *event.event_id().as_bytes(),
+                author: *event.author_fingerprint(),
+                parent_epoch: event.mls_epoch(),
+                mls_action: action,
+                target,
+                key_package_hash,
+            }),
+            true,
+        )
+    }
+
+    /// Authorizes one recovery Genesis using the prior generation's retained
+    /// common policy and the event's MLS-authenticated creator.
+    ///
+    /// The supplied event must be a root Membership event at epoch zero in a
+    /// distinct group and must contain the exact recovery references. The
+    /// creator must currently hold both Space management and member-invite
+    /// permissions in this reducer. The returned proof is bound to this event;
+    /// it cannot authorize another root or group.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RejectReason::InvalidRecoveryAuthorization`] when the event is
+    /// not a valid recovery root for this generation or its author lacks the
+    /// required permission. Returns the relevant payload/schema error when the
+    /// recovery operation cannot be decoded.
+    pub fn authorize_recovery_genesis(
+        &self,
+        event: &MlsBoundEvent,
+    ) -> Result<RecoveryAuthorization, RejectReason> {
+        let policy = self
+            .policy
+            .as_ref()
+            .ok_or(RejectReason::InvalidRecoveryAuthorization)?;
+        let verified = event.event();
+        if verified.kind() != EventKind::Membership
+            || verified.channel_id().is_some()
+            || verified.space_id() != &policy.space_id
+            || verified.mls_group_reference() == &policy.group_reference
+            || verified.mls_epoch() != 0
+            || !verified.parents().is_empty()
+            || event.plaintext().len() > MAX_SPACE_PAYLOAD_BYTES
+        {
+            return Err(RejectReason::InvalidRecoveryAuthorization);
+        }
+        let payload = decode_canonical(event.plaintext())
+            .map_err(|_| RejectReason::InvalidCanonicalPayload)?;
+        let Operation::RecoveryGenesis {
+            creator,
+            prior_group,
+            prior_root,
+            recovery_id,
+            ..
+        } = parse_operation(&payload)?
+        else {
+            return Err(RejectReason::InvalidRecoveryAuthorization);
+        };
+        if creator != *verified.author_fingerprint()
+            || prior_group != policy.group_reference
+            || prior_root != policy.root_event_id
+        {
+            return Err(RejectReason::InvalidRecoveryAuthorization);
+        }
+        require_permission(policy, creator, SPACE_MANAGE | MEMBER_INVITE)
+            .map_err(|_| RejectReason::InvalidRecoveryAuthorization)?;
+        Ok(RecoveryAuthorization {
+            prior_space_id: policy.space_id,
+            prior_group_reference: policy.group_reference,
+            prior_root_event_id: policy.root_event_id,
+            trusted_administrator: creator,
+            recovery_id,
+            new_group_reference: *verified.mls_group_reference(),
+            recovery_event_id: *verified.event_id().as_bytes(),
+        })
     }
 
     /// Applies one exact kind-6 candidate application payload. Event metadata
@@ -448,6 +981,7 @@ impl SpaceReducer {
             metadata: EventMetadata::from_verified(verified_event),
             operation,
             recovery: recovery.cloned(),
+            plaintext: Arc::from(event.plaintext().to_vec()),
         };
         match self.apply_ready(&pending) {
             ApplyResult::Pending => {
@@ -518,15 +1052,16 @@ impl SpaceReducer {
         if channel.archived {
             return EventAuthorization::Rejected(RejectReason::UnknownEntity);
         }
-        let action = match parse_application_action(verified_event.kind(), event.plaintext()) {
-            Ok(action) => action,
-            Err(reason) => return EventAuthorization::Rejected(reason),
-        };
+        let (action, attachment_manifest) =
+            match parse_application_action(verified_event.kind(), event.plaintext()) {
+                Ok(parsed) => parsed,
+                Err(reason) => return EventAuthorization::Rejected(reason),
+            };
         if channel.channel_type == ChannelType::Voice {
             return EventAuthorization::Rejected(RejectReason::WrongChannelType);
         }
         let required_permissions =
-            match application_permissions(&action, &metadata, &self.graph, &ancestors) {
+            match application_permissions(&action, &metadata, &self.graph, &ancestors, policy) {
                 Ok(required) => required,
                 Err(reason) => return EventAuthorization::Rejected(reason),
             };
@@ -536,7 +1071,9 @@ impl SpaceReducer {
         {
             return EventAuthorization::Rejected(RejectReason::Unauthorized);
         }
-        if let Err(reason) = self.retain_application_action(metadata.event_id, action) {
+        if let Err(reason) =
+            self.retain_application_action(metadata.event_id, action, attachment_manifest)
+        {
             return EventAuthorization::Rejected(reason);
         }
         EventAuthorization::Authorized {
@@ -548,6 +1085,7 @@ impl SpaceReducer {
         &mut self,
         event_id: EventReference,
         action: ApplicationAction,
+        attachment_manifest: Option<AttachmentManifest>,
     ) -> Result<(), RejectReason> {
         let reaction_tag = match &action {
             ApplicationAction::Reaction {
@@ -561,20 +1099,34 @@ impl SpaceReducer {
             }),
             _ => None,
         };
+        let current_node = self.graph.get(&event_id);
         if reaction_tag.as_ref().is_some_and(|reaction_tag| {
-            self.graph
-                .get(&event_id)
+            current_node
                 .and_then(|node| node.reaction_tag.as_ref())
                 .is_some_and(|existing| existing != reaction_tag)
         }) {
             return Err(RejectReason::GraphConflict);
         }
-        let current_action = self
-            .graph
-            .get(&event_id)
-            .and_then(|node| node.application_action.as_ref());
+        if attachment_manifest.is_some() != matches!(&action, ApplicationAction::FileManifest) {
+            return Err(RejectReason::GraphConflict);
+        }
+        if current_node
+            .and_then(|node| node.attachment_manifest.as_ref())
+            .is_some_and(|existing| Some(existing) != attachment_manifest.as_ref())
+        {
+            return Err(RejectReason::GraphConflict);
+        }
+        let current_action = current_node.and_then(|node| node.application_action.as_ref());
+        if current_action.is_some_and(|existing| existing != &action) {
+            return Err(RejectReason::GraphConflict);
+        }
+        let manifest_bytes = attachment_manifest.as_ref().map_or(0, |manifest| {
+            manifest.filename.len()
+                + manifest.mime_type.as_ref().map_or(0, String::len)
+                + manifest.chunk_hashes.len() * std::mem::size_of::<[u8; 32]>()
+        });
         let additional_history_bytes = if current_action.is_none() {
-            action.retained_bytes()
+            action.retained_bytes() + manifest_bytes
         } else {
             0
         };
@@ -589,15 +1141,11 @@ impl SpaceReducer {
             .graph
             .get_mut(&event_id)
             .ok_or(RejectReason::GraphConflict)?;
-        if node
-            .application_action
-            .as_ref()
-            .is_some_and(|existing| existing != &action)
-        {
-            return Err(RejectReason::GraphConflict);
-        }
         node.application_authorized = true;
         node.application_action = Some(action);
+        if attachment_manifest.is_some() {
+            node.attachment_manifest = attachment_manifest;
+        }
         if reaction_tag.is_some() {
             node.reaction_tag = reaction_tag;
         }
@@ -660,7 +1208,8 @@ impl SpaceReducer {
                 || relation.author != *event.author_fingerprint()
                 || relation.parent_epoch != event.mls_epoch()
                 || event.channel_id().is_some()
-                || (relation.action == MemberAction::Admit) != relation.key_package_hash.is_some())
+                || (relation.mls_action == lattice_mls::api::MlsMembershipAction::Add)
+                    != relation.key_package_hash.is_some())
         {
             return Err(RejectReason::InvalidControlRelation);
         }
@@ -678,6 +1227,7 @@ impl SpaceReducer {
             mls_bound,
             application_authorized: false,
             application_action: None,
+            attachment_manifest: None,
             reaction_tag: None,
         };
         if let Some(previous) = self.graph.get(&id) {
@@ -832,6 +1382,7 @@ impl SpaceReducer {
             || authorization.trusted_administrator != creator
             || authorization.recovery_id != recovery_id
             || authorization.new_group_reference != metadata.group_reference
+            || authorization.recovery_event_id != metadata.event_id
             || metadata.group_reference == prior_group
         {
             return ApplyResult::Rejected(RejectReason::InvalidRecoveryAuthorization);
@@ -970,6 +1521,7 @@ impl SpaceReducer {
                     epoch: pending.metadata.epoch,
                     operation,
                     signed_event: pending.metadata.signed_event.clone(),
+                    plaintext: pending.plaintext.clone(),
                 });
                 ApplyResult::Applied { revision }
             }
@@ -1119,6 +1671,10 @@ impl SpaceReducer {
             if ancestors.len() > MAX_GRAPH_EVENTS {
                 return Err(AncestorError::Rejected(RejectReason::LimitExceeded));
             }
+            if self.bootstrap_anchors.contains(&id) {
+                visited.insert(id);
+                continue;
+            }
             stack.push((id, true));
             for parent in node.parents.iter().rev() {
                 stack.push((*parent, false));
@@ -1200,6 +1756,7 @@ struct GraphNode {
     mls_bound: bool,
     application_authorized: bool,
     application_action: Option<ApplicationAction>,
+    attachment_manifest: Option<AttachmentManifest>,
     reaction_tag: Option<ReactionTag>,
 }
 
@@ -1214,6 +1771,7 @@ struct PendingPolicy {
     metadata: EventMetadata,
     operation: Operation,
     recovery: Option<RecoveryAuthorization>,
+    plaintext: Arc<[u8]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1226,6 +1784,15 @@ struct AcceptedPolicyEvent {
     epoch: u64,
     operation: Operation,
     signed_event: Arc<[u8]>,
+    plaintext: Arc<[u8]>,
+}
+
+/// Exact signed policy event bytes and the locally authenticated MLS plaintext
+/// needed to replay an accepted policy projection after restart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SpacePolicyReplayEvent {
+    pub(crate) event_bytes: Vec<u8>,
+    pub(crate) plaintext: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1274,13 +1841,16 @@ enum Operation {
 enum ApplicationAction {
     Message {
         content: Arc<str>,
+        rich_text: rich_text::RichText,
         thread_root: Option<EventReference>,
         mention_everyone: bool,
+        mentions: Vec<MentionTarget>,
         attachments: Vec<EventReference>,
     },
     Edit {
         target: EventReference,
         content: Arc<str>,
+        rich_text: rich_text::RichText,
     },
     Tombstone {
         target: EventReference,
@@ -1302,7 +1872,18 @@ enum ApplicationAction {
 impl ApplicationAction {
     fn retained_bytes(&self) -> usize {
         match self {
-            Self::Message { content, .. } | Self::Edit { content, .. } => content.len(),
+            Self::Message {
+                content,
+                rich_text,
+                mentions,
+                ..
+            } => content
+                .len()
+                .saturating_add(rich_text.retained_bytes())
+                .saturating_add(mentions.len().saturating_mul(33)),
+            Self::Edit {
+                content, rich_text, ..
+            } => content.len().saturating_add(rich_text.retained_bytes()),
             Self::Tombstone {
                 moderation_reason, ..
             } => moderation_reason.as_ref().map_or(0, String::len),
@@ -1533,6 +2114,14 @@ fn apply_operation(
             let control_node = graph
                 .get(control_event_id)
                 .ok_or(RejectReason::InvalidControlRelation)?;
+            let proof_matches_action = match action {
+                MemberAction::Admit => {
+                    control.mls_action == lattice_mls::api::MlsMembershipAction::Add
+                }
+                MemberAction::Remove | MemberAction::Ban => {
+                    control.mls_action == lattice_mls::api::MlsMembershipAction::Remove
+                }
+            };
             if control_node.kind != EventKind::MlsControl
                 || !ancestors.contains(control_event_id)
                 || control.space_id != policy.space_id
@@ -1541,7 +2130,7 @@ fn apply_operation(
                 || control.parent_epoch != event_epoch
                 || control_node.epoch != event_epoch
                 || control.target != *target
-                || control.action != *action
+                || !proof_matches_action
             {
                 return Err(RejectReason::InvalidControlRelation);
             }
@@ -1672,7 +2261,7 @@ fn require_permission(
     Ok(())
 }
 
-fn effective_space(policy: &SpacePolicy, fingerprint: &Fingerprint) -> u64 {
+pub(crate) fn effective_space(policy: &SpacePolicy, fingerprint: &Fingerprint) -> u64 {
     if *fingerprint == policy.root_author {
         return OWNER_GRANTS;
     }
@@ -1980,25 +2569,36 @@ fn parse_channel_order(payload: &Value) -> Result<Operation, RejectReason> {
 fn parse_application_action(
     kind: EventKind,
     plaintext: &[u8],
-) -> Result<ApplicationAction, RejectReason> {
+) -> Result<(ApplicationAction, Option<AttachmentManifest>), RejectReason> {
     let payload = decode_canonical(plaintext).map_err(|_| RejectReason::InvalidCanonicalPayload)?;
     match kind {
-        EventKind::Message => parse_message_action(&payload),
-        EventKind::Edit => parse_edit_action(&payload),
-        EventKind::Tombstone => parse_tombstone_action(&payload),
-        EventKind::Reaction => parse_reaction_action(&payload),
-        EventKind::Pin => parse_pin_action(&payload),
-        EventKind::FileManifest => parse_file_manifest_action(&payload),
+        EventKind::Message => parse_message_action(&payload).map(|action| (action, None)),
+        EventKind::Edit => parse_edit_action(&payload).map(|action| (action, None)),
+        EventKind::Tombstone => parse_tombstone_action(&payload).map(|action| (action, None)),
+        EventKind::Reaction => parse_reaction_action(&payload).map(|action| (action, None)),
+        EventKind::Pin => parse_pin_action(&payload).map(|action| (action, None)),
+        EventKind::FileManifest => parse_file_manifest_action(&payload)
+            .map(|manifest| (ApplicationAction::FileManifest, Some(manifest))),
         EventKind::VoiceSignal => Err(RejectReason::UnsupportedAction),
-        EventKind::Membership | EventKind::MlsControl => Err(RejectReason::WrongEventKind),
+        EventKind::Membership | EventKind::MlsControl | EventKind::Ephemeral => {
+            Err(RejectReason::WrongEventKind)
+        }
     }
 }
 
 fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
-    let fields = exact_map(payload, &[0, 1, 2, 3, 4])?;
-    if unsigned(fields[0])? != 1 {
-        return Err(RejectReason::InvalidSchema);
-    }
+    let version = match payload {
+        Value::Map(fields) if fields.first().is_some_and(|(key, _)| *key == 0) => {
+            unsigned(&fields[0].1)?
+        }
+        _ => return Err(RejectReason::InvalidSchema),
+    };
+    let fields = match version {
+        1 => exact_map(payload, &[0, 1, 2, 3, 4])?,
+        2 => exact_map(payload, &[0, 1, 2, 3, 4, 5])?,
+        3 => exact_map(payload, &[0, 1, 2, 3, 4, 5, 6])?,
+        _ => return Err(RejectReason::InvalidSchema),
+    };
     let Value::Text(content) = fields[1] else {
         return Err(RejectReason::InvalidValue);
     };
@@ -2023,28 +2623,87 @@ fn parse_message_action(payload: &Value) -> Result<ApplicationAction, RejectReas
     if attachments.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(RejectReason::InvalidValue);
     }
+    let mentions = if version == 1 {
+        Vec::new()
+    } else {
+        parse_mentions(fields[5])?
+    };
+    let rich_text = parse_rich_text(content, if version == 3 { Some(fields[6]) } else { None })?;
     Ok(ApplicationAction::Message {
         content: Arc::from(content.as_str()),
+        rich_text,
         thread_root,
         mention_everyone,
+        mentions,
         attachments,
     })
 }
 
-fn parse_edit_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
-    let fields = exact_map(payload, &[0, 1, 2])?;
-    if unsigned(fields[0])? != 1 {
-        return Err(RejectReason::InvalidSchema);
+fn parse_mentions(value: &Value) -> Result<Vec<MentionTarget>, RejectReason> {
+    let Value::Array(values) = value else {
+        return Err(RejectReason::InvalidValue);
+    };
+    if values.len() > MAX_MESSAGE_MENTIONS {
+        return Err(RejectReason::LimitExceeded);
     }
+    let mut mentions = Vec::with_capacity(values.len());
+    for value in values {
+        let Value::Array(fields) = value else {
+            return Err(RejectReason::InvalidValue);
+        };
+        if fields.len() != 2 {
+            return Err(RejectReason::InvalidValue);
+        }
+        let target = match unsigned(&fields[0])? {
+            0 => MentionTarget::Identity(fixed_bytes(&fields[1])?),
+            1 => MentionTarget::Role(fixed_bytes(&fields[1])?),
+            _ => return Err(RejectReason::InvalidValue),
+        };
+        mentions.push(target);
+    }
+    if mentions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(RejectReason::InvalidValue);
+    }
+    Ok(mentions)
+}
+fn parse_rich_text(
+    source: &str,
+    encoded_spans: Option<&Value>,
+) -> Result<rich_text::RichText, RejectReason> {
+    let result = match encoded_spans {
+        Some(spans) => rich_text::RichText::parse_with_spans(source, spans),
+        None => rich_text::RichText::parse(source),
+    };
+    result.map_err(|error| match error {
+        rich_text::RichTextError::InputTooLarge => RejectReason::PayloadTooLarge,
+        rich_text::RichTextError::TooManySpans => RejectReason::LimitExceeded,
+        rich_text::RichTextError::InvalidWireSpans => RejectReason::InvalidValue,
+    })
+}
+
+fn parse_edit_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+    let version = match payload {
+        Value::Map(fields) if fields.first().is_some_and(|(key, _)| *key == 0) => {
+            unsigned(&fields[0].1)?
+        }
+        _ => return Err(RejectReason::InvalidSchema),
+    };
+    let fields = match version {
+        1 => exact_map(payload, &[0, 1, 2])?,
+        2 => exact_map(payload, &[0, 1, 2, 3])?,
+        _ => return Err(RejectReason::InvalidSchema),
+    };
     let Value::Text(content) = fields[2] else {
         return Err(RejectReason::InvalidValue);
     };
     if content.len() > MAX_SPACE_PAYLOAD_BYTES {
         return Err(RejectReason::PayloadTooLarge);
     }
+    let rich_text = parse_rich_text(content, if version == 2 { Some(fields[3]) } else { None })?;
     Ok(ApplicationAction::Edit {
         target: fixed_bytes(fields[1])?,
         content: Arc::from(content.as_str()),
+        rich_text,
     })
 }
 
@@ -2112,7 +2771,8 @@ fn parse_pin_action(payload: &Value) -> Result<ApplicationAction, RejectReason> 
         tag,
     })
 }
-fn parse_file_manifest_action(payload: &Value) -> Result<ApplicationAction, RejectReason> {
+
+fn parse_file_manifest_action(payload: &Value) -> Result<AttachmentManifest, RejectReason> {
     let fields = exact_map(payload, &[0, 1, 2, 3, 4, 5])?;
     if unsigned(fields[0])? != 1 {
         return Err(RejectReason::InvalidSchema);
@@ -2140,16 +2800,17 @@ fn parse_file_manifest_action(payload: &Value) -> Result<ApplicationAction, Reje
         .iter()
         .map(fixed_bytes::<32>)
         .collect::<Result<Vec<_>, _>>()?;
-    AttachmentManifest {
+    let manifest = AttachmentManifest {
         filename: filename.clone(),
         mime_type,
         file_size,
         file_hash,
         chunk_hashes,
-    }
-    .validate()
-    .map_err(|_| RejectReason::InvalidValue)?;
-    Ok(ApplicationAction::FileManifest)
+    };
+    manifest
+        .validate()
+        .map_err(|_| RejectReason::InvalidValue)?;
+    Ok(manifest)
 }
 
 fn application_permissions(
@@ -2157,6 +2818,7 @@ fn application_permissions(
     metadata: &EventMetadata,
     graph: &BTreeMap<EventReference, GraphNode>,
     ancestors: &std::collections::BTreeSet<EventReference>,
+    policy: &SpacePolicy,
 ) -> Result<u64, RejectReason> {
     let channel_id = graph
         .get(&metadata.event_id)
@@ -2186,22 +2848,17 @@ fn application_permissions(
             pin_permissions(*target, *add, *tag, metadata, channel_id, graph, ancestors)?
         }
     };
-    if let ApplicationAction::Message {
-        thread_root,
-        mention_everyone,
-        attachments,
-        ..
-    } = action
-    {
-        required |= message_extra_permissions(
-            *thread_root,
-            *mention_everyone,
-            attachments,
-            metadata,
-            channel_id,
-            graph,
-            ancestors,
-        )?;
+    if let ApplicationAction::Message { mentions, .. } = action {
+        if mentions.iter().any(|mention| match mention {
+            MentionTarget::Identity(_) => false,
+            MentionTarget::Role(role_id) => {
+                !is_builtin_role(role_id)
+                    && !policy.custom_roles.iter().any(|role| &role.id == role_id)
+            }
+        }) {
+            return Err(RejectReason::UnknownEntity);
+        }
+        required |= message_extra_permissions(action, metadata, channel_id, graph, ancestors)?;
     }
     Ok(required)
 }
@@ -2347,18 +3004,26 @@ fn pin_permissions(
 }
 
 fn message_extra_permissions(
-    thread_root: Option<EventReference>,
-    mention_everyone: bool,
-    attachments: &[EventReference],
+    action: &ApplicationAction,
     metadata: &EventMetadata,
     channel_id: EntityId,
     graph: &BTreeMap<EventReference, GraphNode>,
     ancestors: &std::collections::BTreeSet<EventReference>,
 ) -> Result<u64, RejectReason> {
+    let ApplicationAction::Message {
+        thread_root,
+        mention_everyone,
+        mentions,
+        attachments,
+        ..
+    } = action
+    else {
+        return Err(RejectReason::WrongEventKind);
+    };
     let mut required = 0;
     if let Some(thread_root) = thread_root {
         let _ = application_target(
-            thread_root,
+            *thread_root,
             EventKind::Message,
             metadata,
             channel_id,
@@ -2367,7 +3032,11 @@ fn message_extra_permissions(
         )?;
         required |= THREAD_CREATE;
     }
-    if mention_everyone {
+    if *mention_everyone
+        || mentions
+            .iter()
+            .any(|mention| matches!(mention, MentionTarget::Role(_)))
+    {
         required |= MENTION_EVERYONE;
     }
     for attachment in attachments {
@@ -2702,6 +3371,103 @@ mod tests {
         assert_eq!(reducer.policy().unwrap().root_author, creator);
     }
 
+    fn recovery_genesis_payload(
+        creator: Fingerprint,
+        prior_group: GroupReference,
+        prior_root: EventReference,
+        recovery_id: EntityId,
+        channel: EntityId,
+    ) -> Value {
+        policy([
+            (0, Value::Unsigned(1)),
+            (1, Value::Unsigned(1)),
+            (2, Value::Bytes(creator.to_vec())),
+            (3, Value::Bytes(prior_group.to_vec())),
+            (4, Value::Bytes(prior_root.to_vec())),
+            (5, Value::Bytes(recovery_id.to_vec())),
+            (6, Value::Array(vec![channel_descriptor(channel)])),
+        ])
+    }
+
+    #[test]
+    fn recovery_requires_current_admin_and_binds_one_new_group_root() {
+        let identity = DeviceIdentity::generate().unwrap();
+        let creator = identity.public_bundle().fingerprint();
+        let space = [18; 16];
+        let prior_group = [19; 32];
+        let new_group = [20; 32];
+        let genesis = make_bound_event(
+            &identity,
+            space,
+            prior_group,
+            0,
+            Vec::new(),
+            genesis_payload(creator, [21; 16]),
+        );
+        let prior_root = *genesis.event().event_id().as_bytes();
+        let mut prior = SpaceReducer::new();
+        assert_eq!(
+            prior.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+
+        let recovery_id = [22; 16];
+        let recovery = make_bound_event(
+            &identity,
+            space,
+            new_group,
+            0,
+            Vec::new(),
+            recovery_genesis_payload(creator, prior_group, prior_root, recovery_id, [23; 16]),
+        );
+        let authorization = prior
+            .authorize_recovery_genesis(&recovery)
+            .expect("the active owner may recover into a new group");
+        let mut recovered = SpaceReducer::new();
+        assert_eq!(
+            recovered.apply(&recovery, Some(&authorization)),
+            ApplyResult::Applied { revision: 0 }
+        );
+        let policy = recovered.policy().expect("recovery root is active");
+        assert_eq!(policy.space_id, space);
+        assert_eq!(policy.group_reference, new_group);
+        assert_eq!(policy.root_author, creator);
+
+        let other_group = make_bound_event(
+            &identity,
+            space,
+            [24; 32],
+            0,
+            Vec::new(),
+            recovery_genesis_payload(creator, prior_group, prior_root, recovery_id, [25; 16]),
+        );
+        assert_eq!(
+            recovered.apply(&other_group, Some(&authorization)),
+            ApplyResult::Rejected(RejectReason::InvalidRecoveryAuthorization)
+        );
+
+        let outsider = DeviceIdentity::generate().unwrap();
+        let outsider_fingerprint = outsider.public_bundle().fingerprint();
+        let unauthorized = make_bound_event(
+            &outsider,
+            space,
+            [26; 32],
+            0,
+            Vec::new(),
+            recovery_genesis_payload(
+                outsider_fingerprint,
+                prior_group,
+                prior_root,
+                [27; 16],
+                [28; 16],
+            ),
+        );
+        assert_eq!(
+            prior.authorize_recovery_genesis(&unauthorized),
+            Err(RejectReason::InvalidRecoveryAuthorization)
+        );
+    }
+
     #[test]
     fn rejects_malformed_exact_keys_in_nested_descriptors() {
         let identity = DeviceIdentity::generate().unwrap();
@@ -2911,6 +3677,143 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Keep exact proof, ban, and re-invite checks together.
+    fn remove_and_ban_require_remove_proof_and_bans_block_reinvite() {
+        let owner_identity = DeviceIdentity::generate().expect("owner identity");
+        let owner = owner_identity.fingerprint();
+        let target = [0x37; 32];
+        let space_id = [0x38; 16];
+        let group_reference = [0x39; 32];
+        let genesis = make_bound_event(
+            &owner_identity,
+            space_id,
+            group_reference,
+            0,
+            Vec::new(),
+            genesis_payload(owner, [0x3A; 16]),
+        );
+        let mut reducer = SpaceReducer::new();
+        assert_eq!(
+            reducer.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+        let mut base_policy = reducer.policy().expect("Genesis policy").clone();
+        base_policy.members.push(Member {
+            fingerprint: target,
+            status: MemberStatus::Active,
+            assigned_roles: Vec::new(),
+        });
+
+        let control_event_id = [0x3B; 32];
+        let make_control = |mls_action, key_package_hash| GraphNode {
+            space_id,
+            group_reference,
+            author: owner,
+            kind: EventKind::MlsControl,
+            epoch: 0,
+            lamport: 1,
+            author_sequence: 2,
+            parents: vec![*genesis.event().event_id().as_bytes()],
+            channel_id: None,
+            control_relation: Some(ValidatedMlsControlRelation {
+                space_id,
+                group_reference,
+                control_event_id,
+                author: owner,
+                parent_epoch: 0,
+                mls_action,
+                target,
+                key_package_hash,
+            }),
+            mls_bound: true,
+            application_authorized: false,
+            application_action: None,
+            attachment_manifest: None,
+            reaction_tag: None,
+        };
+        let mut graph = BTreeMap::new();
+        graph.insert(
+            control_event_id,
+            make_control(lattice_mls::api::MlsMembershipAction::Remove, None),
+        );
+        let ancestors = BTreeSet::from([control_event_id]);
+        let transition = |action| Operation::MemberTransition {
+            action,
+            target,
+            invite_event_id: None,
+            control_event_id,
+        };
+        let mut removed = base_policy.clone();
+        assert_eq!(
+            apply_operation(
+                &mut removed,
+                owner,
+                [0x3C; 32],
+                &transition(MemberAction::Remove),
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            member_status(&removed, &target),
+            Some(MemberStatus::Removed)
+        );
+
+        let mut banned = base_policy.clone();
+        assert_eq!(
+            apply_operation(
+                &mut banned,
+                owner,
+                [0x3D; 32],
+                &transition(MemberAction::Ban),
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Ok(())
+        );
+        assert_eq!(member_status(&banned, &target), Some(MemberStatus::Banned));
+        let invite = Operation::Invite {
+            id: [0x3E; 16],
+            target,
+            key_package_hash: [0x3F; 32],
+            expires_at_revision: None,
+            max_uses: None,
+        };
+        assert_eq!(
+            apply_operation(
+                &mut banned,
+                owner,
+                [0x40; 32],
+                &invite,
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Err(RejectReason::InvalidTransition)
+        );
+
+        graph.insert(
+            control_event_id,
+            make_control(lattice_mls::api::MlsMembershipAction::Add, Some([0x3F; 32])),
+        );
+        assert_eq!(
+            apply_operation(
+                &mut base_policy,
+                owner,
+                [0x41; 32],
+                &transition(MemberAction::Ban),
+                &graph,
+                &ancestors,
+                0,
+            ),
+            Err(RejectReason::InvalidControlRelation)
+        );
+    }
+
+    #[test]
     fn conflicting_siblings_restore_common_state_and_pause_policy() {
         let identity = DeviceIdentity::generate().unwrap();
         let author = identity.public_bundle().fingerprint();
@@ -2983,6 +3886,23 @@ mod tests {
         assert_eq!(reducer.policy().unwrap().revision, 0);
         assert_eq!(reducer.policy().unwrap().channels[0].name, "general");
         assert_eq!(reducer.conflict_evidence().len(), 2);
+        let recovery_event = make_bound_event(
+            &identity,
+            space,
+            [23; 32],
+            0,
+            Vec::new(),
+            recovery_genesis_payload(author, group, root_id, [24; 16], [25; 16]),
+        );
+        let recovery = reducer
+            .authorize_recovery_genesis(&recovery_event)
+            .expect("the owner retains invite authority in the common policy");
+        let mut recovered = SpaceReducer::new();
+        assert_eq!(
+            recovered.apply(&recovery_event, Some(&recovery)),
+            ApplyResult::Applied { revision: 0 }
+        );
+        assert_eq!(recovered.policy().unwrap().group_reference, [23; 32]);
     }
     // Keeps the cross-action causality and delivery-order convergence fixture
     // together; splitting it would obscure the shared event graph.
@@ -3462,13 +4382,33 @@ mod tests {
                 (5, Value::Array(vec![Value::Bytes(vec![0; 32])])),
             ]),
         );
+        let manifest_id = *file_manifest.event().event_id().as_bytes();
+        assert!(
+            reducer
+                .authorized_attachment_manifest(&manifest_id)
+                .is_none()
+        );
         assert_eq!(
             reducer.authorize_application_event(&file_manifest),
             EventAuthorization::Authorized {
                 required_permissions: MESSAGE_SEND | MESSAGE_ATTACH
             }
         );
-        let manifest_id = *file_manifest.event().event_id().as_bytes();
+        let authorized_manifest = reducer
+            .authorized_attachment_manifest(&manifest_id)
+            .expect("only the authorized event yields a receiver capability");
+        assert_eq!(authorized_manifest.event_id(), &manifest_id);
+        let _transfer_id = authorized_manifest.transfer_id().unwrap();
+        let mut receiver = authorized_manifest.new_receiver(1).unwrap();
+        assert!(matches!(
+            receiver.verified_bytes(),
+            Err(lattice_files::AttachmentError::TransferNotAccepted)
+        ));
+        receiver.accept().unwrap();
+        assert!(matches!(
+            receiver.verified_bytes(),
+            Err(lattice_files::AttachmentError::TransferIncomplete)
+        ));
         let message = make_application_event(
             &identity,
             space,
@@ -3798,5 +4738,161 @@ mod tests {
             reducer.authorize_application_event(&edit),
             EventAuthorization::Rejected(RejectReason::InvalidTarget)
         );
+    }
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn control_event_requires_exact_staged_commit_proof() {
+        use lattice_events::EventDraft;
+        use lattice_mls::api::{DeviceCredentialInput, GroupState, IncomingResult};
+        use openmls::credentials::{Credential, CredentialType};
+        use openmls_rust_crypto::OpenMlsRustCrypto;
+
+        fn test_credential(identity: &DeviceIdentity) -> DeviceCredentialInput {
+            let credential = Credential::new(
+                CredentialType::X509,
+                b"test-only untrusted X.509 placeholder".to_vec(),
+            );
+            DeviceCredentialInput::from_untrusted_x509_credential_for_tests(identity, &credential)
+                .expect("test credential matches the device signer")
+        }
+
+        let provider_alice = OpenMlsRustCrypto::default();
+        let provider_bob = OpenMlsRustCrypto::default();
+        let alice_identity = DeviceIdentity::generate().unwrap();
+        let bob_identity = DeviceIdentity::generate().unwrap();
+        let charlie_identity = DeviceIdentity::generate().unwrap();
+        let alice_credential = test_credential(&alice_identity);
+        let bob_credential = test_credential(&bob_identity);
+        let charlie_credential = test_credential(&charlie_identity);
+        let mut alice =
+            GroupState::create(&provider_alice, &alice_identity, &alice_credential).unwrap();
+        let bob_key_package =
+            GroupState::publish_key_package(&provider_bob, &bob_identity, &bob_credential).unwrap();
+        let bob_add = alice
+            .prepare_add(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                bob_key_package.as_bytes(),
+            )
+            .unwrap();
+        let group_id = alice.group_id();
+        let bob_welcome = alice
+            .accept_prepared_add(&provider_alice, &bob_add, bob_add.commit().as_bytes())
+            .unwrap();
+        let mut bob = GroupState::from_welcome(
+            &provider_bob,
+            &group_id,
+            &bob_credential,
+            bob_welcome.as_bytes(),
+        )
+        .unwrap();
+        let charlie_key_package = GroupState::publish_key_package(
+            &provider_alice,
+            &charlie_identity,
+            &charlie_credential,
+        )
+        .unwrap();
+        let charlie_add = alice
+            .prepare_add(
+                &provider_alice,
+                &alice_identity,
+                &alice_credential,
+                charlie_key_package.as_bytes(),
+            )
+            .unwrap();
+        let commit = charlie_add.commit().as_bytes();
+        assert!(matches!(
+            bob.process_incoming(&provider_bob, commit),
+            Ok(IncomingResult::StagedCommit { .. })
+        ));
+        let proof = bob.take_staged_membership_change().unwrap();
+        let parent_epoch = proof.parent_epoch();
+        let space = [80; 16];
+        let group = alice.group_reference();
+        let channel = [81; 16];
+        let mut reducer = SpaceReducer::new();
+        let genesis = make_bound_event(
+            &alice_identity,
+            space,
+            group,
+            0,
+            Vec::new(),
+            genesis_payload(alice_identity.fingerprint(), channel),
+        );
+        let root_id = *genesis.event().event_id().as_bytes();
+        assert_eq!(
+            reducer.apply(&genesis, None),
+            ApplyResult::Applied { revision: 0 }
+        );
+        let invite_id = [82; 16];
+        let target = charlie_identity.fingerprint();
+        let key_package_hash = *proof.key_package_hash().unwrap();
+        let invite = make_bound_event(
+            &alice_identity,
+            space,
+            group,
+            parent_epoch,
+            vec![root_id],
+            policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Unsigned(2)),
+                (2, Value::Bytes(invite_id.to_vec())),
+                (3, Value::Bytes(target.to_vec())),
+                (4, Value::Bytes(key_package_hash.to_vec())),
+                (5, Value::Null),
+                (6, Value::Null),
+            ]),
+        );
+        let invite_event_id = *invite.event().event_id().as_bytes();
+        assert_eq!(
+            reducer.apply(&invite, None),
+            ApplyResult::Applied { revision: 1 }
+        );
+        let make_control_event = |body: Vec<u8>, parents: Vec<EventReference>| {
+            VerifiedSignatureOnlyEvent::create(
+                &alice_identity,
+                EventDraft {
+                    space_id: space,
+                    channel_id: None,
+                    author_sequence: 3,
+                    lamport: 0,
+                    wall_time_hint: 0,
+                    parents: parents.into_iter().map(EventId::from_bytes).collect(),
+                    kind: EventKind::MlsControl,
+                    protected_body: body,
+                    mls_group_reference: group,
+                    mls_epoch: parent_epoch,
+                },
+            )
+            .unwrap()
+        };
+        let control = make_control_event(commit.to_vec(), vec![invite_event_id]);
+        let control_id = *control.event_id().as_bytes();
+        reducer
+            .observe_validated_control_event(&control, proof)
+            .expect("exact authenticated Commit binds to the signed control event");
+        let transition = make_bound_event(
+            &alice_identity,
+            space,
+            group,
+            parent_epoch,
+            vec![control_id],
+            policy([
+                (0, Value::Unsigned(1)),
+                (1, Value::Unsigned(6)),
+                (2, Value::Unsigned(0)),
+                (3, Value::Bytes(target.to_vec())),
+                (4, Value::Bytes(invite_event_id.to_vec())),
+                (5, Value::Bytes(control_id.to_vec())),
+            ]),
+        );
+        assert_eq!(
+            reducer.apply(&transition, None),
+            ApplyResult::Applied { revision: 2 }
+        );
+        let accepted = reducer.policy().unwrap();
+        assert_eq!(member_status(accepted, &target), Some(MemberStatus::Active));
+        assert_eq!(accepted.invites[0].uses, 1);
     }
 }

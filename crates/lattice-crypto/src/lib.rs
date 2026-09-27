@@ -1,8 +1,8 @@
 //! Safe Ed25519 adapters and reviewed lower-layer Noise session mechanics.
 //!
-//! Noise sessions do not authenticate a Lattice identity. The remote Noise
-//! static key must be compared with a separately pinned identity before any
-//! application authorization decision.
+//! Noise sessions do not authenticate a Lattice identity by themselves. Higher
+//! layers must bind the completed transcript to separately pinned identity
+//! keys before authorization; generated Noise static keys are not identity keys.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use thiserror::Error;
@@ -95,10 +95,14 @@ mod noise_session {
     /// Exact Noise protocol name used by every session.
     pub const NOISE_PROTOCOL_NAME: &str = "Noise_XX_25519_ChaChaPoly_SHA256";
     /// Maximum size of a Noise handshake packet, in bytes.
-    pub const MAX_NOISE_PACKET_SIZE: usize = 64 * 1024;
+    pub const MAX_NOISE_PACKET_SIZE: usize = 65_535;
     /// Maximum size of the caller-supplied application prologue, in bytes.
     pub const MAX_NOISE_PROLOGUE_SIZE: usize = 4096;
-    const MAX_XX_MESSAGE_OVERHEAD: usize = 80;
+    /// Maximum plaintext accepted by one Noise transport message.
+    ///
+    /// The corresponding ciphertext always fits in one maximum-size packet.
+    pub const MAX_NOISE_TRANSPORT_MESSAGE_SIZE: usize = MAX_NOISE_PACKET_SIZE - 16;
+    const MAX_XX_MESSAGE_OVERHEAD: usize = 96;
 
     /// The explicit local role in a Noise XX handshake.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,9 +441,162 @@ mod noise_session {
             })
         }
 
+        /// Consumes a completed handshake and enters Noise transport mode.
+        ///
+        /// The resulting object retains Snow's directional cipher states and
+        /// never exports traffic keys. Its monotonically increasing nonces
+        /// reject replayed or out-of-order packets; callers must discard the
+        /// session after any transport error.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`NoiseSessionError::HandshakeNotFinished`] before the last
+        /// handshake message, or [`NoiseSessionError::HandshakeFailure`] if
+        /// Snow cannot create the transport state.
+        pub fn finish_transport(
+            mut self,
+        ) -> Result<EstablishedNoiseTransportSession, NoiseSessionError> {
+            if self.step != NoiseHandshakeStep::Finished {
+                return Err(NoiseSessionError::HandshakeNotFinished);
+            }
+
+            let Some(handshake) = self.handshake.take() else {
+                return Err(NoiseSessionError::HandshakeFailure);
+            };
+            if !handshake.is_handshake_finished() {
+                return Err(NoiseSessionError::HandshakeFailure);
+            }
+
+            let remote_static_public_key: [u8; 32] = handshake
+                .get_remote_static()
+                .ok_or(NoiseSessionError::HandshakeFailure)?
+                .try_into()
+                .map_err(|_| NoiseSessionError::HandshakeFailure)?;
+            let session_hash: [u8; 32] = handshake
+                .get_handshake_hash()
+                .try_into()
+                .map_err(|_| NoiseSessionError::HandshakeFailure)?;
+            let transport = handshake
+                .into_transport_mode()
+                .map_err(|_| NoiseSessionError::HandshakeFailure)?;
+
+            Ok(EstablishedNoiseTransportSession {
+                remote_static_public_key,
+                session_hash,
+                failed: false,
+                transport,
+            })
+        }
+
         fn poison(&mut self) {
             self.handshake = None;
             self.step = NoiseHandshakeStep::Failed;
+        }
+    }
+
+    /// Errors from one bounded Noise transport operation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+    pub enum NoiseTransportError {
+        /// The plaintext or ciphertext exceeds the one-message bound.
+        #[error("Noise transport message exceeds its configured bound")]
+        MessageTooLarge,
+        /// A ciphertext is too short to contain a Noise authentication tag.
+        #[error("Noise transport ciphertext is truncated")]
+        TruncatedCiphertext,
+        /// Encryption failed; the caller must discard this session.
+        #[error("Noise transport encryption failed")]
+        EncryptionFailed,
+        /// Authentication/decryption failed; the caller must discard this session.
+        #[error("Noise transport authentication failed")]
+        AuthenticationFailed,
+        /// The transport session previously failed and is unusable.
+        #[error("Noise transport session is failed")]
+        SessionFailed,
+    }
+
+    /// A completed Noise transport channel with private directional cipher state.
+    ///
+    /// The type deliberately has no `Debug`, `Clone`, or serialization
+    /// implementation, and never exposes content keys. A packet can be opened
+    /// only once at the expected transport nonce.
+    pub struct EstablishedNoiseTransportSession {
+        remote_static_public_key: [u8; 32],
+        session_hash: [u8; 32],
+        transport: snow::TransportState,
+        failed: bool,
+    }
+
+    impl EstablishedNoiseTransportSession {
+        /// Returns the remote Noise static public key. It is not an identity
+        /// assertion unless separately bound to a pinned Lattice identity.
+        #[must_use]
+        pub const fn remote_static_public_key(&self) -> &[u8; 32] {
+            &self.remote_static_public_key
+        }
+
+        /// Returns the completed Noise handshake hash for application binding.
+        #[must_use]
+        pub const fn session_hash(&self) -> &[u8; 32] {
+            &self.session_hash
+        }
+
+        /// Encrypts one bounded plaintext using the next directional nonce.
+        ///
+        /// The returned ciphertext is authenticated but is not, by itself,
+        /// authenticated as any Lattice identity.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`NoiseTransportError::MessageTooLarge`] when plaintext
+        /// exceeds the one-message bound, or an opaque Snow encryption error.
+        pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseTransportError> {
+            if self.failed {
+                return Err(NoiseTransportError::SessionFailed);
+            }
+            if plaintext.len() > MAX_NOISE_TRANSPORT_MESSAGE_SIZE {
+                return Err(NoiseTransportError::MessageTooLarge);
+            }
+            let output_len = plaintext
+                .len()
+                .checked_add(16)
+                .ok_or(NoiseTransportError::MessageTooLarge)?;
+            let mut ciphertext = vec![0_u8; output_len];
+            let Ok(written) = self.transport.write_message(plaintext, &mut ciphertext) else {
+                self.failed = true;
+                return Err(NoiseTransportError::EncryptionFailed);
+            };
+            ciphertext.truncate(written);
+            Ok(ciphertext)
+        }
+
+        /// Authenticates and decrypts one packet at the next directional nonce.
+        ///
+        /// A replayed, reordered, truncated, or modified packet fails. The
+        /// caller must discard this session after any error.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when ciphertext is malformed, over the bound, or
+        /// fails Noise authentication.
+        pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseTransportError> {
+            if self.failed {
+                return Err(NoiseTransportError::SessionFailed);
+            }
+            if ciphertext.len() > MAX_NOISE_PACKET_SIZE {
+                self.failed = true;
+                return Err(NoiseTransportError::MessageTooLarge);
+            }
+            if ciphertext.len() < 16 {
+                self.failed = true;
+                return Err(NoiseTransportError::TruncatedCiphertext);
+            }
+            let mut plaintext = vec![0_u8; ciphertext.len() - 16];
+            let Ok(written) = self.transport.read_message(ciphertext, &mut plaintext) else {
+                self.failed = true;
+                return Err(NoiseTransportError::AuthenticationFailed);
+            };
+            plaintext.truncate(written);
+            Ok(plaintext)
         }
     }
 
@@ -470,17 +627,18 @@ mod noise_session {
 }
 
 pub use noise_session::{
-    EstablishedNoiseSession, MAX_NOISE_PACKET_SIZE, MAX_NOISE_PROLOGUE_SIZE, NOISE_PROTOCOL_NAME,
-    NoiseHandshakeStep, NoiseRole, NoiseSession, NoiseSessionError,
+    EstablishedNoiseSession, EstablishedNoiseTransportSession, MAX_NOISE_PACKET_SIZE,
+    MAX_NOISE_PROLOGUE_SIZE, MAX_NOISE_TRANSPORT_MESSAGE_SIZE, NOISE_PROTOCOL_NAME,
+    NoiseHandshakeStep, NoiseRole, NoiseSession, NoiseSessionError, NoiseTransportError,
 };
 
 #[cfg(test)]
 mod noise_session_tests {
     use super::{
-        EstablishedNoiseSession, MAX_NOISE_PACKET_SIZE, MAX_NOISE_PROLOGUE_SIZE,
-        NoiseHandshakeStep, NoiseRole, NoiseSession, NoiseSessionError,
+        EstablishedNoiseSession, EstablishedNoiseTransportSession, MAX_NOISE_PACKET_SIZE,
+        MAX_NOISE_PROLOGUE_SIZE, NoiseHandshakeStep, NoiseRole, NoiseSession, NoiseSessionError,
+        NoiseTransportError,
     };
-
     const PROLOGUE: &[u8] = b"lattice/v1\0capabilities:sync+files\0rendezvous:rotating-token-01";
 
     fn complete_handshake(
@@ -606,5 +764,52 @@ mod noise_session_tests {
             responder.read_message(b""),
             Err(NoiseSessionError::InvalidState { .. })
         ));
+    }
+    fn complete_transport_handshake() -> (
+        EstablishedNoiseTransportSession,
+        EstablishedNoiseTransportSession,
+    ) {
+        let mut initiator = NoiseSession::new(NoiseRole::Initiator, PROLOGUE).unwrap();
+        let mut responder = NoiseSession::new(NoiseRole::Responder, PROLOGUE).unwrap();
+        let message1 = initiator.write_message(b"").unwrap();
+        responder.read_message(&message1).unwrap();
+        let message2 = responder.write_message(b"").unwrap();
+        initiator.read_message(&message2).unwrap();
+        let message3 = initiator.write_message(b"").unwrap();
+        responder.read_message(&message3).unwrap();
+        (
+            initiator.finish_transport().unwrap(),
+            responder.finish_transport().unwrap(),
+        )
+    }
+
+    #[test]
+    fn transport_state_encrypts_and_poison_fails_closed_on_tamper_or_replay() {
+        let (mut initiator, mut responder) = complete_transport_handshake();
+        let ciphertext = initiator.encrypt(b"scoped sync request").unwrap();
+        assert_eq!(
+            responder.decrypt(&ciphertext).unwrap(),
+            b"scoped sync request"
+        );
+        assert_eq!(
+            responder.decrypt(&ciphertext),
+            Err(NoiseTransportError::AuthenticationFailed)
+        );
+        assert_eq!(
+            responder.decrypt(&ciphertext),
+            Err(NoiseTransportError::SessionFailed)
+        );
+
+        let (mut initiator, mut responder) = complete_transport_handshake();
+        let mut tampered = initiator.encrypt(b"scoped sync response").unwrap();
+        tampered[0] ^= 1;
+        assert_eq!(
+            responder.decrypt(&tampered),
+            Err(NoiseTransportError::AuthenticationFailed)
+        );
+        assert_eq!(
+            responder.decrypt(&tampered),
+            Err(NoiseTransportError::SessionFailed)
+        );
     }
 }

@@ -23,6 +23,13 @@ pub const MAX_COLLECTION_ITEMS: usize = 4_096;
 /// Maximum number of nested array/map containers.
 pub const MAX_NESTING_DEPTH: usize = 32;
 
+mod path_upgrade;
+
+pub use path_upgrade::{
+    MAX_PATH_UPGRADE_FRAME_BYTES, NegotiatedPathUpgrades, PATH_UPGRADE_VERSION,
+    PathUpgradeCapabilities, PathUpgradeError,
+};
+
 const EVENT_ID_DOMAIN: &[u8] = b"lattice:event:v1";
 
 /// Values supported by the candidate integer-key CBOR profile.
@@ -554,6 +561,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accepts_exact_string_collection_and_nesting_limits() {
+        let maximum_string = Value::Bytes(vec![0; MAX_STRING_BYTES]);
+        let encoded_string = encode_canonical(&maximum_string).expect("maximum string encodes");
+        assert_eq!(decode_canonical(&encoded_string), Ok(maximum_string));
+
+        let maximum_array = Value::Array(vec![Value::Null; MAX_COLLECTION_ITEMS]);
+        let encoded_array = encode_canonical(&maximum_array).expect("maximum array encodes");
+        assert_eq!(decode_canonical(&encoded_array), Ok(maximum_array));
+
+        let mut maximum_nesting = Value::Null;
+        for _ in 0..MAX_NESTING_DEPTH {
+            maximum_nesting = Value::Array(vec![maximum_nesting]);
+        }
+        let encoded_nesting = encode_canonical(&maximum_nesting).expect("maximum nesting encodes");
+        assert_eq!(decode_canonical(&encoded_nesting), Ok(maximum_nesting));
+    }
+
+    #[test]
+    fn hostile_byte_corpus_is_panic_free_and_decodes_only_canonical_values() {
+        let canonical_seeds: &[&[u8]] = &[
+            &[0xa1, 0x00, 0x01],
+            &[0x83, 0x01, 0x21, 0xf6],
+            &[0x65, b'h', b'e', b'l', b'l', b'o'],
+        ];
+        for seed in canonical_seeds {
+            let value = decode_canonical(seed).expect("seed is canonical CBOR");
+            assert_eq!(
+                encode_canonical(&value).expect("seed value re-encodes"),
+                *seed
+            );
+            for index in 0..seed.len() {
+                for mask in [0x01, 0x80] {
+                    let mut mutated = seed.to_vec();
+                    mutated[index] ^= mask;
+                    if let Ok(value) = decode_canonical(&mutated) {
+                        assert_eq!(
+                            encode_canonical(&value).expect("mutated value remains encodable"),
+                            mutated
+                        );
+                    }
+                }
+            }
+        }
+        let mut state = 0x1f83_d9ab_fb41_bd6b_u64;
+        for _ in 0..4_096 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 512).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            if let Ok(value) = decode_canonical(&input) {
+                assert_eq!(
+                    encode_canonical(&value).expect("decoded values remain encodable"),
+                    input
+                );
+            }
+        }
+    }
     #[test]
     fn encoder_rejects_invalid_map_order_and_over_limit_values() {
         assert_eq!(

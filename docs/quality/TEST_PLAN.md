@@ -6,7 +6,7 @@
 
 | Suite | Scenario | Required result | IDs |
 | --- | --- | --- | --- |
-| Canonical wire | Same object in Rust/Kotlin/Swift, malformed duplicate key and bad length | Same bytes/ID; malformed rejected before allocation | LAT-002–003, NET-003 |
+| Canonical wire | Same object in Rust/Kotlin, malformed duplicate key and bad length | Same bytes/ID; malformed rejected before allocation | LAT-002–003, NET-003 |
 | Auth/policy | Forged admin, wrong genesis, stale member, blocked channel | Never enters valid projection | IDN-004–005, SPC-003–011 |
 | MLS race | Two authorized commits from same epoch, missing proposal/Welcome, delayed merge | Defined ADR-001 branch choice and recovery; no silent insecure winner | SPC-006–007 |
 | Event convergence | Random event permutations with edits/deletes/reactions | Identical valid projections after dependencies | LAT-007, MSG-002/006–008 |
@@ -16,11 +16,11 @@
 | Relays | Two independent relays, duplicates/drop/reorder/retention | Same event ID; withheld content pending; metadata documented | NET-009–013 |
 | Voice | LAN, heterogeneous NAT, TURN, no TURN, small rooms | Correct connected/failure state and bounded measured quality | VOC-001–008 |
 | Privacy | BLE capture, relay capture, log export | No unintended plaintext/key; residual metadata disclosed | LAT-010/019 |
-| Accessibility | VoiceOver/TalkBack, keyboard, scale, reduced motion | All critical states and actions usable | LAT-013, MOB-009 |
+| Accessibility | Android TalkBack, desktop screen reader/keyboard, scale, reduced motion | All critical states and actions usable | LAT-013, MOB-009 |
 
 ## Physical devices and measurements
 
-Test Android↔Android, iOS↔iOS and Android↔iOS with supported/unsupported Wi-Fi Aware hardware. Capture exact model, OS/build, radios, permissions, foreground/locked/background/restarted states and environmental factors. Measure discovery/connection success, useful BLE throughput, end-to-end latency, delivery fraction, duplicated bytes, battery/power, large-sync duration, file resume, voice setup success/jitter/loss and TURN fraction. Use multiple independent trials with uncertainty intervals; separate simulated energy proxy from battery measurement. Never substitute one success on a simulator for cross-platform interoperability.
+Test Android↔Android on supported/unsupported Wi-Fi Aware hardware; verify Android↔desktop and desktop↔desktop protocol behavior separately where a shared transport exists. Capture exact model, OS/build, radios, permissions, foreground/locked/background/restarted states and environmental factors. Measure discovery/connection success, useful BLE throughput, end-to-end latency, delivery fraction, duplicated bytes, battery/power, large-sync duration, file resume, voice setup success/jitter/loss and TURN fraction. Use multiple independent trials with uncertainty intervals; separate simulated energy proxy from battery measurement. Never substitute one success on an Android emulator for physical-radio evidence.
 
 ## Automated gates
 
@@ -34,17 +34,27 @@ An ID becomes **verified** only with implementation revision, test command/scena
 
 Generate small histories across 2–6 members, with random signed message, edit, permission, invite, ban, MLS proposal and Commit operations. Permute deliveries, duplicates, pauses, clock jumps, reconnections and adversarial relays. At each prefix assert: no unauthorized projection; identical accepted sets plus chosen branch policy produce identical views; removed members do not obtain later epoch secrets; no event ID changes on path change; and every pending object has a bounded recovery/failure reason. Exhaustively enumerate very small branch histories where practical, then fuzz longer ones with fixed seeds and shrinking.
 
-Parser fuzzing targets canonical CBOR, envelope headers, BLE fragment assembly, invite URI, MLS wrapper, relay JSON, file manifest and voice signaling. Track corpus, sanitizer mode, runtime budget, crash/panic and memory peaks. A zero-crash run on one budget is not proof of security; all reproducible crashes become release blockers until triaged.
+Fuzz targets in the isolated `fuzz/` workspace cover canonical CBOR, identity bundles, signed events, bounded sync planning, relay envelopes, NIP-01 JSON, and attachment manifest/chunk-bitmap validation. List them with `cargo +nightly fuzz list --fuzz-dir fuzz`; run a target with `cargo +nightly fuzz run --fuzz-dir fuzz canonical -- -max_total_time=60`. On Windows, the default AddressSanitizer executable needs `clang_rt.asan_dynamic-x86_64.dll` on `PATH`. For a Visual Studio 2022 Build Tools installation, PowerShell can locate and prepend the DLL directory:
+
+```powershell
+$asan = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" | Select-Object -First 1
+$env:PATH = "$($asan.DirectoryName);$env:PATH"
+$env:ASAN_OPTIONS = "quarantine_size_mb=64:thread_local_quarantine_size_kb=256"
+```
+
+A sanitizer-free campaign still requires a linker compatible with libFuzzer's coverage sections. On Windows, a 60-second `signed-event` campaign with `ASAN_OPTIONS=quarantine_size_mb=64:thread_local_quarantine_size_kb=256` completed 557,506 executions at 226 MiB reported process RSS; this is harness RSS, not decoder-only allocation. No campaign result is claimed until the target runs on a supported toolchain. BLE fragment assembly, invite URI, MLS wrapper, and voice signaling targets remain planned. The default libFuzzer maximum input length is 4096 bytes; increase `-max_len` explicitly when exercising decoder boundary budgets. A zero-crash run on one budget is not proof of security; reproducible crashes remain release blockers until triaged.
 
 ## Network laboratory
 
 Model contact graph with time-varying links, asymmetrical drop, MTU, duty cycles, stale summaries, partitions, storage quotas and malicious couriers. Baselines: no forwarding; limited flood; bounded spray; spray plus anti-entropy; relay assistance. For each fixed contact trace report delivered fraction by deadline, distribution of delay, bytes/transmissions per delivered event, cache eviction, missing-history rate and fairness across destinations. The simulator does not claim real battery drain; power must be measured on named hardware.
 
+The deterministic harness uses bounded `lattice_testkit::ContactPlan` windows with `DirectedLink` loss/delay/duplication behavior. Its three-peer chain test records an explicit A→B→C contact trace; it is a protocol/path simulation, not radio evidence. `lattice-core::tests::membership_commit_policy_and_events_commit_atomically` carries signed MLS Commit, membership-transition, and dependent application events over separate reunion windows, proving that the dependent epoch event stays pending until membership dependencies arrive. Reproduce with `cargo test --locked -p lattice-testkit scripted_contacts_forward_one_frame_across_a_three_peer_chain` and `cargo test --locked -p lattice-core membership_commit_policy_and_events_commit_atomically`.
+
 ## Mobile test matrix
 
 | Axis | Required cases |
 | --- | --- |
-| Pairs | Android/Android, iPhone/iPhone, Android/iPhone; mix Wi-Fi Aware capable/incapable |
+| Pairs | Android/Android for BLE; Android/desktop and desktop/desktop for supported shared paths |
 | App state | Both foreground, one background, both locked, process restart, OS termination and reboot |
 | Permission | Granted, denied, revoked, Bluetooth off, Wi-Fi off, local-network denied |
 | Link | Good nearby signal, edge/weak signal, moving contact, LAN, no Internet, metered Internet |
@@ -58,4 +68,4 @@ Test local disk full immediately before send; crash between MLS change and log c
 
 ## Release evidence record
 
-Each run stores requirement IDs, test source revision, seed/fixture, expected invariant, actual result, environment, logs/artifact hash, limitations and reviewer. A v1 release report includes known failed/unsupported platform paths, key migration results, independent protocol review scope, packet-capture privacy findings, and battery/voice measures. No “works on iOS” statement can be based solely on a simulator.
+Each run stores requirement IDs, test source revision, seed/fixture, expected invariant, actual result, environment, logs/artifact hash, limitations and reviewer. A v1 release report includes known failed/unsupported paths within current Android, desktop and CLI scope, key migration results, independent protocol review scope, packet-capture privacy findings, and battery/voice measures. iOS is out of scope and receives no support claim.

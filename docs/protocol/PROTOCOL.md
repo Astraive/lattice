@@ -1,6 +1,6 @@
 # Protocol profile and interoperability boundaries
 
-**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. Bounded executable candidates cover canonical CBOR, event-ID hashing, local identity, and NIP-01/NIP-11 relay networking; see [`protocol/specs/00-overview.md`](../../protocol/specs/00-overview.md) and its vector file. These candidates are not an interoperability claim. Do not ship independent client implementations from this summary alone.
+**Status:** draft. `spec.md` contains longer examples; stable v1 wire bytes are not frozen. Bounded executable candidates cover canonical CBOR, event-ID hashing, local identity, and NIP-01/NIP-11 relay networking; [`10-ble.md`](../../protocol/specs/10-ble.md) assigns experimental BLE labels and candidate service/discovery values, not a frozen interoperable profile. Do not ship independent client implementations from this summary alone.
 
 ## Current executable candidate
 
@@ -33,11 +33,17 @@ Identity bundle candidate fields: Ed25519 verify key, X25519 DH key, version, cr
 
 ## Transport handshakes and BLE
 
-Nearby paths perform a reviewed Noise handshake with explicit pattern, prologue, transcript identity/version/capability/token binding and replay window. Advertising carries a generic service UUID and rotating app token, never static key or Space name. BLE GATT `control`, `rx`, `tx`, `capabilities`, and `upgrade` characteristics are candidates. Fragment after envelope encryption; per-peer aggregate reassembly bytes, object count, deadline, fragment count and pacing credits are mandatory. Adapter “queued to OS” is not remote receipt.
+Nearby BLE exp0 now specifies candidate service/advertisement/token values and a first-contact `Noise_XX_25519_ChaChaPoly_SHA256` exchange with role-separated Ed25519 identity proofs, full-fingerprint pin checks, and a session comparison string in [`10-ble.md`](../../protocol/specs/10-ble.md). It remains an experimental candidate: exact vectors, framing/flow-control, Android wiring, and interoperability are still open. Envelopes are fragmented only after authenticated link protection; an adapter “queued to OS” is not remote receipt.
 
 ## Sync state
 
 Per authorized scope, exchange `{author_id, contiguous_seq, gap_digest}`, recent-event summary, snapshot floor and capabilities. Request missing range/dependencies in bounded batches; authenticate all events before projection. MLS proposals/Commits and policy dependencies are requested before ciphertext needing those epochs. A Bloom/Golomb-type recent summary may have false positives, so a later exact reconciliation path must repair gaps. Never reveal unrelated Space membership merely by sending every known scope.
+
+The Rust node exposes a one-shot authenticated direct-sync path over a caller-owned connected transport. Its fixed Noise prologue is `lattice:direct-sync:noise-xx:v1\0` (Noise XX, empty handshake payloads); no Noise-generated static key is treated as a Lattice identity. After Noise completes, each side sends a Noise-encrypted fixed-width 70-byte identity proof: `LIDP || 0x01 || role || Ed25519_signature`, where role is `1` for initiator and `2` for responder. The signature input is the exact concatenation `lattice:direct-sync-identity-proof:v1\0 || role || final_noise_handshake_hash[32] || initiator_bundle[65] || responder_bundle[65]`. The remote proof must verify with the caller's exact pinned Ed25519 key; the role and both byte-exact v1 identity bundles are bound to this session transcript.
+
+Subsequent `LSYN` request/response frames are wholly encrypted with Snow's directional Noise transport state. Its sequential nonces reject replay/out-of-order packets; any transport authentication error poisons that state and the one-shot API returns an error without accepted events. The requester's and responder's callbacks must each authorize the exact peer/scope before planning or event-source access. An exact-hop receipt is not peer delivery.
+
+`Client::with_pinned_identity` can load and revalidate the exact persisted pin before lending the live local `DeviceIdentity` to an async operation; it does not export private bytes or prove how a pin was human-verified. The caller still supplies authorized summaries, event validation, and scope policy. Sync summaries/checkpoints and accepted events are not persisted by this exchange; MLS epoch, membership, and event permission checks remain the caller's responsibility. Each encrypted application frame is bounded to one Noise message (65,519 plaintext bytes maximum, further reduced by the adapter cap). Route planning is not connected to this already-selected adapter: `plan_forward` returns candidate `PathId`s but no adapter mapping, and its forwarding expiry/hop/copy inputs are not supplied by this session API.
 
 ## Membership and conflict
 
@@ -61,7 +67,7 @@ References: [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), [RFC 9750](https
 | `01-identifiers`, `02-encoding` | Field widths, byte order/CBOR profile, domain strings, canonical hashes |
 | `03-identity`, `04-sessions` | Identity bundle, credential verification, Noise pattern/prologue/replay |
 | `05-events`, `06-spaces`, `07-permissions` | Signed event framing, Space/membership payloads, permission registry and causal conflicts; candidate specs exist, reducers remain incomplete |
-| `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts, delivery class/TTL/copy budget, fragmentation and GATT profile; MLS protected persistence is integrated, link profile remains candidate |
+| `08-mls`, `09-envelope`, `10-ble` | Group lifecycle/conflicts and delivery class/TTL/copy budget remain candidates; `10-ble` specifies an experimental service/discovery/first-contact candidate, with frame/flow-control and interoperable GATT evidence still open |
 | `11-sync`, `12-routing` | Gap summaries, snapshots, path metrics, retry and courier rules |
 | `13-relay`, `14-files`, `15-voice` | Candidate Nostr envelope/retrieval profile, manifest/chunks, room incarnation/signaling; bounded Rust relay networking exists, while app integration and independent-relay interoperability remain unimplemented |
 | `16-versioning` | Required/optional feature bits, downgrade prevention and migration |

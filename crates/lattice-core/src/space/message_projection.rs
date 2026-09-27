@@ -3,7 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use super::{ApplicationAction, EntityId, EventReference, Fingerprint, GraphNode};
+use super::{
+    ApplicationAction, EntityId, EventReference, Fingerprint, GraphNode, MentionTarget,
+    rich_text::RichText,
+};
 
 /// Authorized message history materialized from one reducer generation.
 ///
@@ -31,6 +34,8 @@ pub struct ProjectedMessage {
     pub author: Fingerprint,
     /// Optional immutable thread-root message ID.
     pub thread_root: Option<EventReference>,
+    /// Stable identity and role references carried by this immutable message.
+    pub mentions: Vec<MentionTarget>,
     versions: Vec<MessageVersion>,
     /// All authorized tombstones, including distinct moderation reasons.
     pub tombstones: Vec<MessageTombstone>,
@@ -80,8 +85,10 @@ pub struct MessageVersion {
     pub event_id: EventReference,
     /// Author of this version.
     pub author: Fingerprint,
-    /// Plaintext body from the MLS-bound and authorized event.
+    /// Plain display text with supported source markup removed.
     pub content: Arc<str>,
+    /// UTF-8 byte ranges carrying semantic formatting.
+    pub rich_text: RichText,
     order: MessageOrder,
 }
 
@@ -145,8 +152,9 @@ fn project_messages(
             continue;
         }
         let Some(ApplicationAction::Message {
-            content,
+            rich_text,
             thread_root,
+            mentions,
             ..
         }) = node.application_action.as_ref()
         else {
@@ -159,10 +167,12 @@ fn project_messages(
                 event_id: *event_id,
                 author: node.author,
                 thread_root: *thread_root,
+                mentions: mentions.clone(),
                 versions: vec![MessageVersion {
                     event_id: *event_id,
                     author: node.author,
-                    content: content.clone(),
+                    content: Arc::from(rich_text.render_plain_text()),
+                    rich_text: rich_text.clone(),
                     order,
                 }],
                 tombstones: Vec::new(),
@@ -189,12 +199,15 @@ fn project_updates(
         };
         let order = message_order(node, *event_id);
         match action {
-            ApplicationAction::Edit { target, content } => {
+            ApplicationAction::Edit {
+                target, rich_text, ..
+            } => {
                 if let Some(message) = messages.get_mut(target) {
                     message.versions.push(MessageVersion {
                         event_id: *event_id,
                         author: node.author,
-                        content: content.clone(),
+                        content: Arc::from(rich_text.render_plain_text()),
+                        rich_text: rich_text.clone(),
                         order,
                     });
                 }

@@ -14,6 +14,8 @@ use zeroize::Zeroizing;
 
 const FINGERPRINT_DOMAIN: &[u8] = b"lattice:identity-bundle:v1\0";
 const PUBLIC_BUNDLE_VERSION: u8 = 1;
+/// Exact encoded width of one version-1 public identity bundle.
+pub const IDENTITY_PUBLIC_BUNDLE_BYTES: usize = 1 + 32 + 32;
 const PUBLIC_BUNDLE_LEN: usize = 1 + 32 + 32;
 
 const PROTECTED_MATERIAL_VERSION: u8 = 1;
@@ -91,6 +93,9 @@ pub enum IdentityError {
     /// The supplied full fingerprint does not match the exact public bundle.
     #[error("public identity bundle fingerprint mismatch")]
     FingerprintMismatch,
+    /// The bounded PKCS#10 request could not be encoded.
+    #[error("certificate signing request encoding failed")]
+    CsrEncoding,
     /// The signature does not verify for the provided key and message.
     #[error("Ed25519 signature verification failed")]
     VerificationFailed,
@@ -177,6 +182,33 @@ impl IdentityPublicBundle {
     pub fn fingerprint(self) -> [u8; 32] {
         fingerprint_for_bundle(&self.to_bytes())
     }
+}
+
+/// Exact exp0 transcript context a local identity may sign for one GATT session.
+///
+/// Peer bundles are supplied only for proof/confirmation steps that include
+/// both identities. The local identity's bundle is inserted by the signer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BleExp0IdentitySignature {
+    InitiatorProof {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+    },
+    ResponderProof {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+        initiator_bundle: [u8; IDENTITY_PUBLIC_BUNDLE_BYTES],
+    },
+    InitiatorConfirmation {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+        responder_bundle: [u8; IDENTITY_PUBLIC_BUNDLE_BYTES],
+    },
+    ResponderConfirmation {
+        handshake_hash: [u8; 32],
+        responder_token: [u8; 9],
+        initiator_bundle: [u8; IDENTITY_PUBLIC_BUNDLE_BYTES],
+    },
 }
 
 /// A local identity with non-exportable-by-API Ed25519 and X25519 private keys.
@@ -327,6 +359,101 @@ impl DeviceIdentity {
         self.signing_key.sign(message).to_bytes()
     }
 
+    /// Signs one role-specific exp0 identity proof or transcript confirmation.
+    ///
+    /// Peer bundle bytes are parsed before they enter the signed transcript.
+    /// The method never exports private key material or signs caller-selected
+    /// arbitrary messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError`] when the supplied peer bundle is malformed.
+    pub fn sign_ble_exp0_signature(
+        &self,
+        signature: &BleExp0IdentitySignature,
+    ) -> Result<[u8; 64], IdentityError> {
+        let local_bundle = self.public_bundle().to_bytes();
+        let input = ble_exp0_signature_input(&local_bundle, signature)?;
+        Ok(self.sign(&input))
+    }
+
+    /// Creates a DER-encoded PKCS#10 request for this identity.
+    ///
+    /// The subject common name is `lattice:` followed by the lowercase
+    /// hexadecimal full identity fingerprint. The request also includes one
+    /// subjectAltName URI, `urn:lattice:identity:v1:<fingerprint>`. Its Ed25519
+    /// `SubjectPublicKeyInfo` contains this identity's public signing key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if bounded DER encoding cannot be completed.
+    pub fn certificate_signing_request(&self) -> Result<Vec<u8>, IdentityError> {
+        const ED25519_ALGORITHM: &[u8] = &[0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70];
+        let fingerprint = self.fingerprint();
+        let mut fingerprint_text = [0_u8; 72];
+        fingerprint_text[..8].copy_from_slice(b"lattice:");
+        let mut fingerprint_uri = [0_u8; 88];
+        fingerprint_uri[..24].copy_from_slice(b"urn:lattice:identity:v1:");
+        for (index, byte) in fingerprint.into_iter().enumerate() {
+            fingerprint_text[8 + index * 2] = LOWERCASE_HEX[usize::from(byte >> 4)];
+            fingerprint_text[9 + index * 2] = LOWERCASE_HEX[usize::from(byte & 0x0f)];
+            fingerprint_uri[24 + index * 2] = LOWERCASE_HEX[usize::from(byte >> 4)];
+            fingerprint_uri[25 + index * 2] = LOWERCASE_HEX[usize::from(byte & 0x0f)];
+        }
+
+        let common_name_oid = [0x06, 0x03, 0x55, 0x04, 0x03];
+        let common_name = der_wrap(0x0c, &fingerprint_text)?;
+        let mut attribute_content = Vec::new();
+        der_append(&mut attribute_content, &common_name_oid)?;
+        der_append(&mut attribute_content, &common_name)?;
+        let attribute = der_wrap(0x30, &attribute_content)?;
+        let relative_distinguished_name = der_wrap(0x31, &attribute)?;
+        let subject = der_wrap(0x30, &relative_distinguished_name)?;
+
+        let mut public_key_bits = [0_u8; 33];
+        public_key_bits[1..].copy_from_slice(&self.public_key());
+        let subject_public_key = der_wrap(0x03, &public_key_bits)?;
+        let mut spki_content = Vec::new();
+        der_append(&mut spki_content, ED25519_ALGORITHM)?;
+        der_append(&mut spki_content, &subject_public_key)?;
+        let subject_public_key_info = der_wrap(0x30, &spki_content)?;
+        let uri_name = der_wrap(0x86, &fingerprint_uri)?;
+        let general_names = der_wrap(0x30, &uri_name)?;
+        let subject_alt_name_oid = [0x06, 0x03, 0x55, 0x1d, 0x11];
+        let encoded_general_names = der_wrap(0x04, &general_names)?;
+        let mut extension_content = Vec::new();
+        der_append(&mut extension_content, &subject_alt_name_oid)?;
+        der_append(&mut extension_content, &encoded_general_names)?;
+        let extension = der_wrap(0x30, &extension_content)?;
+        let extensions = der_wrap(0x30, &extension)?;
+        let extension_values = der_wrap(0x31, &extensions)?;
+        let extension_request_oid = [
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e,
+        ];
+        let mut extension_request_content = Vec::new();
+        der_append(&mut extension_request_content, &extension_request_oid)?;
+        der_append(&mut extension_request_content, &extension_values)?;
+        let extension_request = der_wrap(0x30, &extension_request_content)?;
+        let requested_attributes = der_wrap(0xa0, &extension_request)?;
+
+        let mut request_info_content = Vec::new();
+        der_append(&mut request_info_content, &[0x02, 0x01, 0x00])?;
+        der_append(&mut request_info_content, &subject)?;
+        der_append(&mut request_info_content, &subject_public_key_info)?;
+        der_append(&mut request_info_content, &requested_attributes)?;
+        let request_info = der_wrap(0x30, &request_info_content)?;
+        let signature = self.sign(&request_info);
+        let mut signature_bits = [0_u8; 65];
+        signature_bits[1..].copy_from_slice(&signature);
+        let signature = der_wrap(0x03, &signature_bits)?;
+
+        let mut request_content = Vec::new();
+        der_append(&mut request_content, &request_info)?;
+        der_append(&mut request_content, ED25519_ALGORITHM)?;
+        der_append(&mut request_content, &signature)?;
+        der_wrap(0x30, &request_content)
+    }
+
     /// Derives a contributory X25519 secret held in zeroizing memory.
     ///
     /// The peer key must be authenticated by an application protocol. A KDF
@@ -355,6 +482,57 @@ impl DeviceIdentity {
         }
         Ok(Zeroizing::new(shared_secret.to_bytes()))
     }
+}
+
+/// Maximum DER byte count for an identity certificate request.
+const MAX_CSR_DER_LEN: usize = 1024;
+const LOWERCASE_HEX: &[u8; 16] = b"0123456789abcdef";
+
+fn der_length_bytes(length: usize) -> Result<([u8; 9], usize), IdentityError> {
+    let mut encoded = [0_u8; 9];
+    if length < 128 {
+        encoded[0] = u8::try_from(length).map_err(|_| IdentityError::CsrEncoding)?;
+        return Ok((encoded, 1));
+    }
+    let significant_bytes = (usize::BITS as usize - length.leading_zeros() as usize).div_ceil(8);
+    if significant_bytes > 8 {
+        return Err(IdentityError::CsrEncoding);
+    }
+    encoded[0] = 0x80 | u8::try_from(significant_bytes).map_err(|_| IdentityError::CsrEncoding)?;
+    for index in 0..significant_bytes {
+        encoded[1 + index] = u8::try_from((length >> ((significant_bytes - index - 1) * 8)) & 0xff)
+            .map_err(|_| IdentityError::CsrEncoding)?;
+    }
+    Ok((encoded, significant_bytes + 1))
+}
+
+fn der_wrap(tag: u8, content: &[u8]) -> Result<Vec<u8>, IdentityError> {
+    let (length, length_size) = der_length_bytes(content.len())?;
+    let total_len = 1_usize
+        .checked_add(length_size)
+        .and_then(|prefix| prefix.checked_add(content.len()))
+        .filter(|&total| total <= MAX_CSR_DER_LEN)
+        .ok_or(IdentityError::CsrEncoding)?;
+    let mut der = Vec::new();
+    der.try_reserve(total_len)
+        .map_err(|_| IdentityError::CsrEncoding)?;
+    der.push(tag);
+    der.extend_from_slice(&length[..length_size]);
+    der.extend_from_slice(content);
+    Ok(der)
+}
+
+fn der_append(destination: &mut Vec<u8>, value: &[u8]) -> Result<(), IdentityError> {
+    let total_len = destination
+        .len()
+        .checked_add(value.len())
+        .filter(|&total| total <= MAX_CSR_DER_LEN)
+        .ok_or(IdentityError::CsrEncoding)?;
+    destination
+        .try_reserve(total_len - destination.len())
+        .map_err(|_| IdentityError::CsrEncoding)?;
+    destination.extend_from_slice(value);
+    Ok(())
 }
 
 /// Verifies an Ed25519 signature against exact-length public inputs.
@@ -389,6 +567,108 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(),
         .map_err(|_| IdentityError::VerificationFailed)
 }
 
+fn ble_exp0_signature_input(
+    signer_bundle: &[u8; PUBLIC_BUNDLE_LEN],
+    signature: &BleExp0IdentitySignature,
+) -> Result<Vec<u8>, IdentityError> {
+    let mut input = Vec::with_capacity(256);
+    match signature {
+        BleExp0IdentitySignature::InitiatorProof {
+            handshake_hash,
+            responder_token,
+        } => append_ble_exp0_signature_input(
+            &mut input,
+            b"lattice:ble:exp0:identity-init:v0\0",
+            handshake_hash,
+            responder_token,
+            signer_bundle,
+            None,
+        ),
+        BleExp0IdentitySignature::ResponderProof {
+            handshake_hash,
+            responder_token,
+            initiator_bundle,
+        } => {
+            let initiator_bundle = IdentityPublicBundle::from_bytes(initiator_bundle)?.to_bytes();
+            append_ble_exp0_signature_input(
+                &mut input,
+                b"lattice:ble:exp0:identity-responder:v0\0",
+                handshake_hash,
+                responder_token,
+                &initiator_bundle,
+                Some(signer_bundle),
+            );
+        }
+        BleExp0IdentitySignature::InitiatorConfirmation {
+            handshake_hash,
+            responder_token,
+            responder_bundle,
+        } => {
+            let responder_bundle = IdentityPublicBundle::from_bytes(responder_bundle)?.to_bytes();
+            append_ble_exp0_signature_input(
+                &mut input,
+                b"lattice:ble:exp0:identity-confirm-initiator:v0\0",
+                handshake_hash,
+                responder_token,
+                signer_bundle,
+                Some(&responder_bundle),
+            );
+        }
+        BleExp0IdentitySignature::ResponderConfirmation {
+            handshake_hash,
+            responder_token,
+            initiator_bundle,
+        } => {
+            let initiator_bundle = IdentityPublicBundle::from_bytes(initiator_bundle)?.to_bytes();
+            append_ble_exp0_signature_input(
+                &mut input,
+                b"lattice:ble:exp0:identity-confirm-responder:v0\0",
+                handshake_hash,
+                responder_token,
+                &initiator_bundle,
+                Some(signer_bundle),
+            );
+        }
+    }
+    Ok(input)
+}
+
+/// Verifies a role-specific exp0 identity proof or transcript confirmation.
+///
+/// # Errors
+///
+/// Returns [`IdentityError`] for malformed identity bundles, invalid signature
+/// lengths, or signatures that do not authenticate the exact transcript.
+pub fn verify_ble_exp0_signature(
+    signer_bundle: &[u8],
+    context: &BleExp0IdentitySignature,
+    signature: &[u8],
+) -> Result<(), IdentityError> {
+    let signer_bundle = IdentityPublicBundle::from_bytes(signer_bundle)?;
+    let signer_bytes = signer_bundle.to_bytes();
+    let input = ble_exp0_signature_input(&signer_bytes, context)?;
+    verify(&signer_bundle.ed25519_public_key(), &input, signature)
+}
+
+fn append_ble_exp0_signature_input(
+    input: &mut Vec<u8>,
+    domain: &[u8],
+    handshake_hash: &[u8; 32],
+    responder_token: &[u8; 9],
+    initiator_bundle: &[u8; PUBLIC_BUNDLE_LEN],
+    responder_bundle: Option<&[u8; PUBLIC_BUNDLE_LEN]>,
+) {
+    input.extend_from_slice(domain);
+    input.push(0); // profile discriminator
+    input.extend_from_slice(handshake_hash);
+    input.extend_from_slice(responder_token);
+    input.extend_from_slice(&[0; 6]); // initiator and responder capabilities
+    input.extend_from_slice(initiator_bundle);
+    if let Some(responder_bundle) = responder_bundle {
+        input.extend_from_slice(responder_bundle);
+    }
+}
+
 fn fingerprint_for_bundle(bundle_bytes: &[u8; PUBLIC_BUNDLE_LEN]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(FINGERPRINT_DOMAIN);
@@ -399,10 +679,41 @@ fn fingerprint_for_bundle(bundle_bytes: &[u8; PUBLIC_BUNDLE_LEN]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
-        PrivateKeyProtectionError, PrivateKeyProtector, verify,
+        BleExp0IdentitySignature, DeviceIdentity, IdentityError, IdentityPublicBundle,
+        PinnedIdentity, PrivateKeyProtectionError, PrivateKeyProtector, verify,
     };
     use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signature, VerifyingKey};
+
+    fn take_tlv_encoded<'a>(input: &mut &'a [u8], expected_tag: u8) -> (&'a [u8], &'a [u8]) {
+        assert!(input.len() >= 2);
+        assert_eq!(input[0], expected_tag);
+        let first_length = input[1];
+        let (length, header_len) = if first_length & 0x80 == 0 {
+            (usize::from(first_length), 2)
+        } else {
+            let length_bytes = usize::from(first_length & 0x7f);
+            assert!(length_bytes > 0 && length_bytes <= 8);
+            assert!(input.len() >= 2 + length_bytes);
+            let mut length = 0_usize;
+            for byte in &input[2..2 + length_bytes] {
+                length = (length << 8) | usize::from(*byte);
+            }
+            assert!(length >= 128);
+            (length, 2 + length_bytes)
+        };
+        let end = header_len.checked_add(length).expect("DER length fits");
+        assert!(input.len() >= end);
+        let encoded = &input[..end];
+        let value = &input[header_len..end];
+        *input = &input[end..];
+        (encoded, value)
+    }
+
+    fn take_tlv<'a>(input: &mut &'a [u8], expected_tag: u8) -> &'a [u8] {
+        take_tlv_encoded(input, expected_tag).1
+    }
+
     /// Test-only passthrough; it deliberately provides no confidentiality.
     struct TestProtector {
         fail_wrap: bool,
@@ -456,6 +767,87 @@ mod tests {
     }
 
     #[test]
+    fn csr_contains_identity_key_fingerprint_and_valid_signature() {
+        let identity = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let request = identity
+            .certificate_signing_request()
+            .expect("bounded CSR DER encoding should succeed");
+        assert!(request.len() <= super::MAX_CSR_DER_LEN);
+
+        let mut document = request.as_slice();
+        let mut request_content = take_tlv(&mut document, 0x30);
+        assert!(document.is_empty());
+        let (request_info_der, request_info) = take_tlv_encoded(&mut request_content, 0x30);
+        assert_eq!(
+            take_tlv(&mut request_content, 0x30),
+            &[0x06, 0x03, 0x2b, 0x65, 0x70]
+        );
+        let signature_bits = take_tlv(&mut request_content, 0x03);
+        assert!(request_content.is_empty());
+        assert_eq!(signature_bits.len(), 65);
+        assert_eq!(
+            signature_bits[0], 0,
+            "signature BIT STRING has no unused bits"
+        );
+
+        let mut info = request_info;
+        assert_eq!(take_tlv(&mut info, 0x02), &[0x00]);
+        let mut subject = take_tlv(&mut info, 0x30);
+        let mut rdn = take_tlv(&mut subject, 0x31);
+        assert!(subject.is_empty());
+        let mut attribute = take_tlv(&mut rdn, 0x30);
+        assert!(rdn.is_empty());
+        assert_eq!(take_tlv(&mut attribute, 0x06), &[0x55, 0x04, 0x03]);
+        let common_name = take_tlv(&mut attribute, 0x0c);
+        assert!(attribute.is_empty());
+        let fingerprint_hex = lowercase_hex(&identity.fingerprint());
+        let expected_common_name = format!("lattice:{fingerprint_hex}");
+        assert_eq!(common_name, expected_common_name.as_bytes());
+
+        let mut spki = take_tlv(&mut info, 0x30);
+        assert_eq!(take_tlv(&mut spki, 0x30), &[0x06, 0x03, 0x2b, 0x65, 0x70]);
+        let public_key_bits = take_tlv(&mut spki, 0x03);
+        assert!(spki.is_empty());
+        assert_eq!(public_key_bits.len(), 33);
+        assert_eq!(public_key_bits[0], 0);
+        assert_eq!(&public_key_bits[1..], &identity.public_key());
+        let mut requested_attributes = take_tlv(&mut info, 0xa0);
+        let mut extension_request = take_tlv(&mut requested_attributes, 0x30);
+        assert!(requested_attributes.is_empty());
+        assert_eq!(
+            take_tlv(&mut extension_request, 0x06),
+            &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e]
+        );
+        let mut extension_values = take_tlv(&mut extension_request, 0x31);
+        assert!(extension_request.is_empty());
+        let mut extensions = take_tlv(&mut extension_values, 0x30);
+        assert!(extension_values.is_empty());
+        let mut extension = take_tlv(&mut extensions, 0x30);
+        assert!(extensions.is_empty());
+        assert_eq!(take_tlv(&mut extension, 0x06), &[0x55, 0x1d, 0x11]);
+        let mut general_names = take_tlv(&mut extension, 0x04);
+        assert!(extension.is_empty());
+        let mut general_names_content = take_tlv(&mut general_names, 0x30);
+        assert!(general_names.is_empty());
+        let uri = take_tlv(&mut general_names_content, 0x86);
+        assert!(general_names_content.is_empty());
+        let expected_uri = format!("urn:lattice:identity:v1:{fingerprint_hex}");
+        assert_eq!(uri, expected_uri.as_bytes());
+        assert!(info.is_empty());
+
+        let public_key_bytes: [u8; 32] = public_key_bits[1..]
+            .try_into()
+            .expect("Ed25519 SPKI key is 32 bytes");
+        let signature_bytes: [u8; 64] = signature_bits[1..]
+            .try_into()
+            .expect("Ed25519 CSR signature is 64 bytes");
+        VerifyingKey::from_bytes(&public_key_bytes)
+            .expect("CSR SPKI encodes an Ed25519 public key")
+            .verify_strict(request_info_der, &Signature::from_bytes(&signature_bytes))
+            .expect("CSR signature verifies over CertificationRequestInfo");
+    }
+
+    #[test]
     fn pinned_identity_requires_exact_full_bundle_fingerprint() {
         let identity = DeviceIdentity::generate().expect("OS CSPRNG should be available");
         let bundle = identity.public_bundle();
@@ -497,6 +889,15 @@ mod tests {
             IdentityPublicBundle::from_bytes(&bytes),
             Err(IdentityError::NonContributoryDhKey)
         );
+    }
+
+    fn lowercase_hex(bytes: &[u8]) -> String {
+        let mut encoded = Vec::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            encoded.push(super::LOWERCASE_HEX[usize::from(byte >> 4)]);
+            encoded.push(super::LOWERCASE_HEX[usize::from(byte & 0x0f)]);
+        }
+        String::from_utf8(encoded).expect("lowercase hex is ASCII")
     }
 
     fn decode_hex(value: &str) -> Vec<u8> {
@@ -583,6 +984,40 @@ mod tests {
         assert_ne!(&*shared, &*unrelated_shared);
     }
 
+    #[test]
+    fn hostile_public_bundle_corpus_is_bounded_and_round_trips() {
+        let valid = DeviceIdentity::generate()
+            .expect("generate identity fixture")
+            .public_bundle()
+            .to_bytes();
+        for index in 0..valid.len() {
+            for mask in [0x01, 0x80] {
+                let mut mutated = valid;
+                mutated[index] ^= mask;
+                if let Ok(bundle) = IdentityPublicBundle::from_bytes(&mutated) {
+                    assert_eq!(bundle.to_bytes(), mutated);
+                }
+            }
+        }
+
+        let mut state = 0xc0ac_29b7_c97c_50dd_u64;
+        for _ in 0..1_024 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let length = usize::try_from(state % 96).expect("bounded corpus length");
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                input.push(u8::try_from((state >> 32) & 0xff).expect("masked to one byte"));
+            }
+            if let Ok(bundle) = IdentityPublicBundle::from_bytes(&input) {
+                assert_eq!(bundle.to_bytes().as_slice(), input.as_slice());
+            }
+        }
+    }
     #[test]
     fn invalid_bundle_and_dh_inputs_are_rejected() {
         let identity = DeviceIdentity::generate().expect("OS CSPRNG should be available");
@@ -714,6 +1149,90 @@ mod tests {
                 maximum: 4096,
                 actual: 4097,
             })
+        );
+    }
+
+    #[test]
+    fn ble_exp0_signatures_bind_the_role_transcript_token_and_bundles() {
+        let initiator = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let responder = DeviceIdentity::generate().expect("OS CSPRNG should be available");
+        let handshake_hash = [0x41; 32];
+        let responder_token = [0x92; 9];
+        let initiator_bundle = initiator.public_bundle().to_bytes();
+        let responder_bundle = responder.public_bundle().to_bytes();
+        let cases = [
+            (
+                BleExp0IdentitySignature::InitiatorProof {
+                    handshake_hash,
+                    responder_token,
+                },
+                &initiator,
+                b"lattice:ble:exp0:identity-init:v0\0".as_slice(),
+                &initiator_bundle,
+                None,
+            ),
+            (
+                BleExp0IdentitySignature::ResponderProof {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle,
+                },
+                &responder,
+                b"lattice:ble:exp0:identity-responder:v0\0".as_slice(),
+                &initiator_bundle,
+                Some(&responder_bundle),
+            ),
+            (
+                BleExp0IdentitySignature::InitiatorConfirmation {
+                    handshake_hash,
+                    responder_token,
+                    responder_bundle,
+                },
+                &initiator,
+                b"lattice:ble:exp0:identity-confirm-initiator:v0\0".as_slice(),
+                &initiator_bundle,
+                Some(&responder_bundle),
+            ),
+            (
+                BleExp0IdentitySignature::ResponderConfirmation {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle,
+                },
+                &responder,
+                b"lattice:ble:exp0:identity-confirm-responder:v0\0".as_slice(),
+                &initiator_bundle,
+                Some(&responder_bundle),
+            ),
+        ];
+
+        for (record, signer, domain, initiator_bundle, responder_bundle) in cases {
+            let signature = signer
+                .sign_ble_exp0_signature(&record)
+                .expect("valid role bundle");
+            let mut input = domain.to_vec();
+            input.push(0); // profile discriminator
+            input.extend_from_slice(&handshake_hash);
+            input.extend_from_slice(&responder_token);
+            input.extend_from_slice(&[0; 6]);
+            input.extend_from_slice(initiator_bundle);
+            if let Some(responder_bundle) = responder_bundle {
+                input.extend_from_slice(responder_bundle);
+            }
+            verify(&signer.public_key(), &input, &signature)
+                .expect("signature matches the exact exp0 input");
+            input[0] ^= 1;
+            assert!(verify(&signer.public_key(), &input, &signature).is_err());
+        }
+
+        assert!(
+            responder
+                .sign_ble_exp0_signature(&BleExp0IdentitySignature::ResponderProof {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle: [0; 65],
+                })
+                .is_err()
         );
     }
 

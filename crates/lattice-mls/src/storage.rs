@@ -245,13 +245,15 @@ impl Codec for ProtectedJsonCodec {
     type Error = ProtectedCodecError;
 
     fn to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>, Self::Error> {
-        // OpenMLS also runs its codec over SQLite primary keys. Group IDs and
-        // epochs are public lookup metadata and must have stable bytes;
-        // randomized AEAD would make later lookups miss. Secret-bearing group
-        // records still use the authenticated encrypted path below.
+        // OpenMLS also runs its codec over SQLite primary keys. Group IDs,
+        // epochs, and MLS object hash references are public lookup metadata and
+        // must have stable bytes; randomized AEAD would make later lookups miss.
+        // Secret-bearing records still use the authenticated encrypted path.
         if matches!(
             std::any::type_name::<T>(),
-            "&openmls::group::GroupId" | "&openmls::group::GroupEpoch"
+            "&openmls::group::GroupId"
+                | "&openmls::group::GroupEpoch"
+                | "&openmls::ciphersuite::hash_ref::HashReference"
         ) {
             let mut encoded = LimitedBuffer(Zeroizing::new(vec![0]));
             serde_json::to_writer(&mut encoded, value)
