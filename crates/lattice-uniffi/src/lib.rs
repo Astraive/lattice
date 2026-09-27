@@ -3,8 +3,10 @@
 use lattice_core::{DeviceIdentityInfo as CoreIdentityInfo, SpaceGenesisCursor};
 use thiserror::Error;
 
+mod ble_exp0;
 mod identity;
 mod mobile_client;
+pub use ble_exp0::{MobileBlePeerInfo, MobileBleRole, MobileBleSession};
 pub use identity::MobilePinnedIdentity;
 pub use mobile_client::MobileClient;
 
@@ -128,6 +130,44 @@ pub struct MobileChannelSummary {
 pub struct MobileQueuedMessage {
     /// Immutable identifier of the committed event.
     pub event_id: Vec<u8>,
+}
+/// Durable delivery state of one Core-authored outbox envelope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum MobileOutboxState {
+    Queued,
+    Forwarded,
+    Delivered,
+    Failed,
+}
+
+/// Exact persisted envelope and retry metadata for native transport owners.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileOutboxEntry {
+    /// Immutable signed-event identifier.
+    pub event_id: Vec<u8>,
+    /// Opaque envelope bytes; transport code must not reinterpret them.
+    pub envelope_bytes: Vec<u8>,
+    /// Persisted retry schedule in Unix milliseconds.
+    pub next_attempt_ms: i64,
+    /// Number of recorded forwarding attempts.
+    pub attempt_count: u32,
+    /// Local outbox state; this is not proof of destination receipt.
+    pub state: MobileOutboxState,
+}
+/// Outcome class from Core's authenticated sync-event acceptance path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum MobileSyncEventState {
+    Accepted,
+    Duplicate,
+    Pending,
+}
+
+/// Result of handing one signed application event to Rust Core.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileSyncEventResult {
+    pub event_id: Vec<u8>,
+    pub state: MobileSyncEventState,
+    pub missing_dependencies: Vec<Vec<u8>>,
 }
 /// One locally retained authorized message from bounded history or search.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -264,13 +304,52 @@ pub enum MobileError {
     /// Local encrypted message history could not be authenticated or restored.
     #[error("local message history is unavailable")]
     MessageHistoryUnavailable,
+    /// Invalid signed-event identifier supplied for an outbox transition.
+    #[error("invalid durable outbox event identifier")]
+    InvalidOutboxEventId,
+    /// Negative retry timestamp supplied for a forwarding attempt.
+    #[error("invalid durable outbox retry schedule")]
+    InvalidOutboxSchedule,
+    /// An outbox state transition could not be applied.
+    #[error("durable outbox transition was rejected")]
+    OutboxTransitionRejected,
+    /// Invalid event-ID cursor supplied to the bounded outbox page API.
+    #[error("invalid durable outbox cursor")]
+    InvalidOutboxCursor,
+    /// Requested outbox page size is outside the supported bound.
+    #[error("invalid durable outbox page size")]
+    InvalidOutboxPage,
+    /// The durable outbox could not be read.
+    #[error("durable outbox is unavailable")]
+    OutboxUnavailable,
+    /// Signed event failed verification, MLS binding, local policy, or storage.
+    #[error("authenticated sync event could not be ingested")]
+    SyncIngestFailed,
+    /// The advertised exp0 token has an invalid width.
+    #[error("invalid BLE discovery token")]
+    InvalidBleDiscoveryToken,
+    /// The authenticated exp0 session could not advance safely.
+    #[error("BLE session failed")]
+    BleSessionFailed,
+    /// An exp0 control or identity record failed its exact encoding or signature.
+    #[error("BLE record rejected")]
+    BleRecordRejected,
+    /// The remote identity has not been explicitly pinned on this device.
+    #[error("BLE peer identity is not pinned")]
+    BlePeerNotPinned,
+    /// The remote identity differs from this device's existing pin.
+    #[error("BLE peer identity does not match its pin")]
+    BlePeerIdentityMismatch,
+    /// Application records are forbidden before transcript confirmation.
+    #[error("BLE peer is not authenticated")]
+    BlePeerNotAuthenticated,
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
-    use super::{MobileClient, MobileError, PlatformKeyProtector};
+    use super::{MobileBleRole, MobileBleSession, MobileClient, MobileError, PlatformKeyProtector};
 
     #[derive(Default)]
     struct TestProtector {
@@ -554,6 +633,58 @@ mod tests {
     }
 
     #[test]
+    fn lists_bounded_opaque_outbox_pages_and_rejects_invalid_inputs() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let client = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("profile.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "android-outbox-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        assert!(
+            client
+                .outbox_page(None, 16)
+                .expect("read empty outbox")
+                .is_empty()
+        );
+        assert!(matches!(
+            client.outbox_page(Some(vec![0; 31]), 16),
+            Err(MobileError::InvalidOutboxCursor)
+        ));
+        let invalid_large_limit = i32::try_from(lattice_core::MAX_OUTBOX_PAGE_SIZE)
+            .expect("outbox page limit fits in i32")
+            .checked_add(1)
+            .expect("invalid outbox page limit fits in i32");
+        for limit in [0, -1, invalid_large_limit] {
+            assert!(matches!(
+                client.outbox_page(None, limit),
+                Err(MobileError::InvalidOutboxPage)
+            ));
+        }
+        assert!(matches!(
+            client.mark_outbox_forwarded(vec![0; 31], 0),
+            Err(MobileError::InvalidOutboxEventId)
+        ));
+        assert!(matches!(
+            client.mark_outbox_forwarded(vec![0; 32], -1),
+            Err(MobileError::InvalidOutboxSchedule)
+        ));
+        assert!(matches!(
+            client.record_destination_receipt(vec![0; 31]),
+            Err(MobileError::InvalidOutboxEventId)
+        ));
+        assert!(matches!(
+            client.record_destination_receipt(vec![0; 32]),
+            Err(MobileError::OutboxTransitionRejected)
+        ));
+    }
+
+    #[test]
     fn queue_local_message_rejects_malformed_ids_credentials_and_empty_history() {
         let directory = tempfile::tempdir().expect("temporary profile directory");
         let client = MobileClient::open_or_create(
@@ -732,6 +863,161 @@ mod tests {
                 .spaces
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn ble_sessions_authenticate_pinned_peers_before_application_records() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let protector = std::sync::Arc::new(TestProtector::default());
+        let initiator = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("initiator.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "ble-initiator".to_owned(),
+            protector.clone(),
+        )
+        .expect("open initiator");
+        let responder = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("responder.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "ble-responder".to_owned(),
+            protector,
+        )
+        .expect("open responder");
+        let token = vec![0x5a; 9];
+        let initiator_session =
+            MobileBleSession::new(initiator.clone(), MobileBleRole::Initiator, token.clone())
+                .expect("create initiator session");
+        let responder_session =
+            MobileBleSession::new(responder.clone(), MobileBleRole::Responder, token.clone())
+                .expect("create responder session");
+        let rejected_session =
+            MobileBleSession::new(responder.clone(), MobileBleRole::Responder, token.clone())
+                .expect("create rejected-token test session");
+        assert!(matches!(
+            rejected_session.validate_active_responder_token(vec![0x5b; 9]),
+            Err(MobileError::BleRecordRejected)
+        ));
+        assert!(
+            !rejected_session
+                .is_authenticated()
+                .expect("rejected session closed")
+        );
+
+        let (initiator_peer, responder_peer) =
+            exchange_ble_identity_proofs(&initiator_session, &responder_session, &token);
+        assert_eq!(initiator_peer.safety_number, responder_peer.safety_number);
+        assert!(!initiator_peer.already_pinned);
+        assert!(!responder_peer.already_pinned);
+        assert!(matches!(
+            initiator_session.encrypt_record(b"before pin".to_vec()),
+            Err(MobileError::BlePeerNotAuthenticated)
+        ));
+        assert!(matches!(
+            initiator_session.write_confirmation(),
+            Err(MobileError::BlePeerNotPinned)
+        ));
+
+        initiator
+            .pin_identity(responder_peer.identity_bundle, responder_peer.fingerprint)
+            .expect("pin responder identity");
+        responder
+            .pin_identity(initiator_peer.identity_bundle, initiator_peer.fingerprint)
+            .expect("pin initiator identity");
+        confirm_ble_peers(&initiator_session, &responder_session);
+
+        let application_record = b"opaque lattice envelope";
+        let ciphertext = initiator_session
+            .encrypt_record(application_record.to_vec())
+            .expect("encrypt authenticated envelope");
+        assert_eq!(
+            responder_session
+                .decrypt_record(ciphertext)
+                .expect("decrypt authenticated envelope"),
+            application_record
+        );
+        let response = responder_session
+            .encrypt_record(b"reply".to_vec())
+            .expect("encrypt response envelope");
+        assert_eq!(
+            initiator_session
+                .decrypt_record(response)
+                .expect("decrypt response envelope"),
+            b"reply"
+        );
+    }
+    fn confirm_ble_peers(initiator: &MobileBleSession, responder: &MobileBleSession) {
+        let initiator_confirmation = initiator
+            .write_confirmation()
+            .expect("write initiator confirmation");
+        responder
+            .read_confirmation(initiator_confirmation)
+            .expect("verify initiator confirmation");
+        let responder_confirmation = responder
+            .write_confirmation()
+            .expect("write responder confirmation");
+        responder
+            .confirmation_write_succeeded()
+            .expect("GATT accepted responder confirmation");
+        initiator
+            .read_confirmation(responder_confirmation)
+            .expect("verify responder confirmation");
+        assert!(initiator.is_authenticated().expect("initiator auth"));
+        assert!(responder.is_authenticated().expect("responder auth"));
+    }
+    fn exchange_ble_identity_proofs(
+        initiator: &MobileBleSession,
+        responder: &MobileBleSession,
+        token: &[u8],
+    ) -> (super::MobileBlePeerInfo, super::MobileBlePeerInfo) {
+        let message_1 = initiator
+            .write_handshake_message()
+            .expect("write Noise message 1");
+        responder
+            .read_handshake_message(message_1)
+            .expect("read Noise message 1");
+        let message_2 = responder
+            .write_handshake_message()
+            .expect("write Noise message 2");
+        initiator
+            .read_handshake_message(message_2)
+            .expect("read Noise message 2");
+        let message_3 = initiator
+            .write_handshake_message()
+            .expect("write Noise message 3");
+        responder
+            .read_handshake_message(message_3)
+            .expect("read Noise message 3");
+        assert!(initiator.handshake_complete().expect("initiator complete"));
+        assert!(responder.handshake_complete().expect("responder complete"));
+        assert!(matches!(
+            responder.read_identity_proof(vec![0]),
+            Err(MobileError::BleRecordRejected)
+        ));
+        responder
+            .validate_active_responder_token(token.to_vec())
+            .expect("match currently advertised responder token");
+
+        let initiator_peer = responder
+            .read_identity_proof(
+                initiator
+                    .write_identity_proof()
+                    .expect("write initiator proof"),
+            )
+            .expect("verify initiator proof");
+        let responder_peer = initiator
+            .read_identity_proof(
+                responder
+                    .write_identity_proof()
+                    .expect("write responder proof"),
+            )
+            .expect("verify responder proof");
+        (initiator_peer, responder_peer)
     }
     #[test]
     fn rejects_profile_identifier_before_calling_the_platform_protector() {
