@@ -1165,7 +1165,9 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
             }}
             spellCheck={false}
           />
-          <label htmlFor="space-welcome-credential">X.509 credential vector content (hex)</label>
+          <label htmlFor="space-welcome-credential">
+            Joining device's X.509 credential vector (hex)
+          </label>
           <textarea
             id="space-welcome-credential"
             autoComplete="off"
@@ -1180,7 +1182,10 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
             }}
             spellCheck={false}
           />
-          <p>Maximum credential size: 16 KiB before hex encoding.</p>
+          <p>
+            Supply this profile's credential vector, not the inviter's. Maximum credential size:
+            16 KiB before hex encoding.
+          </p>
           <button
             type="submit"
             disabled={
