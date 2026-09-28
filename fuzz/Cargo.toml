@@ -15,6 +15,11 @@ lattice-identity = { path = "../crates/lattice-identity" }
 lattice-protocol = { path = "../crates/lattice-protocol" }
 lattice-sync = { path = "../crates/lattice-sync" }
 lattice-relay = { path = "../crates/lattice-relay" }
+lattice-crypto = { path = "../crates/lattice-crypto" }
+lattice-core = { path = "../crates/lattice-core" }
+lattice-mls = { path = "../crates/lattice-mls" }
+openmls = "=0.9.0"
+lattice-voice = { path = "../crates/lattice-voice" }
 
 # Use independent workspace for fuzzers
 [workspace]
@@ -65,6 +70,48 @@ bench = false
 [[bin]]
 name = "sync-plan"
 path = "fuzz_targets/sync_plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nip11"
+path = "fuzz_targets/nip11.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path-upgrade"
+path = "fuzz_targets/path_upgrade.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ble-noise-ingress"
+path = "fuzz_targets/ble_noise_ingress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "space-invite-bootstrap"
+path = "fuzz_targets/space_invite_bootstrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mls-credential"
+path = "fuzz_targets/mls_credential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "voice-signaling-sequence"
+path = "fuzz_targets/voice_signaling_sequence.rs"
 test = false
 doc = false
 bench = false
