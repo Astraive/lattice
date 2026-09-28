@@ -32,6 +32,43 @@ class BleExp0EnvelopeTransportTest {
     }
 
     @Test
+    fun gattWriteFailureAfterDurableAttemptRemainsRetryableWithoutPeerReceipt() {
+        val eventId = ByteArray(32) { (it + 1).toByte() }
+        val profile = RecordingProfile(eventId, MobileSyncEventState.ACCEPTED, false)
+        val io = RecordingIo(rejectControls = true)
+        val transport = BleExp0EnvelopeTransport(
+            profile,
+            IdentitySessionCipher(),
+            BleExp0TransferProtocol(1, 247, 41),
+            io,
+        )
+
+        var rejected = false
+        try {
+            transport.sendEnvelope(
+                MobileOutboxEntry(
+                    eventId = eventId,
+                    envelopeBytes = byteArrayOf(0x01, 0x02, 0x03),
+                    nextAttemptMs = 0,
+                    attemptCount = 0u,
+                    state = MobileOutboxState.QUEUED,
+                ),
+                retryAtUnixMillis = 100,
+                nowUnixMillis = 0,
+                nowElapsedMillis = 0,
+            )
+        } catch (_: IllegalStateException) {
+            rejected = true
+        }
+
+        assertTrue(rejected)
+        assertEquals(MobileOutboxState.FORWARDING, profile.state)
+        assertEquals(eventId.toList(), profile.attemptEventId?.toList())
+        assertTrue(profile.ingressEventId == null)
+        assertTrue(io.disconnected)
+    }
+
+    @Test
     fun duplicateIngressIsAcknowledgedAsPeerIngressNotDelivery() {
         val fixture = transferWithIngressResult(MobileSyncEventState.DUPLICATE)
 
@@ -124,12 +161,13 @@ class BleExp0EnvelopeTransportTest {
         override fun decryptRecord(ciphertext: ByteArray): ByteArray = ciphertext.copyOf()
     }
 
-    private class RecordingIo : BleExp0EnvelopeIo {
+    private class RecordingIo(private val rejectControls: Boolean = false) : BleExp0EnvelopeIo {
         val controls = mutableListOf<ByteArray>()
         val frames = mutableListOf<ByteArray>()
         var disconnected = false
 
         override fun enqueueControl(ciphertext: ByteArray): Boolean {
+            if (rejectControls) return false
             controls += ciphertext.copyOf()
             return true
         }
@@ -151,11 +189,13 @@ class BleExp0EnvelopeTransportTest {
     ) : BleExp0IngressProfile {
         var state = MobileOutboxState.QUEUED
         var ingressEventId: ByteArray? = null
+        var attemptEventId: ByteArray? = null
         var ingressCalls = 0
 
         override fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long) {
             require(eventId.contentEquals(this.eventId))
             require(nextAttemptMs == 100L)
+            attemptEventId = eventId.copyOf()
             state = MobileOutboxState.FORWARDING
         }
 
