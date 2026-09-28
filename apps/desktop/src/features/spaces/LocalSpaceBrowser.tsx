@@ -139,6 +139,9 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<string | null>(null);
+  const [replyTarget, setReplyTarget] = useState<string | null>(null);
+  const [reactionToken, setReactionToken] = useState("👍");
+  const [mutationTag, setMutationTag] = useState("");
   const [eventId, setEventId] = useState<string | null>(null);
   const [history, setHistory] = useState<LocalTextMessage[]>([]);
   const [historyChannelId, setHistoryChannelId] = useState<string | null>(null);
@@ -222,7 +225,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
     setFeedback(null);
     setEventId(null);
     try {
-      const args: Record<string, string> = {
+      const args: Record<string, unknown> = {
         spaceIdHex: space.spaceId,
         groupReferenceHex: space.groupReference,
         credentialVectorHex,
@@ -230,17 +233,23 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
         content,
       };
       if (editTarget) args.targetMessageIdHex = editTarget;
-      const queued = await invoke<QueuedLocalMessage>(
-        editTarget ? "queue_local_text_message_edit" : "queue_local_text_message",
-        args,
-      );
+      if (replyTarget) args.threadRootHex = replyTarget;
+      const command = editTarget
+        ? "queue_local_text_message_edit"
+        : replyTarget
+          ? "queue_local_text_message_reply"
+          : "queue_local_text_message";
+      const queued = await invoke<QueuedLocalMessage>(command, args);
       setEventId(queued.eventId);
       setFeedback(
         editTarget
           ? "Edit committed locally. Network forwarding and recipient delivery are unknown."
-          : "Committed locally. Network forwarding and recipient delivery are unknown.",
+          : replyTarget
+            ? "Reply committed locally. Network forwarding and recipient delivery are unknown."
+            : "Committed locally. Network forwarding and recipient delivery are unknown.",
       );
       setEditTarget(null);
+      setReplyTarget(null);
       setContent("");
       await loadHistory();
     } catch (cause) {
@@ -382,18 +391,111 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
 
   function beginEdit(message: LocalTextMessage) {
     setEditTarget(message.eventId);
+    setReplyTarget(null);
     setContent(message.content);
     setFeedback(`Editing message ${message.eventId}. The original event remains immutable.`);
     setEventId(null);
   }
 
+  function beginReply(message: LocalTextMessage) {
+    setEditTarget(null);
+    setReplyTarget(message.eventId);
+    setContent("");
+    setFeedback(`Replying in the thread rooted at ${message.eventId}.`);
+    setEventId(null);
+  }
+
+  async function tombstoneMessage(message: LocalTextMessage) {
+    if (
+      busy ||
+      !credentialIsValid ||
+      !window.confirm(
+        "Queue a signed tombstone for this message? It hides the content in compliant local projections but cannot erase copies already received.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setFeedback(null);
+    setEventId(null);
+    try {
+      const queued = await invoke<QueuedLocalMessage>("queue_local_text_message_tombstone", {
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        credentialVectorHex,
+        channelIdHex: channelId,
+        targetMessageIdHex: message.eventId,
+      });
+      setEventId(queued.eventId);
+      setFeedback(
+        "Tombstone committed locally. Forwarding and remote display changes are unknown.",
+      );
+      await loadHistory();
+    } catch (cause) {
+      setFeedback(
+        `Tombstone was not queued: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function queueTaggedMutation(
+    message: LocalTextMessage,
+    kind: "reaction" | "pin",
+    add: boolean,
+  ) {
+    if (busy || !credentialIsValid) return;
+    if (!add && !/^[\da-f]{64}$/i.test(mutationTag)) {
+      setFeedback("Enter the 32-byte add-event ID to remove that reaction or pin.");
+      return;
+    }
+    setBusy(true);
+    setFeedback(null);
+    setEventId(null);
+    try {
+      const args: Record<string, unknown> = {
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        credentialVectorHex,
+        channelIdHex: channelId,
+        targetMessageIdHex: message.eventId,
+        add,
+      };
+      if (!add) args.tagHex = mutationTag;
+      if (kind === "reaction") args.token = reactionToken.trim();
+      const queued = await invoke<QueuedLocalMessage>(
+        kind === "reaction" ? "queue_local_text_message_reaction" : "queue_local_text_message_pin",
+        args,
+      );
+      setEventId(queued.eventId);
+      if (add) setMutationTag(queued.eventId);
+      setFeedback(
+        `${kind === "reaction" ? "Reaction" : "Pin"} ${add ? "add" : "removal"} committed locally. Forwarding and recipient delivery are unknown.`,
+      );
+      await loadHistory();
+    } catch (cause) {
+      setFeedback(
+        `Message update was not queued: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <form className="local-message-composer" onSubmit={(event) => void queueMessage(event)}>
-      <h4>{editTarget ? "Edit a text message" : "Queue a text message"}</h4>
+      <h4>
+        {editTarget
+          ? "Edit a text message"
+          : replyTarget
+            ? "Reply in a thread"
+            : "Queue a text message"}
+      </h4>
       <p>
         {editTarget
           ? "The edit is a new encrypted event; the original event remains unchanged."
-          : "Local encrypted commit only. Explicit pinned-peer sync below exchanges event history; there is no recipient-delivery receipt."}
+          : replyTarget
+            ? `This creates a reply rooted at ${replyTarget}.`
+            : "Local encrypted commit only. Explicit pinned-peer sync below exchanges event history; there is no recipient-delivery receipt."}
       </p>
       {channels.length === 0 ? (
         <p>This Space has no active text or announcement channels.</p>
@@ -401,7 +503,15 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
         <>
           <label>
             Channel
-            <select value={channelId} onChange={(event) => setChannelId(event.target.value)}>
+            <select
+              value={channelId}
+              onChange={(event) => {
+                setChannelId(event.target.value);
+                setEditTarget(null);
+                setReplyTarget(null);
+                setContent("");
+              }}
+            >
               {channels.map((channel) => (
                 <option key={channel.id} value={channel.id}>
                   {channel.name} · {channel.channelType}
@@ -421,7 +531,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
             />
           </label>
           <label>
-            {editTarget ? "Replacement text" : "Message"}
+            {editTarget ? "Replacement text" : replyTarget ? "Reply" : "Message"}
             <textarea
               maxLength={MAX_MESSAGE_BYTES}
               rows={3}
@@ -429,11 +539,35 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               onChange={(event) => setContent(event.target.value)}
             />
           </label>
+          <label>
+            Reaction token
+            <input
+              maxLength={64}
+              value={reactionToken}
+              onChange={(event) => setReactionToken(event.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label>
+            Reaction or pin add-event ID for removal (32-byte hex)
+            <input
+              maxLength={64}
+              value={mutationTag}
+              onChange={(event) => setMutationTag(event.target.value.trim())}
+              disabled={busy}
+            />
+          </label>
           <button
             type="submit"
             disabled={busy || !channelId || !credentialIsValid || !contentIsValid}
           >
-            {busy ? "Committing…" : editTarget ? "Queue edit" : "Queue locally"}
+            {busy
+              ? "Committing…"
+              : editTarget
+                ? "Queue edit"
+                : replyTarget
+                  ? "Queue reply"
+                  : "Queue locally"}
           </button>
           {!editTarget && (
             <button
@@ -587,6 +721,19 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               Cancel edit
             </button>
           )}
+          {replyTarget && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setReplyTarget(null);
+                setContent("");
+                setFeedback(null);
+              }}
+            >
+              Cancel reply
+            </button>
+          )}
           <section className="local-message-history" aria-label="Recent local message history">
             <div>
               <h4>Recent local messages</h4>
@@ -650,10 +797,50 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                     <small>
                       {localOutboxLabel(message.outboxState)} · event {message.eventId}
                     </small>
+                    <button type="button" disabled={busy} onClick={() => beginReply(message)}>
+                      Reply in thread
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !credentialIsValid || !reactionToken.trim()}
+                      onClick={() => void queueTaggedMutation(message, "reaction", true)}
+                    >
+                      Add reaction
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !credentialIsValid || !/^[\da-f]{64}$/i.test(mutationTag)}
+                      onClick={() => void queueTaggedMutation(message, "reaction", false)}
+                    >
+                      Remove reaction by tag
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !credentialIsValid}
+                      onClick={() => void queueTaggedMutation(message, "pin", true)}
+                    >
+                      Pin
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !credentialIsValid || !/^[\da-f]{64}$/i.test(mutationTag)}
+                      onClick={() => void queueTaggedMutation(message, "pin", false)}
+                    >
+                      Remove pin by tag
+                    </button>
                     {message.outboxState !== null && (
-                      <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
-                        Edit locally
-                      </button>
+                      <>
+                        <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
+                          Edit locally
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy || !credentialIsValid}
+                          onClick={() => void tombstoneMessage(message)}
+                        >
+                          Queue delete tombstone
+                        </button>
+                      </>
                     )}
                   </li>
                 ))}
