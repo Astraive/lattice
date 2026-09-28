@@ -816,6 +816,16 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -891,7 +901,15 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_gener
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_unpin_identity(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_cancel(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_is_closed(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_wait_for_change(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
 ): Short
@@ -1003,7 +1021,7 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointe
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1017,14 +1035,26 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`:
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
 fun uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_lattice_uniffi_fn_clone_mobileprojectionsubscription(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_lattice_uniffi_fn_free_mobileprojectionsubscription(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_cancel(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_is_closed(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_wait_for_change(`ptr`: Pointer,`timeoutMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1251,7 +1281,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages() != 1752.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes() != 60636.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_unpin_identity() != 4515.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_cancel() != 29406.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_is_closed() != 44730.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_wait_for_change() != 14195.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() != 64121.toShort()) {
@@ -2616,6 +2658,11 @@ public interface MobileClientInterface {
     fun `searchLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `query`: kotlin.String): MobileLocalTextMessageSearch
     
     /**
+     * Subscribes to bounded, coalesced Core projection changes.
+     */
+    fun `subscribeProjectionChanges`(): MobileProjectionSubscription
+    
+    /**
      * Removes one full-fingerprint peer pin from this local profile.
      *
      * This revokes trust only on this device. It does not revoke the remote
@@ -3131,6 +3178,22 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Subscribes to bounded, coalesced Core projection changes.
+     */
+    @Throws(MobileException::class)override fun `subscribeProjectionChanges`(): MobileProjectionSubscription {
+            return FfiConverterTypeMobileProjectionSubscription.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Removes one full-fingerprint peer pin from this local profile.
      *
      * This revokes trust only on this device. It does not revoke the remote
@@ -3207,6 +3270,294 @@ public object FfiConverterTypeMobileClient: FfiConverter<MobileClient, Pointer> 
     override fun allocationSize(value: MobileClient) = 8UL
 
     override fun write(value: MobileClient, buf: ByteBuffer) {
+        // The Rust code always expects pointers written as 8 bytes,
+        // and will fail to compile if they don't fit.
+        buf.putLong(Pointer.nativeValue(lower(value)))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// to the live Rust struct on the other side of the FFI.
+//
+// Each instance implements core operations for working with the Rust `Arc<T>` and the
+// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque pointer to the underlying Rust struct.
+//     Method calls need to read this pointer from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its pointer should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
+//      before it can pass the pointer over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * Cancellable bounded observer for local Core projection changes.
+ */
+public interface MobileProjectionSubscriptionInterface {
+    
+    /**
+     * Closes the subscription and wakes any blocked waiter.
+     */
+    fun `cancel`()
+    
+    /**
+     * Reports whether this subscription has been closed.
+     */
+    fun `isClosed`(): kotlin.Boolean
+    
+    /**
+     * Waits for one coalesced change; `None` means timeout or closure.
+     */
+    fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange?
+    
+    companion object
+}
+
+/**
+ * Cancellable bounded observer for local Core projection changes.
+ */
+open class MobileProjectionSubscription: Disposable, AutoCloseable, MobileProjectionSubscriptionInterface
+{
+
+    constructor(pointer: Pointer) {
+        this.pointer = pointer
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    /**
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noPointer: NoPointer) {
+        this.pointer = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    protected val pointer: Pointer?
+    protected val cleanable: UniffiCleaner.Cleanable
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the pointer being freed concurrently.
+        try {
+            return block(this.uniffiClonePointer())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+        override fun run() {
+            pointer?.let { ptr ->
+                uniffiRustCall { status ->
+                    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_free_mobileprojectionsubscription(ptr, status)
+                }
+            }
+        }
+    }
+
+    fun uniffiClonePointer(): Pointer {
+        return uniffiRustCall() { status ->
+            UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_clone_mobileprojectionsubscription(pointer!!, status)
+        }
+    }
+
+    
+    /**
+     * Closes the subscription and wakes any blocked waiter.
+     */override fun `cancel`()
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_cancel(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Reports whether this subscription has been closed.
+     */override fun `isClosed`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_is_closed(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Waits for one coalesced change; `None` means timeout or closure.
+     */
+    @Throws(MobileException::class)override fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange? {
+            return FfiConverterOptionalTypeMobileProjectionChange.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_wait_for_change(
+        it, FfiConverterULong.lower(`timeoutMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+    
+    companion object
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileProjectionSubscription: FfiConverter<MobileProjectionSubscription, Pointer> {
+
+    override fun lower(value: MobileProjectionSubscription): Pointer {
+        return value.uniffiClonePointer()
+    }
+
+    override fun lift(value: Pointer): MobileProjectionSubscription {
+        return MobileProjectionSubscription(value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileProjectionSubscription {
+        // The Rust code always writes pointers as 8 bytes, and will
+        // fail to compile if they don't fit.
+        return lift(Pointer(buf.getLong()))
+    }
+
+    override fun allocationSize(value: MobileProjectionSubscription) = 8UL
+
+    override fun write(value: MobileProjectionSubscription, buf: ByteBuffer) {
         // The Rust code always expects pointers written as 8 bytes,
         // and will fail to compile if they don't fit.
         buf.putLong(Pointer.nativeValue(lower(value)))
@@ -4457,6 +4808,33 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
+     * The bounded Core projection observer limit has been reached.
+     */
+    class ProjectionObserverLimit(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The Core projection observer wait duration is outside its supported range.
+     */
+    class InvalidProjectionWait(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The Core projection observer synchronization state is unavailable.
+     */
+    class ProjectionObserverUnavailable(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
      * A supplied Space, group, or channel identifier has the wrong byte length.
      */
     class InvalidSpaceMessageId(
@@ -4660,25 +5038,28 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             15 -> MobileException.InvalidSpaceBootstrap()
             16 -> MobileException.UntrustedSpaceInviter()
             17 -> MobileException.SpaceJoinFailed()
-            18 -> MobileException.InvalidSpaceMessageId()
-            19 -> MobileException.InvalidMessageInput()
-            20 -> MobileException.InvalidMessageSearch()
-            21 -> MobileException.MessageRejected()
-            22 -> MobileException.MessageQueueFailed()
-            23 -> MobileException.MessageHistoryUnavailable()
-            24 -> MobileException.InvalidOutboxEventId()
-            25 -> MobileException.InvalidOutboxSchedule()
-            26 -> MobileException.OutboxTransitionRejected()
-            27 -> MobileException.InvalidOutboxCursor()
-            28 -> MobileException.InvalidOutboxPage()
-            29 -> MobileException.OutboxUnavailable()
-            30 -> MobileException.SyncIngestFailed()
-            31 -> MobileException.InvalidBleDiscoveryToken()
-            32 -> MobileException.BleSessionFailed()
-            33 -> MobileException.BleRecordRejected()
-            34 -> MobileException.BlePeerNotPinned()
-            35 -> MobileException.BlePeerIdentityMismatch()
-            36 -> MobileException.BlePeerNotAuthenticated()
+            18 -> MobileException.ProjectionObserverLimit()
+            19 -> MobileException.InvalidProjectionWait()
+            20 -> MobileException.ProjectionObserverUnavailable()
+            21 -> MobileException.InvalidSpaceMessageId()
+            22 -> MobileException.InvalidMessageInput()
+            23 -> MobileException.InvalidMessageSearch()
+            24 -> MobileException.MessageRejected()
+            25 -> MobileException.MessageQueueFailed()
+            26 -> MobileException.MessageHistoryUnavailable()
+            27 -> MobileException.InvalidOutboxEventId()
+            28 -> MobileException.InvalidOutboxSchedule()
+            29 -> MobileException.OutboxTransitionRejected()
+            30 -> MobileException.InvalidOutboxCursor()
+            31 -> MobileException.InvalidOutboxPage()
+            32 -> MobileException.OutboxUnavailable()
+            33 -> MobileException.SyncIngestFailed()
+            34 -> MobileException.InvalidBleDiscoveryToken()
+            35 -> MobileException.BleSessionFailed()
+            36 -> MobileException.BleRecordRejected()
+            37 -> MobileException.BlePeerNotPinned()
+            38 -> MobileException.BlePeerIdentityMismatch()
+            39 -> MobileException.BlePeerNotAuthenticated()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -4750,6 +5131,18 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.SpaceJoinFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.ProjectionObserverLimit -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidProjectionWait -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.ProjectionObserverUnavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -4902,80 +5295,92 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(17)
                 Unit
             }
-            is MobileException.InvalidSpaceMessageId -> {
+            is MobileException.ProjectionObserverLimit -> {
                 buf.putInt(18)
                 Unit
             }
-            is MobileException.InvalidMessageInput -> {
+            is MobileException.InvalidProjectionWait -> {
                 buf.putInt(19)
                 Unit
             }
-            is MobileException.InvalidMessageSearch -> {
+            is MobileException.ProjectionObserverUnavailable -> {
                 buf.putInt(20)
                 Unit
             }
-            is MobileException.MessageRejected -> {
+            is MobileException.InvalidSpaceMessageId -> {
                 buf.putInt(21)
                 Unit
             }
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.InvalidMessageInput -> {
                 buf.putInt(22)
                 Unit
             }
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.InvalidMessageSearch -> {
                 buf.putInt(23)
                 Unit
             }
-            is MobileException.InvalidOutboxEventId -> {
+            is MobileException.MessageRejected -> {
                 buf.putInt(24)
                 Unit
             }
-            is MobileException.InvalidOutboxSchedule -> {
+            is MobileException.MessageQueueFailed -> {
                 buf.putInt(25)
                 Unit
             }
-            is MobileException.OutboxTransitionRejected -> {
+            is MobileException.MessageHistoryUnavailable -> {
                 buf.putInt(26)
                 Unit
             }
-            is MobileException.InvalidOutboxCursor -> {
+            is MobileException.InvalidOutboxEventId -> {
                 buf.putInt(27)
                 Unit
             }
-            is MobileException.InvalidOutboxPage -> {
+            is MobileException.InvalidOutboxSchedule -> {
                 buf.putInt(28)
                 Unit
             }
-            is MobileException.OutboxUnavailable -> {
+            is MobileException.OutboxTransitionRejected -> {
                 buf.putInt(29)
                 Unit
             }
-            is MobileException.SyncIngestFailed -> {
+            is MobileException.InvalidOutboxCursor -> {
                 buf.putInt(30)
                 Unit
             }
-            is MobileException.InvalidBleDiscoveryToken -> {
+            is MobileException.InvalidOutboxPage -> {
                 buf.putInt(31)
                 Unit
             }
-            is MobileException.BleSessionFailed -> {
+            is MobileException.OutboxUnavailable -> {
                 buf.putInt(32)
                 Unit
             }
-            is MobileException.BleRecordRejected -> {
+            is MobileException.SyncIngestFailed -> {
                 buf.putInt(33)
                 Unit
             }
-            is MobileException.BlePeerNotPinned -> {
+            is MobileException.InvalidBleDiscoveryToken -> {
                 buf.putInt(34)
                 Unit
             }
-            is MobileException.BlePeerIdentityMismatch -> {
+            is MobileException.BleSessionFailed -> {
                 buf.putInt(35)
                 Unit
             }
-            is MobileException.BlePeerNotAuthenticated -> {
+            is MobileException.BleRecordRejected -> {
                 buf.putInt(36)
+                Unit
+            }
+            is MobileException.BlePeerNotPinned -> {
+                buf.putInt(37)
+                Unit
+            }
+            is MobileException.BlePeerIdentityMismatch -> {
+                buf.putInt(38)
+                Unit
+            }
+            is MobileException.BlePeerNotAuthenticated -> {
+                buf.putInt(39)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5014,6 +5419,41 @@ public object FfiConverterTypeMobileOutboxState: FfiConverterRustBuffer<MobileOu
     override fun allocationSize(value: MobileOutboxState) = 4UL
 
     override fun write(value: MobileOutboxState, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Coalesced reason that a local Core projection may need refreshing.
+ */
+
+enum class MobileProjectionChange {
+    
+    SPACES,
+    MESSAGES,
+    ALL,
+    SYNCED_EVENTS;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileProjectionChange: FfiConverterRustBuffer<MobileProjectionChange> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileProjectionChange.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileProjectionChange) = 4UL
+
+    override fun write(value: MobileProjectionChange, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -5239,6 +5679,38 @@ public object FfiConverterOptionalTypeMobileSpaceCursor: FfiConverterRustBuffer<
         } else {
             buf.put(1)
             FfiConverterTypeMobileSpaceCursor.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileProjectionChange: FfiConverterRustBuffer<MobileProjectionChange?> {
+    override fun read(buf: ByteBuffer): MobileProjectionChange? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileProjectionChange.read(buf)
+    }
+
+    override fun allocationSize(value: MobileProjectionChange?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileProjectionChange.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileProjectionChange?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileProjectionChange.write(value, buf)
         }
     }
 }

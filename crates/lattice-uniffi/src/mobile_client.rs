@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::Duration;
 
 use lattice_core::{
     Client, CoreError, InitialChannel, LocalTextMessageRecord, MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES,
@@ -13,9 +14,9 @@ use lattice_identity::{
 use super::{
     MobileChannelSummary, MobileChannelType, MobileCreatedSpace, MobileError, MobileIdentityInfo,
     MobileInitialChannel, MobileLocalTextMessage, MobileLocalTextMessageSearch, MobileOutboxEntry,
-    MobileOutboxState, MobilePinnedIdentity, MobileQueuedMessage, MobileSpaceCursor,
-    MobileSpacePage, MobileSpaceSummary, MobileSyncEventResult, MobileSyncEventState,
-    PlatformKeyProtector,
+    MobileOutboxState, MobilePinnedIdentity, MobileProjectionChange, MobileQueuedMessage,
+    MobileSpaceCursor, MobileSpacePage, MobileSpaceSummary, MobileSyncEventResult,
+    MobileSyncEventState, PlatformKeyProtector,
 };
 
 struct ProfileProtector {
@@ -37,10 +38,314 @@ impl PrivateKeyProtector for ProfileProtector {
     }
 }
 
+const MAX_PROJECTION_SUBSCRIPTIONS: usize = 32;
+const MAX_PROJECTION_WAIT_MS: u64 = 60_000;
+const SPACE_CHANGE: u8 = 1;
+const MESSAGE_CHANGE: u8 = 2;
+const ALL_CHANGE: u8 = 4;
+const SYNCED_EVENT_CHANGE: u8 = 8;
+
+#[derive(Default)]
+struct ProjectionSignalState {
+    pending: u8,
+    closed: bool,
+}
+
+struct ProjectionSignal {
+    state: Mutex<ProjectionSignalState>,
+    changed: Condvar,
+}
+
+impl ProjectionSignal {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ProjectionSignalState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn notify(&self, change: MobileProjectionChange) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.closed {
+                state.pending |= projection_change_mask(change);
+                self.changed.notify_one();
+            }
+        }
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed = true;
+        state.pending = 0;
+        self.changed.notify_all();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.state.lock().map(|state| state.closed).unwrap_or(true)
+    }
+
+    fn wait(&self, timeout: Duration) -> Result<Option<MobileProjectionChange>, MobileError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| MobileError::ProjectionObserverUnavailable)?;
+        let (mut state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| state.pending == 0 && !state.closed)
+            .map_err(|_| MobileError::ProjectionObserverUnavailable)?;
+        if state.closed || state.pending == 0 {
+            return Ok(None);
+        }
+        let pending = std::mem::take(&mut state.pending);
+        Ok(Some(coalesced_projection_change(pending)))
+    }
+}
+
+/// Cancellable bounded observer for local Core projection changes.
+#[derive(uniffi::Object)]
+pub struct MobileProjectionSubscription {
+    signal: Arc<ProjectionSignal>,
+}
+
+#[uniffi::export]
+impl MobileProjectionSubscription {
+    /// Waits for one coalesced change; `None` means timeout or closure.
+    pub fn wait_for_change(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<Option<MobileProjectionChange>, MobileError> {
+        if timeout_ms == 0 || timeout_ms > MAX_PROJECTION_WAIT_MS {
+            return Err(MobileError::InvalidProjectionWait);
+        }
+        self.signal.wait(Duration::from_millis(timeout_ms))
+    }
+
+    /// Reports whether this subscription has been closed.
+    pub fn is_closed(&self) -> bool {
+        self.signal.is_closed()
+    }
+
+    /// Closes the subscription and wakes any blocked waiter.
+    pub fn cancel(&self) {
+        self.signal.close();
+    }
+}
+
+impl Drop for MobileProjectionSubscription {
+    fn drop(&mut self) {
+        self.signal.close();
+    }
+}
+
+#[derive(Default)]
+struct ProjectionObserverHub {
+    subscriptions: Mutex<Vec<Weak<ProjectionSignal>>>,
+}
+
+impl ProjectionObserverHub {
+    fn subscribe(&self) -> Result<Arc<MobileProjectionSubscription>, MobileError> {
+        let mut subscriptions = self
+            .subscriptions
+            .lock()
+            .map_err(|_| MobileError::ProjectionObserverUnavailable)?;
+        subscriptions.retain(|subscription| {
+            subscription
+                .upgrade()
+                .is_some_and(|signal| !signal.is_closed())
+        });
+        if subscriptions.len() >= MAX_PROJECTION_SUBSCRIPTIONS {
+            return Err(MobileError::ProjectionObserverLimit);
+        }
+        let signal = Arc::new(ProjectionSignal::new());
+        subscriptions.push(Arc::downgrade(&signal));
+        Ok(Arc::new(MobileProjectionSubscription { signal }))
+    }
+
+    fn publish(&self, change: MobileProjectionChange) {
+        let Ok(mut subscriptions) = self.subscriptions.lock() else {
+            return;
+        };
+        subscriptions.retain(|subscription| {
+            if let Some(signal) = subscription.upgrade() {
+                signal.notify(change);
+                !signal.is_closed()
+            } else {
+                false
+            }
+        });
+    }
+}
+
+fn projection_change_mask(change: MobileProjectionChange) -> u8 {
+    match change {
+        MobileProjectionChange::Spaces => SPACE_CHANGE,
+        MobileProjectionChange::Messages => MESSAGE_CHANGE,
+        MobileProjectionChange::All => ALL_CHANGE,
+        MobileProjectionChange::SyncedEvents => SYNCED_EVENT_CHANGE,
+    }
+}
+
+fn coalesced_projection_change(pending: u8) -> MobileProjectionChange {
+    if pending & SYNCED_EVENT_CHANGE != 0 {
+        MobileProjectionChange::SyncedEvents
+    } else if pending & ALL_CHANGE != 0
+        || pending & (SPACE_CHANGE | MESSAGE_CHANGE) == (SPACE_CHANGE | MESSAGE_CHANGE)
+    {
+        MobileProjectionChange::All
+    } else if pending & MESSAGE_CHANGE != 0 {
+        MobileProjectionChange::Messages
+    } else {
+        MobileProjectionChange::Spaces
+    }
+}
+
+fn ingress_projection_change(state: MobileSyncEventState) -> Option<MobileProjectionChange> {
+    (state == MobileSyncEventState::Accepted).then_some(MobileProjectionChange::SyncedEvents)
+}
+
+fn publish_ingress_projection_change(
+    observers: &ProjectionObserverHub,
+    state: MobileSyncEventState,
+) {
+    if let Some(change) = ingress_projection_change(state) {
+        observers.publish(change);
+    }
+}
+
+#[cfg(test)]
+mod projection_observer_tests {
+    use super::*;
+
+    #[test]
+    fn accepted_ingress_notifies_but_other_outcomes_do_not() {
+        let hub = ProjectionObserverHub::default();
+        let subscription = hub.subscribe().unwrap();
+        for state in [
+            MobileSyncEventState::Duplicate,
+            MobileSyncEventState::Pending,
+            MobileSyncEventState::CheckpointExcluded,
+        ] {
+            publish_ingress_projection_change(&hub, state);
+            assert_eq!(
+                subscription.wait_for_change(1).unwrap(),
+                None,
+                "unexpected notification for {state:?}"
+            );
+        }
+        publish_ingress_projection_change(&hub, MobileSyncEventState::Accepted);
+        assert_eq!(
+            subscription.wait_for_change(1).unwrap(),
+            Some(MobileProjectionChange::SyncedEvents)
+        );
+    }
+
+    #[test]
+    fn observer_burst_is_bounded_and_coalesced() {
+        let signal = ProjectionSignal::new();
+        for change in [
+            MobileProjectionChange::Spaces,
+            MobileProjectionChange::Messages,
+            MobileProjectionChange::SyncedEvents,
+        ] {
+            signal.notify(change);
+        }
+        assert_eq!(
+            signal.wait(Duration::from_millis(1)).unwrap(),
+            Some(MobileProjectionChange::SyncedEvents)
+        );
+        assert_eq!(signal.wait(Duration::from_millis(1)).unwrap(), None);
+    }
+
+    #[test]
+    fn closing_subscription_wakes_waiter_and_rejects_new_notifications() {
+        let signal = Arc::new(ProjectionSignal::new());
+        let waiter = Arc::clone(&signal);
+        let thread = std::thread::spawn(move || waiter.wait(Duration::from_secs(5)).unwrap());
+        signal.close();
+        assert_eq!(thread.join().unwrap(), None);
+        signal.notify(MobileProjectionChange::Messages);
+        assert_eq!(signal.wait(Duration::from_millis(1)).unwrap(), None);
+    }
+
+    #[test]
+    fn observer_registry_enforces_limit_and_reuses_closed_slots() {
+        let hub = ProjectionObserverHub::default();
+        let subscriptions: Vec<_> = (0..MAX_PROJECTION_SUBSCRIPTIONS)
+            .map(|_| hub.subscribe().unwrap())
+            .collect();
+        assert!(matches!(
+            hub.subscribe(),
+            Err(MobileError::ProjectionObserverLimit)
+        ));
+        subscriptions[0].cancel();
+        assert!(hub.subscribe().is_ok());
+    }
+
+    struct ObserverTestProtector;
+
+    impl PlatformKeyProtector for ObserverTestProtector {
+        fn wrap(
+            &self,
+            _profile_id: String,
+            clear_material: Vec<u8>,
+        ) -> Result<Vec<u8>, super::super::ProtectorError> {
+            Ok(clear_material)
+        }
+
+        fn unwrap(
+            &self,
+            _profile_id: String,
+            ciphertext: Vec<u8>,
+        ) -> Result<Vec<u8>, super::super::ProtectorError> {
+            Ok(ciphertext)
+        }
+    }
+
+    #[test]
+    fn rejected_ingress_does_not_notify_subscribers() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("observer.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "observer-test".to_owned(),
+            Arc::new(ObserverTestProtector),
+        )
+        .unwrap();
+        let subscription = client.subscribe_projection_changes().unwrap();
+        assert!(matches!(
+            client.ingest_synced_application_event(Vec::new()),
+            Err(MobileError::SyncIngestFailed)
+        ));
+        assert_eq!(subscription.wait_for_change(1).unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_wait_durations_are_rejected() {
+        let subscription = MobileProjectionSubscription {
+            signal: Arc::new(ProjectionSignal::new()),
+        };
+        assert!(matches!(
+            subscription.wait_for_change(0),
+            Err(MobileError::InvalidProjectionWait)
+        ));
+        assert!(matches!(
+            subscription.wait_for_change(MAX_PROJECTION_WAIT_MS + 1),
+            Err(MobileError::InvalidProjectionWait)
+        ));
+    }
+}
+
 /// Thread-safe handle to one durable local profile.
 #[derive(uniffi::Object)]
 pub struct MobileClient {
     client: Mutex<Client>,
+    projection_observers: ProjectionObserverHub,
 }
 
 #[uniffi::export]
@@ -76,7 +381,15 @@ impl MobileClient {
             .map_err(|error| map_open_error(&error))?;
         Ok(Arc::new(Self {
             client: Mutex::new(client),
+            projection_observers: ProjectionObserverHub::default(),
         }))
+    }
+
+    /// Subscribes to bounded, coalesced Core projection changes.
+    pub fn subscribe_projection_changes(
+        &self,
+    ) -> Result<Arc<MobileProjectionSubscription>, MobileError> {
+        self.projection_observers.subscribe()
     }
 
     /// Returns the non-secret public identity information for native UI.
@@ -229,7 +542,7 @@ impl MobileClient {
         let created = client
             .create_space_from_x509_credential(credential_vector, channels)
             .map_err(|error| map_create_space_error(&error))?;
-        Ok(MobileCreatedSpace {
+        let result = MobileCreatedSpace {
             space_id: created.space_id().to_vec(),
             group_reference: created.group_reference().to_vec(),
             genesis_event_id: created.genesis_event().event_id().as_bytes().to_vec(),
@@ -240,7 +553,11 @@ impl MobileClient {
                     .into_iter()
                     .flat_map(|p| &p.channels),
             ),
-        })
+        };
+        drop(client);
+        self.projection_observers
+            .publish(MobileProjectionChange::Spaces);
+        Ok(result)
     }
     /// Joins one validated MLS Welcome using a signed policy checkpoint from
     /// an explicitly pinned inviter.
@@ -281,7 +598,7 @@ impl MobileClient {
                 credential_vector,
             )
             .map_err(|error| map_welcome_join_error(&error))?;
-        Ok(MobileCreatedSpace {
+        let result = MobileCreatedSpace {
             space_id: created.space_id().to_vec(),
             group_reference: created.group_reference().to_vec(),
             genesis_event_id: created.genesis_event().event_id().as_bytes().to_vec(),
@@ -292,7 +609,10 @@ impl MobileClient {
                     .into_iter()
                     .flat_map(|policy| &policy.channels),
             ),
-        })
+        };
+        self.projection_observers
+            .publish(MobileProjectionChange::All);
+        Ok(result)
     }
     /// Restores a named local generation, then creates its authorized one-member recovery generation.
     ///
@@ -330,7 +650,7 @@ impl MobileClient {
                 credential_vector,
             )
             .map_err(|error| map_recovery_space_error(&error))?;
-        Ok(MobileCreatedSpace {
+        let result = MobileCreatedSpace {
             space_id: created.space_id().to_vec(),
             group_reference: created.group_reference().to_vec(),
             genesis_event_id: created.genesis_event().event_id().as_bytes().to_vec(),
@@ -341,7 +661,10 @@ impl MobileClient {
                     .into_iter()
                     .flat_map(|policy| &policy.channels),
             ),
-        })
+        };
+        self.projection_observers
+            .publish(MobileProjectionChange::All);
+        Ok(result)
     }
 
     /// Restores one bounded page of local Genesis snapshots.
@@ -500,11 +823,14 @@ impl MobileClient {
                     .collect(),
             ),
         };
-        Ok(MobileSyncEventResult {
+        let result = MobileSyncEventResult {
             event_id: event_id.to_vec(),
             state,
             missing_dependencies,
-        })
+        };
+        drop(client);
+        publish_ingress_projection_change(&self.projection_observers, state);
+        Ok(result)
     }
 
     /// Returns the newest bounded history of locally retained authorized text messages.
@@ -640,9 +966,12 @@ impl MobileClient {
                 &content,
             )
             .map_err(|error| map_queue_message_error(&error))?;
-        Ok(MobileQueuedMessage {
+        let result = MobileQueuedMessage {
             event_id: queued.event_id().to_vec(),
-        })
+        };
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(result)
     }
 
     /// Queues a locally authorized immutable Edit event and updates the
@@ -695,9 +1024,12 @@ impl MobileClient {
                 &content,
             )
             .map_err(|error| map_queue_message_error(&error))?;
-        Ok(MobileQueuedMessage {
+        let result = MobileQueuedMessage {
             event_id: queued.event_id().to_vec(),
-        })
+        };
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(result)
     }
 }
 

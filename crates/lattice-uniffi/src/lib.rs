@@ -8,7 +8,7 @@ mod identity;
 mod mobile_client;
 pub use ble_exp0::{MobileBlePeerInfo, MobileBleRole, MobileBleSession};
 pub use identity::MobilePinnedIdentity;
-pub use mobile_client::MobileClient;
+pub use mobile_client::{MobileClient, MobileProjectionSubscription};
 
 uniffi::setup_scaffolding!();
 
@@ -172,6 +172,15 @@ pub struct MobileSyncEventResult {
     pub state: MobileSyncEventState,
     pub missing_dependencies: Vec<Vec<u8>>,
 }
+
+/// Coalesced reason that a local Core projection may need refreshing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum MobileProjectionChange {
+    Spaces,
+    Messages,
+    All,
+    SyncedEvents,
+}
 /// One locally retained authorized message from bounded history or search.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct MobileLocalTextMessage {
@@ -288,6 +297,15 @@ pub enum MobileError {
     /// A validated Welcome could not be imported into the local profile.
     #[error("Space Welcome join failed")]
     SpaceJoinFailed,
+    /// The bounded Core projection observer limit has been reached.
+    #[error("too many Core projection observers")]
+    ProjectionObserverLimit,
+    /// The Core projection observer wait duration is outside its supported range.
+    #[error("invalid Core projection observer wait duration")]
+    InvalidProjectionWait,
+    /// The Core projection observer synchronization state is unavailable.
+    #[error("Core projection observer is unavailable")]
+    ProjectionObserverUnavailable,
 
     /// A supplied Space, group, or channel identifier has the wrong byte length.
     #[error("invalid Space message identifier")]

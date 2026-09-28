@@ -20,51 +20,41 @@ import uniffi.lattice_uniffi.MobileSyncEventResult
 
 
 import java.util.concurrent.atomic.AtomicBoolean
-import uniffi.lattice_uniffi.MobileSyncEventState
+import java.util.concurrent.Executors
 
 internal enum class CoreProjectionChange { SPACES, MESSAGES, ALL, SYNCED_EVENTS }
 
-internal class CoreProjectionSubscriptionHub : AutoCloseable {
-    private class Subscription(private val observer: (CoreProjectionChange) -> Unit) : AutoCloseable {
-        private val active = AtomicBoolean(true)
-
-        fun notifyChanged(change: CoreProjectionChange) {
-            if (active.get()) {
-                try {
-                    observer(change)
-                } catch (_: RuntimeException) {
-                    // A projection observer cannot fail the Core mutation that published it.
-                }
-            }
-        }
-
-        override fun close() {
-            active.set(false)
-        }
+private fun uniffi.lattice_uniffi.MobileProjectionChange.toCoreProjectionChange(): CoreProjectionChange =
+    when (this) {
+        uniffi.lattice_uniffi.MobileProjectionChange.SPACES -> CoreProjectionChange.SPACES
+        uniffi.lattice_uniffi.MobileProjectionChange.MESSAGES -> CoreProjectionChange.MESSAGES
+        uniffi.lattice_uniffi.MobileProjectionChange.ALL -> CoreProjectionChange.ALL
+        uniffi.lattice_uniffi.MobileProjectionChange.SYNCED_EVENTS -> CoreProjectionChange.SYNCED_EVENTS
     }
 
+
+internal class CoreProjectionSubscriptionRegistry : AutoCloseable {
     private val lock = Any()
-    private val subscriptions = LinkedHashSet<Subscription>()
+    private val subscriptions = LinkedHashSet<AutoCloseable>()
     private var closed = false
 
-    fun subscribe(observer: (CoreProjectionChange) -> Unit): AutoCloseable {
-        val subscription = Subscription(observer)
+    fun track(subscription: AutoCloseable): AutoCloseable {
+        lateinit var handle: AutoCloseable
+        val active = AtomicBoolean(true)
+        handle = AutoCloseable {
+            if (active.compareAndSet(true, false)) {
+                synchronized(lock) { subscriptions.remove(handle) }
+                subscription.close()
+            }
+        }
         synchronized(lock) {
-            check(!closed) { "Core projection subscriptions are closed" }
-            subscriptions.add(subscription)
+            if (!closed) {
+                subscriptions.add(handle)
+                return handle
+            }
         }
-        return AutoCloseable {
-            synchronized(lock) { subscriptions.remove(subscription) }
-            subscription.close()
-        }
-    }
-
-    fun publishChanged(change: CoreProjectionChange) {
-        val current = synchronized(lock) {
-            if (closed) return
-            subscriptions.toList()
-        }
-        current.forEach { it.notifyChanged(change) }
+        handle.close()
+        return handle
     }
 
     override fun close() {
@@ -73,7 +63,7 @@ internal class CoreProjectionSubscriptionHub : AutoCloseable {
             closed = true
             subscriptions.toList().also { subscriptions.clear() }
         }
-        current.forEach(Subscription::close)
+        current.forEach(AutoCloseable::close)
     }
 }
 /** AndroidKeyStore-backed callback required by the shared Rust profile. */
@@ -103,22 +93,49 @@ internal class AndroidMobileProfile private constructor(
     private val keyProtector: AndroidPlatformKeyProtector,
     private val profileId: String,
 ): AutoCloseable, BleExp0IngressProfile {
-    private val projectionSubscriptions = CoreProjectionSubscriptionHub()
+    private val projectionSubscriptions = CoreProjectionSubscriptionRegistry()
     private val closed = AtomicBoolean(false)
 
-    fun subscribeProjectionChanges(observer: (CoreProjectionChange) -> Unit): AutoCloseable =
-        projectionSubscriptions.subscribe(observer)
+    fun subscribeProjectionChanges(observer: (CoreProjectionChange) -> Unit): AutoCloseable {
+        check(!closed.get()) { "Android mobile profile is closed" }
+        val subscription = client.subscribeProjectionChanges()
+        val executor = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "lattice-core-projection").apply { isDaemon = true }
+        }
+        val worker = executor.submit {
+            while (!Thread.currentThread().isInterrupted) {
+                val change = try {
+                    subscription.waitForChange(30_000uL)
+                } catch (_: Exception) {
+                    break
+                }
+                if (change == null) {
+                    if (subscription.isClosed()) break
+                    continue
+                }
+                try {
+                    observer(change.toCoreProjectionChange())
+                } catch (_: RuntimeException) {
+                    // A UI projection observer cannot fail a Core mutation.
+                }
+            }
+        }
+        lateinit var handle: AutoCloseable
+        handle = AutoCloseable {
+            subscription.cancel()
+            subscription.close()
+            worker.cancel(true)
+            executor.shutdownNow()
+        }
+        return projectionSubscriptions.track(handle)
+    }
     fun keyProtectionLevel(): AndroidKeyProtectionLevel = keyProtector.protectionLevel(profileId)
     fun identityInfo(): MobileIdentityInfo = client.identityInfo()
-
     fun certificateSigningRequest(): ByteArray = client.certificateSigningRequest()
-
     fun createLocalSpace(
         credentialVector: ByteArray,
         channels: List<MobileInitialChannel>,
-    ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels).also {
-        projectionSubscriptions.publishChanged(CoreProjectionChange.SPACES)
-    }
+    ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels)
 
     fun joinSpaceFromWelcomeBootstrap(
         bootstrapPackage: ByteArray,
@@ -128,9 +145,7 @@ internal class AndroidMobileProfile private constructor(
         bootstrapPackage,
         expectedInviterFingerprint,
         credentialVector,
-    ).also {
-        projectionSubscriptions.publishChanged(CoreProjectionChange.ALL)
-    }
+    )
 
     fun recoverLocalSpaceGeneration(
         spaceId: ByteArray,
@@ -140,9 +155,7 @@ internal class AndroidMobileProfile private constructor(
         spaceId,
         groupReference,
         credentialVector,
-    ).also {
-        projectionSubscriptions.publishChanged(CoreProjectionChange.ALL)
-    }
+    )
 
     fun pinIdentity(publicBundle: ByteArray, expectedFingerprint: ByteArray): MobilePinnedIdentity =
         client.pinIdentity(publicBundle, expectedFingerprint)
@@ -173,11 +186,8 @@ internal class AndroidMobileProfile private constructor(
     ): List<MobileLocalTextMessage> = client.listLocalTextMessages(spaceId, groupReference, channelId)
 
     override fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult =
-        client.ingestSyncedApplicationEvent(canonicalBytes).also { result ->
-            if (result.state == MobileSyncEventState.ACCEPTED) {
-                projectionSubscriptions.publishChanged(CoreProjectionChange.SYNCED_EVENTS)
-            }
-        }
+        client.ingestSyncedApplicationEvent(canonicalBytes)
+
     fun queueLocalTextMessage(
         spaceId: ByteArray,
         groupReference: ByteArray,
@@ -190,10 +200,7 @@ internal class AndroidMobileProfile private constructor(
         credentialVector,
         channelId,
         content,
-    ).also {
-        projectionSubscriptions.publishChanged(CoreProjectionChange.MESSAGES)
-    }
-
+    )
 
     fun queueLocalTextMessageEdit(
         spaceId: ByteArray,
@@ -209,9 +216,7 @@ internal class AndroidMobileProfile private constructor(
         channelId,
         targetMessageId,
         content,
-    ).also {
-        projectionSubscriptions.publishChanged(CoreProjectionChange.MESSAGES)
-    }
+    )
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         projectionSubscriptions.close()
