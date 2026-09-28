@@ -830,6 +830,14 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -902,6 +910,14 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_pin(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reaction(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reply(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted(
 ): Short
@@ -1046,6 +1062,14 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(`ptr`
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_pin(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`add`: Byte,`tag`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reaction(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`add`: Byte,`tag`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`threadRoot`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1288,6 +1312,18 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit() != 5149.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_pin() != 11462.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reaction() != 42878.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reply() != 7635.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone() != 10575.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted() != 33011.toShort()) {
@@ -2652,6 +2688,26 @@ public interface MobileClientInterface {
     fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
     
     /**
+     * Queues a pin add or observed-tag removal.
+     */
+    fun `queueLocalTextMessagePin`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage
+    
+    /**
+     * Queues a tagged reaction add or observed-tag removal.
+     */
+    fun `queueLocalTextMessageReaction`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `token`: kotlin.String, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage
+    
+    /**
+     * Queues a locally authorized immutable thread reply.
+     */
+    fun `queueLocalTextMessageReply`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `threadRoot`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
+    
+    /**
+     * Queues a locally authorized tombstone for a locally authored message.
+     */
+    fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage
+    
+    /**
      * Records only authenticated peer acceptance into bounded BLE ingress.
      * It is not proof of destination delivery or reading.
      *
@@ -3171,6 +3227,70 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(
         it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`targetMessageId`),FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Queues a pin add or observed-tag removal.
+     */
+    @Throws(MobileException::class)override fun `queueLocalTextMessagePin`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_pin(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`targetMessageId`),FfiConverterBoolean.lower(`add`),FfiConverterOptionalByteArray.lower(`tag`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Queues a tagged reaction add or observed-tag removal.
+     */
+    @Throws(MobileException::class)override fun `queueLocalTextMessageReaction`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `token`: kotlin.String, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reaction(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`targetMessageId`),FfiConverterString.lower(`token`),FfiConverterBoolean.lower(`add`),FfiConverterOptionalByteArray.lower(`tag`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Queues a locally authorized immutable thread reply.
+     */
+    @Throws(MobileException::class)override fun `queueLocalTextMessageReply`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `threadRoot`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`threadRoot`),FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Queues a locally authorized tombstone for a locally authored message.
+     */
+    @Throws(MobileException::class)override fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterByteArray.lower(`targetMessageId`),_status)
 }
     }
     )

@@ -278,10 +278,14 @@ class MainActivity : ComponentActivity() {
                     onContinuePermission = ::continuePermissionFlow,
                     onMessageCredentialHexChanged = ::onMessageCredentialHexChanged,
                     onMessageContentChanged = ::onMessageContentChanged,
+                    onMessageReactionTokenChanged = ::onMessageReactionTokenChanged,
+                    onMessageMutationTagHexChanged = ::onMessageMutationTagHexChanged,
                     onMessageChannelSelected = ::onMessageChannelSelected,
                     onQueueLocalMessage = ::queueLocalMessage,
                     onLoadMessageHistory = ::loadLocalMessageHistory,
                     onEditLocalMessage = ::editLocalMessage,
+                    onReplyLocalMessage = ::replyLocalMessage,
+                    onQueueMessageMutation = ::queueLocalMessageMutation,
                     onCancelMessageEdit = ::cancelLocalMessageEdit,
                     onRefreshLocalSpaces = ::refreshLocalSpaces,
                     onLoadMoreSpaces = ::loadMoreLocalSpaces,
@@ -549,10 +553,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun onMessageReactionTokenChanged(spaceKey: String, value: String) {
+        if (value.toByteArray(Charsets.UTF_8).size > 64) return
+        updateMessageComposer(spaceKey) {
+            it.copy(reactionToken = value, status = "Reaction token changed; not yet queued.")
+        }
+    }
+
+    private fun onMessageMutationTagHexChanged(spaceKey: String, value: String) {
+        if (value.length > 64) return
+        updateMessageComposer(spaceKey) {
+            it.copy(mutationTagHex = value.trim(), status = "Mutation tag changed; not yet used.")
+        }
+    }
+
     private fun onMessageChannelSelected(spaceKey: String, channelIdHex: String) {
         updateMessageComposer(spaceKey) {
             it.copy(
                 selectedChannelIdHex = channelIdHex,
+                editTargetMessageIdHex = null,
+                replyTargetMessageIdHex = null,
                 eventIdHex = null,
                 historyChannelIdHex = null,
                 historyStatus = null,
@@ -569,8 +589,23 @@ class MainActivity : ComponentActivity() {
             it.copy(
                 content = message.content,
                 editTargetMessageIdHex = message.eventId.toLowerHex(),
+                replyTargetMessageIdHex = null,
                 eventIdHex = null,
                 status = "Editing your local message. The original event remains immutable.",
+            )
+        }
+    }
+
+    private fun replyLocalMessage(spaceKey: String, message: MobileLocalTextMessage) {
+        val composer = screenState.messageComposers[spaceKey] ?: LocalMessageComposerState()
+        if (composer.submitting) return
+        updateMessageComposer(spaceKey) {
+            it.copy(
+                content = "",
+                editTargetMessageIdHex = null,
+                replyTargetMessageIdHex = message.eventId.toLowerHex(),
+                eventIdHex = null,
+                status = "Replying in thread rooted at ${message.eventId.toLowerHex()}.",
             )
         }
     }
@@ -580,6 +615,7 @@ class MainActivity : ComponentActivity() {
             it.copy(
                 content = "",
                 editTargetMessageIdHex = null,
+                replyTargetMessageIdHex = null,
                 eventIdHex = null,
                 status = "Edit cancelled; original message remains unchanged.",
             )
@@ -783,25 +819,36 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val queued = withContext(Dispatchers.IO) {
-                    val target = composer.editTargetMessageIdHex?.let { decodeIdentityHex(it, 32) }
-                    if (composer.editTargetMessageIdHex != null && target == null) {
+                    val editTarget = composer.editTargetMessageIdHex?.let { decodeIdentityHex(it, 32) }
+                    if (composer.editTargetMessageIdHex != null && editTarget == null) {
                         throw IllegalArgumentException("The selected message ID is malformed.")
                     }
-                    if (target == null) {
-                        profile.queueLocalTextMessage(
+                    val replyRoot = composer.replyTargetMessageIdHex?.let { decodeIdentityHex(it, 32) }
+                    if (composer.replyTargetMessageIdHex != null && replyRoot == null) {
+                        throw IllegalArgumentException("The selected thread root ID is malformed.")
+                    }
+                    when {
+                        editTarget != null -> profile.queueLocalTextMessageEdit(
                             space.spaceId,
                             space.groupReference,
                             credentialVector,
                             channel.id,
+                            editTarget,
                             composer.content,
                         )
-                    } else {
-                        profile.queueLocalTextMessageEdit(
+                        replyRoot != null -> profile.queueLocalTextMessageReply(
                             space.spaceId,
                             space.groupReference,
                             credentialVector,
                             channel.id,
-                            target,
+                            replyRoot,
+                            composer.content,
+                        )
+                        else -> profile.queueLocalTextMessage(
+                            space.spaceId,
+                            space.groupReference,
+                            credentialVector,
+                            channel.id,
                             composer.content,
                         )
                     }
@@ -812,11 +859,15 @@ class MainActivity : ComponentActivity() {
                             submitting = false,
                             content = "",
                             editTargetMessageIdHex = null,
+                            replyTargetMessageIdHex = null,
                             eventIdHex = queued.eventId.toLowerHex(),
-                            status = if (composer.editTargetMessageIdHex == null) {
-                                "Queued locally in the durable outbox. Network forwarding and recipient delivery are unknown."
-                            } else {
-                                "Edit committed locally as a new immutable event. Network forwarding and recipient delivery are unknown."
+                            status = when {
+                                composer.editTargetMessageIdHex != null ->
+                                    "Edit committed locally as a new immutable event. Network forwarding and recipient delivery are unknown."
+                                composer.replyTargetMessageIdHex != null ->
+                                    "Thread reply committed locally. Network forwarding and recipient delivery are unknown."
+                                else ->
+                                    "Queued locally in the durable outbox. Network forwarding and recipient delivery are unknown."
                             },
                         )
                     }
@@ -838,6 +889,136 @@ class MainActivity : ComponentActivity() {
             } finally {
                 credentialVector.fill(0)
                 contentBytes.fill(0)
+            }
+        }
+    }
+
+    private fun queueLocalMessageMutation(
+        spaceKey: String,
+        message: MobileLocalTextMessage,
+        mutation: LocalTextMessageMutation,
+        add: Boolean,
+    ) {
+        val profile = mobileProfile ?: return updateMessageComposer(spaceKey) {
+            it.copy(status = "The protected profile is not ready.")
+        }
+        val space = screenState.localSpaces.firstOrNull { localSpaceKey(it) == spaceKey }
+            ?: return updateMessageComposer(spaceKey) {
+                it.copy(status = "This local Space is no longer available.")
+            }
+        val composer = screenState.messageComposers[spaceKey] ?: LocalMessageComposerState()
+        if (composer.submitting) return
+        val messageChannels = space.channels.filter {
+            !it.archived &&
+                (it.channelType == MobileChannelType.TEXT ||
+                    it.channelType == MobileChannelType.ANNOUNCEMENT)
+        }
+        val channel = messageChannels.firstOrNull {
+            it.id.toLowerHex() == composer.selectedChannelIdHex
+        } ?: (if (composer.selectedChannelIdHex == null) messageChannels.firstOrNull() else null)
+            ?: return updateMessageComposer(spaceKey) {
+                it.copy(status = "Select an active channel before queueing a message update.")
+            }
+        val credentialVector = decodeStrictBoundedHex(composer.credentialVectorHex)
+            ?: return updateMessageComposer(spaceKey) {
+                it.copy(status = "Enter a valid trusted X.509 credential vector before queueing.")
+            }
+        val target = message.eventId
+        val tag = if (!add && mutation != LocalTextMessageMutation.TOMBSTONE) {
+            decodeIdentityHex(composer.mutationTagHex, 32)
+        } else {
+            null
+        }
+        val token = composer.reactionToken
+        if (!add && mutation != LocalTextMessageMutation.TOMBSTONE && tag == null) {
+            credentialVector.fill(0)
+            return updateMessageComposer(spaceKey) {
+                it.copy(status = "The selected message or mutation tag is malformed.")
+            }
+        }
+        if (mutation == LocalTextMessageMutation.REACTION &&
+            token.toByteArray(Charsets.UTF_8).size !in 1..64
+        ) {
+            credentialVector.fill(0)
+            return updateMessageComposer(spaceKey) {
+                it.copy(status = "Reaction token must contain 1 to 64 UTF-8 bytes.")
+            }
+        }
+        updateMessageComposer(spaceKey) {
+            it.copy(submitting = true, eventIdHex = null, status = "Committing message update locally…")
+        }
+        lifecycleScope.launch {
+            try {
+                val queued = withContext(Dispatchers.IO) {
+                    when (mutation) {
+                        LocalTextMessageMutation.TOMBSTONE ->
+                            profile.queueLocalTextMessageTombstone(
+                                space.spaceId,
+                                space.groupReference,
+                                credentialVector,
+                                channel.id,
+                                target,
+                            )
+                        LocalTextMessageMutation.REACTION ->
+                            profile.queueLocalTextMessageReaction(
+                                space.spaceId,
+                                space.groupReference,
+                                credentialVector,
+                                channel.id,
+                                target,
+                                token,
+                                add,
+                                tag,
+                            )
+                        LocalTextMessageMutation.PIN ->
+                            profile.queueLocalTextMessagePin(
+                                space.spaceId,
+                                space.groupReference,
+                                credentialVector,
+                                channel.id,
+                                target,
+                                add,
+                                tag,
+                            )
+                    }
+                }
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(
+                            submitting = false,
+                            eventIdHex = queued.eventId.toLowerHex(),
+                            mutationTagHex = if (add && mutation != LocalTextMessageMutation.TOMBSTONE) {
+                                queued.eventId.toLowerHex()
+                            } else {
+                                it.mutationTagHex
+                            },
+                            status = when (mutation) {
+                                LocalTextMessageMutation.TOMBSTONE ->
+                                    "Tombstone queued locally. Forwarding and remote display changes are unknown."
+                                LocalTextMessageMutation.REACTION ->
+                                    "Reaction ${if (add) "add" else "removal"} committed locally. Forwarding and recipient delivery are unknown."
+                                LocalTextMessageMutation.PIN ->
+                                    "Pin ${if (add) "add" else "removal"} committed locally. Forwarding and recipient delivery are unknown."
+                            },
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(submitting = false, status = mobileQueueErrorStatus(error))
+                    }
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    updateMessageComposer(spaceKey) {
+                        it.copy(submitting = false, status = "The message update could not be confirmed as queued locally.")
+                    }
+                }
+            } finally {
+                credentialVector.fill(0)
             }
         }
     }
@@ -2595,10 +2776,14 @@ private fun NearbyReadinessScreen(
     onCopyIdentityFingerprint: () -> Unit,
     onMessageCredentialHexChanged: (String, String) -> Unit,
     onMessageContentChanged: (String, String) -> Unit,
+    onMessageReactionTokenChanged: (String, String) -> Unit,
+    onMessageMutationTagHexChanged: (String, String) -> Unit,
     onMessageChannelSelected: (String, String) -> Unit,
     onQueueLocalMessage: (String) -> Unit,
     onLoadMessageHistory: (String) -> Unit,
     onEditLocalMessage: (String, MobileLocalTextMessage) -> Unit,
+    onReplyLocalMessage: (String, MobileLocalTextMessage) -> Unit,
+    onQueueMessageMutation: (String, MobileLocalTextMessage, LocalTextMessageMutation, Boolean) -> Unit,
     onCancelMessageEdit: (String) -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -2823,10 +3008,16 @@ private fun NearbyReadinessScreen(
                             profileReady = state.profileStatus == "Protected local identity is available on this device.",
                             onCredentialVectorHexChanged = { onMessageCredentialHexChanged(spaceKey, it) },
                             onContentChanged = { onMessageContentChanged(spaceKey, it) },
+                            onReactionTokenChanged = { onMessageReactionTokenChanged(spaceKey, it) },
+                            onMutationTagHexChanged = { onMessageMutationTagHexChanged(spaceKey, it) },
                             onChannelSelected = { onMessageChannelSelected(spaceKey, it) },
                             onQueue = { onQueueLocalMessage(spaceKey) },
                             onLoadHistory = { onLoadMessageHistory(spaceKey) },
                             onEditMessage = { message -> onEditLocalMessage(spaceKey, message) },
+                            onReplyMessage = { message -> onReplyLocalMessage(spaceKey, message) },
+                            onQueueMutation = { message, mutation, add ->
+                                onQueueMessageMutation(spaceKey, message, mutation, add)
+                            },
                             onCancelEdit = { onCancelMessageEdit(spaceKey) },
                             profileIdentityHex = state.identityFingerprint.orEmpty(),
                         )

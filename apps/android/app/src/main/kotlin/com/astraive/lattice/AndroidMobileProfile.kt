@@ -318,6 +318,74 @@ internal class AndroidMobileProfile private constructor(
         targetMessageId,
         content,
     )
+
+    fun queueLocalTextMessageReply(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        threadRoot: ByteArray,
+        content: String,
+    ): MobileQueuedMessage = client.queueLocalTextMessageReply(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        threadRoot,
+        content,
+    )
+
+    fun queueLocalTextMessageTombstone(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        targetMessageId: ByteArray,
+    ): MobileQueuedMessage = client.queueLocalTextMessageTombstone(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        targetMessageId,
+    )
+
+    fun queueLocalTextMessageReaction(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        targetMessageId: ByteArray,
+        token: String,
+        add: Boolean,
+        tag: ByteArray?,
+    ): MobileQueuedMessage = client.queueLocalTextMessageReaction(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        targetMessageId,
+        token,
+        add,
+        tag,
+    )
+
+    fun queueLocalTextMessagePin(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        channelId: ByteArray,
+        targetMessageId: ByteArray,
+        add: Boolean,
+        tag: ByteArray?,
+    ): MobileQueuedMessage = client.queueLocalTextMessagePin(
+        spaceId,
+        groupReference,
+        credentialVector,
+        channelId,
+        targetMessageId,
+        add,
+        tag,
+    )
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         projectionSubscriptions.close()

@@ -1124,6 +1124,203 @@ impl MobileClient {
             .publish(MobileProjectionChange::Messages);
         Ok(result)
     }
+    /// Queues a locally authorized immutable thread reply.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_local_text_message_reply(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        channel_id: Vec<u8>,
+        thread_root: Vec<u8>,
+        content: String,
+    ) -> Result<MobileQueuedMessage, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let thread_root: [u8; 32] = thread_root
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        if content.len() > MAX_SPACE_PAYLOAD_BYTES {
+            return Err(MobileError::InvalidMessageInput);
+        }
+        let queued = self
+            .lock_client()?
+            .queue_text_message_reply_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+                channel_id,
+                thread_root,
+                &content,
+            )
+            .map_err(|error| map_queue_message_error(&error))?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(MobileQueuedMessage {
+            event_id: queued.event_id().to_vec(),
+        })
+    }
+
+    /// Queues a locally authorized tombstone for a locally authored message.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_local_text_message_tombstone(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        channel_id: Vec<u8>,
+        target_message_id: Vec<u8>,
+    ) -> Result<MobileQueuedMessage, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let target: [u8; 32] = target_message_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let queued = self
+            .lock_client()?
+            .queue_text_message_tombstone_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+                channel_id,
+                target,
+            )
+            .map_err(|error| map_queue_message_error(&error))?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(MobileQueuedMessage {
+            event_id: queued.event_id().to_vec(),
+        })
+    }
+
+    /// Queues a tagged reaction add or observed-tag removal.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_local_text_message_reaction(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        channel_id: Vec<u8>,
+        target_message_id: Vec<u8>,
+        token: String,
+        add: bool,
+        tag: Option<Vec<u8>>,
+    ) -> Result<MobileQueuedMessage, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let target: [u8; 32] = target_message_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let tag = tag
+            .map(|tag| {
+                tag.try_into()
+                    .map_err(|_| MobileError::InvalidSpaceMessageId)
+            })
+            .transpose()?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        if token.is_empty() || token.len() > 64 {
+            return Err(MobileError::InvalidMessageInput);
+        }
+        let queued = self
+            .lock_client()?
+            .queue_text_message_reaction_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+                channel_id,
+                target,
+                &token,
+                add,
+                tag,
+            )
+            .map_err(|error| map_queue_message_error(&error))?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(MobileQueuedMessage {
+            event_id: queued.event_id().to_vec(),
+        })
+    }
+
+    /// Queues a pin add or observed-tag removal.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_local_text_message_pin(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        channel_id: Vec<u8>,
+        target_message_id: Vec<u8>,
+        add: bool,
+        tag: Option<Vec<u8>>,
+    ) -> Result<MobileQueuedMessage, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let target: [u8; 32] = target_message_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let tag = tag
+            .map(|tag| {
+                tag.try_into()
+                    .map_err(|_| MobileError::InvalidSpaceMessageId)
+            })
+            .transpose()?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let queued = self
+            .lock_client()?
+            .queue_text_message_pin_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+                channel_id,
+                target,
+                add,
+                tag,
+            )
+            .map_err(|error| map_queue_message_error(&error))?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(MobileQueuedMessage {
+            event_id: queued.event_id().to_vec(),
+        })
+    }
 }
 
 fn mobile_text_message(message: LocalTextMessageRecord) -> MobileLocalTextMessage {

@@ -36,7 +36,13 @@ internal data class LocalMessageComposerState(
     val status: String = "Enter the trusted X.509 credential vector to queue a local message.",
     val eventIdHex: String? = null,
     val editTargetMessageIdHex: String? = null,
+    val replyTargetMessageIdHex: String? = null,
+    val reactionToken: String = "👍",
+    val mutationTagHex: String = "",
 )
+
+internal enum class LocalTextMessageMutation { TOMBSTONE, REACTION, PIN }
+
 
 @Composable
 internal fun SpaceMessageComposer(
@@ -45,16 +51,23 @@ internal fun SpaceMessageComposer(
     profileReady: Boolean,
     onCredentialVectorHexChanged: (String) -> Unit,
     onContentChanged: (String) -> Unit,
+    onReactionTokenChanged: (String) -> Unit,
+    onMutationTagHexChanged: (String) -> Unit,
     onChannelSelected: (String) -> Unit,
     onQueue: () -> Unit,
     onLoadHistory: () -> Unit,
     onEditMessage: (MobileLocalTextMessage) -> Unit,
+    onReplyMessage: (MobileLocalTextMessage) -> Unit,
+    onQueueMutation: (MobileLocalTextMessage, LocalTextMessageMutation, Boolean) -> Unit,
     onCancelEdit: () -> Unit,
     profileIdentityHex: String,
 ) {
     val availableChannels = channels.filter {
         !it.archived && (it.channelType == MobileChannelType.TEXT || it.channelType == MobileChannelType.ANNOUNCEMENT)
     }
+    val reactionTokenIsValid = state.reactionToken.toByteArray().size in 1..64
+    val mutationTagIsValid = state.mutationTagHex.length == 64 &&
+        state.mutationTagHex.all { it.digitToIntOrNull(16) != null }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
@@ -65,16 +78,22 @@ internal fun SpaceMessageComposer(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                if (state.editTargetMessageIdHex == null) "Queue a local text message"
-                else "Edit local text message",
+                when {
+                    state.editTargetMessageIdHex != null -> "Edit local text message"
+                    state.replyTargetMessageIdHex != null -> "Reply in a message thread"
+                    else -> "Queue a local text message"
+                },
                 modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                if (state.editTargetMessageIdHex == null) {
-                    "Messages and outbox state are local records. Authorized incoming messages appear after Core accepts them; an outbox state does not prove that a destination received or read an event."
-                } else {
-                    "Editing commits a new immutable encrypted event; the original remains unchanged. Forwarding state does not prove destination receipt or reading."
+                when {
+                    state.editTargetMessageIdHex != null ->
+                        "Editing commits a new immutable encrypted event; the original remains unchanged."
+                    state.replyTargetMessageIdHex != null ->
+                        "This commits a reply rooted at ${state.replyTargetMessageIdHex}; history remains a flat local list."
+                    else ->
+                        "Messages and outbox state are local records. Authorized incoming messages appear after Core accepts them; an outbox state does not prove that a destination received or read an event."
                 },
             )
             Text(
@@ -107,7 +126,9 @@ internal fun SpaceMessageComposer(
                     val idHex = channel.id.toLowerHex()
                     val selected = state.selectedChannelIdHex == idHex ||
                         (state.selectedChannelIdHex == null && channel == availableChannels.first())
-                    val enabled = !state.submitting && state.editTargetMessageIdHex == null
+                    val enabled = !state.submitting &&
+                        state.editTargetMessageIdHex == null &&
+                        state.replyTargetMessageIdHex == null
                     androidx.compose.foundation.layout.Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -148,10 +169,35 @@ internal fun SpaceMessageComposer(
                     value = state.content,
                     onValueChange = onContentChanged,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (state.editTargetMessageIdHex == null) "Message" else "Replacement text") },
+                    label = {
+                        Text(
+                            when {
+                                state.editTargetMessageIdHex != null -> "Replacement text"
+                                state.replyTargetMessageIdHex != null -> "Reply"
+                                else -> "Message"
+                            },
+                        )
+                    },
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     enabled = !state.submitting,
                     minLines = 3,
+                )
+                OutlinedTextField(
+                    value = state.reactionToken,
+                    onValueChange = onReactionTokenChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Reaction token") },
+                    supportingText = { Text("1–64 UTF-8 bytes") },
+                    enabled = !state.submitting,
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = state.mutationTagHex,
+                    onValueChange = onMutationTagHexChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Reaction or pin add-event ID for removal (32-byte hex)") },
+                    enabled = !state.submitting,
+                    singleLine = true,
                 )
                 Button(
                     onClick = onQueue,
@@ -159,18 +205,24 @@ internal fun SpaceMessageComposer(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        if (state.submitting) "Committing locally…"
-                        else if (state.editTargetMessageIdHex == null) "Queue locally"
-                        else "Queue edit locally",
+                        when {
+                            state.submitting -> "Committing locally…"
+                            state.editTargetMessageIdHex != null -> "Queue edit locally"
+                            state.replyTargetMessageIdHex != null -> "Queue reply locally"
+                            else -> "Queue locally"
+                        },
                     )
                 }
-                if (state.editTargetMessageIdHex != null) {
+                if (
+                    state.editTargetMessageIdHex != null ||
+                    state.replyTargetMessageIdHex != null
+                ) {
                     Button(
                         onClick = onCancelEdit,
                         enabled = !state.submitting,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Cancel edit")
+                        Text(if (state.editTargetMessageIdHex != null) "Cancel edit" else "Cancel reply")
                     }
                 }
                 Button(
@@ -222,6 +274,50 @@ internal fun SpaceMessageComposer(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                Button(
+                                    onClick = { onReplyMessage(message) },
+                                    enabled = !state.submitting,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Reply in thread")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.REACTION, true)
+                                    },
+                                    enabled = profileReady && !state.submitting && reactionTokenIsValid,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Add reaction")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.REACTION, false)
+                                    },
+                                    enabled = profileReady && !state.submitting && mutationTagIsValid &&
+                                        reactionTokenIsValid,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Remove reaction by tag")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.PIN, true)
+                                    },
+                                    enabled = profileReady && !state.submitting,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Pin message")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.PIN, false)
+                                    },
+                                    enabled = profileReady && !state.submitting && mutationTagIsValid,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Remove pin by tag")
+                                }
                                 if (message.authorId.toLowerHex() == profileIdentityHex) {
                                     Button(
                                         onClick = { onEditMessage(message) },
@@ -229,6 +325,15 @@ internal fun SpaceMessageComposer(
                                         modifier = Modifier.fillMaxWidth(),
                                     ) {
                                         Text("Edit locally")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            onQueueMutation(message, LocalTextMessageMutation.TOMBSTONE, true)
+                                        },
+                                        enabled = profileReady && !state.submitting,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text("Queue delete tombstone")
                                     }
                                 }
                             }
