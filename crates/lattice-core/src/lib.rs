@@ -3875,27 +3875,24 @@ impl Client {
             next_cursor,
         })
     }
-    /// Records one relay or direct-peer forwarding attempt for a durable outbox row.
+    /// Records one persisted forwarding attempt for a durable outbox row.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if the timestamp or outbox state transition is invalid.
-    pub fn mark_outbox_forwarded(
+    pub fn mark_outbox_attempt(
         &mut self,
         event_id: [u8; 32],
         next_attempt_ms: i64,
     ) -> Result<(), CoreError> {
-        self.store.mark_forwarded(event_id, next_attempt_ms)?;
+        self.store
+            .mark_forwarding_attempt(event_id, next_attempt_ms)?;
         Ok(())
     }
 
-    /// Records a destination receipt after an authenticated transport acknowledgement.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if the outbox row is missing, not forwarded, or storage fails.
-    pub fn record_destination_receipt(&mut self, event_id: [u8; 32]) -> Result<(), CoreError> {
-        self.store.record_destination_receipt(event_id)?;
+    /// Records authenticated peer ingress acceptance, never destination delivery.
+    pub fn record_peer_ingress_accepted(&mut self, event_id: [u8; 32]) -> Result<(), CoreError> {
+        self.store.record_peer_ingress_accepted(event_id)?;
         Ok(())
     }
 }

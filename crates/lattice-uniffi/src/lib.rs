@@ -131,11 +131,13 @@ pub struct MobileQueuedMessage {
     /// Immutable identifier of the committed event.
     pub event_id: Vec<u8>,
 }
-/// Durable delivery state of one Core-authored outbox envelope.
+/// Durable local outbox state. Only a verified destination receipt may be `Delivered`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum MobileOutboxState {
     Queued,
+    Forwarding,
     Forwarded,
+    PeerIngressAccepted,
     Delivered,
     Failed,
 }
@@ -668,19 +670,19 @@ mod tests {
             ));
         }
         assert!(matches!(
-            client.mark_outbox_forwarded(vec![0; 31], 0),
+            client.mark_outbox_attempt(vec![0; 31], 0),
             Err(MobileError::InvalidOutboxEventId)
         ));
         assert!(matches!(
-            client.mark_outbox_forwarded(vec![0; 32], -1),
+            client.mark_outbox_attempt(vec![0; 32], -1),
             Err(MobileError::InvalidOutboxSchedule)
         ));
         assert!(matches!(
-            client.record_destination_receipt(vec![0; 31]),
+            client.record_peer_ingress_accepted(vec![0; 31]),
             Err(MobileError::InvalidOutboxEventId)
         ));
         assert!(matches!(
-            client.record_destination_receipt(vec![0; 32]),
+            client.record_peer_ingress_accepted(vec![0; 32]),
             Err(MobileError::OutboxTransitionRejected)
         ));
     }

@@ -102,7 +102,7 @@ internal class AndroidMobileProfile private constructor(
     private val client: MobileClient,
     private val keyProtector: AndroidPlatformKeyProtector,
     private val profileId: String,
-) : AutoCloseable {
+): AutoCloseable, BleExp0IngressProfile {
     private val projectionSubscriptions = CoreProjectionSubscriptionHub()
     private val closed = AtomicBoolean(false)
 
@@ -160,11 +160,11 @@ internal class AndroidMobileProfile private constructor(
     fun outboxPage(afterEventId: ByteArray? = null, limit: Int = 64): List<MobileOutboxEntry> =
         client.outboxPage(afterEventId, limit)
 
-    fun markOutboxForwarded(eventId: ByteArray, nextAttemptMs: Long) =
-        client.markOutboxForwarded(eventId, nextAttemptMs)
+    override fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long) =
+        client.markOutboxAttempt(eventId, nextAttemptMs)
 
-    fun recordDestinationReceipt(eventId: ByteArray) =
-        client.recordDestinationReceipt(eventId)
+    override fun recordPeerIngressAccepted(eventId: ByteArray) =
+        client.recordPeerIngressAccepted(eventId)
 
     fun localTextMessages(
         spaceId: ByteArray,
@@ -172,7 +172,7 @@ internal class AndroidMobileProfile private constructor(
         channelId: ByteArray,
     ): List<MobileLocalTextMessage> = client.listLocalTextMessages(spaceId, groupReference, channelId)
 
-    fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult =
+    override fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult =
         client.ingestSyncedApplicationEvent(canonicalBytes).also { result ->
             if (result.state == MobileSyncEventState.ACCEPTED) {
                 projectionSubscriptions.publishChanged(CoreProjectionChange.SYNCED_EVENTS)

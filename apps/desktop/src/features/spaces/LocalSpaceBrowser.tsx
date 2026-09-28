@@ -75,7 +75,7 @@ type LocalTextMessage = {
   authorSequence: number;
   lamport: number;
   content: string;
-  outboxState: "queued" | "forwarded" | "delivered" | "failed" | null;
+  outboxState: "queued" | "forwarding" | "forwarded" | "peer_ingress_accepted" | "delivered" | "failed" | null;
 };
 
 type LocalTextMessageSearch = {
@@ -104,9 +104,13 @@ const INVITER_FINGERPRINT_HEX_LENGTH = 32 * 2;
 const MAX_KEY_PACKAGE_HEX_LENGTH = 1024 * 1024 * 2;
 
 function localOutboxLabel(state: LocalTextMessage["outboxState"]): string {
-  if (state === "queued") return "queued locally · event may be shared by explicit sync";
-  if (state === null) return "retained locally · no outbox status";
-  return "local outbox marker only · sync and recipient delivery are not tracked";
+  if (state === "queued") return "queued locally · not yet sent";
+  if (state === "forwarding") return "forwarding attempt recorded · recipient delivery unconfirmed";
+  if (state === "forwarded") return "next hop accepted · recipient delivery unconfirmed";
+  if (state === "peer_ingress_accepted") return "authenticated peer accepted bounded ingress · not recipient delivery";
+  if (state === "delivered") return "verified destination receipt recorded";
+  if (state === "failed") return "failed or expired · retained locally";
+  return "retained locally · no outbox status";
 }
 
 type LocalSpaceBrowserProps = {

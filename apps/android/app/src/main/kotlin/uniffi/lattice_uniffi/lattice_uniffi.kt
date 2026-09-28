@@ -871,7 +871,7 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages(
 ): Short
-fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_forwarded(
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(
 ): Short
@@ -885,7 +885,7 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
 ): Short
-fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_destination_receipt(
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(
 ): Short
@@ -1003,7 +1003,7 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointe
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_forwarded(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1017,7 +1017,7 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`:
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_record_destination_receipt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1161,43 +1161,43 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_confirmation_write_succeeded() != 57107.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_confirmation_write_succeeded() != 8023.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_decrypt_record() != 43481.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_decrypt_record() != 49913.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_encrypt_record() != 26020.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_encrypt_record() != 35205.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete() != 16809.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete() != 64426.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated() != 2483.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated() != 20122.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation() != 64748.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation() != 19143.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message() != 3458.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message() != 58447.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_identity_proof() != 45392.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_identity_proof() != 52034.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_terminate() != 57755.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_terminate() != 51949.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_validate_active_responder_token() != 41552.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_validate_active_responder_token() != 49837.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_confirmation() != 43769.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_confirmation() != 27503.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_message() != 15290.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_message() != 1315.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof() != 35450.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof() != 48589.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request() != 35576.toShort()) {
@@ -1209,7 +1209,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event() != 7136.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event() != 49026.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap() != 17509.toShort()) {
@@ -1221,7 +1221,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages() != 10804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_forwarded() != 60134.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt() != 52438.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence() != 50784.toShort()) {
@@ -1242,7 +1242,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit() != 5149.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_destination_receipt() != 41558.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted() != 33011.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation() != 15281.toShort()) {
@@ -1741,40 +1741,88 @@ public interface MobileBleSessionInterface {
     
     /**
      * Marks the responder's confirmation as locally accepted by the GATT write callback.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` unless a responder confirmation is pending,
+     * or `BleSessionFailed` if the state mutex is poisoned.
      */
     fun `confirmationWriteSucceeded`()
     
     /**
      * Authenticates and decrypts one record after identity confirmation.
+     *
+     * # Errors
+     *
+     * Returns `BlePeerNotAuthenticated` before peer confirmation, or
+     * `BleSessionFailed` for an invalid, oversized, or unauthentic record.
      */
     fun `decryptRecord`(`ciphertext`: kotlin.ByteArray): kotlin.ByteArray
     
     /**
      * Encrypts one authenticated application/control record after identity confirmation.
+     *
+     * # Errors
+     *
+     * Returns `BlePeerNotAuthenticated` before peer confirmation,
+     * `BleRecordRejected` for an empty or oversized record, or session errors.
      */
     fun `encryptRecord`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray
     
+    /**
+     * Reports whether Noise has established the encrypted transport.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` if the session state mutex is poisoned.
+     */
     fun `handshakeComplete`(): kotlin.Boolean
     
+    /**
+     * Reports whether the peer identity has been confirmed.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` if the session state mutex is poisoned.
+     */
     fun `isAuthenticated`(): kotlin.Boolean
     
     /**
      * Verifies the peer confirmation; responders must then write their own confirmation.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` for an invalid peer proof or transition,
+     * `BlePeerNotPinned` when explicit pinning is missing, or session errors.
      */
     fun `readConfirmation`(`packet`: kotlin.ByteArray)
     
     /**
      * Reads one empty-payload Noise XX handshake packet.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` for malformed or failed Noise packets, or
+     * `BleRecordRejected` when the current handshake step cannot read.
      */
     fun `readHandshakeMessage`(`packet`: kotlin.ByteArray)
     
     /**
      * Verifies the remote identity proof and returns the SAS for explicit pinning.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` for an invalid proof or transition,
+     * `BlePeerIdentityMismatch` for a conflicting pin, or Core/session errors.
      */
     fun `readIdentityProof`(`packet`: kotlin.ByteArray): MobileBlePeerInfo
     
     /**
      * Discards all handshake, transcript, peer, and transport state.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
     fun `terminate`()
     
@@ -1783,21 +1831,41 @@ public interface MobileBleSessionInterface {
      *
      * Responders must call this immediately before consuming the initiator's
      * identity proof; a token rotation during the handshake invalidates it.
+     *
+     * # Errors
+     *
+     * Returns `InvalidBleDiscoveryToken` for a malformed token and
+     * `BleRecordRejected` if the role, state, or token value does not match.
      */
     fun `validateActiveResponderToken`(`activeToken`: kotlin.ByteArray)
     
     /**
-     * Writes the role-appropriate identity confirmation after this device pins the peer.
+     * Writes the role-appropriate encrypted identity confirmation after this device pins the peer.
+     *
+     * # Errors
+     *
+     * Returns a pin or state error when the peer is not verified and pinned,
+     * or a Core/Noise error if signing or encryption fails.
      */
     fun `writeConfirmation`(): kotlin.ByteArray
     
     /**
      * Writes the next empty-payload Noise XX handshake packet.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` when the peer is not ready for a local
+     * packet, or `BleSessionFailed` if Noise fails and the session is cleared.
      */
     fun `writeHandshakeMessage`(): kotlin.ByteArray
     
     /**
      * Writes the role-specific encrypted 135-byte identity proof.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` when the handshake/proof ordering is invalid,
+     * or a Core/Noise error when signing or encrypting fails.
      */
     fun `writeIdentityProof`(): kotlin.ByteArray
     
@@ -1914,6 +1982,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Marks the responder's confirmation as locally accepted by the GATT write callback.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` unless a responder confirmation is pending,
+     * or `BleSessionFailed` if the state mutex is poisoned.
      */
     @Throws(MobileException::class)override fun `confirmationWriteSucceeded`()
         = 
@@ -1929,6 +2002,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Authenticates and decrypts one record after identity confirmation.
+     *
+     * # Errors
+     *
+     * Returns `BlePeerNotAuthenticated` before peer confirmation, or
+     * `BleSessionFailed` for an invalid, oversized, or unauthentic record.
      */
     @Throws(MobileException::class)override fun `decryptRecord`(`ciphertext`: kotlin.ByteArray): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -1945,6 +2023,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Encrypts one authenticated application/control record after identity confirmation.
+     *
+     * # Errors
+     *
+     * Returns `BlePeerNotAuthenticated` before peer confirmation,
+     * `BleRecordRejected` for an empty or oversized record, or session errors.
      */
     @Throws(MobileException::class)override fun `encryptRecord`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -1959,6 +2042,13 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
 
     
+    /**
+     * Reports whether Noise has established the encrypted transport.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` if the session state mutex is poisoned.
+     */
     @Throws(MobileException::class)override fun `handshakeComplete`(): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     callWithPointer {
@@ -1972,6 +2062,13 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
 
     
+    /**
+     * Reports whether the peer identity has been confirmed.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` if the session state mutex is poisoned.
+     */
     @Throws(MobileException::class)override fun `isAuthenticated`(): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     callWithPointer {
@@ -1987,6 +2084,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Verifies the peer confirmation; responders must then write their own confirmation.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` for an invalid peer proof or transition,
+     * `BlePeerNotPinned` when explicit pinning is missing, or session errors.
      */
     @Throws(MobileException::class)override fun `readConfirmation`(`packet`: kotlin.ByteArray)
         = 
@@ -2002,6 +2104,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Reads one empty-payload Noise XX handshake packet.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` for malformed or failed Noise packets, or
+     * `BleRecordRejected` when the current handshake step cannot read.
      */
     @Throws(MobileException::class)override fun `readHandshakeMessage`(`packet`: kotlin.ByteArray)
         = 
@@ -2017,6 +2124,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Verifies the remote identity proof and returns the SAS for explicit pinning.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` for an invalid proof or transition,
+     * `BlePeerIdentityMismatch` for a conflicting pin, or Core/session errors.
      */
     @Throws(MobileException::class)override fun `readIdentityProof`(`packet`: kotlin.ByteArray): MobileBlePeerInfo {
             return FfiConverterTypeMobileBlePeerInfo.lift(
@@ -2033,6 +2145,10 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Discards all handshake, transcript, peer, and transport state.
+     *
+     * # Errors
+     *
+     * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
     @Throws(MobileException::class)override fun `terminate`()
         = 
@@ -2051,6 +2167,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
      *
      * Responders must call this immediately before consuming the initiator's
      * identity proof; a token rotation during the handshake invalidates it.
+     *
+     * # Errors
+     *
+     * Returns `InvalidBleDiscoveryToken` for a malformed token and
+     * `BleRecordRejected` if the role, state, or token value does not match.
      */
     @Throws(MobileException::class)override fun `validateActiveResponderToken`(`activeToken`: kotlin.ByteArray)
         = 
@@ -2065,7 +2186,12 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
 
     
     /**
-     * Writes the role-appropriate identity confirmation after this device pins the peer.
+     * Writes the role-appropriate encrypted identity confirmation after this device pins the peer.
+     *
+     * # Errors
+     *
+     * Returns a pin or state error when the peer is not verified and pinned,
+     * or a Core/Noise error if signing or encryption fails.
      */
     @Throws(MobileException::class)override fun `writeConfirmation`(): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -2082,6 +2208,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Writes the next empty-payload Noise XX handshake packet.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` when the peer is not ready for a local
+     * packet, or `BleSessionFailed` if Noise fails and the session is cleared.
      */
     @Throws(MobileException::class)override fun `writeHandshakeMessage`(): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -2098,6 +2229,11 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Writes the role-specific encrypted 135-byte identity proof.
+     *
+     * # Errors
+     *
+     * Returns `BleRecordRejected` when the handshake/proof ordering is invalid,
+     * or a Core/Noise error when signing or encrypting fails.
      */
     @Throws(MobileException::class)override fun `writeIdentityProof`(): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -2286,16 +2422,17 @@ public interface MobileClientInterface {
     fun `identityInfo`(): MobileIdentityInfo
     
     /**
-     * Sends one opaque signed event through Rust's signature, MLS, dependency,
-     * and local Space authorization gates.
+     * Sends one signed event through Rust's signature, MLS, dependency, and
+     * local Space authorization gates.
      *
-     * `Pending` means the event was retained for missing parents; it is not
-     * authorized application content and must not be projected to the UI.
+     * `Pending` means missing parents were retained. `CheckpointExcluded`
+     * means signed ciphertext predates the local MLS checkpoint and is retained
+     * only to preserve DAG ancestry; neither outcome is authorized content.
      *
      * # Errors
      *
-     * Returns `SyncIngestFailed` unless Core accepts, recognizes a duplicate,
-     * or safely retains the event as pending.
+     * Returns `SyncIngestFailed` unless Core accepts, recognizes, excludes, or
+     * safely retains the event as pending.
      */
     fun `ingestSyncedApplicationEvent`(`canonicalBytes`: kotlin.ByteArray): MobileSyncEventResult
     
@@ -2344,14 +2481,14 @@ public interface MobileClientInterface {
     fun `listLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray): List<MobileLocalTextMessage>
     
     /**
-     * Persists a forwarding attempt before its envelope is placed on transport.
+     * Persists one forwarding attempt before its envelope is placed on transport.
      *
      * # Errors
      *
      * Returns `InvalidOutboxEventId`, `InvalidOutboxSchedule`, or
      * `OutboxTransitionRejected`.
      */
-    fun `markOutboxForwarded`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+    fun `markOutboxAttempt`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
     
     /**
      * Returns the next durable author sequence for this identity.
@@ -2438,13 +2575,14 @@ public interface MobileClientInterface {
     fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
     
     /**
-     * Records destination acceptance from the authenticated peer's completion record.
+     * Records only authenticated peer acceptance into bounded BLE ingress.
+     * It is not proof of destination delivery or reading.
      *
      * # Errors
      *
      * Returns `InvalidOutboxEventId` or `OutboxTransitionRejected`.
      */
-    fun `recordDestinationReceipt`(`eventId`: kotlin.ByteArray)
+    fun `recordPeerIngressAccepted`(`eventId`: kotlin.ByteArray)
     
     /**
      * Restores a named local generation, then creates its authorized one-member recovery generation.
@@ -2647,16 +2785,17 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Sends one opaque signed event through Rust's signature, MLS, dependency,
-     * and local Space authorization gates.
+     * Sends one signed event through Rust's signature, MLS, dependency, and
+     * local Space authorization gates.
      *
-     * `Pending` means the event was retained for missing parents; it is not
-     * authorized application content and must not be projected to the UI.
+     * `Pending` means missing parents were retained. `CheckpointExcluded`
+     * means signed ciphertext predates the local MLS checkpoint and is retained
+     * only to preserve DAG ancestry; neither outcome is authorized content.
      *
      * # Errors
      *
-     * Returns `SyncIngestFailed` unless Core accepts, recognizes a duplicate,
-     * or safely retains the event as pending.
+     * Returns `SyncIngestFailed` unless Core accepts, recognizes, excludes, or
+     * safely retains the event as pending.
      */
     @Throws(MobileException::class)override fun `ingestSyncedApplicationEvent`(`canonicalBytes`: kotlin.ByteArray): MobileSyncEventResult {
             return FfiConverterTypeMobileSyncEventResult.lift(
@@ -2749,18 +2888,18 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Persists a forwarding attempt before its envelope is placed on transport.
+     * Persists one forwarding attempt before its envelope is placed on transport.
      *
      * # Errors
      *
      * Returns `InvalidOutboxEventId`, `InvalidOutboxSchedule`, or
      * `OutboxTransitionRejected`.
      */
-    @Throws(MobileException::class)override fun `markOutboxForwarded`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+    @Throws(MobileException::class)override fun `markOutboxAttempt`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
         = 
     callWithPointer {
     uniffiRustCallWithError(MobileException) { _status ->
-    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_forwarded(
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(
         it, FfiConverterByteArray.lower(`eventId`),FfiConverterLong.lower(`nextAttemptMs`),_status)
 }
     }
@@ -2919,17 +3058,18 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Records destination acceptance from the authenticated peer's completion record.
+     * Records only authenticated peer acceptance into bounded BLE ingress.
+     * It is not proof of destination delivery or reading.
      *
      * # Errors
      *
      * Returns `InvalidOutboxEventId` or `OutboxTransitionRejected`.
      */
-    @Throws(MobileException::class)override fun `recordDestinationReceipt`(`eventId`: kotlin.ByteArray)
+    @Throws(MobileException::class)override fun `recordPeerIngressAccepted`(`eventId`: kotlin.ByteArray)
         = 
     callWithPointer {
     uniffiRustCallWithError(MobileException) { _status ->
-    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_record_destination_receipt(
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(
         it, FfiConverterByteArray.lower(`eventId`),_status)
 }
     }
@@ -4846,13 +4986,15 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
 
 
 /**
- * Durable delivery state of one Core-authored outbox envelope.
+ * Durable local outbox state. Only a verified destination receipt may be `Delivered`.
  */
 
 enum class MobileOutboxState {
     
     QUEUED,
+    FORWARDING,
     FORWARDED,
+    PEER_INGRESS_ACCEPTED,
     DELIVERED,
     FAILED;
     companion object
@@ -4888,7 +5030,8 @@ enum class MobileSyncEventState {
     
     ACCEPTED,
     DUPLICATE,
-    PENDING;
+    PENDING,
+    CHECKPOINT_EXCLUDED;
     companion object
 }
 

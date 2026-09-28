@@ -198,7 +198,17 @@ internal fun SpaceMessageComposer(
                             ) {
                                 Text(message.content, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    "Local outbox record: ${message.outboxState ?: "no queued state; retained locally"}",
+                                    when (message.outboxState) {
+                                        "queued" -> "Queued locally; not yet sent"
+                                        "forwarding" -> "Forwarding attempt recorded; delivery unconfirmed"
+                                        "forwarded" -> "Next hop accepted; delivery unconfirmed"
+                                        "peer_ingress_accepted" ->
+                                            "Peer accepted bounded ingress; not recipient delivery"
+                                        "delivered" -> "Verified destination receipt recorded"
+                                        "failed" -> "Failed or expired; retained locally"
+                                        null -> "No queued state; retained locally"
+                                        else -> "Unknown local outbox status"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

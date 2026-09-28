@@ -49,7 +49,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+pub const CURRENT_SCHEMA_VERSION: i64 = 14;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -90,11 +90,13 @@ pub struct PendingEvent {
     pub missing_dependencies: Vec<[u8; ID_BYTES]>,
 }
 
-/// Delivery state of a locally authored envelope.
+/// Durable progress state for a locally authored envelope; not all states prove delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboxState {
     Queued,
+    Forwarding,
     Forwarded,
+    PeerIngressAccepted,
     Delivered,
     Failed,
 }
@@ -664,6 +666,43 @@ impl Store {
                             AND length(encrypted_targets) BETWEEN 1 AND 262144)
                 );
                 PRAGMA user_version = 13;",
+            )?;
+            transaction.commit()?;
+        }
+
+        if version < 14 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "DROP INDEX outbox_queued_schedule;
+                ALTER TABLE outbox RENAME TO outbox_v13;
+                CREATE TABLE outbox (
+                    event_id BLOB PRIMARY KEY NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE,
+                    envelope_bytes BLOB NOT NULL
+                        CHECK(typeof(envelope_bytes) = 'blob'
+                            AND length(envelope_bytes) BETWEEN 1 AND 1048576),
+                    next_attempt_ms INTEGER NOT NULL CHECK(next_attempt_ms >= 0),
+                    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                    state TEXT NOT NULL
+                        CHECK(state IN (
+                            'queued', 'forwarding', 'forwarded',
+                            'peer_ingress_accepted', 'delivered', 'failed'
+                        ))
+                );
+                INSERT INTO outbox
+                    (event_id, envelope_bytes, next_attempt_ms, attempt_count, state)
+                SELECT event_id, envelope_bytes, next_attempt_ms, attempt_count,
+                    CASE state
+                        WHEN 'delivered' THEN 'peer_ingress_accepted'
+                        WHEN 'forwarded' THEN 'forwarding'
+                        ELSE state
+                    END
+                FROM outbox_v13;
+                DROP TABLE outbox_v13;
+                CREATE INDEX outbox_queued_schedule
+                    ON outbox(state, next_attempt_ms, event_id);
+                PRAGMA user_version = 14;",
             )?;
             transaction.commit()?;
         }
@@ -2081,20 +2120,23 @@ impl Store {
         .collect()
     }
 
-    /// Records local relay/courier forwarding only. This never marks delivery.
+    /// Records a durable attempt before placing an envelope on transport.
     ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid scheduling data, an invalid state transition,
-    /// or database failures.
-    pub fn mark_forwarded(&mut self, event_id: [u8; ID_BYTES], next_attempt_ms: i64) -> Result<()> {
+    /// The attempt keeps the original event/envelope identity and remains
+    /// retryable after transport failure.
+    pub fn mark_forwarding_attempt(
+        &mut self,
+        event_id: [u8; ID_BYTES],
+        next_attempt_ms: i64,
+    ) -> Result<()> {
         if next_attempt_ms < 0 {
             return Err(StoreError::InvalidOutboxSchedule);
         }
         let changed = self.connection.execute(
             "UPDATE outbox
-             SET state = 'forwarded', next_attempt_ms = ?2, attempt_count = attempt_count + 1
-             WHERE event_id = ?1 AND state IN ('queued', 'forwarded')
+             SET state = 'forwarding', next_attempt_ms = ?2, attempt_count = attempt_count + 1
+             WHERE event_id = ?1
+               AND state IN ('queued', 'forwarding', 'forwarded', 'peer_ingress_accepted')
                AND attempt_count < 4294967295",
             params![&event_id[..], next_attempt_ms],
         )?;
@@ -2105,20 +2147,36 @@ impl Store {
         }
     }
 
-    /// Records a destination's receipt. Only a forwarded envelope can become
-    /// delivered; duplicate receipts are idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt cannot be applied or the database query
-    /// fails.
-    pub fn record_destination_receipt(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
+    /// Records a relay/next-hop acceptance after a persisted forwarding attempt.
+    /// This is forwarding, not delivery.
+    pub fn mark_forwarded(&mut self, event_id: [u8; ID_BYTES], next_attempt_ms: i64) -> Result<()> {
+        if next_attempt_ms < 0 {
+            return Err(StoreError::InvalidOutboxSchedule);
+        }
         let changed = self.connection.execute(
-            "UPDATE outbox SET state = 'delivered'
-             WHERE event_id = ?1 AND state = 'forwarded'",
+            "UPDATE outbox
+             SET state = 'forwarded', next_attempt_ms = ?2
+             WHERE event_id = ?1 AND state IN ('forwarding', 'forwarded')",
+            params![&event_id[..], next_attempt_ms],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOutboxTransition)
+        }
+    }
+
+    /// Records only the peer's authenticated acceptance into bounded ingress.
+    ///
+    /// This is not evidence of durable Core acceptance, destination delivery,
+    /// or reading. Duplicate acknowledgements are idempotent.
+    pub fn record_peer_ingress_accepted(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE outbox SET state = 'peer_ingress_accepted'
+             WHERE event_id = ?1 AND state IN ('forwarding', 'peer_ingress_accepted')",
             params![&event_id[..]],
         )?;
-        if changed == 1 || self.outbox_state(&event_id)? == Some(OutboxState::Delivered) {
+        if changed == 1 || self.outbox_state(&event_id)? == Some(OutboxState::PeerIngressAccepted) {
             Ok(())
         } else {
             Err(StoreError::InvalidOutboxTransition)
@@ -2126,15 +2184,11 @@ impl Store {
     }
 
     /// Marks an undelivered envelope failed or expired. Repeating failure is safe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transition is invalid or the database operation
-    /// fails.
     pub fn mark_failed(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE outbox SET state = 'failed'
-             WHERE event_id = ?1 AND state IN ('queued', 'forwarded')",
+             WHERE event_id = ?1
+               AND state IN ('queued', 'forwarding', 'forwarded', 'peer_ingress_accepted')",
             params![&event_id[..]],
         )?;
         if changed == 1 || self.outbox_state(&event_id)? == Some(OutboxState::Failed) {
@@ -2597,7 +2651,9 @@ fn validate_outbox_envelope(bytes: &[u8]) -> Result<()> {
 fn decode_outbox_state(state: &str) -> Result<OutboxState> {
     match state {
         "queued" => Ok(OutboxState::Queued),
+        "forwarding" => Ok(OutboxState::Forwarding),
         "forwarded" => Ok(OutboxState::Forwarded),
+        "peer_ingress_accepted" => Ok(OutboxState::PeerIngressAccepted),
         "delivered" => Ok(OutboxState::Delivered),
         "failed" => Ok(OutboxState::Failed),
         _ => Err(StoreError::CorruptData("invalid outbox state")),
@@ -2919,7 +2975,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2967,7 +3023,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2984,6 +3040,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn v13_outbox_migration_demotes_unverified_delivery_states() {
+        let database = TempDatabase::new();
+        let author = id(80);
+        let formerly_delivered = id(81);
+        let formerly_forwarded = id(82);
+        {
+            let mut store = Store::open(database.path()).expect("create latest schema");
+            store
+                .commit_authored_with_outbox(
+                    author,
+                    formerly_delivered,
+                    1,
+                    &[0xA1],
+                    &[],
+                    &[0x11],
+                    100,
+                )
+                .expect("create delivery fixture");
+            store
+                .commit_authored_with_outbox(
+                    author,
+                    formerly_forwarded,
+                    2,
+                    &[0xA2],
+                    &[],
+                    &[0x22],
+                    200,
+                )
+                .expect("create forwarding fixture");
+        }
+        {
+            let connection =
+                rusqlite::Connection::open(database.path()).expect("open migration fixture");
+            connection
+                .execute_batch(
+                    "DROP INDEX outbox_queued_schedule;
+                     ALTER TABLE outbox RENAME TO outbox_new;
+                     CREATE TABLE outbox (
+                        event_id BLOB PRIMARY KEY NOT NULL
+                            REFERENCES events(event_id) ON DELETE CASCADE,
+                        envelope_bytes BLOB NOT NULL
+                            CHECK(typeof(envelope_bytes) = 'blob'
+                                AND length(envelope_bytes) BETWEEN 1 AND 1048576),
+                        next_attempt_ms INTEGER NOT NULL CHECK(next_attempt_ms >= 0),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                        state TEXT NOT NULL
+                            CHECK(state IN ('queued', 'forwarded', 'delivered', 'failed'))
+                     );
+                     INSERT INTO outbox
+                        (event_id, envelope_bytes, next_attempt_ms, attempt_count, state)
+                     SELECT event_id, envelope_bytes, next_attempt_ms, attempt_count, 'queued'
+                     FROM outbox_new;
+                     DROP TABLE outbox_new;
+                     CREATE INDEX outbox_queued_schedule
+                        ON outbox(state, next_attempt_ms, event_id);
+                     PRAGMA user_version = 13;",
+                )
+                .expect("restore v13 outbox schema");
+            connection
+                .execute(
+                    "UPDATE outbox SET state = 'delivered' WHERE event_id = ?1",
+                    rusqlite::params![&formerly_delivered[..]],
+                )
+                .expect("restore legacy delivered state");
+            connection
+                .execute(
+                    "UPDATE outbox SET state = 'forwarded' WHERE event_id = ?1",
+                    rusqlite::params![&formerly_forwarded[..]],
+                )
+                .expect("restore legacy forwarded state");
+        }
+
+        let store = Store::open(database.path()).expect("migrate v13 outbox");
+        let rows = store
+            .list_outbox_page(None, 10)
+            .expect("read migrated outbox");
+        let delivered = rows
+            .iter()
+            .find(|row| row.event_id == formerly_delivered)
+            .expect("find former delivered row");
+        assert_eq!(delivered.state, OutboxState::PeerIngressAccepted);
+        assert_eq!(delivered.envelope_bytes, [0x11]);
+        assert_eq!(delivered.next_attempt_ms, 100);
+        let forwarded = rows
+            .iter()
+            .find(|row| row.event_id == formerly_forwarded)
+            .expect("find former forwarded row");
+        assert_eq!(forwarded.state, OutboxState::Forwarding);
+        assert_eq!(forwarded.envelope_bytes, [0x22]);
+        assert_eq!(forwarded.next_attempt_ms, 200);
+    }
     #[test]
     fn trusted_identity_persists_exact_bytes_idempotently_and_rejects_conflicts() {
         let database = TempDatabase::new();
@@ -3689,7 +3837,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn authored_event_and_outbox_transition_durably_without_false_delivery() {
+    fn authored_outbox_preserves_identity_across_attempt_ack_and_retry() {
         let database = TempDatabase::new();
         let author = id(50);
         let event = id(51);
@@ -3722,70 +3870,53 @@ mod tests {
             assert_eq!(queued[0].state, OutboxState::Queued);
             assert_eq!(queued[0].envelope_bytes, [0x01, 0x02]);
             assert_eq!(queued[0].attempt_count, 0);
-            assert_eq!(
-                store
-                    .commit_authored_with_outbox(
-                        author,
-                        event,
-                        1,
-                        &[0xA1],
-                        &[],
-                        &[0x01, 0x02],
-                        999,
-                    )
-                    .expect("repeat identical event and envelope"),
-                CommitOutcome::AlreadyPresent
-            );
 
             store
-                .mark_forwarded(event, 200)
-                .expect("record relay forwarding");
-            let forwarded = store
+                .mark_forwarding_attempt(event, 200)
+                .expect("persist attempt before transport");
+            let attempted = store.list_outbox_page(None, 10).expect("list attempt");
+            assert_eq!(attempted[0].state, OutboxState::Forwarding);
+            assert_eq!(attempted[0].attempt_count, 1);
+            assert_eq!(attempted[0].event_id, event);
+            assert_eq!(attempted[0].envelope_bytes, [0x01, 0x02]);
+            assert!(matches!(
+                store.record_peer_ingress_accepted(id(99)),
+                Err(StoreError::InvalidOutboxTransition)
+            ));
+            store
+                .record_peer_ingress_accepted(event)
+                .expect("record peer transport ingress acknowledgement");
+            store
+                .record_peer_ingress_accepted(event)
+                .expect("repeat ingress acknowledgement idempotently");
+            let accepted = store
                 .list_outbox_page(None, 10)
-                .expect("list forwarded envelope");
-            assert_eq!(forwarded[0].state, OutboxState::Forwarded);
-            assert_eq!(forwarded[0].attempt_count, 1);
+                .expect("list ingress state");
+            assert_eq!(accepted[0].state, OutboxState::PeerIngressAccepted);
+            assert_eq!(accepted[0].attempt_count, 1);
+            assert_eq!(accepted[0].envelope_bytes, [0x01, 0x02]);
             assert!(matches!(
                 store.commit_authored_with_outbox(author, event, 1, &[0xA1], &[], &[0x03], 300),
                 Err(StoreError::OutboxConflict)
             ));
-            assert_eq!(
-                store
-                    .commit_authored_with_outbox(
-                        author,
-                        event,
-                        1,
-                        &[0xA1],
-                        &[],
-                        &[0x01, 0x02],
-                        300,
-                    )
-                    .expect("repeat identical forwarded envelope"),
-                CommitOutcome::AlreadyPresent
-            );
-
-            assert!(matches!(
-                store.record_destination_receipt(id(99)),
-                Err(StoreError::InvalidOutboxTransition)
-            ));
         }
 
         let mut store = Store::open(database.path()).expect("reopen outbox database");
-        let forwarded = store
+        let accepted = store
             .list_outbox_page(None, 10)
-            .expect("load durable outbox state");
-        assert_eq!(forwarded[0].state, OutboxState::Forwarded);
-        assert_eq!(forwarded[0].next_attempt_ms, 200);
+            .expect("load durable state");
+        assert_eq!(accepted[0].state, OutboxState::PeerIngressAccepted);
+        assert_eq!(accepted[0].next_attempt_ms, 200);
+        assert_eq!(accepted[0].event_id, event);
+        assert_eq!(accepted[0].envelope_bytes, [0x01, 0x02]);
         store
-            .record_destination_receipt(event)
-            .expect("record destination receipt");
-        assert_eq!(
-            store
-                .list_outbox_page(None, 10)
-                .expect("list delivered envelope")[0]
-                .state,
-            OutboxState::Delivered
-        );
+            .mark_forwarding_attempt(event, 300)
+            .expect("retry after peer ingress acknowledgement");
+        let retried = store.list_outbox_page(None, 10).expect("load retry state");
+        assert_eq!(retried[0].state, OutboxState::Forwarding);
+        assert_eq!(retried[0].attempt_count, 2);
+        assert_eq!(retried[0].event_id, event);
+        assert_eq!(retried[0].envelope_bytes, [0x01, 0x02]);
         assert_eq!(
             store
                 .next_author_sequence(&author)
@@ -3887,7 +4018,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_outbox_entry_cannot_be_reported_delivered() {
+    fn failed_outbox_entry_rejects_peer_ingress_ack() {
         let database = TempDatabase::new();
         let mut store = Store::open(database.path()).expect("open database");
         let event = id(70);
@@ -3900,7 +4031,7 @@ mod tests {
             OutboxState::Failed
         );
         assert!(matches!(
-            store.record_destination_receipt(event),
+            store.record_peer_ingress_accepted(event),
             Err(StoreError::InvalidOutboxTransition)
         ));
     }

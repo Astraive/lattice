@@ -22,7 +22,7 @@ pub enum RelayOutboxError {
     /// The durable outbox row was not found.
     #[error("outbox event was not found")]
     MissingOutboxEntry,
-    /// Only queued or previously forwarded rows can be sent to a relay.
+    /// Only nonterminal rows can be sent to a relay.
     #[error("outbox state {0:?} cannot be forwarded")]
     NotForwardable(OutboxState),
     /// The attempt counter cannot advance without overflowing its durable width.
@@ -103,7 +103,13 @@ pub async fn publish_outbox_entry_once(
         return Err(RelayOutboxError::InvalidSchedule);
     }
     let entry = load_outbox_entry(store, event_id)?;
-    if !matches!(entry.state, OutboxState::Queued | OutboxState::Forwarded) {
+    if !matches!(
+        entry.state,
+        OutboxState::Queued
+            | OutboxState::Forwarding
+            | OutboxState::Forwarded
+            | OutboxState::PeerIngressAccepted
+    ) {
         return Err(RelayOutboxError::NotForwardable(entry.state));
     }
     if entry.attempt_count == u32::MAX {
@@ -114,6 +120,7 @@ pub async fn publish_outbox_entry_once(
         return Err(RelayOutboxError::InnerEventMismatch);
     }
     let message = RelayProfileMessage::create(envelope, mailbox, relay_secret_key)?;
+    store.mark_forwarding_attempt(event_id, next_attempt_ms)?;
     let acceptance = relay.publish(relay_url, &message, cancellation).await?;
     record_relay_acceptance(store, event_id, *acceptance.event_id(), next_attempt_ms)?;
     Ok(acceptance)
@@ -168,6 +175,9 @@ mod tests {
     #[test]
     fn accepted_relay_event_marks_only_outbox_forwarded() {
         let mut store = queued_store();
+        store
+            .mark_forwarding_attempt([0x22; 32], 45)
+            .expect("record relay attempt");
         record_relay_acceptance(&mut store, [0x22; 32], [0x44; 32], 45)
             .expect("record relay acceptance");
         let row = store.list_outbox_page(None, 1).expect("read outbox");
@@ -221,12 +231,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_outbox_never_republishes_a_delivered_row() {
+    async fn relay_outbox_never_republishes_a_failed_row() {
         let mut store = queued_store();
-        store.mark_forwarded([0x22; 32], 1).expect("mark forwarded");
-        store
-            .record_destination_receipt([0x22; 32])
-            .expect("record destination receipt");
+        store.mark_failed([0x22; 32]).expect("mark row failed");
         let relay = RelayClient::new(Duration::from_secs(1)).expect("relay client");
         let cancellation = CancellationToken::new();
         assert!(matches!(
@@ -244,10 +251,10 @@ mod tests {
                 &cancellation,
             )
             .await,
-            Err(RelayOutboxError::NotForwardable(OutboxState::Delivered))
+            Err(RelayOutboxError::NotForwardable(OutboxState::Failed))
         ));
         let row = store.list_outbox_page(None, 1).expect("read outbox");
-        assert_eq!(row[0].state, OutboxState::Delivered);
-        assert_eq!(row[0].attempt_count, 1);
+        assert_eq!(row[0].state, OutboxState::Failed);
+        assert_eq!(row[0].attempt_count, 0);
     }
 }

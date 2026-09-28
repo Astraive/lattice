@@ -10,7 +10,7 @@ internal class BleExp0OutboxPump(
     /** Router authorization for this peer; event envelope bytes remain opaque here. */
     private val isRoutedToPeer: (eventId: ByteArray) -> Boolean,
 ) {
-    /** Starts the first due queued/forwarded entry in event-ID order, if one exists. */
+    /** Starts the first due nonterminal entry in event-ID order, if one exists. */
     fun startNextDue(
         nowUnixMillis: Long,
         nowElapsedMillis: Long,
@@ -35,20 +35,23 @@ internal class BleExp0OutboxPump(
         }
     }
 
-    /** Continues the durable queue after an authenticated LBFA destination receipt. */
+    /** Continues the durable queue after an authenticated LBFA ingress acknowledgement. */
     fun receiveControl(
         ciphertext: ByteArray,
         nowUnixMillis: Long,
         nowElapsedMillis: Long,
         retryAt: (attemptCount: UInt, nowUnixMillis: Long) -> Long,
     ): ByteArray? {
-        val receiptEventId = transport.receiveControl(ciphertext, nowElapsedMillis) ?: return null
+        val ingressEventId = transport.receiveControl(ciphertext, nowElapsedMillis) ?: return null
         startNextDue(nowUnixMillis, nowElapsedMillis, retryAt)
-        return receiptEventId
+        return ingressEventId
     }
 
     private fun MobileOutboxEntry.isDueAt(nowUnixMillis: Long): Boolean =
-        (state == MobileOutboxState.QUEUED || state == MobileOutboxState.FORWARDED) &&
+        (state == MobileOutboxState.QUEUED ||
+            state == MobileOutboxState.FORWARDING ||
+            state == MobileOutboxState.FORWARDED ||
+            state == MobileOutboxState.PEER_INGRESS_ACCEPTED) &&
             nextAttemptMs <= nowUnixMillis
 
     private companion object {

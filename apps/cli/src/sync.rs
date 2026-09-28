@@ -1477,7 +1477,9 @@ fn print_status(
                 "outbox": {
                     "total": outbox.total,
                     "queued": outbox.queued,
+                    "forwarding": outbox.forwarding,
                     "forwarded": outbox.forwarded,
+                    "peer_ingress_accepted": outbox.peer_ingress_accepted,
                     "destination_receipt_recorded": outbox.destination_receipt_recorded,
                     "failed": outbox.failed,
                 },
@@ -1507,10 +1509,12 @@ fn print_status(
             );
         }
         println!(
-            "Outbox: {} total ({} queued, {} forwarded, {} destination receipts recorded, {} failed).",
+            "Outbox: {} total ({} queued, {} forwarding attempts, {} forwarded, {} peer-ingress acknowledgements, {} destination receipts, {} failed).",
             outbox.total,
             outbox.queued,
+            outbox.forwarding,
             outbox.forwarded,
+            outbox.peer_ingress_accepted,
             outbox.destination_receipt_recorded,
             outbox.failed
         );
@@ -1519,7 +1523,7 @@ fn print_status(
         );
         println!("No synchronization scheduler or network exchange is running.");
         println!(
-            "Destination-receipt counts reflect local outbox state and are not independently verified here."
+            "Destination delivery requires a verified recipient receipt; a peer-ingress or relay acknowledgement is not delivery."
         );
         println!("Forwarding or relay acceptance is not recipient delivery.");
     }
@@ -1551,7 +1555,9 @@ fn outbox_counts(store: &Store) -> Result<OutboxCounts, Box<dyn Error>> {
             counts.total += 1;
             match entry.state {
                 OutboxState::Queued => counts.queued += 1,
+                OutboxState::Forwarding => counts.forwarding += 1,
                 OutboxState::Forwarded => counts.forwarded += 1,
+                OutboxState::PeerIngressAccepted => counts.peer_ingress_accepted += 1,
                 OutboxState::Delivered => counts.destination_receipt_recorded += 1,
                 OutboxState::Failed => counts.failed += 1,
             }
@@ -1594,7 +1600,9 @@ fn pending_event_summaries(store: &Store) -> Result<Vec<serde_json::Value>, Box<
 struct OutboxCounts {
     total: usize,
     queued: usize,
+    forwarding: usize,
     forwarded: usize,
+    peer_ingress_accepted: usize,
     destination_receipt_recorded: usize,
     failed: usize,
 }

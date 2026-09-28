@@ -96,7 +96,9 @@ fn project_local_text_message(message: LocalTextMessageRecord) -> LocalTextMessa
         content: message.content,
         outbox_state: message.outbox_state.map(|state| match state {
             OutboxState::Queued => "queued",
+            OutboxState::Forwarding => "forwarding",
             OutboxState::Forwarded => "forwarded",
+            OutboxState::PeerIngressAccepted => "peer_ingress_accepted",
             OutboxState::Delivered => "delivered",
             OutboxState::Failed => "failed",
         }),

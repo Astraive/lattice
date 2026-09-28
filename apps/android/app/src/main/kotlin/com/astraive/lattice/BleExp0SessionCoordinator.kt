@@ -86,13 +86,13 @@ internal class BleExp0SessionCoordinator(
             require(value.isNotEmpty()) { "Empty GATT control value" }
             checkFresh(elapsedMillis)
             if (stage == Stage.AUTHENTICATED) {
-                val receipt = requireNotNull(pump).receiveControl(
+                val ingressEventId = requireNotNull(pump).receiveControl(
                     value,
                     System.currentTimeMillis(),
                     elapsedMillis,
                     retryAt,
                 )
-                if (receipt != null) startNextDue(elapsedMillis)
+                if (ingressEventId != null) startNextDue(elapsedMillis)
                 touch(elapsedMillis)
                 return
             }
@@ -333,7 +333,12 @@ internal class BleExp0SessionCoordinator(
             MobileBleRole.RESPONDER -> BleExp0TransferProtocol.ROLE_RESPONDER
         }
         val transfer = BleExp0TransferProtocol.forAuthenticatedSession(localRole, negotiatedMtu)
-        val authenticatedTransport = BleExp0EnvelopeTransport(profile, session, transfer, io)
+        val authenticatedTransport = BleExp0EnvelopeTransport(
+            profile,
+            MobileBleSessionCipher(session),
+            transfer,
+            io,
+        )
         val outboxPump = BleExp0OutboxPump(profile, authenticatedTransport) { eventId ->
             routeAllowed.get() && isRoutedToPeer(eventId)
         }

@@ -2036,7 +2036,7 @@ class MainActivity : ComponentActivity() {
         screenState = screenState.copy(
             pendingRouteConsent = false,
             bleConnectionStatus = if (allowed) {
-                "Authenticated BLE peer approved to carry opaque encrypted envelopes; destination receipts remain separate."
+                "Authenticated BLE peer approved to carry opaque encrypted envelopes; peer-ingress acknowledgements are not destination delivery."
             } else {
                 "Peer remains authenticated; encrypted outbox forwarding was not approved."
             },
@@ -2683,7 +2683,7 @@ private fun NearbyReadinessScreen(
             }
             Spacer(Modifier.height(20.dp))
             Text(
-                "A selected peer is not trusted until its Noise identity proof is verified and pinned. Encrypted outbox forwarding requires separate consent; a destination receipt is recorded only after Core accepts the event.",
+                "A selected peer is not trusted until its Noise identity proof is verified and pinned. Encrypted outbox forwarding requires separate consent. LBFA records authenticated peer acceptance of a complete envelope into bounded ingress, not destination delivery.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

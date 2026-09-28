@@ -11,14 +11,36 @@ internal interface BleExp0EnvelopeIo {
     fun disconnect()
 }
 
+/** Authenticated Core operations required by one exp0 transport. */
+internal interface BleExp0IngressProfile {
+    fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long)
+    fun recordPeerIngressAccepted(eventId: ByteArray)
+    fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): uniffi.lattice_uniffi.MobileSyncEventResult
+}
+
+/** Noise record operations bound to the already-authenticated session. */
+internal interface BleExp0SessionCipher {
+    fun isAuthenticated(): Boolean
+    fun encryptRecord(plaintext: ByteArray): ByteArray
+    fun decryptRecord(ciphertext: ByteArray): ByteArray
+}
+
+internal class MobileBleSessionCipher(
+    private val session: MobileBleSession,
+) : BleExp0SessionCipher {
+    override fun isAuthenticated(): Boolean = session.isAuthenticated()
+    override fun encryptRecord(plaintext: ByteArray): ByteArray = session.encryptRecord(plaintext)
+    override fun decryptRecord(ciphertext: ByteArray): ByteArray = session.decryptRecord(ciphertext)
+}
+
 /**
  * Bridges authenticated Noise records, bounded exp0 transfers, FIFO GATT value
- * queues, Rust Core event ingress, and durable destination receipts. Invoke
- * from a serialized worker, never directly from the main thread.
+ * queues, Rust Core event ingress, and durable peer-ingress acknowledgements.
+ * Invoke from a serialized worker, never directly from the main thread.
  */
 internal class BleExp0EnvelopeTransport(
-    private val profile: AndroidMobileProfile,
-    private val session: MobileBleSession,
+    private val profile: BleExp0IngressProfile,
+    private val session: BleExp0SessionCipher,
     private val transfer: BleExp0TransferProtocol,
     private val io: BleExp0EnvelopeIo,
 ) {
@@ -34,9 +56,12 @@ internal class BleExp0EnvelopeTransport(
         nowElapsedMillis: Long,
     ) {
         requireAuthenticated()
-        require(entry.state == MobileOutboxState.QUEUED || entry.state == MobileOutboxState.FORWARDED) {
-            "Only queued or forwarded outbox entries can be sent"
-        }
+        require(
+            entry.state == MobileOutboxState.QUEUED ||
+                entry.state == MobileOutboxState.FORWARDING ||
+                entry.state == MobileOutboxState.FORWARDED ||
+                entry.state == MobileOutboxState.PEER_INGRESS_ACCEPTED,
+        ) { "Only nonterminal outbox entries can be sent" }
         require(entry.nextAttemptMs <= nowUnixMillis) { "Outbox entry is not due yet" }
         require(retryAtUnixMillis >= 0) { "Retry time must be nonnegative" }
         require(entry.eventId.size == 32) { "Outbox event ID must contain 32 bytes" }
@@ -47,7 +72,7 @@ internal class BleExp0EnvelopeTransport(
             throw error
         }
         try {
-            profile.markOutboxForwarded(entry.eventId, retryAtUnixMillis)
+            profile.markOutboxAttempt(entry.eventId, retryAtUnixMillis)
             activeOutboundEventId = entry.eventId.copyOf()
             sendProtectedControl(start)
         } catch (error: Exception) {
@@ -75,7 +100,7 @@ internal class BleExp0EnvelopeTransport(
                     transfer.acceptCompletion(plaintext, nowMillis)
                     val eventId = activeOutboundEventId
                         ?: throw IllegalStateException("Completion has no active outbox event")
-                    profile.recordDestinationReceipt(eventId)
+                    profile.recordPeerIngressAccepted(eventId)
                     activeOutboundEventId = null
                     eventId.copyOf()
                 }
@@ -95,13 +120,10 @@ internal class BleExp0EnvelopeTransport(
             val update = transfer.acceptFrame(frame, nowMillis)
             update.creditRecord?.let(::sendProtectedControl)
             val completedEnvelope = update.completedEnvelope ?: return
+            // Core outcomes (Accepted, Duplicate, Pending, or CheckpointExcluded)
+            // all mean the bounded ingress handoff succeeded; none means delivery.
             profile.ingestSyncedApplicationEvent(completedEnvelope)
-            sendProtectedControl(
-                transfer.acknowledgeIngress(
-                    readTransferId(frame),
-                    android.os.SystemClock.elapsedRealtime(),
-                ),
-            )
+            sendProtectedControl(transfer.acknowledgeIngress(readTransferId(frame), nowMillis))
         } catch (error: Exception) {
             failClosed()
             throw error
