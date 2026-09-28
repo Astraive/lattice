@@ -394,22 +394,29 @@ class MainActivity : ComponentActivity() {
     private fun attachCoreProjectionSubscription() {
         if (!activityStarted || projectionSubscription != null) return
         val profile = mobileProfile ?: return
-        projectionSubscription = profile.subscribeProjectionChanges { change ->
-            runOnUiThread {
-                if (!activityStarted || isFinishing || isDestroyed || mobileProfile !== profile) return@runOnUiThread
-                when (change) {
-                    CoreProjectionChange.SPACES -> refreshLocalSpaces()
-                    CoreProjectionChange.MESSAGES -> refreshLoadedMessageHistories()
-                    CoreProjectionChange.ALL -> {
-                        refreshLocalSpaces()
-                        refreshLoadedMessageHistories()
-                    }
-                    CoreProjectionChange.SYNCED_EVENTS -> {
-                        refreshLocalSpaces()
-                        refreshLoadedMessageHistories(notifyIncomingMessages = true)
+        val dispatcher = CoreProjectionChangeDispatcher(
+            post = { action -> runOnUiThread { action() } },
+            observer = { change ->
+                if (activityStarted && !isFinishing && !isDestroyed && mobileProfile === profile) {
+                    when (change) {
+                        CoreProjectionChange.SPACES -> refreshLocalSpaces()
+                        CoreProjectionChange.MESSAGES -> refreshLoadedMessageHistories()
+                        CoreProjectionChange.ALL -> {
+                            refreshLocalSpaces()
+                            refreshLoadedMessageHistories()
+                        }
+                        CoreProjectionChange.SYNCED_EVENTS -> {
+                            refreshLocalSpaces()
+                            refreshLoadedMessageHistories(notifyIncomingMessages = true)
+                        }
                     }
                 }
-            }
+            },
+        )
+        val nativeSubscription = profile.subscribeProjectionChanges(dispatcher::offer)
+        projectionSubscription = AutoCloseable {
+            dispatcher.close()
+            nativeSubscription.close()
         }
         refreshLocalSpaces()
         refreshLoadedMessageHistories()

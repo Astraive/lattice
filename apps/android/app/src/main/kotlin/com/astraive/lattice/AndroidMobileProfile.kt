@@ -33,6 +33,88 @@ private fun uniffi.lattice_uniffi.MobileProjectionChange.toCoreProjectionChange(
         uniffi.lattice_uniffi.MobileProjectionChange.SYNCED_EVENTS -> CoreProjectionChange.SYNCED_EVENTS
     }
 
+internal class CoreProjectionChangeDispatcher(
+    private val post: ((() -> Unit) -> Unit),
+    private val observer: (CoreProjectionChange) -> Unit,
+) : AutoCloseable {
+    private val lock = Any()
+    private var pending = 0
+    private var scheduled = false
+    private var closed = false
+
+    fun offer(change: CoreProjectionChange) {
+        val shouldPost = synchronized(lock) {
+            if (closed) return
+            pending = pending or change.mask()
+            if (scheduled) {
+                false
+            } else {
+                scheduled = true
+                true
+            }
+        }
+        if (shouldPost) post(::drain)
+    }
+
+    private fun drain() {
+        val change = synchronized(lock) {
+            if (closed) {
+                pending = 0
+                scheduled = false
+                return
+            }
+            coalescedChange(pending).also { pending = 0 }
+        }
+        try {
+            change?.let(observer)
+        } finally {
+            val shouldPost = synchronized(lock) {
+                if (closed || pending == 0) {
+                    pending = 0
+                    scheduled = false
+                    false
+                } else {
+                    true
+                }
+            }
+            if (shouldPost) post(::drain)
+        }
+    }
+
+    override fun close() {
+        synchronized(lock) {
+            closed = true
+            pending = 0
+        }
+    }
+
+    private fun CoreProjectionChange.mask(): Int = when (this) {
+        CoreProjectionChange.SPACES -> SPACE_CHANGE
+        CoreProjectionChange.MESSAGES -> MESSAGE_CHANGE
+        CoreProjectionChange.ALL -> ALL_CHANGE
+        CoreProjectionChange.SYNCED_EVENTS -> SYNCED_EVENT_CHANGE
+    }
+
+    private fun coalescedChange(changes: Int): CoreProjectionChange? {
+        val spacesAndMessages =
+            (changes and (SPACE_CHANGE or MESSAGE_CHANGE)) == (SPACE_CHANGE or MESSAGE_CHANGE)
+        return when {
+            (changes and SYNCED_EVENT_CHANGE) != 0 -> CoreProjectionChange.SYNCED_EVENTS
+            (changes and ALL_CHANGE) != 0 || spacesAndMessages -> CoreProjectionChange.ALL
+            (changes and MESSAGE_CHANGE) != 0 -> CoreProjectionChange.MESSAGES
+            (changes and SPACE_CHANGE) != 0 -> CoreProjectionChange.SPACES
+            else -> null
+        }
+    }
+
+    private companion object {
+        const val SPACE_CHANGE = 1
+        const val MESSAGE_CHANGE = 2
+        const val ALL_CHANGE = 4
+        const val SYNCED_EVENT_CHANGE = 8
+    }
+}
+
 
 internal class CoreProjectionSubscriptionRegistry : AutoCloseable {
     private val lock = Any()
