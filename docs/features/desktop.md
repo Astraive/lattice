@@ -19,6 +19,10 @@ The Spaces browser also imports a versioned Welcome bootstrap through `import_lo
 
 The Spaces browser also publishes a fresh one-time KeyPackage from an input X.509 credential vector through `publish_local_space_key_package`. Core validates the OS-rooted credential and persists the matching private KeyPackage material locally; the UI exposes only the bounded public package bytes for copying to an inviter. Publication makes no network request and does not create or join a Space.
 
+## Browser WebRTC event exchange
+
+Each message composer exposes a manually signaled WebRTC data-channel link for a browser peer. It transfers only signed message events from the selected Space-generation outbox, with 256 KiB frame and 16 MiB per-session limits plus bounded buffered-data backpressure. Received event bytes are submitted to the normal Core application-event acceptance path, and accepted events refresh the local history projection. Membership transitions are not carried. The WebRTC transport encrypts the channel but does not authenticate the remote device identity; use the pinned TCP sync action when peer identity authentication is required. Sending or Core acceptance does not establish recipient delivery or full convergence. Desktop↔Web runtime acceptance remains unverified.
+
 ## Direct authenticated synchronization
 
 Each local Space card exposes `sync_local_space_once`. Both already joined, mutually pinned peers run it concurrently with the same Space generation, each providing the other's TCP listener address and a local listen address. The listener defaults to loopback and accepts the exact pinned identity. A run exchanges one bounded v2 summary/request/response round, validates the signed event's scope, author, sequence, and ID, then submits received bytes through normal Core MLS and policy acceptance and retries ready dependencies once. The operation has a 30-second stage deadline and closes its listener when the call ends. It does not claim convergence; run further rounds if needed. It does not update outbox delivery markers, change membership, or use courier/relay.

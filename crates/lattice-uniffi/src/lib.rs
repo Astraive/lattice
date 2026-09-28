@@ -925,7 +925,13 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock")
             .as_secs();
-        let common = (vec![0; 16], vec![0; 32], vec![1], 1_000_000_000_000_u64, Some(1));
+        let common = (
+            vec![0; 16],
+            vec![0; 32],
+            vec![1],
+            1_000_000_000_000_u64,
+            Some(1),
+        );
 
         assert!(matches!(
             client.create_space_invitation(

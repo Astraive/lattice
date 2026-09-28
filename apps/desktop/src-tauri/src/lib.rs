@@ -63,6 +63,8 @@ pub fn run() {
             peer_mode::get_persistent_peer_mode_status,
             peer_mode::configure_persistent_peer_mode,
             peer_mode::list_retained_courier_items,
+            sync::list_local_web_event_page,
+            sync::accept_local_web_event,
             sync::sync_local_space_once,
             peer_mode::forward_queued_courier_item
         ])

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type FormEvent, useState } from "react";
+import { DesktopWebRtcEventPanel } from "./DesktopWebRtcEventPanel";
 import { LocalSyncPanel } from "./LocalSyncPanel";
 
 type LocalChannelSummary = {
@@ -75,7 +76,14 @@ type LocalTextMessage = {
   authorSequence: number;
   lamport: number;
   content: string;
-  outboxState: "queued" | "forwarding" | "forwarded" | "peer_ingress_accepted" | "delivered" | "failed" | null;
+  outboxState:
+    | "queued"
+    | "forwarding"
+    | "forwarded"
+    | "peer_ingress_accepted"
+    | "delivered"
+    | "failed"
+    | null;
 };
 
 type LocalTextMessageSearch = {
@@ -107,7 +115,8 @@ function localOutboxLabel(state: LocalTextMessage["outboxState"]): string {
   if (state === "queued") return "queued locally · not yet sent";
   if (state === "forwarding") return "forwarding attempt recorded · recipient delivery unconfirmed";
   if (state === "forwarded") return "next hop accepted · recipient delivery unconfirmed";
-  if (state === "peer_ingress_accepted") return "authenticated peer accepted bounded ingress · not recipient delivery";
+  if (state === "peer_ingress_accepted")
+    return "authenticated peer accepted bounded ingress · not recipient delivery";
   if (state === "delivered") return "verified destination receipt recorded";
   if (state === "failed") return "failed or expired · retained locally";
   return "retained locally · no outbox status";
@@ -583,8 +592,9 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               <h4>Recent local messages</h4>
               <p>
                 Newest 100 locally retained messages for this channel, including authorized incoming
-                events. Events can be exchanged by explicit authenticated sync below; outbox markers
-                describe local state, not sync completion or recipient delivery.
+                events. Browser WebRTC can exchange bounded signed message events without
+                authenticating the peer identity; pinned TCP sync below authenticates the peer.
+                Neither path proves destination delivery.
               </p>
             </div>
             <button type="button" disabled={historyBusy} onClick={() => void loadHistory()}>
@@ -650,6 +660,11 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               </ol>
             )}
           </section>
+          <DesktopWebRtcEventPanel
+            spaceId={space.spaceId}
+            groupReference={space.groupReference}
+            onEventAccepted={loadHistory}
+          />
         </>
       )}
       {feedback && <p role={eventId ? "status" : "alert"}>{feedback}</p>}
