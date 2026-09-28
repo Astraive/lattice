@@ -1,5 +1,5 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lattice_core::{
     Client, CoreError, InitialChannel, LocalTextMessageRecord, MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES,
@@ -15,8 +15,8 @@ use super::{
     MobileChannelSummary, MobileChannelType, MobileCreatedSpace, MobileError, MobileIdentityInfo,
     MobileInitialChannel, MobileLocalTextMessage, MobileLocalTextMessageSearch, MobileOutboxEntry,
     MobileOutboxState, MobilePinnedIdentity, MobileProjectionChange, MobileQueuedMessage,
-    MobileSpaceCursor, MobileSpacePage, MobileSpaceSummary, MobileSyncEventResult,
-    MobileSyncEventState, PlatformKeyProtector,
+    MobileSpaceCursor, MobileSpaceInvitation, MobileSpacePage, MobileSpaceSummary,
+    MobileSyncEventResult, MobileSyncEventState, PlatformKeyProtector,
 };
 
 struct ProfileProtector {
@@ -40,6 +40,7 @@ impl PrivateKeyProtector for ProfileProtector {
 
 const MAX_PROJECTION_SUBSCRIPTIONS: usize = 32;
 const MAX_PROJECTION_WAIT_MS: u64 = 60_000;
+const MAX_SPACE_INVITE_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 const SPACE_CHANGE: u8 = 1;
 const MESSAGE_CHANGE: u8 = 2;
 const ALL_CHANGE: u8 = 4;
@@ -553,6 +554,98 @@ impl MobileClient {
                     .into_iter()
                     .flat_map(|p| &p.channels),
             ),
+        };
+        drop(client);
+        self.projection_observers
+            .publish(MobileProjectionChange::Spaces);
+        Ok(result)
+    }
+    /// Publishes one locally retained X.509 KeyPackage for offline invitation.
+    ///
+    /// The output is intended for explicit out-of-band transfer; no relay or
+    /// network is contacted. The matching private KeyPackage remains local.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn publish_space_key_package(
+        &self,
+        credential_vector: Vec<u8>,
+    ) -> Result<Vec<u8>, MobileError> {
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| MobileError::SpaceKeyPackagePublicationFailed)?
+            .as_secs();
+        self.lock_client()?
+            .publish_x509_key_package(credential_vector, now)
+            .map_err(|error| match error {
+                CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
+                _ => MobileError::SpaceKeyPackagePublicationFailed,
+            })
+    }
+
+    /// Commits an offline invitation for one published target KeyPackage.
+    ///
+    /// The invitation event and Welcome checkpoint are created by Core as one
+    /// membership transaction. The token and bootstrap are returned for an
+    /// explicit out-of-band handoff; no network is contacted.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn create_space_invitation(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        key_package_wire: Vec<u8>,
+        expires_at_unix_seconds: u64,
+        max_uses: Option<u32>,
+    ) -> Result<MobileSpaceInvitation, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        if key_package_wire.is_empty() || key_package_wire.len() > MAX_SPACE_PAYLOAD_BYTES {
+            return Err(MobileError::InvalidSpaceKeyPackage);
+        }
+        let max_uses = max_uses
+            .map(|value| u16::try_from(value).map_err(|_| MobileError::InvalidSpaceInput))
+            .transpose()?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| MobileError::SpaceInvitationFailed)?
+            .as_secs();
+        if expires_at_unix_seconds <= now
+            || expires_at_unix_seconds - now > MAX_SPACE_INVITE_TTL_SECONDS
+            || max_uses == Some(0)
+        {
+            return Err(MobileError::InvalidSpaceInput);
+        }
+        let mut client = self.lock_client()?;
+        let mut space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::SpaceInvitationFailed)?;
+        let invitation = client
+            .create_space_invite_from_x509_credential(
+                &mut space,
+                credential_vector,
+                &key_package_wire,
+                None,
+                expires_at_unix_seconds,
+                max_uses,
+            )
+            .map_err(|error| match error {
+                CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
+                _ => MobileError::SpaceInvitationFailed,
+            })?;
+        let result = MobileSpaceInvitation {
+            invite_event_id: invitation.invite_event_id().to_vec(),
+            target_fingerprint: invitation.target_fingerprint().to_vec(),
+            token: invitation.token().to_vec(),
+            welcome_bootstrap: invitation.welcome_bootstrap().to_vec(),
         };
         drop(client);
         self.projection_observers

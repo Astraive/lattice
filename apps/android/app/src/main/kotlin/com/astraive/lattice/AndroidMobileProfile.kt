@@ -18,6 +18,7 @@ import uniffi.lattice_uniffi.MobileBleSession
 import uniffi.lattice_uniffi.MobileOutboxEntry
 import uniffi.lattice_uniffi.MobileSyncEventResult
 
+import uniffi.lattice_uniffi.MobileSpaceInvitation
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
@@ -136,6 +137,24 @@ internal class AndroidMobileProfile private constructor(
         credentialVector: ByteArray,
         channels: List<MobileInitialChannel>,
     ): MobileCreatedSpace = client.createLocalSpace(credentialVector, channels)
+    fun publishSpaceKeyPackage(credentialVector: ByteArray): ByteArray =
+        client.publishSpaceKeyPackage(credentialVector)
+
+    fun createSpaceInvitation(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        keyPackageWire: ByteArray,
+        expiresAtUnixSeconds: ULong,
+        maxUses: UInt?,
+    ): MobileSpaceInvitation = client.createSpaceInvitation(
+        spaceId,
+        groupReference,
+        credentialVector,
+        keyPackageWire,
+        expiresAtUnixSeconds,
+        maxUses,
+    )
 
     fun joinSpaceFromWelcomeBootstrap(
         bootstrapPackage: ByteArray,

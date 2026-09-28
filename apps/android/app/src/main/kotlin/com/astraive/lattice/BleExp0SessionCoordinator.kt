@@ -4,6 +4,7 @@ import android.os.SystemClock
 import uniffi.lattice_uniffi.MobileBlePeerInfo
 import uniffi.lattice_uniffi.MobileBleSession
 import uniffi.lattice_uniffi.MobileBleRole
+import uniffi.lattice_uniffi.MobileSyncEventResult
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -18,6 +19,7 @@ internal class BleExp0SessionCoordinator(
     private val retryAt: (attemptCount: UInt, nowUnixMillis: Long) -> Long,
     private val onPeerVerificationRequired: (MobileBlePeerInfo, (Boolean) -> Unit) -> Unit,
     private val onAuthenticated: (BleExp0OutboxPump, (Boolean) -> Unit) -> Unit,
+    private val onCoreIngressResult: (MobileSyncEventResult) -> Unit,
     private val decisionExecutor: Executor,
     private val onFailure: (String) -> Unit,
 ) : AutoCloseable {
@@ -338,6 +340,7 @@ internal class BleExp0SessionCoordinator(
             MobileBleSessionCipher(session),
             transfer,
             io,
+            onCoreIngressResult,
         )
         val outboxPump = BleExp0OutboxPump(profile, authenticatedTransport) { eventId ->
             routeAllowed.get() && isRoutedToPeer(eventId)

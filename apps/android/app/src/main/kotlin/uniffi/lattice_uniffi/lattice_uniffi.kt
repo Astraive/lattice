@@ -826,6 +826,10 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -871,6 +875,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_reque
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event(
@@ -890,6 +896,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page(
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 ): Short
@@ -1011,6 +1019,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(`pt
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`channels`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`keyPackageWire`: RustBuffer.ByValue,`expiresAtUnixSeconds`: Long,`maxUses`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(`ptr`: Pointer,`canonicalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1030,6 +1040,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(`ptr`: Pointer,`aft
 fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Pointer,`publicBundle`: RustBuffer.ByValue,`expectedFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1236,6 +1248,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space() != 46165.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation() != 11611.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1264,6 +1279,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity() != 24120.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package() != 45561.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message() != 19845.toShort()) {
@@ -2455,6 +2473,15 @@ public interface MobileClientInterface {
     fun `createLocalSpace`(`credentialVector`: kotlin.ByteArray, `channels`: List<MobileInitialChannel>): MobileCreatedSpace
     
     /**
+     * Commits an offline invitation for one published target KeyPackage.
+     *
+     * The invitation event and Welcome checkpoint are created by Core as one
+     * membership transaction. The token and bootstrap are returned for an
+     * explicit out-of-band handoff; no network is contacted.
+     */
+    fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation
+    
+    /**
      * Returns the non-secret public identity information for native UI.
      *
      * # Errors
@@ -2583,6 +2610,14 @@ public interface MobileClientInterface {
      * and `ProfileUnavailable` if the profile cannot be read.
      */
     fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity?
+    
+    /**
+     * Publishes one locally retained X.509 KeyPackage for offline invitation.
+     *
+     * The output is intended for explicit out-of-band transfer; no relay or
+     * network is contacted. The matching private KeyPackage remains local.
+     */
+    fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray
     
     /**
      * Validates and commits a text event to this device's local durable outbox.
@@ -2804,6 +2839,26 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(
         it, FfiConverterByteArray.lower(`credentialVector`),FfiConverterSequenceTypeMobileInitialChannel.lower(`channels`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Commits an offline invitation for one published target KeyPackage.
+     *
+     * The invitation event and Welcome checkpoint are created by Core as one
+     * membership transaction. The token and bootstrap are returned for an
+     * explicit out-of-band handoff; no network is contacted.
+     */
+    @Throws(MobileException::class)override fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation {
+            return FfiConverterTypeMobileSpaceInvitation.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`keyPackageWire`),FfiConverterULong.lower(`expiresAtUnixSeconds`),FfiConverterOptionalUInt.lower(`maxUses`),_status)
 }
     }
     )
@@ -3043,6 +3098,25 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(
         it, FfiConverterByteArray.lower(`fingerprint`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Publishes one locally retained X.509 KeyPackage for offline invitation.
+     *
+     * The output is intended for explicit out-of-band transfer; no relay or
+     * network is contacted. The matching private KeyPackage remains local.
+     */
+    @Throws(MobileException::class)override fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(
+        it, FfiConverterByteArray.lower(`credentialVector`),_status)
 }
     }
     )
@@ -4456,6 +4530,61 @@ public object FfiConverterTypeMobileSpaceCursor: FfiConverterRustBuffer<MobileSp
 
 
 /**
+ * Offline invitation artifacts committed with one membership transition.
+ */
+data class MobileSpaceInvitation (
+    /**
+     * Signed policy Invite event identifier.
+     */
+    var `inviteEventId`: kotlin.ByteArray, 
+    /**
+     * Full fingerprint of the target device.
+     */
+    var `targetFingerprint`: kotlin.ByteArray, 
+    /**
+     * Canonical invitation token bytes.
+     */
+    var `token`: kotlin.ByteArray, 
+    /**
+     * Signed policy checkpoint and MLS Welcome bootstrap.
+     */
+    var `welcomeBootstrap`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSpaceInvitation: FfiConverterRustBuffer<MobileSpaceInvitation> {
+    override fun read(buf: ByteBuffer): MobileSpaceInvitation {
+        return MobileSpaceInvitation(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSpaceInvitation) = (
+            FfiConverterByteArray.allocationSize(value.`inviteEventId`) +
+            FfiConverterByteArray.allocationSize(value.`targetFingerprint`) +
+            FfiConverterByteArray.allocationSize(value.`token`) +
+            FfiConverterByteArray.allocationSize(value.`welcomeBootstrap`)
+    )
+
+    override fun write(value: MobileSpaceInvitation, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`inviteEventId`, buf)
+            FfiConverterByteArray.write(value.`targetFingerprint`, buf)
+            FfiConverterByteArray.write(value.`token`, buf)
+            FfiConverterByteArray.write(value.`welcomeBootstrap`, buf)
+    }
+}
+
+
+
+/**
  * Bounded page of locally verified Space Genesis snapshots.
  */
 data class MobileSpacePage (
@@ -4808,6 +4937,33 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
+     * A KeyPackage publication request exceeded mobile input bounds or failed validation.
+     */
+    class SpaceKeyPackagePublicationFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The target KeyPackage is empty, oversized, or malformed.
+     */
+    class InvalidSpaceKeyPackage(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * A membership invitation could not be committed locally.
+     */
+    class SpaceInvitationFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
      * The bounded Core projection observer limit has been reached.
      */
     class ProjectionObserverLimit(
@@ -5038,28 +5194,31 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             15 -> MobileException.InvalidSpaceBootstrap()
             16 -> MobileException.UntrustedSpaceInviter()
             17 -> MobileException.SpaceJoinFailed()
-            18 -> MobileException.ProjectionObserverLimit()
-            19 -> MobileException.InvalidProjectionWait()
-            20 -> MobileException.ProjectionObserverUnavailable()
-            21 -> MobileException.InvalidSpaceMessageId()
-            22 -> MobileException.InvalidMessageInput()
-            23 -> MobileException.InvalidMessageSearch()
-            24 -> MobileException.MessageRejected()
-            25 -> MobileException.MessageQueueFailed()
-            26 -> MobileException.MessageHistoryUnavailable()
-            27 -> MobileException.InvalidOutboxEventId()
-            28 -> MobileException.InvalidOutboxSchedule()
-            29 -> MobileException.OutboxTransitionRejected()
-            30 -> MobileException.InvalidOutboxCursor()
-            31 -> MobileException.InvalidOutboxPage()
-            32 -> MobileException.OutboxUnavailable()
-            33 -> MobileException.SyncIngestFailed()
-            34 -> MobileException.InvalidBleDiscoveryToken()
-            35 -> MobileException.BleSessionFailed()
-            36 -> MobileException.BleRecordRejected()
-            37 -> MobileException.BlePeerNotPinned()
-            38 -> MobileException.BlePeerIdentityMismatch()
-            39 -> MobileException.BlePeerNotAuthenticated()
+            18 -> MobileException.SpaceKeyPackagePublicationFailed()
+            19 -> MobileException.InvalidSpaceKeyPackage()
+            20 -> MobileException.SpaceInvitationFailed()
+            21 -> MobileException.ProjectionObserverLimit()
+            22 -> MobileException.InvalidProjectionWait()
+            23 -> MobileException.ProjectionObserverUnavailable()
+            24 -> MobileException.InvalidSpaceMessageId()
+            25 -> MobileException.InvalidMessageInput()
+            26 -> MobileException.InvalidMessageSearch()
+            27 -> MobileException.MessageRejected()
+            28 -> MobileException.MessageQueueFailed()
+            29 -> MobileException.MessageHistoryUnavailable()
+            30 -> MobileException.InvalidOutboxEventId()
+            31 -> MobileException.InvalidOutboxSchedule()
+            32 -> MobileException.OutboxTransitionRejected()
+            33 -> MobileException.InvalidOutboxCursor()
+            34 -> MobileException.InvalidOutboxPage()
+            35 -> MobileException.OutboxUnavailable()
+            36 -> MobileException.SyncIngestFailed()
+            37 -> MobileException.InvalidBleDiscoveryToken()
+            38 -> MobileException.BleSessionFailed()
+            39 -> MobileException.BleRecordRejected()
+            40 -> MobileException.BlePeerNotPinned()
+            41 -> MobileException.BlePeerIdentityMismatch()
+            42 -> MobileException.BlePeerNotAuthenticated()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -5131,6 +5290,18 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.SpaceJoinFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.SpaceKeyPackagePublicationFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.InvalidSpaceKeyPackage -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.SpaceInvitationFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -5295,92 +5466,104 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(17)
                 Unit
             }
-            is MobileException.ProjectionObserverLimit -> {
+            is MobileException.SpaceKeyPackagePublicationFailed -> {
                 buf.putInt(18)
                 Unit
             }
-            is MobileException.InvalidProjectionWait -> {
+            is MobileException.InvalidSpaceKeyPackage -> {
                 buf.putInt(19)
                 Unit
             }
-            is MobileException.ProjectionObserverUnavailable -> {
+            is MobileException.SpaceInvitationFailed -> {
                 buf.putInt(20)
                 Unit
             }
-            is MobileException.InvalidSpaceMessageId -> {
+            is MobileException.ProjectionObserverLimit -> {
                 buf.putInt(21)
                 Unit
             }
-            is MobileException.InvalidMessageInput -> {
+            is MobileException.InvalidProjectionWait -> {
                 buf.putInt(22)
                 Unit
             }
-            is MobileException.InvalidMessageSearch -> {
+            is MobileException.ProjectionObserverUnavailable -> {
                 buf.putInt(23)
                 Unit
             }
-            is MobileException.MessageRejected -> {
+            is MobileException.InvalidSpaceMessageId -> {
                 buf.putInt(24)
                 Unit
             }
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.InvalidMessageInput -> {
                 buf.putInt(25)
                 Unit
             }
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.InvalidMessageSearch -> {
                 buf.putInt(26)
                 Unit
             }
-            is MobileException.InvalidOutboxEventId -> {
+            is MobileException.MessageRejected -> {
                 buf.putInt(27)
                 Unit
             }
-            is MobileException.InvalidOutboxSchedule -> {
+            is MobileException.MessageQueueFailed -> {
                 buf.putInt(28)
                 Unit
             }
-            is MobileException.OutboxTransitionRejected -> {
+            is MobileException.MessageHistoryUnavailable -> {
                 buf.putInt(29)
                 Unit
             }
-            is MobileException.InvalidOutboxCursor -> {
+            is MobileException.InvalidOutboxEventId -> {
                 buf.putInt(30)
                 Unit
             }
-            is MobileException.InvalidOutboxPage -> {
+            is MobileException.InvalidOutboxSchedule -> {
                 buf.putInt(31)
                 Unit
             }
-            is MobileException.OutboxUnavailable -> {
+            is MobileException.OutboxTransitionRejected -> {
                 buf.putInt(32)
                 Unit
             }
-            is MobileException.SyncIngestFailed -> {
+            is MobileException.InvalidOutboxCursor -> {
                 buf.putInt(33)
                 Unit
             }
-            is MobileException.InvalidBleDiscoveryToken -> {
+            is MobileException.InvalidOutboxPage -> {
                 buf.putInt(34)
                 Unit
             }
-            is MobileException.BleSessionFailed -> {
+            is MobileException.OutboxUnavailable -> {
                 buf.putInt(35)
                 Unit
             }
-            is MobileException.BleRecordRejected -> {
+            is MobileException.SyncIngestFailed -> {
                 buf.putInt(36)
                 Unit
             }
-            is MobileException.BlePeerNotPinned -> {
+            is MobileException.InvalidBleDiscoveryToken -> {
                 buf.putInt(37)
                 Unit
             }
-            is MobileException.BlePeerIdentityMismatch -> {
+            is MobileException.BleSessionFailed -> {
                 buf.putInt(38)
                 Unit
             }
-            is MobileException.BlePeerNotAuthenticated -> {
+            is MobileException.BleRecordRejected -> {
                 buf.putInt(39)
+                Unit
+            }
+            is MobileException.BlePeerNotPinned -> {
+                buf.putInt(40)
+                Unit
+            }
+            is MobileException.BlePeerIdentityMismatch -> {
+                buf.putInt(41)
+                Unit
+            }
+            is MobileException.BlePeerNotAuthenticated -> {
+                buf.putInt(42)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5553,6 +5736,38 @@ public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorE
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
 }
 
 

@@ -234,6 +234,19 @@ pub struct MobileCreatedSpace {
     pub channels: Vec<MobileChannelSummary>,
 }
 
+/// Offline invitation artifacts committed with one membership transition.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileSpaceInvitation {
+    /// Signed policy Invite event identifier.
+    pub invite_event_id: Vec<u8>,
+    /// Full fingerprint of the target device.
+    pub target_fingerprint: Vec<u8>,
+    /// Canonical invitation token bytes.
+    pub token: Vec<u8>,
+    /// Signed policy checkpoint and MLS Welcome bootstrap.
+    pub welcome_bootstrap: Vec<u8>,
+}
+
 /// Bounded page of locally verified Space Genesis snapshots.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct MobileSpacePage {
@@ -297,6 +310,15 @@ pub enum MobileError {
     /// A validated Welcome could not be imported into the local profile.
     #[error("Space Welcome join failed")]
     SpaceJoinFailed,
+    /// A KeyPackage publication request exceeded mobile input bounds or failed validation.
+    #[error("Space KeyPackage publication failed")]
+    SpaceKeyPackagePublicationFailed,
+    /// The target KeyPackage is empty, oversized, or malformed.
+    #[error("invalid Space KeyPackage")]
+    InvalidSpaceKeyPackage,
+    /// A membership invitation could not be committed locally.
+    #[error("Space invitation failed")]
+    SpaceInvitationFailed,
     /// The bounded Core projection observer limit has been reached.
     #[error("too many Core projection observers")]
     ProjectionObserverLimit,
@@ -884,6 +906,49 @@ mod tests {
                 .spaces
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn invitation_rejects_oversized_policy_window_and_empty_key_package() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let client = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("profile.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "android-invite-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let common = (vec![0; 16], vec![0; 32], vec![1], 1_000_000_000_000_u64, Some(1));
+
+        assert!(matches!(
+            client.create_space_invitation(
+                common.0.clone(),
+                common.1.clone(),
+                common.2.clone(),
+                Vec::new(),
+                now + 60,
+                common.4,
+            ),
+            Err(MobileError::InvalidSpaceKeyPackage)
+        ));
+        assert!(matches!(
+            client.create_space_invitation(
+                common.0,
+                common.1,
+                common.2,
+                vec![1],
+                now + 30 * 24 * 60 * 60 + 1,
+                common.4,
+            ),
+            Err(MobileError::InvalidSpaceInput)
+        ));
     }
 
     #[test]

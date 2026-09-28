@@ -3,6 +3,7 @@ package com.astraive.lattice
 import uniffi.lattice_uniffi.MobileBleSession
 import uniffi.lattice_uniffi.MobileOutboxEntry
 import uniffi.lattice_uniffi.MobileOutboxState
+import uniffi.lattice_uniffi.MobileSyncEventResult
 
 /** FIFO GATT write queue; implementations must serialize control and frame writes. */
 internal interface BleExp0EnvelopeIo {
@@ -43,6 +44,7 @@ internal class BleExp0EnvelopeTransport(
     private val session: BleExp0SessionCipher,
     private val transfer: BleExp0TransferProtocol,
     private val io: BleExp0EnvelopeIo,
+    private val onCoreIngressResult: (MobileSyncEventResult) -> Unit = {},
 ) {
     private var closed = false
     private var activeOutboundEventId: ByteArray? = null
@@ -122,7 +124,12 @@ internal class BleExp0EnvelopeTransport(
             val completedEnvelope = update.completedEnvelope ?: return
             // Core outcomes (Accepted, Duplicate, Pending, or CheckpointExcluded)
             // all mean the bounded ingress handoff succeeded; none means delivery.
-            profile.ingestSyncedApplicationEvent(completedEnvelope)
+            val result = profile.ingestSyncedApplicationEvent(completedEnvelope)
+            try {
+                onCoreIngressResult(result)
+            } catch (_: RuntimeException) {
+                // Diagnostic observers cannot block ingress acknowledgement.
+            }
             sendProtectedControl(transfer.acknowledgeIngress(readTransferId(frame), nowMillis))
         } catch (error: Exception) {
             failClosed()

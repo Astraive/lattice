@@ -72,9 +72,9 @@ internal fun SpaceMessageComposer(
             )
             Text(
                 if (state.editTargetMessageIdHex == null) {
-                    "Messages and outbox status below are local records only. The recent outgoing history is bounded; incoming messages, forwarding, and recipient delivery are not available here."
+                    "Messages and outbox state are local records. Authorized incoming messages appear after Core accepts them; an outbox state does not prove that a destination received or read an event."
                 } else {
-                    "Editing creates a new immutable encrypted event in the local outbox; the original event remains unchanged. Forwarding and recipient delivery are not available here."
+                    "Editing commits a new immutable encrypted event; the original remains unchanged. Forwarding state does not prove destination receipt or reading."
                 },
             )
             Text(

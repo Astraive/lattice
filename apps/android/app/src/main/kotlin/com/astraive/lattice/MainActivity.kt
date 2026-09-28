@@ -64,6 +64,7 @@ import uniffi.lattice_uniffi.MobileSpaceSummary
 import uniffi.lattice_uniffi.MobileChannelType
 import uniffi.lattice_uniffi.MobileInitialChannel
 import uniffi.lattice_uniffi.MobileLocalTextMessage
+import uniffi.lattice_uniffi.MobileSyncEventResult
 import com.astraive.lattice.identity.IdentityPinCard
 import com.astraive.lattice.identity.IdentityPinUiState
 import com.astraive.lattice.identity.decodeIdentityHex
@@ -92,6 +93,7 @@ internal data class NearbyScreenState(
     val sightings: Int = 0,
     val nearbyCandidates: List<BleExp0PeerCandidate> = emptyList(),
     val bleConnectionStatus: String = "No authenticated BLE session.",
+    val lastCoreIngressResult: String? = null,
     val pendingIdentitySafetyNumber: String? = null,
     val pendingIdentityFingerprint: String? = null,
     val pendingRouteConsent: Boolean = false,
@@ -114,6 +116,7 @@ internal data class NearbyScreenState(
     val loadingSpacePage: Boolean = false,
     val spaceCreation: SpaceCreationUiState = SpaceCreationUiState(),
     val spaceWelcomeJoin: SpaceWelcomeJoinUiState = SpaceWelcomeJoinUiState(),
+    val spaceMembership: SpaceMembershipUiState = SpaceMembershipUiState(),
     val spaceRecovery: LocalSpaceRecoveryUiState = LocalSpaceRecoveryUiState(),
     val identityClipboardStatus: String? = null,
     val messageComposers: Map<String, LocalMessageComposerState> = emptyMap(),
@@ -292,6 +295,14 @@ class MainActivity : ComponentActivity() {
                     onWelcomeInviterFingerprintChanged = ::onWelcomeInviterFingerprintChanged,
                     onWelcomeCredentialVectorChanged = ::onWelcomeCredentialVectorChanged,
                     onJoinSpaceFromWelcome = ::joinSpaceFromWelcome,
+                    onKeyPackageCredentialChanged = ::onKeyPackageCredentialChanged,
+                    onPublishSpaceKeyPackage = ::publishSpaceKeyPackage,
+                    onInvitationKeyPackageChanged = ::onInvitationKeyPackageChanged,
+                    onInvitationCredentialChanged = ::onInvitationCredentialChanged,
+                    onInvitationExpiryHoursChanged = ::onInvitationExpiryHoursChanged,
+                    onInvitationMaxUsesChanged = ::onInvitationMaxUsesChanged,
+                    onCreateSpaceInvitation = ::createSpaceInvitation,
+                    onCopyMembershipValue = ::copyPublicValue,
                     onGenerateCertificateRequest = ::generateCertificateRequest,
                     onCopyCertificateRequest = ::copyCertificateRequest,
                     onLookupPinnedIdentity = ::lookupPinnedIdentity,
@@ -995,6 +1006,232 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun updateSpaceMembership(update: (SpaceMembershipUiState) -> SpaceMembershipUiState) {
+        screenState = screenState.copy(spaceMembership = update(screenState.spaceMembership))
+    }
+
+    private fun onKeyPackageCredentialChanged(value: String) {
+        if (value.length > MAX_CREDENTIAL_HEX_LENGTH) {
+            updateSpaceMembership {
+                it.copy(keyPackageStatus = "The credential vector exceeds the 16 KiB input limit.")
+            }
+            return
+        }
+        updateSpaceMembership {
+            it.copy(
+                keyPackageCredentialHex = value,
+                publishedKeyPackageBase64 = null,
+                keyPackageStatus = "Credential input changed; it has not been validated.",
+            )
+        }
+    }
+
+    private fun publishSpaceKeyPackage() {
+        val profile = mobileProfile ?: return updateSpaceMembership {
+            it.copy(keyPackageStatus = "The protected profile is not ready.")
+        }
+        val current = screenState.spaceMembership
+        if (current.publishingKeyPackage) return
+        val credential = decodeStrictBoundedHex(current.keyPackageCredentialHex) ?: return updateSpaceMembership {
+            it.copy(keyPackageStatus = "Enter a valid, bounded X.509 credential vector.")
+        }
+        updateSpaceMembership {
+            it.copy(
+                publishingKeyPackage = true,
+                publishedKeyPackageBase64 = null,
+                keyPackageStatus = "Validating this device credential and publishing a one-time package locally.",
+            )
+        }
+        lifecycleScope.launch {
+            try {
+                val keyPackage = withContext(Dispatchers.IO) {
+                    try {
+                        profile.publishSpaceKeyPackage(credential)
+                    } finally {
+                        credential.fill(0)
+                    }
+                }
+                val encoded = Base64.encodeToString(keyPackage, Base64.NO_WRAP)
+                if (!isFinishing && !isDestroyed) {
+                    screenState = screenState.copy(
+                        spaceMembership = screenState.spaceMembership.copy(
+                            keyPackageCredentialHex = "",
+                            publishedKeyPackageBase64 = encoded,
+                            keyPackageStatus = "KeyPackage published locally; its private material stays on this device. No network was contacted.",
+                        ),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership {
+                        it.copy(keyPackageStatus = mobileErrorStatus(error))
+                    }
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership {
+                        it.copy(keyPackageStatus = "The local KeyPackage could not be published.")
+                    }
+                }
+            } finally {
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership { it.copy(publishingKeyPackage = false) }
+                }
+            }
+        }
+    }
+
+    private fun onInvitationKeyPackageChanged(value: String) {
+        if (value.length > MAX_SPACE_KEY_PACKAGE_BASE64_CHARS) {
+            updateSpaceMembership {
+                it.copy(invitationStatus = "The KeyPackage exceeds the 256 KiB decoded input limit.")
+            }
+            return
+        }
+        updateSpaceMembership {
+            it.copy(
+                invitationKeyPackageBase64 = value,
+                invitation = null,
+                invitationStatus = "KeyPackage input changed; it has not been validated.",
+            )
+        }
+    }
+
+    private fun onInvitationCredentialChanged(value: String) {
+        if (value.length > MAX_CREDENTIAL_HEX_LENGTH) {
+            updateSpaceMembership {
+                it.copy(invitationStatus = "The credential vector exceeds the 16 KiB input limit.")
+            }
+            return
+        }
+        updateSpaceMembership {
+            it.copy(
+                invitationCredentialHex = value,
+                invitation = null,
+                invitationStatus = "Credential input changed; it has not been validated.",
+            )
+        }
+    }
+
+    private fun onInvitationExpiryHoursChanged(value: String) {
+        if (value.length > 3 || value.any { !it.isDigit() }) return
+        updateSpaceMembership {
+            it.copy(expiryHours = value, invitation = null, invitationStatus = "Invite expiry changed.")
+        }
+    }
+
+    private fun onInvitationMaxUsesChanged(value: String) {
+        if (value.length > 5 || value.any { !it.isDigit() }) return
+        updateSpaceMembership {
+            it.copy(maxUses = value, invitation = null, invitationStatus = "Maximum uses changed.")
+        }
+    }
+
+    private fun createSpaceInvitation() {
+        val profile = mobileProfile ?: return updateSpaceMembership {
+            it.copy(invitationStatus = "The protected profile is not ready.")
+        }
+        val current = screenState.spaceMembership
+        if (current.creatingInvitation) return
+        val space = screenState.selectedSpaceKey?.let { key ->
+            screenState.localSpaces.firstOrNull { localSpaceKey(it) == key }
+        } ?: return updateSpaceMembership {
+            it.copy(invitationStatus = "Open the intended local Space before creating an invitation.")
+        }
+        val keyPackage = decodeBoundedBase64(
+            current.invitationKeyPackageBase64,
+            MAX_SPACE_KEY_PACKAGE_BYTES,
+            MAX_SPACE_KEY_PACKAGE_BASE64_CHARS,
+        ) ?: return updateSpaceMembership {
+            it.copy(invitationStatus = "Enter a canonical Base64 KeyPackage no larger than 256 KiB.")
+        }
+        val credential = decodeStrictBoundedHex(current.invitationCredentialHex) ?: run {
+            keyPackage.fill(0)
+            return updateSpaceMembership {
+                it.copy(invitationStatus = "Enter a valid, bounded X.509 credential vector.")
+            }
+        }
+        val expiryHours = current.expiryHours.toLongOrNull()
+        val maxUses = current.maxUses.toUIntOrNull()
+        if (expiryHours == null || expiryHours !in 1..720 || maxUses == null || maxUses !in 1u..65_535u) {
+            keyPackage.fill(0)
+            credential.fill(0)
+            return updateSpaceMembership {
+                it.copy(invitationStatus = "Expiry must be 1–720 hours and maximum uses 1–65,535.")
+            }
+        }
+        val expiresAt = System.currentTimeMillis() / 1000L + expiryHours * 3600L
+        updateSpaceMembership {
+            it.copy(
+                creatingInvitation = true,
+                invitation = null,
+                invitationStatus = "Checking inviter trust and target KeyPackage; committing the membership transition.",
+            )
+        }
+        lifecycleScope.launch {
+            try {
+                val invitation = withContext(Dispatchers.IO) {
+                    try {
+                        profile.createSpaceInvitation(
+                            space.spaceId,
+                            space.groupReference,
+                            credential,
+                            keyPackage,
+                            expiresAt.toULong(),
+                            maxUses,
+                        )
+                    } finally {
+                        credential.fill(0)
+                        keyPackage.fill(0)
+                    }
+                }
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership {
+                        it.copy(
+                            invitationKeyPackageBase64 = "",
+                            invitationCredentialHex = "",
+                            invitation = invitation,
+                            invitationStatus = "Invitation committed locally; share the Welcome bootstrap with the matching target fingerprint. No network was contacted.",
+                        )
+                    }
+                }
+                refreshLocalSpaces()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership { it.copy(invitationStatus = mobileErrorStatus(error)) }
+                }
+            } catch (_: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership { it.copy(invitationStatus = "The signed Space invitation could not be committed.") }
+                }
+            } finally {
+                if (!isFinishing && !isDestroyed) {
+                    updateSpaceMembership { it.copy(creatingInvitation = false) }
+                }
+            }
+        }
+    }
+
+    private fun decodeBoundedBase64(value: String, maxBytes: Int, maxChars: Int): ByteArray? {
+        if (value.isEmpty() || value.length > maxChars || value.length % 4 != 0) return null
+        val decoded = try {
+            Base64.decode(value, Base64.NO_WRAP)
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        if (decoded.isEmpty() || decoded.size > maxBytes ||
+            Base64.encodeToString(decoded, Base64.NO_WRAP) != value
+        ) {
+            decoded.fill(0)
+            return null
+        }
+        return decoded
+    }
+
     private fun onWelcomeBootstrapBase64Changed(value: String) {
         if (value.length > MAX_SPACE_WELCOME_BOOTSTRAP_BASE64_CHARS) {
             screenState = screenState.copy(
@@ -1571,6 +1808,9 @@ class MainActivity : ComponentActivity() {
         is MobileException.InvalidSpaceBootstrap -> "The Welcome bootstrap package is invalid or exceeds its size bound."
         is MobileException.UntrustedSpaceInviter -> "The inviter identity is not pinned to the exact expected bundle."
         is MobileException.SpaceJoinFailed -> "The signed Welcome or policy checkpoint could not be imported."
+        is MobileException.InvalidSpaceKeyPackage -> "The target KeyPackage is invalid or exceeds its size bound."
+        is MobileException.SpaceKeyPackagePublicationFailed -> "The target device KeyPackage could not be published."
+        is MobileException.SpaceInvitationFailed -> "The signed membership invitation could not be committed."
         is MobileException.InvalidBleDiscoveryToken -> "The BLE discovery token is invalid; no session was started."
         is MobileException.BleSessionFailed -> "BLE authentication or transport failed; delivery is not confirmed."
         is MobileException.BleRecordRejected -> "The BLE peer sent an unexpected or malformed record."
@@ -1941,6 +2181,7 @@ class MainActivity : ComponentActivity() {
             retryAt = ::bleRetryAt,
             onPeerVerificationRequired = ::requestBlePeerApproval,
             onAuthenticated = ::onBleAuthenticated,
+            onCoreIngressResult = ::onBleCoreIngressResult,
             onFailure = { failure ->
                 runOnUiThread {
                     screenState = screenState.copy(
@@ -1976,6 +2217,7 @@ class MainActivity : ComponentActivity() {
             retryAt = ::bleRetryAt,
             onPeerVerificationRequired = ::requestBlePeerApproval,
             onAuthenticated = ::onBleAuthenticated,
+            onCoreIngressResult = ::onBleCoreIngressResult,
             onFailure = { failure ->
                 runOnUiThread {
                     screenState = screenState.copy(
@@ -2019,6 +2261,14 @@ class MainActivity : ComponentActivity() {
             screenState = screenState.copy(
                 pendingRouteConsent = true,
                 bleConnectionStatus = "Peer identity authenticated. Encrypted outbox forwarding is disabled pending consent.",
+            )
+        }
+    }
+
+    private fun onBleCoreIngressResult(result: MobileSyncEventResult) {
+        runOnUiThread {
+            screenState = screenState.copy(
+                lastCoreIngressResult = "${result.state.name}: ${result.eventId.toLowerHex()}",
             )
         }
     }
@@ -2248,9 +2498,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun permissionRationaleText(): String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        "Android will ask for nearby-device Bluetooth scan, connect, and advertise permissions. Lattice scans and advertises an experimental rotating discovery token; sightings are unauthenticated, and no GATT connection or message exchange is available."
+        "Android will ask for nearby-device Bluetooth scan, connect, and advertise permissions. Lattice scans and advertises an experimental rotating discovery token; sightings are unauthenticated. A connection starts only after explicit candidate selection, and message forwarding requires identity verification and consent."
     } else {
-        "Android requires location permission for Bluetooth LE scanning on this Android version. Lattice scans and advertises an experimental rotating discovery token; it does not access or save your location, connect to peers, or exchange messages."
+        "Android requires location permission for Bluetooth LE scanning on this Android version. Lattice does not access or save your location. Sightings are unauthenticated; a connection starts only after explicit candidate selection, and message forwarding requires identity verification and consent."
     }
 
     private fun openAppSettings() {
@@ -2315,6 +2565,14 @@ private fun NearbyReadinessScreen(
     onWelcomeInviterFingerprintChanged: (String) -> Unit,
     onWelcomeCredentialVectorChanged: (String) -> Unit,
     onJoinSpaceFromWelcome: () -> Unit,
+    onKeyPackageCredentialChanged: (String) -> Unit,
+    onPublishSpaceKeyPackage: () -> Unit,
+    onInvitationKeyPackageChanged: (String) -> Unit,
+    onInvitationCredentialChanged: (String) -> Unit,
+    onInvitationExpiryHoursChanged: (String) -> Unit,
+    onInvitationMaxUsesChanged: (String) -> Unit,
+    onCreateSpaceInvitation: () -> Unit,
+    onCopyMembershipValue: (String, String) -> Unit,
     onRecoverySpaceSelected: (String) -> Unit,
     onRecoveryCredentialChanged: (String) -> Unit,
     onRecoverLocalSpace: () -> Unit,
@@ -2566,6 +2824,20 @@ private fun NearbyReadinessScreen(
                             profileIdentityHex = state.identityFingerprint.orEmpty(),
                         )
                     }
+                    SpaceMembershipCard(
+                        state = state.spaceMembership,
+                        selectedSpace = selectedSpace,
+                        profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                        onKeyPackageCredentialChanged = onKeyPackageCredentialChanged,
+                        onPublishKeyPackage = onPublishSpaceKeyPackage,
+                        onInvitationKeyPackageChanged = onInvitationKeyPackageChanged,
+                        onInvitationCredentialChanged = onInvitationCredentialChanged,
+                        onExpiryHoursChanged = onInvitationExpiryHoursChanged,
+                        onMaxUsesChanged = onInvitationMaxUsesChanged,
+                        onCreateInvitation = onCreateSpaceInvitation,
+                        onCopyValue = onCopyMembershipValue,
+                    )
+                    Spacer(Modifier.height(20.dp))
                     state.nextSpaceCursor?.let { cursor ->
                         Button(
                             onClick = { onLoadMoreSpaces(cursor) },
@@ -2639,6 +2911,12 @@ private fun NearbyReadinessScreen(
                         state.bleConnectionStatus,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    state.lastCoreIngressResult?.let { result ->
+                        Text(
+                            "Last Core ingress: $result",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     state.nearbyCandidates.forEach { candidate ->
                         Text(
                             "Nearby peer ${candidate.selectionId}: rotating token match only; identity remains unverified.",

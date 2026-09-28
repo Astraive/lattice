@@ -1,5 +1,6 @@
 package com.astraive.lattice
 
+import android.util.Base64
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -336,6 +337,169 @@ internal fun SpaceCreationCard(
                         Text("Genesis event ID: ${created.genesisEventId.toLowerHex()}")
                     }
                 }
+            }
+        }
+    }
+}
+
+internal const val MAX_SPACE_KEY_PACKAGE_BYTES = 256 * 1024
+internal const val MAX_SPACE_KEY_PACKAGE_BASE64_CHARS = ((MAX_SPACE_KEY_PACKAGE_BYTES + 2) / 3) * 4
+
+internal data class SpaceMembershipUiState(
+    val keyPackageCredentialHex: String = "",
+    val publishedKeyPackageBase64: String? = null,
+    val publishingKeyPackage: Boolean = false,
+    val keyPackageStatus: String = "Publish a one-time KeyPackage for this device before joining an invitation.",
+    val invitationKeyPackageBase64: String = "",
+    val invitationCredentialHex: String = "",
+    val expiryHours: String = "24",
+    val maxUses: String = "1",
+    val creatingInvitation: Boolean = false,
+    val invitationStatus: String = "Select a local Space and provide the target device's KeyPackage.",
+    val invitation: uniffi.lattice_uniffi.MobileSpaceInvitation? = null,
+)
+
+@Composable
+internal fun SpaceMembershipCard(
+    state: SpaceMembershipUiState,
+    selectedSpace: MobileSpaceSummary?,
+    profileReady: Boolean,
+    onKeyPackageCredentialChanged: (String) -> Unit,
+    onPublishKeyPackage: () -> Unit,
+    onInvitationKeyPackageChanged: (String) -> Unit,
+    onInvitationCredentialChanged: (String) -> Unit,
+    onExpiryHoursChanged: (String) -> Unit,
+    onMaxUsesChanged: (String) -> Unit,
+    onCreateInvitation: () -> Unit,
+    onCopyValue: (String, String) -> Unit,
+) {
+    val keyPackageCredentialValid = isCredentialVectorHex(state.keyPackageCredentialHex)
+    val invitationCredentialValid = isCredentialVectorHex(state.invitationCredentialHex)
+    val keyPackageBounded = state.invitationKeyPackageBase64.isNotEmpty() &&
+        state.invitationKeyPackageBase64.length <= MAX_SPACE_KEY_PACKAGE_BASE64_CHARS
+    val expiryHours = state.expiryHours.toLongOrNull()
+    val maxUses = state.maxUses.toUIntOrNull()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Invite a device",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                "The target device first publishes a KeyPackage using its own protected identity. Transfer that package here out of band. Core validates the target and commits the signed membership transition, invite token, and Welcome checkpoint locally.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = state.keyPackageCredentialHex,
+                onValueChange = onKeyPackageCredentialChanged,
+                label = { Text("Target device X.509 credential (hex)") },
+                enabled = profileReady && !state.publishingKeyPackage,
+                isError = state.keyPackageCredentialHex.isNotEmpty() && !keyPackageCredentialValid,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = onPublishKeyPackage,
+                enabled = profileReady && !state.publishingKeyPackage && keyPackageCredentialValid,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.publishingKeyPackage) "Publishing locally…" else "Publish this device's KeyPackage")
+            }
+            Text(state.keyPackageStatus, style = MaterialTheme.typography.bodySmall)
+            state.publishedKeyPackageBase64?.let { keyPackage ->
+                Text("Share this one-time public KeyPackage with the inviter:", style = MaterialTheme.typography.bodySmall)
+                SelectionContainer { Text(keyPackage, style = MaterialTheme.typography.bodySmall) }
+                Button(
+                    onClick = { onCopyValue("one-time KeyPackage", keyPackage) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Copy KeyPackage") }
+            }
+            Text(
+                selectedSpace?.let { "Selected local Space: ${it.spaceId.toLowerHex()}" }
+                    ?: "Open a local Space above to create an invitation.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedTextField(
+                value = state.invitationKeyPackageBase64,
+                onValueChange = onInvitationKeyPackageChanged,
+                label = { Text("Target device KeyPackage (Base64)") },
+                supportingText = { Text("Maximum 256 KiB decoded. Transfer only through a channel you trust.") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = state.invitationKeyPackageBase64.isNotEmpty() && !keyPackageBounded,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.invitationCredentialHex,
+                onValueChange = onInvitationCredentialChanged,
+                label = { Text("Inviter device X.509 credential (hex)") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = state.invitationCredentialHex.isNotEmpty() && !invitationCredentialValid,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.expiryHours,
+                onValueChange = onExpiryHoursChanged,
+                label = { Text("Invite expiry (hours)") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = expiryHours == null || expiryHours !in 1..720,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.maxUses,
+                onValueChange = onMaxUsesChanged,
+                label = { Text("Maximum uses (1–65,535)") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = maxUses == null || maxUses !in 1u..65_535u,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = onCreateInvitation,
+                enabled = profileReady && selectedSpace != null && !state.creatingInvitation &&
+                    keyPackageBounded && invitationCredentialValid &&
+                    expiryHours != null && expiryHours in 1..720 &&
+                    maxUses != null && maxUses in 1u..65_535u,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.creatingInvitation) "Committing invitation…" else "Create signed invitation")
+            }
+            Text(state.invitationStatus, style = MaterialTheme.typography.bodySmall)
+            state.invitation?.let { invitation ->
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("The signed membership transition and Welcome checkpoint were committed locally.")
+                        Text("Target fingerprint: ${invitation.targetFingerprint.toLowerHex()}")
+                        Text("Invite event ID: ${invitation.inviteEventId.toLowerHex()}")
+                        Text("Welcome bootstrap (Base64):")
+                        Text(Base64.encodeToString(invitation.welcomeBootstrap, Base64.NO_WRAP))
+                    }
+                }
+                Button(
+                    onClick = {
+                        onCopyValue(
+                            "Welcome bootstrap",
+                            Base64.encodeToString(invitation.welcomeBootstrap, Base64.NO_WRAP),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Copy Welcome bootstrap") }
             }
         }
     }

@@ -17,6 +17,7 @@ class BleExp0EnvelopeTransportTest {
         assertEquals(MobileOutboxState.PEER_INGRESS_ACCEPTED, fixture.senderProfile.state)
         assertEquals(fixture.eventId.toList(), fixture.senderProfile.ingressEventId?.toList())
         assertTrue(fixture.receiverIo.controls.any(::isCompletion))
+        assertEquals(MobileSyncEventState.PENDING, fixture.ingressResults.single().state)
     }
 
     @Test
@@ -27,6 +28,7 @@ class BleExp0EnvelopeTransportTest {
         assertFalse(fixture.receiverIo.controls.any(::isCompletion))
         assertTrue(fixture.receiverIo.disconnected)
         assertTrue(fixture.senderIo.disconnected)
+        assertTrue(fixture.ingressResults.isEmpty())
     }
 
     @Test
@@ -36,6 +38,15 @@ class BleExp0EnvelopeTransportTest {
         assertEquals(MobileOutboxState.PEER_INGRESS_ACCEPTED, fixture.senderProfile.state)
         assertEquals(1, fixture.receiverProfile.ingressCalls)
         assertTrue(fixture.receiverIo.controls.any(::isCompletion))
+        assertEquals(MobileSyncEventState.DUPLICATE, fixture.ingressResults.single().state)
+    }
+
+    @Test
+    fun acceptedIngressOutcomeIsAvailableForPhysicalDiagnostics() {
+        val fixture = transferWithIngressResult(MobileSyncEventState.ACCEPTED)
+
+        assertEquals(MobileSyncEventState.ACCEPTED, fixture.ingressResults.single().state)
+        assertTrue(fixture.eventId.contentEquals(fixture.ingressResults.single().eventId))
     }
 
     private fun transferWithIngressResult(state: MobileSyncEventState): Fixture = transfer(state, false)
@@ -48,6 +59,7 @@ class BleExp0EnvelopeTransportTest {
         val senderProfile = RecordingProfile(eventId, state, false)
         val receiverProfile = RecordingProfile(eventId, state, failIngress)
         val senderIo = RecordingIo()
+        val ingressResults = mutableListOf<MobileSyncEventResult>()
         val receiverIo = RecordingIo()
         val sender = BleExp0EnvelopeTransport(
             senderProfile,
@@ -60,6 +72,7 @@ class BleExp0EnvelopeTransportTest {
             IdentitySessionCipher(),
             BleExp0TransferProtocol(2, 247, 91),
             receiverIo,
+            onCoreIngressResult = { ingressResults += it },
         )
         sender.sendEnvelope(
             MobileOutboxEntry(
@@ -89,7 +102,7 @@ class BleExp0EnvelopeTransportTest {
             receiver.receiveFrame(inboundFrame, nowMillis = 3)
             sender.receiveControl(receiverIo.controls.last(), nowMillis = 4)
         }
-        return Fixture(eventId, senderProfile, receiverProfile, senderIo, receiverIo)
+        return Fixture(eventId, senderProfile, receiverProfile, senderIo, receiverIo, ingressResults)
     }
 
     private fun isCompletion(record: ByteArray): Boolean =
@@ -102,6 +115,7 @@ class BleExp0EnvelopeTransportTest {
         val receiverProfile: RecordingProfile,
         val senderIo: RecordingIo,
         val receiverIo: RecordingIo,
+        val ingressResults: List<MobileSyncEventResult>,
     )
 
     private class IdentitySessionCipher : BleExp0SessionCipher {

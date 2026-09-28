@@ -22,6 +22,8 @@
 
 Test Android↔Android on supported/unsupported Wi-Fi Aware hardware; verify Android↔desktop and desktop↔desktop protocol behavior separately where a shared transport exists. Capture exact model, OS/build, radios, permissions, foreground/locked/background/restarted states and environmental factors. Measure discovery/connection success, useful BLE throughput, end-to-end latency, delivery fraction, duplicated bytes, battery/power, large-sync duration, file resume, voice setup success/jitter/loss and TURN fraction. Use multiple independent trials with uncertainty intervals; separate simulated energy proxy from battery measurement. Never substitute one success on an Android emulator for physical-radio evidence.
 
+Android Compose now supports local target KeyPackage publication, invitation creation, and pinned Welcome import using externally issued trusted credentials. The focused foreground BLE path has automated framing/Core-ingress coverage, but physical acceptance is not recorded. Track the run in [PHYSICAL_ANDROID_ACCEPTANCE.md](../verification/PHYSICAL_ANDROID_ACCEPTANCE.md); do not infer radio acceptance from emulator or unit-test results.
+
 ## Automated gates
 
 M0: canonical vectors and property tests. M1/M2: offline physical-device test. M3: membership/key and policy conflict suite. M4: file and path-upgrade tests. M5: malicious relay suite. M6: voice connectivity matrix. M8: fuzz corpus/coverage budget, database migrations, clean-room wire decoder, repeatable benchmarks, privacy capture, external security review, accessibility and reproducible release artifacts.
