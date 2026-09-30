@@ -19,6 +19,6 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
     "markdownlint-cli2": "0.23.3",
-    "turbo": "2.11.3"
+    "turbo": "2.11.4"
   }
 }
