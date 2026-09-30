@@ -13,7 +13,7 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 lattice-identity = { path = "../lattice-identity", version = "=0.1.0" }
 zeroize = "=1.9.0"
 directories = "=6.0.0"
-fs4 = "=0.13.1"
+fs4 = "=1.1.0"
 sha2 = "=0.10.9"
 
 [lints]
