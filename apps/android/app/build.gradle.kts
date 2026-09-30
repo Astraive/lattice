@@ -34,7 +34,7 @@ dependencies {
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
-    implementation("androidx.activity:activity-compose:1.14.0-alpha02")
+    implementation("androidx.activity:activity-compose:1.14.0-alpha03")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("androidx.compose.material3:material3")
 
