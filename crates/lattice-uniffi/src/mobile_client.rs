@@ -27,7 +27,7 @@ use lattice_node::sync::{
     receive_authenticated_attachment_once, send_authenticated_attachment_once,
     serve_authenticated_direct_message_once,
 };
-use lattice_platform::MAX_ENVELOPE_BYTES;
+use lattice_platform::{MAX_ENVELOPE_BYTES, TransportError};
 use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
 use tokio_util::sync::CancellationToken;
 
@@ -468,6 +468,7 @@ mod direct_message_lan_tests {
                 )
             })
         };
+        std::thread::sleep(Duration::from_millis(100));
         let bob_task = {
             let bob = Arc::clone(&bob);
             let peer_fingerprint = alice_identity.fingerprint.clone();
@@ -2635,6 +2636,19 @@ struct DirectMessageExchangeRequest<'a> {
     outgoing: Option<([u8; 32], &'a [u8])>,
 }
 
+async fn connect_direct_message_peer(
+    connect: SocketAddr,
+) -> Result<TcpPeerAdapter, TransportError> {
+    loop {
+        match TcpPeerAdapter::connect(connect, MAX_ENVELOPE_BYTES).await {
+            Err(TransportError::Unavailable) => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 fn run_direct_message_exchange(
     client: &mut Client,
     request: DirectMessageExchangeRequest<'_>,
@@ -2663,10 +2677,7 @@ fn run_direct_message_exchange(
     let (outbound, (inbound, _remote)) = runtime
         .block_on(async {
             tokio::time::timeout(Duration::from_secs(30), async {
-                tokio::try_join!(
-                    TcpPeerAdapter::connect(connect, MAX_ENVELOPE_BYTES),
-                    listener.accept()
-                )
+                tokio::try_join!(connect_direct_message_peer(connect), listener.accept())
             })
             .await
         })
