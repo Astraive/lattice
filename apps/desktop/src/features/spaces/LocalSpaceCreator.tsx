@@ -1,3 +1,4 @@
+import { ActionButton, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 
@@ -66,7 +67,7 @@ export function LocalSpaceCreator({ runtimeAvailable, identityReady }: LocalSpac
     <section className="space-browser" aria-labelledby="space-create-title" aria-busy={busy}>
       <div className="space-browser-heading">
         <div>
-          <h3 id="space-create-title">Create a local Space</h3>
+          <h2 id="space-create-title">Create a local Space</h2>
           <p>
             Supply the exact RFC 9420 TLS X.509 credential vector in hex. The OS trust store and
             local identity are checked before the Genesis transaction; this does not join another
@@ -81,41 +82,46 @@ export function LocalSpaceCreator({ runtimeAvailable, identityReady }: LocalSpac
         <p>Initialize or reopen the protected device identity before creating a local Space.</p>
       )}
       <div className="identity-pin-fields">
-        <label htmlFor="space-credential-vector">Trusted X.509 credential vector (hex)</label>
-        <textarea
-          id="space-credential-vector"
-          autoComplete="off"
-          maxLength={MAX_CREDENTIAL_HEX_LENGTH}
-          disabled={!runtimeAvailable || !identityReady || busy}
-          value={credentialVectorHex}
-          onChange={(event) => {
-            setCredentialVectorHex(event.currentTarget.value);
-            setError(null);
-            setCreated(null);
-          }}
-          spellCheck={false}
-          aria-describedby="space-credential-help"
-        />
-        <p id="space-credential-help">
-          Maximum 16 KiB before hex encoding. The leaf certificate must match this device's signing
-          key and full identity fingerprint.
-        </p>
-        <label htmlFor="space-channel-name">Initial text channel name</label>
-        <input
-          id="space-channel-name"
-          autoComplete="off"
-          maxLength={MAX_CHANNEL_NAME_UTF8_BYTES}
-          disabled={!runtimeAvailable || !identityReady || busy}
-          value={channelName}
-          onChange={(event) => {
-            setChannelName(event.currentTarget.value);
-            setError(null);
-            setCreated(null);
-          }}
-        />
-        <p>Channel names must be nonblank, contain no NUL, and fit in 128 UTF-8 bytes.</p>
+        <FormField
+          label="Trusted X.509 credential vector (hex)"
+          htmlFor="space-credential-vector"
+          hint="Maximum 16 KiB before hex encoding. The leaf certificate must match this device's signing key and full identity fingerprint."
+        >
+          <textarea
+            id="space-credential-vector"
+            autoComplete="off"
+            maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+            disabled={!runtimeAvailable || !identityReady || busy}
+            value={credentialVectorHex}
+            onChange={(event) => {
+              setCredentialVectorHex(event.currentTarget.value);
+              setError(null);
+              setCreated(null);
+            }}
+            spellCheck={false}
+          />
+        </FormField>
+        <FormField
+          label="Initial text channel name"
+          htmlFor="space-channel-name"
+          hint="Channel names must be nonblank, contain no NUL, and fit in 128 UTF-8 bytes."
+        >
+          <input
+            id="space-channel-name"
+            autoComplete="off"
+            maxLength={MAX_CHANNEL_NAME_UTF8_BYTES}
+            disabled={!runtimeAvailable || !identityReady || busy}
+            value={channelName}
+            onChange={(event) => {
+              setChannelName(event.currentTarget.value);
+              setError(null);
+              setCreated(null);
+            }}
+          />
+        </FormField>
         <div className="identity-actions">
-          <button
+          <ActionButton
+            tone="primary"
             type="button"
             disabled={
               !runtimeAvailable ||
@@ -127,11 +133,15 @@ export function LocalSpaceCreator({ runtimeAvailable, identityReady }: LocalSpac
             onClick={() => void createLocalSpace()}
           >
             {busy ? "Creating…" : "Create local Space"}
-          </button>
+          </ActionButton>
         </div>
       </div>
-      {busy && <p role="status">Validating the credential and committing local MLS state…</p>}
-      {error && <p role="alert">Could not create the local Space: {error}</p>}
+      {busy && (
+        <StatusNotice kind="info">
+          Validating the credential and committing local MLS state…
+        </StatusNotice>
+      )}
+      {error && <StatusNotice kind="error">Could not create the local Space: {error}</StatusNotice>}
       {created && (
         <div className="identity-status" role="status" aria-live="polite">
           <p>A local Genesis and initial text channel were committed; no network was contacted.</p>
