@@ -3,7 +3,9 @@ use lattice_crypto::{
     NoiseSessionError, NoiseTransportError,
 };
 use lattice_identity::{DeviceIdentity, PinnedIdentity, verify};
-use lattice_platform::{EnvelopeBytes, TransportAdapter, TransportError, TransportReceipt};
+use lattice_platform::{
+    EnvelopeBytes, MAX_ENVELOPE_BYTES, TransportAdapter, TransportError, TransportReceipt,
+};
 use lattice_protocol::{NegotiatedPathUpgrades, PathUpgradeCapabilities, PathUpgradeError};
 use lattice_router::{DeduplicationOutcome, EventDeduplicator, EventId as RouterEventId};
 use lattice_sync::{PlanError, ScopeId, ScopeSummary, plan_sync};
@@ -1078,6 +1080,299 @@ fn request_scope_v2(bytes: &[u8]) -> Result<ScopeId, SyncProtocolError> {
     Ok(ScopeId::new(reader.array32()?))
 }
 
+const DIRECT_MESSAGE_SYNC_PROLOGUE: &[u8] = b"lattice:direct-message-sync:noise-xx:v1\0";
+const DIRECT_MESSAGE_IDENTITY_PROOF_DOMAIN: &[u8] =
+    b"lattice:direct-message-sync-identity-proof:v1\0";
+const DIRECT_MESSAGE_TRANSFER_MAGIC: &[u8; 4] = b"LDMS";
+const DIRECT_MESSAGE_ACK_MAGIC: &[u8; 4] = b"LDMA";
+const DIRECT_MESSAGE_SYNC_VERSION: u8 = 1;
+const DIRECT_MESSAGE_TRANSFER_HEADER_BYTES: usize = 4 + 1 + 1 + 32 + 4;
+const DIRECT_MESSAGE_ACK_BYTES: usize = 4 + 1 + 1 + 32;
+
+/// Authenticated outcome recorded after one inbound opaque DM packet is committed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DirectMessageIngressState {
+    /// Core committed an application message.
+    Accepted,
+    /// Core durably retained an invitation awaiting user consent.
+    InvitationPending,
+    /// Core recognized a previously committed packet.
+    Duplicate,
+}
+
+/// Core-authenticated receipt for one received direct-message packet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectMessageIngressReceipt {
+    /// Packet identity returned by Core after parsing the exact bytes.
+    pub packet_id: [u8; 32],
+    /// Durable Core ingress result; pending consent is not conversation acceptance.
+    pub state: DirectMessageIngressState,
+}
+
+/// One completed pinned direct-message packet exchange.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthenticatedDirectMessageExchange {
+    /// Exact peer identity authenticated by the transcript-bound proof.
+    pub authenticated_peer: PinnedIdentity,
+    /// Core-confirmed receipt for the peer's packet, if one was sent.
+    pub incoming: Option<DirectMessageIngressReceipt>,
+    /// Core-confirmed receipt for the local packet, if one was sent.
+    pub outgoing: Option<DirectMessageIngressReceipt>,
+}
+
+/// Failure while transferring an opaque direct-message packet over a pinned session.
+#[derive(Debug, Error)]
+pub enum DirectMessageTransportError {
+    /// Noise identity authentication or bounded transport failed.
+    #[error(transparent)]
+    Session(#[from] AuthenticatedSyncError),
+    /// The packet or acknowledgement frame was malformed or exceeded its bound.
+    #[error("invalid authenticated direct-message transfer frame")]
+    InvalidFrame,
+    /// Core rejected or failed to commit the received packet.
+    #[error("Core rejected direct-message ingress: {0}")]
+    Ingress(String),
+    /// The authenticated peer acknowledged a different local packet.
+    #[error("direct-message acknowledgement does not match the sent packet")]
+    AcknowledgementMismatch,
+}
+
+/// Initiates one bounded packet transfer to an exact pinned peer.
+///
+/// The inbound callback must pass the transcript-authenticated fingerprint to
+/// Core and return only after ingress is durably accepted. The peer ACK means
+/// that same Core ingress outcome, not user consent or a read receipt.
+pub async fn execute_authenticated_direct_message_once<A, F>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    outgoing: Option<([u8; 32], &[u8])>,
+    mut ingest: F,
+    cancellation: &CancellationToken,
+) -> Result<AuthenticatedDirectMessageExchange, DirectMessageTransportError>
+where
+    A: TransportAdapter + ?Sized,
+    F: FnMut(&PinnedIdentity, &[u8]) -> Result<DirectMessageIngressReceipt, String>,
+{
+    exchange_authenticated_direct_message_once(
+        adapter,
+        local_identity,
+        pinned_peer,
+        NoiseRole::Initiator,
+        outgoing,
+        &mut ingest,
+        cancellation,
+    )
+    .await
+}
+
+/// Serves one bounded packet transfer from an exact pinned peer.
+///
+/// The inbound callback must pass the transcript-authenticated fingerprint to
+/// Core and return only after ingress is durably accepted. The peer ACK means
+/// that same Core ingress outcome, not user consent or a read receipt.
+pub async fn serve_authenticated_direct_message_once<A, F>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    outgoing: Option<([u8; 32], &[u8])>,
+    mut ingest: F,
+    cancellation: &CancellationToken,
+) -> Result<AuthenticatedDirectMessageExchange, DirectMessageTransportError>
+where
+    A: TransportAdapter + ?Sized,
+    F: FnMut(&PinnedIdentity, &[u8]) -> Result<DirectMessageIngressReceipt, String>,
+{
+    exchange_authenticated_direct_message_once(
+        adapter,
+        local_identity,
+        pinned_peer,
+        NoiseRole::Responder,
+        outgoing,
+        &mut ingest,
+        cancellation,
+    )
+    .await
+}
+
+async fn exchange_authenticated_direct_message_once<A, F>(
+    adapter: &A,
+    local_identity: &DeviceIdentity,
+    pinned_peer: PinnedIdentity,
+    role: NoiseRole,
+    outgoing: Option<([u8; 32], &[u8])>,
+    ingest: &mut F,
+    cancellation: &CancellationToken,
+) -> Result<AuthenticatedDirectMessageExchange, DirectMessageTransportError>
+where
+    A: TransportAdapter + ?Sized,
+    F: FnMut(&PinnedIdentity, &[u8]) -> Result<DirectMessageIngressReceipt, String>,
+{
+    let mut channel = establish_authenticated_channel_with_protocol(
+        adapter,
+        local_identity,
+        pinned_peer,
+        role,
+        cancellation,
+        DIRECT_MESSAGE_SYNC_PROLOGUE,
+        DIRECT_MESSAGE_IDENTITY_PROOF_DOMAIN,
+    )
+    .await?;
+    let outgoing_frame = encode_direct_message_transfer(outgoing)?;
+    if outgoing_frame.len() > max_v2_plaintext_frame(adapter) {
+        return Err(DirectMessageTransportError::InvalidFrame);
+    }
+    let outgoing_packet_id = outgoing.map(|(packet_id, _)| packet_id);
+    let (incoming, remote_ack) = match role {
+        NoiseRole::Initiator => {
+            send_encrypted(adapter, &mut channel, &outgoing_frame, cancellation).await?;
+            let peer_frame = receive_decrypted(adapter, &mut channel, cancellation).await?;
+            let incoming = ingest_direct_message_transfer(&peer_frame, &pinned_peer, ingest)?;
+            let acknowledgement = encode_direct_message_ack(incoming);
+            send_encrypted(adapter, &mut channel, &acknowledgement, cancellation).await?;
+            let remote_ack = receive_decrypted(adapter, &mut channel, cancellation).await?;
+            (incoming, remote_ack)
+        }
+        NoiseRole::Responder => {
+            let peer_frame = receive_decrypted(adapter, &mut channel, cancellation).await?;
+            let incoming = ingest_direct_message_transfer(&peer_frame, &pinned_peer, ingest)?;
+            send_encrypted(adapter, &mut channel, &outgoing_frame, cancellation).await?;
+            let remote_ack = receive_decrypted(adapter, &mut channel, cancellation).await?;
+            let acknowledgement = encode_direct_message_ack(incoming);
+            send_encrypted(adapter, &mut channel, &acknowledgement, cancellation).await?;
+            (incoming, remote_ack)
+        }
+    };
+    let outgoing = decode_direct_message_ack(&remote_ack, outgoing_packet_id)?;
+    Ok(AuthenticatedDirectMessageExchange {
+        authenticated_peer: pinned_peer,
+        incoming,
+        outgoing,
+    })
+}
+
+fn encode_direct_message_transfer(
+    outgoing: Option<([u8; 32], &[u8])>,
+) -> Result<Vec<u8>, DirectMessageTransportError> {
+    let mut frame = Vec::with_capacity(
+        DIRECT_MESSAGE_TRANSFER_HEADER_BYTES
+            .saturating_add(outgoing.map_or(0, |(_, packet)| packet.len())),
+    );
+    frame.extend_from_slice(DIRECT_MESSAGE_TRANSFER_MAGIC);
+    frame.push(DIRECT_MESSAGE_SYNC_VERSION);
+    if let Some((packet_id, packet)) = outgoing {
+        if packet.is_empty() || packet.len() > MAX_ENVELOPE_BYTES {
+            return Err(DirectMessageTransportError::InvalidFrame);
+        }
+        frame.push(1);
+        frame.extend_from_slice(&packet_id);
+        let length =
+            u32::try_from(packet.len()).map_err(|_| DirectMessageTransportError::InvalidFrame)?;
+        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(packet);
+    } else {
+        frame.push(0);
+        frame.extend_from_slice(&[0; 32]);
+        frame.extend_from_slice(&0_u32.to_be_bytes());
+    }
+    Ok(frame)
+}
+
+fn ingest_direct_message_transfer<F>(
+    frame: &[u8],
+    authenticated_peer: &PinnedIdentity,
+    ingest: &mut F,
+) -> Result<Option<DirectMessageIngressReceipt>, DirectMessageTransportError>
+where
+    F: FnMut(&PinnedIdentity, &[u8]) -> Result<DirectMessageIngressReceipt, String>,
+{
+    if frame.len() < DIRECT_MESSAGE_TRANSFER_HEADER_BYTES
+        || &frame[..4] != DIRECT_MESSAGE_TRANSFER_MAGIC
+        || frame[4] != DIRECT_MESSAGE_SYNC_VERSION
+    {
+        return Err(DirectMessageTransportError::InvalidFrame);
+    }
+    let present = frame[5];
+    let expected_packet_id: [u8; 32] = frame[6..38]
+        .try_into()
+        .map_err(|_| DirectMessageTransportError::InvalidFrame)?;
+    let length = u32::from_be_bytes(
+        frame[38..42]
+            .try_into()
+            .map_err(|_| DirectMessageTransportError::InvalidFrame)?,
+    ) as usize;
+    if present == 0 {
+        if expected_packet_id != [0; 32] || length != 0 || frame.len() != 42 {
+            return Err(DirectMessageTransportError::InvalidFrame);
+        }
+        return Ok(None);
+    }
+    if present != 1
+        || length == 0
+        || length > MAX_ENVELOPE_BYTES
+        || frame.len() != DIRECT_MESSAGE_TRANSFER_HEADER_BYTES.saturating_add(length)
+    {
+        return Err(DirectMessageTransportError::InvalidFrame);
+    }
+    let receipt = ingest(
+        authenticated_peer,
+        &frame[DIRECT_MESSAGE_TRANSFER_HEADER_BYTES..],
+    )
+    .map_err(DirectMessageTransportError::Ingress)?;
+    if receipt.packet_id != expected_packet_id {
+        return Err(DirectMessageTransportError::InvalidFrame);
+    }
+    Ok(Some(receipt))
+}
+
+fn encode_direct_message_ack(incoming: Option<DirectMessageIngressReceipt>) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(DIRECT_MESSAGE_ACK_BYTES);
+    frame.extend_from_slice(DIRECT_MESSAGE_ACK_MAGIC);
+    frame.push(DIRECT_MESSAGE_SYNC_VERSION);
+    if let Some(receipt) = incoming {
+        frame.push(match receipt.state {
+            DirectMessageIngressState::Accepted => 1,
+            DirectMessageIngressState::InvitationPending => 2,
+            DirectMessageIngressState::Duplicate => 3,
+        });
+        frame.extend_from_slice(&receipt.packet_id);
+    } else {
+        frame.push(0);
+        frame.extend_from_slice(&[0; 32]);
+    }
+    frame
+}
+
+fn decode_direct_message_ack(
+    frame: &[u8],
+    expected_packet_id: Option<[u8; 32]>,
+) -> Result<Option<DirectMessageIngressReceipt>, DirectMessageTransportError> {
+    if frame.len() != DIRECT_MESSAGE_ACK_BYTES
+        || &frame[..4] != DIRECT_MESSAGE_ACK_MAGIC
+        || frame[4] != DIRECT_MESSAGE_SYNC_VERSION
+    {
+        return Err(DirectMessageTransportError::InvalidFrame);
+    }
+    let state = frame[5];
+    let packet_id: [u8; 32] = frame[6..]
+        .try_into()
+        .map_err(|_| DirectMessageTransportError::InvalidFrame)?;
+    match (expected_packet_id, state) {
+        (None, 0) if packet_id == [0; 32] => Ok(None),
+        (Some(expected), state @ 1..=3) if packet_id == expected => {
+            Ok(Some(DirectMessageIngressReceipt {
+                packet_id,
+                state: match state {
+                    1 => DirectMessageIngressState::Accepted,
+                    2 => DirectMessageIngressState::InvitationPending,
+                    _ => DirectMessageIngressState::Duplicate,
+                },
+            }))
+        }
+        _ => Err(DirectMessageTransportError::AcknowledgementMismatch),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -1089,9 +1384,12 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        AuthenticatedSyncError, SyncRequestTarget, SyncSourceError,
-        establish_authenticated_channel_v2, max_v2_plaintext_frame, receive_decrypted,
-        send_encrypted, serve_authenticated_sync_v2_once,
+        AuthenticatedSyncError, DirectMessageIngressReceipt, DirectMessageIngressState,
+        DirectMessageTransportError, SyncRequestTarget, SyncSourceError, decode_direct_message_ack,
+        encode_direct_message_ack, encode_direct_message_transfer,
+        establish_authenticated_channel_v2, execute_authenticated_direct_message_once,
+        ingest_direct_message_transfer, max_v2_plaintext_frame, receive_decrypted, send_encrypted,
+        serve_authenticated_direct_message_once, serve_authenticated_sync_v2_once,
     };
     use crate::sync::{SyncEventRecord, SyncProtocolError};
 
@@ -1191,5 +1489,120 @@ mod tests {
         client.expect("send authenticated but unplanned request");
         assert_eq!(summary_calls.get(), 1);
         assert_eq!(event_calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn authenticated_direct_message_exchange_acks_only_core_ingress() {
+        let alice = DeviceIdentity::generate().expect("generate initiator identity");
+        let bob = DeviceIdentity::generate().expect("generate responder identity");
+        let alice_fingerprint = alice.fingerprint();
+        let bob_fingerprint = bob.fingerprint();
+        let alice_pin =
+            PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice_fingerprint)
+                .expect("pin initiator identity");
+        let bob_pin =
+            PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob_fingerprint)
+                .expect("pin responder identity");
+        let listener = TcpPeerListener::bind("127.0.0.1:0", 4096)
+            .await
+            .expect("bind test listener");
+        let endpoint = listener.local_addr().expect("read listener address");
+        let (client_adapter, server_result) =
+            tokio::join!(TcpPeerAdapter::connect(endpoint, 4096), listener.accept());
+        let client_adapter = client_adapter.expect("connect test initiator");
+        let (server_adapter, _) = server_result.expect("accept test responder");
+
+        let alice_id = [0x11; 32];
+        let bob_id = [0x22; 32];
+        let alice_packet = [0xa1, 0xa2];
+        let bob_packet = [0xb1, 0xb2, 0xb3];
+        let client_cancel = CancellationToken::new();
+        let server_cancel = CancellationToken::new();
+        let client = execute_authenticated_direct_message_once(
+            &client_adapter,
+            &alice,
+            bob_pin,
+            Some((alice_id, &alice_packet)),
+            |peer, bytes| {
+                assert_eq!(peer.fingerprint(), bob_fingerprint);
+                assert_eq!(bytes, bob_packet);
+                Ok(DirectMessageIngressReceipt {
+                    packet_id: bob_id,
+                    state: DirectMessageIngressState::Accepted,
+                })
+            },
+            &client_cancel,
+        );
+        let server = serve_authenticated_direct_message_once(
+            &server_adapter,
+            &bob,
+            alice_pin,
+            Some((bob_id, &bob_packet)),
+            |peer, bytes| {
+                assert_eq!(peer.fingerprint(), alice_fingerprint);
+                assert_eq!(bytes, alice_packet);
+                Ok(DirectMessageIngressReceipt {
+                    packet_id: alice_id,
+                    state: DirectMessageIngressState::InvitationPending,
+                })
+            },
+            &server_cancel,
+        );
+        let (client, server) = tokio::join!(client, server);
+        let client = client.expect("complete initiator packet exchange");
+        let server = server.expect("complete responder packet exchange");
+        assert_eq!(client.authenticated_peer.fingerprint(), bob_fingerprint);
+        assert_eq!(server.authenticated_peer.fingerprint(), alice_fingerprint);
+        assert_eq!(
+            client.incoming,
+            Some(DirectMessageIngressReceipt {
+                packet_id: bob_id,
+                state: DirectMessageIngressState::Accepted,
+            })
+        );
+        assert_eq!(
+            client.outgoing,
+            Some(DirectMessageIngressReceipt {
+                packet_id: alice_id,
+                state: DirectMessageIngressState::InvitationPending,
+            })
+        );
+        assert_eq!(server.incoming, client.outgoing);
+        assert_eq!(server.outgoing, client.incoming);
+    }
+
+    #[test]
+    fn direct_message_transfer_rejects_bad_lengths_and_mismatched_ack_ids() {
+        let packet_id = [0x44; 32];
+        let packet = [0x51, 0x52];
+        let mut frame = encode_direct_message_transfer(Some((packet_id, &packet)))
+            .expect("encode valid transfer");
+        frame[38..42].copy_from_slice(&1_u32.to_be_bytes());
+        let callback_called = Cell::new(false);
+        let mut ingest = |_: &PinnedIdentity, _: &[u8]| {
+            callback_called.set(true);
+            Ok(DirectMessageIngressReceipt {
+                packet_id,
+                state: DirectMessageIngressState::Accepted,
+            })
+        };
+        let peer = DeviceIdentity::generate().expect("generate peer");
+        let peer_pin =
+            PinnedIdentity::from_verified_fingerprint(peer.public_bundle(), peer.fingerprint())
+                .expect("pin peer");
+        assert!(matches!(
+            ingest_direct_message_transfer(&frame, &peer_pin, &mut ingest,),
+            Err(DirectMessageTransportError::InvalidFrame)
+        ));
+        assert!(!callback_called.get());
+
+        let mismatched = encode_direct_message_ack(Some(DirectMessageIngressReceipt {
+            packet_id: [0x55; 32],
+            state: DirectMessageIngressState::Accepted,
+        }));
+        assert!(matches!(
+            decode_direct_message_ack(&mismatched, Some(packet_id)),
+            Err(DirectMessageTransportError::AcknowledgementMismatch)
+        ));
     }
 }
