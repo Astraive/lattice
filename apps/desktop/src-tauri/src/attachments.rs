@@ -11,7 +11,6 @@ use std::{
 };
 
 use fs4::fs_std::FileExt as _;
-use lattice_core::Client;
 use lattice_files::{
     AttachmentManifest, AttachmentStagingLimits, AttachmentStagingStore, MAX_FILE_SIZE,
     ManagedAttachmentFile,
@@ -302,7 +301,7 @@ fn send_attachment_blocking(
 ) -> Result<AttachmentTransferSummary, String> {
     let (database_path, protector) = profile::open_profile()?;
     let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
     if client
         .pinned_identity(&target.peer_fingerprint)
         .map_err(|error| format!("validate attachment peer pin: {error}"))?
@@ -376,7 +375,7 @@ fn receive_attachment_blocking(
 ) -> Result<Option<AttachmentTransferSummary>, String> {
     let (database_path, protector) = profile::open_profile()?;
     let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
     if client
         .pinned_identity(&target.peer_fingerprint)
         .map_err(|error| format!("validate attachment peer pin: {error}"))?
@@ -758,7 +757,7 @@ fn queue_selected_file(
     let (manifest, _) = stage_source_file(source_path, &source_dir)?;
     let (database_path, protector) = profile::open_profile()?;
     let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
     let queued = client
         .queue_file_manifest_from_x509_credential(
             &space_id,
