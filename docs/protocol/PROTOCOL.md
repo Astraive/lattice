@@ -33,7 +33,7 @@ Identity bundle candidate fields: Ed25519 verify key, X25519 DH key, version, cr
 
 ## Transport handshakes and BLE
 
-Nearby BLE exp0 now specifies candidate service/advertisement/token values and a first-contact `Noise_XX_25519_ChaChaPoly_SHA256` exchange with role-separated Ed25519 identity proofs, full-fingerprint pin checks, and a session comparison string in [`10-ble.md`](../../protocol/specs/10-ble.md). It remains an experimental candidate: exact vectors, framing/flow-control, Android wiring, and interoperability are still open. Envelopes are fragmented only after authenticated link protection; an adapter “queued to OS” is not remote receipt.
+Nearby BLE exp0 specifies candidate service/advertisement/token values and a first-contact `Noise_XX_25519_ChaChaPoly_SHA256` exchange with role-separated Ed25519 identity proofs, full-fingerprint pin checks, and a session comparison string in [`10-ble.md`](../../protocol/specs/10-ble.md). Fixture-backed Rust tests cover exact Noise transcript/ciphertext and identity-signature inputs; Android JVM tests cover advertisement, exact capabilities, control, frame, and GATT UUID cases. It remains experimental: physical device acceptance, independent interoperability, replay/token-rotation behavior, and security/privacy review are still open. Envelopes are fragmented only after authenticated link protection; an adapter “queued to OS” is not remote receipt.
 
 ## Sync state
 

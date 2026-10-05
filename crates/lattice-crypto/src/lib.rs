@@ -633,6 +633,167 @@ pub use noise_session::{
 };
 
 #[cfg(test)]
+mod ble_exp0_vector_tests {
+    use super::{NoiseHandshakeStep, NoiseRole, NoiseSession};
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        assert_eq!(value.len() % 2, 0, "hex has odd length");
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let digit = |byte: u8| match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    _ => panic!("invalid lowercase hex"),
+                };
+                digit(pair[0]) * 16 + digit(pair[1])
+            })
+            .collect()
+    }
+
+    fn establish_noise_vector(
+        fixture: &serde_json::Value,
+    ) -> (snow::TransportState, snow::TransportState) {
+        use snow::{Builder, params::NoiseParams};
+
+        let noise = &fixture["noise_transcript"];
+        let key = |name: &str| decode_hex(noise[name].as_str().unwrap());
+        let static_i = key("initiator_static_private_key_hex");
+        let ephemeral_i = key("initiator_ephemeral_private_key_hex");
+        let static_r = key("responder_static_private_key_hex");
+        let ephemeral_r = key("responder_ephemeral_private_key_hex");
+        let prologue = decode_hex(fixture["noise_prologue"]["prologue_hex"].as_str().unwrap());
+        let params: NoiseParams = super::NOISE_PROTOCOL_NAME.parse().unwrap();
+
+        let initiator_builder = Builder::new(params.clone())
+            .local_private_key(&static_i)
+            .unwrap()
+            .fixed_ephemeral_key_for_testing_only(&ephemeral_i)
+            .prologue(&prologue)
+            .unwrap();
+        let mut initiator = initiator_builder.build_initiator().unwrap();
+        let responder_builder = Builder::new(params)
+            .local_private_key(&static_r)
+            .unwrap()
+            .fixed_ephemeral_key_for_testing_only(&ephemeral_r)
+            .prologue(&prologue)
+            .unwrap();
+        let mut responder = responder_builder.build_responder().unwrap();
+
+        let mut message1 = vec![0; 256];
+        let len1 = initiator.write_message(&[], &mut message1).unwrap();
+        message1.truncate(len1);
+        let mut payload = vec![0; 256];
+        assert_eq!(responder.read_message(&message1, &mut payload).unwrap(), 0);
+        let mut message2 = vec![0; 256];
+        let len2 = responder.write_message(&[], &mut message2).unwrap();
+        message2.truncate(len2);
+        assert_eq!(initiator.read_message(&message2, &mut payload).unwrap(), 0);
+        let mut message3 = vec![0; 256];
+        let len3 = initiator.write_message(&[], &mut message3).unwrap();
+        message3.truncate(len3);
+        assert_eq!(responder.read_message(&message3, &mut payload).unwrap(), 0);
+        let handshake_hash = initiator.get_handshake_hash().to_vec();
+        assert_eq!(handshake_hash, responder.get_handshake_hash());
+        assert_eq!(
+            message1,
+            decode_hex(noise["message1_hex"].as_str().unwrap())
+        );
+        assert_eq!(
+            message2,
+            decode_hex(noise["message2_hex"].as_str().unwrap())
+        );
+        assert_eq!(
+            message3,
+            decode_hex(noise["message3_hex"].as_str().unwrap())
+        );
+        assert_eq!(
+            handshake_hash,
+            decode_hex(noise["handshake_hash_hex"].as_str().unwrap())
+        );
+
+        (
+            initiator.into_transport_mode().unwrap(),
+            responder.into_transport_mode().unwrap(),
+        )
+    }
+
+    #[test]
+    fn ble_exp0_noise_vector_matches_reproducible_xx_and_transport() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../protocol/vectors/ble-exp0.json")).unwrap();
+        let noise = &fixture["noise_transcript"];
+        let (mut initiator_transport, mut responder_transport) = establish_noise_vector(&fixture);
+        let transfer_start = decode_hex(
+            fixture["transport_records"]["transfer_start_plaintext_hex"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut ciphertext = vec![0; transfer_start.len() + 16];
+        let ciphertext_len = initiator_transport
+            .write_message(&transfer_start, &mut ciphertext)
+            .unwrap();
+        ciphertext.truncate(ciphertext_len);
+        let mut plaintext = vec![0; 128];
+        let plaintext_len = responder_transport
+            .read_message(&ciphertext, &mut plaintext)
+            .unwrap();
+        assert_eq!(&plaintext[..plaintext_len], transfer_start);
+        assert_eq!(
+            ciphertext,
+            decode_hex(
+                noise["initiator_to_responder_ciphertext_hex"]
+                    .as_str()
+                    .unwrap()
+            )
+        );
+
+        let credit = decode_hex(
+            fixture["transport_records"]["initial_credit_plaintext_hex"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut ciphertext = vec![0; credit.len() + 16];
+        let ciphertext_len = responder_transport
+            .write_message(&credit, &mut ciphertext)
+            .unwrap();
+        ciphertext.truncate(ciphertext_len);
+        let plaintext_len = initiator_transport
+            .read_message(&ciphertext, &mut plaintext)
+            .unwrap();
+        assert_eq!(&plaintext[..plaintext_len], credit);
+        assert_eq!(
+            ciphertext,
+            decode_hex(
+                noise["responder_to_initiator_ciphertext_hex"]
+                    .as_str()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn ble_exp0_negative_noise_cases_fail_closed() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../protocol/vectors/ble-exp0.json")).unwrap();
+        let prologue = decode_hex(fixture["noise_prologue"]["prologue_hex"].as_str().unwrap());
+        for case in fixture["negative_cases"].as_array().unwrap() {
+            if case["target"] != "noise" {
+                continue;
+            }
+            let packet = decode_hex(case["input_hex"].as_str().unwrap());
+            let mut responder = NoiseSession::new(NoiseRole::Responder, &prologue).unwrap();
+            assert!(
+                responder.read_message(&packet).is_err(),
+                "{}",
+                case["case_id"]
+            );
+            assert_eq!(responder.step(), NoiseHandshakeStep::Failed);
+        }
+    }
+}
+#[cfg(test)]
 mod noise_session_tests {
     use super::{
         EstablishedNoiseSession, EstablishedNoiseTransportSession, MAX_NOISE_PACKET_SIZE,

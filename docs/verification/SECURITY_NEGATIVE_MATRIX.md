@@ -14,7 +14,7 @@ The test-only CA/CSR procedure and artifact containment rules are in [developmen
 | Unsafe attachment metadata/name | Files tests/source audit | VERIFIED for bounded local paths | Cross-client malicious manifest and export-path scenario. |
 | Malformed sync framing / unplanned targets | Sync planner/transport tests | VERIFIED for unit-level boundary | Malicious live TCP peer and durable-state non-projection proof. |
 | Malformed relay mailbox event | Relay parser tests; Core kind-11 admission requires an active manager, complete heads, MLS-authenticated exact generation and post-admission roster | VERIFIED for local Core authorization and codec cases | Independent relay delivery, malformed received event rejection without projection, and cross-client ingress remain unverified. |
-| Malformed BLE advertisements/frames | Candidate specification/vectors; implementation and device path unaudited | UNVERIFIED | Fuzz/negative vectors and physical GATT-to-Core tests. |
+| Malformed BLE advertisements, capabilities, controls, frames, identity proofs and Noise packets | Candidate shared JSON vectors; Android fixture-backed JVM checks and Rust identity/Noise consumers | VERIFIED for the covered fixture cases only | Physical GATT-to-Core negatives, replay/token-rotation cases, and broader fuzz coverage. |
 | Unauthorized notification | Projection source rules documented; app-level notification path audited earlier | UNVERIFIED end-to-end | Actual notification must follow authorized decrypted projection only. |
 | WASM/OPFS storage corruption or quota failure | No browser runtime | BLOCKED | Browser tests with malformed DB state, quota failure, reopen, and fail-closed behavior. |
 

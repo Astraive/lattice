@@ -46,6 +46,8 @@ internal object BleExp0GattProfile {
     val capabilitiesUuid: UUID = UUID.fromString("1c9a0005-7d31-4f6a-9b43-4c4154544943")
     val upgradeUuid: UUID = UUID.fromString("1c9a0006-7d31-4f6a-9b43-4c4154544943")
     val capabilitiesValue: ByteArray get() = byteArrayOf(0, 0, 0)
+    fun acceptsCapabilities(value: ByteArray): Boolean =
+        value.size == 3 && value[0] == 0.toByte() && value[1] == 0.toByte() && value[2] == 0.toByte()
     val clientConfigurationUuid: UUID =
         UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

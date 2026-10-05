@@ -1386,7 +1386,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated() != 20122.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_peer_identity_fingerprint() != 32823.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_peer_identity_fingerprint() != 21852.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation() != 19143.toShort()) {
@@ -1413,58 +1413,58 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof() != 48589.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_accept_direct_message_invitation() != 65512.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_accept_direct_message_invitation() != 5052.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_accept_pending_direct_message_invitation() != 61640.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_accept_pending_direct_message_invitation() != 62702.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_attachment_staging_status() != 62827.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_attachment_staging_status() != 14269.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_authorized_attachment_manifest() != 62572.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_authorized_attachment_manifest() != 48471.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request() != 35576.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_attachment_manifest() != 38788.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_attachment_manifest() != 41439.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_direct_message() != 6023.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_direct_message() != 59887.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space() != 46165.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation() != 11611.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation() != 58199.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_decline_pending_direct_message_invitation() != 38224.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_decline_pending_direct_message_invitation() != 22079.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_conversations() != 56892.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_conversations() != 36206.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_history() != 53903.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_history() != 32557.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_is_for_peer() != 59158.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_is_for_peer() != 18211.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_outbox_page() != 18634.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_outbox_page() != 23363.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_exchange_direct_messages_once() != 39663.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_exchange_direct_messages_once() != 22409.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_finish_attachment_export() != 17951.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_finish_attachment_export() != 53577.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_direct_message_packet() != 10770.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_direct_message_packet() != 61181.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event() != 49026.toShort()) {
@@ -1479,7 +1479,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages() != 10804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_direct_message_attempt() != 25612.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_direct_message_attempt() != 38515.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt() != 52438.toShort()) {
@@ -1491,7 +1491,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page() != 15966.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pending_direct_message_invitations() != 16007.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pending_direct_message_invitations() != 437.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity() != 30926.toShort()) {
@@ -1500,19 +1500,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity() != 24120.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_prepare_attachment_export() != 40669.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_prepare_attachment_export() != 6185.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_direct_message_key_package() != 7026.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_direct_message_key_package() != 47236.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package() != 45561.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package() != 48792.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_attachment_manifest() != 1711.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_attachment_manifest() != 16522.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_direct_message_text() != 311.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_direct_message_text() != 31835.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message() != 19845.toShort()) {
@@ -1521,22 +1521,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit() != 5149.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_pin() != 11462.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_pin() != 49615.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reaction() != 42878.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reaction() != 8799.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reply() != 7635.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reply() != 57575.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone() != 10575.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone() != 32293.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_receive_attachment_once() != 4570.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_receive_attachment_once() != 44416.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_direct_message_peer_ingress_accepted() != 37184.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_direct_message_peer_ingress_accepted() != 63772.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted() != 33011.toShort()) {
@@ -1548,10 +1548,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages() != 1752.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_send_attachment_once() != 29674.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_send_attachment_once() != 2419.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes() != 60636.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes() != 17131.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_unpin_identity() != 4515.toShort()) {
@@ -1563,7 +1563,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_is_closed() != 44730.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_wait_for_change() != 14195.toShort()) {
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_wait_for_change() != 51097.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() != 64121.toShort()) {
@@ -2101,6 +2101,12 @@ public interface MobileBleSessionInterface {
     
     /**
      * Returns the pinned fingerprint bound to this authenticated session.
+     *
+     * # Errors
+     *
+     * Returns `BlePeerNotAuthenticated` before peer confirmation,
+     * `BleRecordRejected` if the authenticated session has no peer identity,
+     * or `BleSessionFailed` if the session state mutex is poisoned.
      */
     fun `peerIdentityFingerprint`(): kotlin.ByteArray
     
@@ -2401,6 +2407,12 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     
     /**
      * Returns the pinned fingerprint bound to this authenticated session.
+     *
+     * # Errors
+     *
+     * Returns `BlePeerNotAuthenticated` before peer confirmation,
+     * `BleRecordRejected` if the authenticated session has no peer identity,
+     * or `BleSessionFailed` if the session state mutex is poisoned.
      */
     @Throws(MobileException::class)override fun `peerIdentityFingerprint`(): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -2722,23 +2734,49 @@ public interface MobileClientInterface {
     
     /**
      * Imports a routed Welcome only after explicit user acceptance.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageNotAccepted` without explicit acceptance,
+     * `InvalidFingerprint` for malformed peer identity bytes,
+     * `DirectMessageFailed` for invalid packet/credential bytes or failed
+     * import, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `acceptDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `invitationPacket`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray
     
     /**
      * Accepts a persisted invitation only with user consent and matching peer.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageNotAccepted` without explicit acceptance,
+     * `InvalidFingerprint` or `InvalidOutboxEventId` for malformed identifiers,
+     * `InvalidSpaceCredential` for invalid credentials, or
+     * `DirectMessageFailed` if importing the accepted invitation fails.
      */
     fun `acceptPendingDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `packetId`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray
     
     /**
      * Reopens the private receiver store and verifies staged chunks before
      * reporting resumable progress.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
+     * `AttachmentOperationFailed` when staged data cannot be verified.
      */
     fun `attachmentStagingStatus`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentStagingStatus
     
     /**
      * Returns a display-only summary only when Core authorizes this exact
      * event ID in the restored Space generation.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
+     * `AttachmentOperationFailed` if its summary cannot be formed.
      */
     fun `authorizedAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAuthorizedAttachmentManifest
     
@@ -2757,11 +2795,22 @@ public interface MobileClientInterface {
      *
      * The identifier is an opaque lowercase-hex token; this API never accepts
      * a caller-selected filesystem path.
+     *
+     * # Errors
+     *
+     * Returns `AttachmentOperationFailed` if the source cannot be read or its
+     * metadata cannot be computed.
      */
     fun `createAttachmentManifest`(`sourceId`: kotlin.String, `filename`: kotlin.String): MobileAttachmentManifest
     
     /**
      * Creates and durably queues an opaque MLS Welcome invitation packet.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for malformed peer identity bytes,
+     * `DirectMessageFailed` for invalid package/scheduling input or failed
+     * creation, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `createDirectMessage`(`credentialVector`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray, `peerKeyPackage`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long): MobileCreatedDirectMessage
     
@@ -2781,47 +2830,96 @@ public interface MobileClientInterface {
     fun `createLocalSpace`(`credentialVector`: kotlin.ByteArray, `channels`: List<MobileInitialChannel>): MobileCreatedSpace
     
     /**
-     * Commits an offline invitation for one published target KeyPackage.
+     * Commits an offline invitation for one published target `KeyPackage`.
      *
      * The invitation event and Welcome checkpoint are created by Core as one
      * membership transaction. The token and bootstrap are returned for an
      * explicit out-of-band handoff; no network is contacted.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` or `InvalidSpaceKeyPackage` for invalid input,
+     * `InvalidSpaceInput` for invalid expiry/use limits, and
+     * `SpaceInvitationFailed` if restoring or committing the invitation fails.
      */
     fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation
     
     /**
      * Declines a pending invitation without importing its MLS Welcome.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` for a malformed packet ID or
+     * `DirectMessageFailed` if the pending invitation cannot be declined.
      */
     fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean
     
     /**
      * Lists local pairwise conversations in stable bounded order.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageFailed` for an invalid page size or failed
+     * conversation lookup, or `ProfileUnavailable` if the profile lock is
+     * unavailable.
      */
     fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation>
     
     /**
      * Reads decrypted local history for one pairwise conversation.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for a malformed conversation ID,
+     * `DirectMessageFailed` for an invalid page size or failed history lookup,
+     * or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `directMessageHistory`(`groupReference`: kotlin.ByteArray, `limit`: kotlin.UInt): List<MobileDirectMessageHistoryEntry>
     
     /**
      * Verifies that an outbox packet targets the authenticated BLE peer.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+     * IDs, `DirectMessageFailed` if the conversation lookup fails, or
+     * `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `directMessageIsForPeer`(`groupReference`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray): kotlin.Boolean
     
     /**
      * Reads a bounded page of durable opaque DM packets awaiting forwarding.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxCursor` for a malformed cursor,
+     * `InvalidOutboxPage` for an invalid page size, `OutboxUnavailable` for
+     * storage failures, or `ProfileUnavailable` if the profile lock fails.
      */
     fun `directMessageOutboxPage`(`afterPacketId`: kotlin.ByteArray?, `limit`: kotlin.UInt): List<MobileDirectMessageOutboxEntry>
     
     /**
      * Runs one authenticated, pinned TCP direct-message exchange over a local
      * LAN path. It sends at most one due opaque packet in each direction.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for a malformed fingerprint,
+     * `DirectMessageFailed` for invalid addresses, an unpinned peer, or
+     * exchange failures, `OutboxUnavailable` for storage failures,
+     * `OutboxTransitionRejected` for invalid state changes, or
+     * `ProfileOpenFailed` if a read-only ingress client cannot be opened.
      */
     fun `exchangeDirectMessagesOnce`(`connectAddress`: kotlin.String, `listenAddress`: kotlin.String, `peerFingerprint`: kotlin.ByteArray): MobileDirectMessageExchange
     
     /**
      * Removes one internal export temporary file after document-picker use.
+     *
+     * # Errors
+     *
+     * Returns `AttachmentOperationFailed` for an invalid export identifier or
+     * when the temporary file cannot safely be removed.
      */
     fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean
     
@@ -2836,6 +2934,12 @@ public interface MobileClientInterface {
     
     /**
      * Authenticates one opaque application packet from the pinned peer.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for malformed peer identity bytes,
+     * `DirectMessageFailed` for invalid packets or failed authenticated
+     * ingress, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `ingestDirectMessagePacket`(`authenticatedPeerIdentity`: kotlin.ByteArray, `envelopeBytes`: kotlin.ByteArray): MobileDirectMessageIngressResult
     
@@ -2900,6 +3004,12 @@ public interface MobileClientInterface {
     
     /**
      * Persists the retry attempt before routing the DM packet.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` for a malformed packet ID,
+     * `InvalidOutboxSchedule` for a negative retry time, or
+     * `OutboxTransitionRejected` if the state transition is invalid.
      */
     fun `markDirectMessageAttempt`(`packetId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
     
@@ -2938,6 +3048,11 @@ public interface MobileClientInterface {
     
     /**
      * Lists bounded invitations saved from authenticated transport ingress.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageFailed` for an invalid page size or failed lookup,
+     * or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation>
     
@@ -2973,30 +3088,63 @@ public interface MobileClientInterface {
     /**
      * Copies an already-complete staged attachment to a bounded app-private
      * temporary file for the native document picker to export.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `AttachmentNotAuthorized` unless Core authorizes the exact manifest,
+     * `AttachmentOperationFailed` if staged bytes are incomplete or fail
+     * verification, or a profile/filesystem error.
      */
     fun `prepareAttachmentExport`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentExport
     
     /**
-     * Publishes one validated local KeyPackage for a pairwise DM invitation.
+     * Publishes one validated local `KeyPackage` for a pairwise DM invitation.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceCredential` for empty or oversized credentials,
+     * `ProfileUnavailable` if the profile lock is poisoned, or
+     * `DirectMessageFailed` if Core cannot publish the package.
      */
     fun `publishDirectMessageKeyPackage`(`credentialVector`: kotlin.ByteArray, `nowUnixSeconds`: kotlin.ULong): kotlin.ByteArray
     
     /**
-     * Publishes one locally retained X.509 KeyPackage for offline invitation.
+     * Publishes one locally retained X.509 `KeyPackage` for offline invitation.
      *
      * The output is intended for explicit out-of-band transfer; no relay or
-     * network is contacted. The matching private KeyPackage remains local.
+     * network is contacted. The matching private `KeyPackage` remains local.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceCredential` for empty or oversized credential
+     * bytes, `ProfileUnavailable` if the profile lock is poisoned, and
+     * `SpaceKeyPackagePublicationFailed` if publication fails.
      */
     fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray
     
     /**
      * Queues one Core-authorized signed Space manifest and durably stages the
      * verified source under its event-bound transfer identity.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for invalid credentials,
+     * `AttachmentOperationFailed` for invalid metadata or staging failures,
+     * `AttachmentManifestSourceChanged` if the imported file no longer matches
+     * the preview, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `queueAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `sourceId`: kotlin.String, `preview`: MobileAttachmentManifest): MobileAttachmentQueueReceipt
     
     /**
      * Encrypts text locally and commits the resulting opaque packet to Core.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for a malformed conversation ID,
+     * `DirectMessageFailed` for invalid input or a failed queue operation, or
+     * `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `queueDirectMessageText`(`credentialVector`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `content`: kotlin.String, `nextAttemptMs`: kotlin.Long): MobileDirectMessagePacket
     
@@ -3034,32 +3182,75 @@ public interface MobileClientInterface {
     
     /**
      * Queues a pin add or observed-tag removal.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers or tags,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `MessageRejected` when local policy denies the pin, or
+     * `MessageQueueFailed` for other failures.
      */
     fun `queueLocalTextMessagePin`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage
     
     /**
      * Queues a tagged reaction add or observed-tag removal.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers or tags,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `InvalidMessageInput` for an invalid reaction token, `MessageRejected`
+     * when local policy denies the reaction, or `MessageQueueFailed` for
+     * other failures.
      */
     fun `queueLocalTextMessageReaction`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `token`: kotlin.String, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage
     
     /**
      * Queues a locally authorized immutable thread reply.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `InvalidMessageInput` for oversized text, `MessageRejected` when local
+     * policy denies the reply, or `MessageQueueFailed` for other failures.
      */
     fun `queueLocalTextMessageReply`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `threadRoot`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
     
     /**
      * Queues a locally authorized tombstone for a locally authored message.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `MessageRejected` when local policy denies the tombstone, or
+     * `MessageQueueFailed` for other failures.
      */
     fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage
     
     /**
      * Receives one authorized manifest into persistent private staging after
      * explicit user consent and exact pinned-peer authorization.
+     *
+     * # Errors
+     *
+     * Returns `AttachmentConsentRequired` without explicit consent,
+     * `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+     * identifiers, `AttachmentPeerNotPinned` or `AttachmentPeerNotAuthorized`
+     * when the exact peer lacks required trust/membership, and
+     * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
+     * authorization, connection, verification, or transfer failures.
      */
     fun `receiveAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `listenAddress`: kotlin.String, `userConsented`: kotlin.Boolean): MobileAttachmentTransferReceipt
     
     /**
      * Records authenticated peer-ingress acceptance, not destination delivery.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` for a malformed packet ID or
+     * `OutboxTransitionRejected` if the ingress transition is invalid.
      */
     fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray)
     
@@ -3107,11 +3298,24 @@ public interface MobileClientInterface {
     /**
      * Sends one authorized manifest over TCP and a separately domain-bound
      * Noise session pinned to the exact active Space member.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+     * identifiers, `AttachmentPeerNotPinned` or `AttachmentPeerNotAuthorized`
+     * when the exact peer lacks required trust/membership, and
+     * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
+     * authorization, connection, verification, or transfer failures.
      */
     fun `sendAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `connectAddress`: kotlin.String): MobileAttachmentTransferReceipt
     
     /**
      * Subscribes to bounded, coalesced Core projection changes.
+     *
+     * # Errors
+     *
+     * Returns `ProfileUnavailable` if the subscription limit is reached or
+     * the observer registry is unavailable.
      */
     fun `subscribeProjectionChanges`(): MobileProjectionSubscription
     
@@ -3219,6 +3423,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Imports a routed Welcome only after explicit user acceptance.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageNotAccepted` without explicit acceptance,
+     * `InvalidFingerprint` for malformed peer identity bytes,
+     * `DirectMessageFailed` for invalid packet/credential bytes or failed
+     * import, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `acceptDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `invitationPacket`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -3235,6 +3446,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Accepts a persisted invitation only with user consent and matching peer.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageNotAccepted` without explicit acceptance,
+     * `InvalidFingerprint` or `InvalidOutboxEventId` for malformed identifiers,
+     * `InvalidSpaceCredential` for invalid credentials, or
+     * `DirectMessageFailed` if importing the accepted invitation fails.
      */
     @Throws(MobileException::class)override fun `acceptPendingDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `packetId`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -3252,6 +3470,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Reopens the private receiver store and verifies staged chunks before
      * reporting resumable progress.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
+     * `AttachmentOperationFailed` when staged data cannot be verified.
      */
     @Throws(MobileException::class)override fun `attachmentStagingStatus`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentStagingStatus {
             return FfiConverterTypeMobileAttachmentStagingStatus.lift(
@@ -3269,6 +3493,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Returns a display-only summary only when Core authorizes this exact
      * event ID in the restored Space generation.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
+     * `AttachmentOperationFailed` if its summary cannot be formed.
      */
     @Throws(MobileException::class)override fun `authorizedAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAuthorizedAttachmentManifest {
             return FfiConverterTypeMobileAuthorizedAttachmentManifest.lift(
@@ -3309,6 +3539,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
      *
      * The identifier is an opaque lowercase-hex token; this API never accepts
      * a caller-selected filesystem path.
+     *
+     * # Errors
+     *
+     * Returns `AttachmentOperationFailed` if the source cannot be read or its
+     * metadata cannot be computed.
      */
     @Throws(MobileException::class)override fun `createAttachmentManifest`(`sourceId`: kotlin.String, `filename`: kotlin.String): MobileAttachmentManifest {
             return FfiConverterTypeMobileAttachmentManifest.lift(
@@ -3325,6 +3560,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Creates and durably queues an opaque MLS Welcome invitation packet.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for malformed peer identity bytes,
+     * `DirectMessageFailed` for invalid package/scheduling input or failed
+     * creation, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `createDirectMessage`(`credentialVector`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray, `peerKeyPackage`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long): MobileCreatedDirectMessage {
             return FfiConverterTypeMobileCreatedDirectMessage.lift(
@@ -3366,11 +3607,18 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Commits an offline invitation for one published target KeyPackage.
+     * Commits an offline invitation for one published target `KeyPackage`.
      *
      * The invitation event and Welcome checkpoint are created by Core as one
      * membership transaction. The token and bootstrap are returned for an
      * explicit out-of-band handoff; no network is contacted.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` or `InvalidSpaceKeyPackage` for invalid input,
+     * `InvalidSpaceInput` for invalid expiry/use limits, and
+     * `SpaceInvitationFailed` if restoring or committing the invitation fails.
      */
     @Throws(MobileException::class)override fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation {
             return FfiConverterTypeMobileSpaceInvitation.lift(
@@ -3387,6 +3635,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Declines a pending invitation without importing its MLS Welcome.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` for a malformed packet ID or
+     * `DirectMessageFailed` if the pending invitation cannot be declined.
      */
     @Throws(MobileException::class)override fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean {
             return FfiConverterBoolean.lift(
@@ -3403,6 +3656,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Lists local pairwise conversations in stable bounded order.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageFailed` for an invalid page size or failed
+     * conversation lookup, or `ProfileUnavailable` if the profile lock is
+     * unavailable.
      */
     @Throws(MobileException::class)override fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation> {
             return FfiConverterSequenceTypeMobileDirectMessageConversation.lift(
@@ -3419,6 +3678,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Reads decrypted local history for one pairwise conversation.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for a malformed conversation ID,
+     * `DirectMessageFailed` for an invalid page size or failed history lookup,
+     * or `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `directMessageHistory`(`groupReference`: kotlin.ByteArray, `limit`: kotlin.UInt): List<MobileDirectMessageHistoryEntry> {
             return FfiConverterSequenceTypeMobileDirectMessageHistoryEntry.lift(
@@ -3435,6 +3700,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Verifies that an outbox packet targets the authenticated BLE peer.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+     * IDs, `DirectMessageFailed` if the conversation lookup fails, or
+     * `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `directMessageIsForPeer`(`groupReference`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray): kotlin.Boolean {
             return FfiConverterBoolean.lift(
@@ -3451,6 +3722,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Reads a bounded page of durable opaque DM packets awaiting forwarding.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxCursor` for a malformed cursor,
+     * `InvalidOutboxPage` for an invalid page size, `OutboxUnavailable` for
+     * storage failures, or `ProfileUnavailable` if the profile lock fails.
      */
     @Throws(MobileException::class)override fun `directMessageOutboxPage`(`afterPacketId`: kotlin.ByteArray?, `limit`: kotlin.UInt): List<MobileDirectMessageOutboxEntry> {
             return FfiConverterSequenceTypeMobileDirectMessageOutboxEntry.lift(
@@ -3468,6 +3745,14 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Runs one authenticated, pinned TCP direct-message exchange over a local
      * LAN path. It sends at most one due opaque packet in each direction.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for a malformed fingerprint,
+     * `DirectMessageFailed` for invalid addresses, an unpinned peer, or
+     * exchange failures, `OutboxUnavailable` for storage failures,
+     * `OutboxTransitionRejected` for invalid state changes, or
+     * `ProfileOpenFailed` if a read-only ingress client cannot be opened.
      */
     @Throws(MobileException::class)override fun `exchangeDirectMessagesOnce`(`connectAddress`: kotlin.String, `listenAddress`: kotlin.String, `peerFingerprint`: kotlin.ByteArray): MobileDirectMessageExchange {
             return FfiConverterTypeMobileDirectMessageExchange.lift(
@@ -3484,6 +3769,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Removes one internal export temporary file after document-picker use.
+     *
+     * # Errors
+     *
+     * Returns `AttachmentOperationFailed` for an invalid export identifier or
+     * when the temporary file cannot safely be removed.
      */
     @Throws(MobileException::class)override fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean {
             return FfiConverterBoolean.lift(
@@ -3520,6 +3810,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Authenticates one opaque application packet from the pinned peer.
+     *
+     * # Errors
+     *
+     * Returns `InvalidFingerprint` for malformed peer identity bytes,
+     * `DirectMessageFailed` for invalid packets or failed authenticated
+     * ingress, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `ingestDirectMessagePacket`(`authenticatedPeerIdentity`: kotlin.ByteArray, `envelopeBytes`: kotlin.ByteArray): MobileDirectMessageIngressResult {
             return FfiConverterTypeMobileDirectMessageIngressResult.lift(
@@ -3639,6 +3935,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Persists the retry attempt before routing the DM packet.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` for a malformed packet ID,
+     * `InvalidOutboxSchedule` for a negative retry time, or
+     * `OutboxTransitionRejected` if the state transition is invalid.
      */
     @Throws(MobileException::class)override fun `markDirectMessageAttempt`(`packetId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
         = 
@@ -3719,6 +4021,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Lists bounded invitations saved from authenticated transport ingress.
+     *
+     * # Errors
+     *
+     * Returns `DirectMessageFailed` for an invalid page size or failed lookup,
+     * or `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation> {
             return FfiConverterSequenceTypeMobileDirectMessagePendingInvitation.lift(
@@ -3787,6 +4094,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Copies an already-complete staged attachment to a bounded app-private
      * temporary file for the native document picker to export.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `AttachmentNotAuthorized` unless Core authorizes the exact manifest,
+     * `AttachmentOperationFailed` if staged bytes are incomplete or fail
+     * verification, or a profile/filesystem error.
      */
     @Throws(MobileException::class)override fun `prepareAttachmentExport`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentExport {
             return FfiConverterTypeMobileAttachmentExport.lift(
@@ -3802,7 +4116,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Publishes one validated local KeyPackage for a pairwise DM invitation.
+     * Publishes one validated local `KeyPackage` for a pairwise DM invitation.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceCredential` for empty or oversized credentials,
+     * `ProfileUnavailable` if the profile lock is poisoned, or
+     * `DirectMessageFailed` if Core cannot publish the package.
      */
     @Throws(MobileException::class)override fun `publishDirectMessageKeyPackage`(`credentialVector`: kotlin.ByteArray, `nowUnixSeconds`: kotlin.ULong): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -3818,10 +4138,16 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
-     * Publishes one locally retained X.509 KeyPackage for offline invitation.
+     * Publishes one locally retained X.509 `KeyPackage` for offline invitation.
      *
      * The output is intended for explicit out-of-band transfer; no relay or
-     * network is contacted. The matching private KeyPackage remains local.
+     * network is contacted. The matching private `KeyPackage` remains local.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceCredential` for empty or oversized credential
+     * bytes, `ProfileUnavailable` if the profile lock is poisoned, and
+     * `SpaceKeyPackagePublicationFailed` if publication fails.
      */
     @Throws(MobileException::class)override fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
@@ -3839,6 +4165,14 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Queues one Core-authorized signed Space manifest and durably stages the
      * verified source under its event-bound transfer identity.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for invalid credentials,
+     * `AttachmentOperationFailed` for invalid metadata or staging failures,
+     * `AttachmentManifestSourceChanged` if the imported file no longer matches
+     * the preview, or `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `queueAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `sourceId`: kotlin.String, `preview`: MobileAttachmentManifest): MobileAttachmentQueueReceipt {
             return FfiConverterTypeMobileAttachmentQueueReceipt.lift(
@@ -3855,6 +4189,12 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Encrypts text locally and commits the resulting opaque packet to Core.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for a malformed conversation ID,
+     * `DirectMessageFailed` for invalid input or a failed queue operation, or
+     * `ProfileUnavailable` if the profile lock is unavailable.
      */
     @Throws(MobileException::class)override fun `queueDirectMessageText`(`credentialVector`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `content`: kotlin.String, `nextAttemptMs`: kotlin.Long): MobileDirectMessagePacket {
             return FfiConverterTypeMobileDirectMessagePacket.lift(
@@ -3925,6 +4265,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Queues a pin add or observed-tag removal.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers or tags,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `MessageRejected` when local policy denies the pin, or
+     * `MessageQueueFailed` for other failures.
      */
     @Throws(MobileException::class)override fun `queueLocalTextMessagePin`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage {
             return FfiConverterTypeMobileQueuedMessage.lift(
@@ -3941,6 +4288,14 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Queues a tagged reaction add or observed-tag removal.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers or tags,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `InvalidMessageInput` for an invalid reaction token, `MessageRejected`
+     * when local policy denies the reaction, or `MessageQueueFailed` for
+     * other failures.
      */
     @Throws(MobileException::class)override fun `queueLocalTextMessageReaction`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `token`: kotlin.String, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage {
             return FfiConverterTypeMobileQueuedMessage.lift(
@@ -3957,6 +4312,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Queues a locally authorized immutable thread reply.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `InvalidMessageInput` for oversized text, `MessageRejected` when local
+     * policy denies the reply, or `MessageQueueFailed` for other failures.
      */
     @Throws(MobileException::class)override fun `queueLocalTextMessageReply`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `threadRoot`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage {
             return FfiConverterTypeMobileQueuedMessage.lift(
@@ -3973,6 +4335,13 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Queues a locally authorized tombstone for a locally authored message.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed identifiers,
+     * `InvalidSpaceCredential` for malformed or untrusted credentials,
+     * `MessageRejected` when local policy denies the tombstone, or
+     * `MessageQueueFailed` for other failures.
      */
     @Throws(MobileException::class)override fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage {
             return FfiConverterTypeMobileQueuedMessage.lift(
@@ -3990,6 +4359,15 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Receives one authorized manifest into persistent private staging after
      * explicit user consent and exact pinned-peer authorization.
+     *
+     * # Errors
+     *
+     * Returns `AttachmentConsentRequired` without explicit consent,
+     * `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+     * identifiers, `AttachmentPeerNotPinned` or `AttachmentPeerNotAuthorized`
+     * when the exact peer lacks required trust/membership, and
+     * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
+     * authorization, connection, verification, or transfer failures.
      */
     @Throws(MobileException::class)override fun `receiveAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `listenAddress`: kotlin.String, `userConsented`: kotlin.Boolean): MobileAttachmentTransferReceipt {
             return FfiConverterTypeMobileAttachmentTransferReceipt.lift(
@@ -4006,6 +4384,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Records authenticated peer-ingress acceptance, not destination delivery.
+     *
+     * # Errors
+     *
+     * Returns `InvalidOutboxEventId` for a malformed packet ID or
+     * `OutboxTransitionRejected` if the ingress transition is invalid.
      */
     @Throws(MobileException::class)override fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray)
         = 
@@ -4095,6 +4478,14 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     /**
      * Sends one authorized manifest over TCP and a separately domain-bound
      * Noise session pinned to the exact active Space member.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+     * identifiers, `AttachmentPeerNotPinned` or `AttachmentPeerNotAuthorized`
+     * when the exact peer lacks required trust/membership, and
+     * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
+     * authorization, connection, verification, or transfer failures.
      */
     @Throws(MobileException::class)override fun `sendAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `connectAddress`: kotlin.String): MobileAttachmentTransferReceipt {
             return FfiConverterTypeMobileAttachmentTransferReceipt.lift(
@@ -4111,6 +4502,11 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     
     /**
      * Subscribes to bounded, coalesced Core projection changes.
+     *
+     * # Errors
+     *
+     * Returns `ProfileUnavailable` if the subscription limit is reached or
+     * the observer registry is unavailable.
      */
     @Throws(MobileException::class)override fun `subscribeProjectionChanges`(): MobileProjectionSubscription {
             return FfiConverterTypeMobileProjectionSubscription.lift(
@@ -4324,6 +4720,12 @@ public interface MobileProjectionSubscriptionInterface {
     
     /**
      * Waits for one coalesced change; `None` means timeout or closure.
+     *
+     * # Errors
+     *
+     * Returns `InvalidProjectionWait` for a timeout outside the supported
+     * range, or `ProjectionObserverUnavailable` if observer synchronization
+     * fails.
      */
     fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange?
     
@@ -4447,6 +4849,12 @@ open class MobileProjectionSubscription: Disposable, AutoCloseable, MobileProjec
     
     /**
      * Waits for one coalesced change; `None` means timeout or closure.
+     *
+     * # Errors
+     *
+     * Returns `InvalidProjectionWait` for a timeout outside the supported
+     * range, or `ProjectionObserverUnavailable` if observer synchronization
+     * fails.
      */
     @Throws(MobileException::class)override fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange? {
             return FfiConverterOptionalTypeMobileProjectionChange.lift(
@@ -6426,7 +6834,7 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
-     * A KeyPackage publication request exceeded mobile input bounds or failed validation.
+     * A `KeyPackage` publication request exceeded mobile input bounds or failed validation.
      */
     class SpaceKeyPackagePublicationFailed(
         ) : MobileException() {
@@ -6435,7 +6843,7 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
-     * The target KeyPackage is empty, oversized, or malformed.
+     * The target `KeyPackage` is empty, oversized, or malformed.
      */
     class InvalidSpaceKeyPackage(
         ) : MobileException() {
