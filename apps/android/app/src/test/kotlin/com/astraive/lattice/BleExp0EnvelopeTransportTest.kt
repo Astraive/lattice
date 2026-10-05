@@ -86,6 +86,52 @@ class BleExp0EnvelopeTransportTest {
         assertTrue(fixture.eventId.contentEquals(fixture.ingressResults.single().eventId))
     }
 
+    @Test
+    fun opaqueDirectMessagePacketsUseAuthenticatedPeerIngressPath() {
+        val packetId = ByteArray(32) { (it + 9).toByte() }
+        val envelope = byteArrayOf(0x4c, 0x44, 0x4d, 0x50, 0x01, 0x01) +
+            ByteArray(32) { 0x22 } + byteArrayOf(0x01)
+        val senderProfile = RecordingProfile(packetId, MobileSyncEventState.ACCEPTED, false)
+        val receiverProfile = RecordingProfile(packetId, MobileSyncEventState.ACCEPTED, false)
+        val senderIo = RecordingIo()
+        val receiverIo = RecordingIo()
+        val sender = BleExp0EnvelopeTransport(
+            senderProfile,
+            IdentitySessionCipher(),
+            BleExp0TransferProtocol(1, 247, 41),
+            senderIo,
+        )
+        val receiver = BleExp0EnvelopeTransport(
+            receiverProfile,
+            IdentitySessionCipher(),
+            BleExp0TransferProtocol(2, 247, 91),
+            receiverIo,
+        )
+
+        sender.sendEnvelope(
+            MobileOutboxEntry(
+                eventId = packetId,
+                envelopeBytes = envelope,
+                nextAttemptMs = 0,
+                attemptCount = 0u,
+                state = MobileOutboxState.QUEUED,
+            ),
+            retryAtUnixMillis = 100,
+            nowUnixMillis = 0,
+            nowElapsedMillis = 0,
+        )
+        receiver.receiveControl(senderIo.controls.single(), nowMillis = 1)
+        sender.receiveControl(receiverIo.controls.last(), nowMillis = 2)
+        receiver.receiveFrame(senderIo.frames.single(), nowMillis = 3)
+        sender.receiveControl(receiverIo.controls.last(), nowMillis = 4)
+
+        assertEquals(packetId.toList(), senderProfile.directMessageAttemptId?.toList())
+        assertEquals(packetId.toList(), senderProfile.directMessageIngressId?.toList())
+        assertEquals(0, receiverProfile.ingressCalls)
+        assertEquals(1, receiverProfile.directMessageIngressCalls)
+        assertEquals(ByteArray(32) { 0x11 }.toList(), receiverProfile.authenticatedPeer?.toList())
+    }
+
     private fun transferWithIngressResult(state: MobileSyncEventState): Fixture = transfer(state, false)
 
     private fun transferWithIngressFailure(): Fixture = transfer(MobileSyncEventState.ACCEPTED, true)
@@ -157,6 +203,7 @@ class BleExp0EnvelopeTransportTest {
 
     private class IdentitySessionCipher : BleExp0SessionCipher {
         override fun isAuthenticated(): Boolean = true
+        override fun peerIdentityFingerprint(): ByteArray = ByteArray(32) { 0x11 }
         override fun encryptRecord(plaintext: ByteArray): ByteArray = plaintext.copyOf()
         override fun decryptRecord(ciphertext: ByteArray): ByteArray = ciphertext.copyOf()
     }
@@ -191,6 +238,10 @@ class BleExp0EnvelopeTransportTest {
         var ingressEventId: ByteArray? = null
         var attemptEventId: ByteArray? = null
         var ingressCalls = 0
+        var directMessageAttemptId: ByteArray? = null
+        var directMessageIngressId: ByteArray? = null
+        var directMessageIngressCalls = 0
+        var authenticatedPeer: ByteArray? = null
 
         override fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long) {
             require(eventId.contentEquals(this.eventId))
@@ -214,5 +265,40 @@ class BleExp0EnvelopeTransportTest {
                 missingDependencies = emptyList(),
             )
         }
+
+        override fun markDirectMessageAttempt(packetId: ByteArray, nextAttemptMs: Long) {
+            require(packetId.contentEquals(eventId))
+            require(nextAttemptMs == 100L)
+            directMessageAttemptId = packetId.copyOf()
+            state = MobileOutboxState.FORWARDING
+        }
+
+        override fun recordDirectMessagePeerIngressAccepted(packetId: ByteArray) {
+            require(packetId.contentEquals(eventId))
+            directMessageIngressId = packetId.copyOf()
+            state = MobileOutboxState.PEER_INGRESS_ACCEPTED
+        }
+
+        override fun ingestDirectMessagePacket(
+            authenticatedPeerIdentity: ByteArray,
+            envelopeBytes: ByteArray,
+        ): uniffi.lattice_uniffi.MobileDirectMessageIngressResult {
+            directMessageIngressCalls++
+            authenticatedPeer = authenticatedPeerIdentity.copyOf()
+            return uniffi.lattice_uniffi.MobileDirectMessageIngressResult(
+                packetId = eventId.copyOf(),
+                duplicate = false,
+                invitationPending = true,
+                groupReference = ByteArray(32) { 0x22 },
+                peerIdentity = authenticatedPeerIdentity.copyOf(),
+                content = null,
+            )
+        }
+
+        override fun isDirectMessageRoutedToPeer(
+            groupReference: ByteArray,
+            peerIdentity: ByteArray,
+        ): Boolean = groupReference.contentEquals(ByteArray(32) { 0x22 }) &&
+            peerIdentity.contentEquals(ByteArray(32) { 0x11 })
     }
 }
