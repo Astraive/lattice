@@ -12,6 +12,8 @@ use core::fmt;
 use crate::nip01::{NostrEventError, NostrEventV1};
 use crate::nip11::RelayCapabilities;
 use crate::{DeliveryClass, EnvelopeError, EnvelopeV1};
+use k256::schnorr::SigningKey;
+use zeroize::Zeroizing;
 
 /// NIP-01 event kind for an opaque Lattice envelope.
 pub const LATTICE_RELAY_KIND: u64 = 39_001;
@@ -22,8 +24,72 @@ pub const MAX_RELAY_CONTENT_BYTES: usize = 60_000;
 const MAILBOX_TAG_PREFIX: &str = "lattice1.";
 
 /// A random per-generation mailbox token. It is not a Space or device ID.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct MailboxToken([u8; 32]);
+
+impl fmt::Debug for MailboxToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MailboxToken([REDACTED])")
+    }
+}
+
+/// An independently generated relay-only BIP340 signing secret.
+pub struct RelaySigningKey(Zeroizing<[u8; 32]>);
+
+/// Failure to generate or validate independent relay signing material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelaySigningKeyError {
+    /// The operating-system cryptographic random source failed.
+    RandomSource,
+    /// The candidate bytes are not a valid secp256k1 Schnorr scalar.
+    InvalidSecretKey,
+}
+
+impl fmt::Display for RelaySigningKeyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RandomSource => formatter.write_str("relay signing-key randomness failed"),
+            Self::InvalidSecretKey => formatter.write_str("invalid relay Schnorr secret key"),
+        }
+    }
+}
+
+impl std::error::Error for RelaySigningKeyError {}
+
+impl RelaySigningKey {
+    /// Generates a fresh independent relay-only Schnorr key.
+    pub fn generate() -> Result<Self, RelaySigningKeyError> {
+        let mut bytes = Zeroizing::new([0_u8; 32]);
+        for _ in 0..4 {
+            getrandom::fill(&mut *bytes).map_err(|_| RelaySigningKeyError::RandomSource)?;
+            if SigningKey::from_bytes(&bytes[..]).is_ok() {
+                return Ok(Self(bytes));
+            }
+        }
+        Err(RelaySigningKeyError::InvalidSecretKey)
+    }
+
+    /// Validates and owns an existing relay-only Schnorr secret.
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, RelaySigningKeyError> {
+        let bytes = Zeroizing::new(bytes);
+        if SigningKey::from_bytes(&bytes[..]).is_err() {
+            return Err(RelaySigningKeyError::InvalidSecretKey);
+        }
+        Ok(Self(Zeroizing::new(*bytes)))
+    }
+
+    /// Returns secret bytes only for the relay profile signing operation.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for RelaySigningKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RelaySigningKey([REDACTED])")
+    }
+}
 
 impl MailboxToken {
     /// Constructs a token from its random fixed-width bytes.
@@ -323,12 +389,24 @@ mod tests {
     use lattice_identity::DeviceIdentity;
 
     use super::{
-        LATTICE_RELAY_KIND, MailboxToken, RelayProfileError, RelayProfileMessage,
+        LATTICE_RELAY_KIND, MailboxToken, RelayProfileError, RelayProfileMessage, RelaySigningKey,
         require_compatible_relay,
     };
     use crate::nip01::NostrEventV1;
     use crate::nip11::{LATTICE_PROFILE_MIN_MESSAGE_LENGTH, RelayCapabilities};
     use crate::{DeliveryClass, EnvelopeV1};
+
+    #[test]
+    fn relay_signing_key_is_validated_and_debug_redacted() {
+        let key = RelaySigningKey::from_bytes([1; 32]).expect("valid Schnorr key");
+        assert_eq!(format!("{key:?}"), "RelaySigningKey([REDACTED])");
+        assert!(RelaySigningKey::from_bytes([0; 32]).is_err());
+
+        let generated = RelaySigningKey::generate().expect("independent relay key");
+        let restored =
+            RelaySigningKey::from_bytes(*generated.as_bytes()).expect("validate restored key");
+        assert_eq!(generated.as_bytes(), restored.as_bytes());
+    }
 
     fn envelope() -> EnvelopeV1 {
         let identity = DeviceIdentity::generate().expect("device identity");
