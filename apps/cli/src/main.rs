@@ -2,6 +2,7 @@ mod doctor;
 mod identity;
 mod node;
 mod peer;
+mod profile;
 mod relay;
 mod space;
 mod sync;
@@ -26,7 +27,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use directories::BaseDirs;
 use lattice_core::{
-    Client, CoreError, DeviceIdentityInfo, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
+    CoreError, DeviceIdentityInfo, InitialChannel, MAX_SPACE_CREDENTIAL_BYTES,
     MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, SpaceGenesisCursor, space::ChannelType,
 };
 use lattice_mls::api::DeviceCredentialInput;
@@ -660,14 +661,14 @@ fn execute_identity(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         IdentityCommand::Init => {
-            let client = Client::open_or_create(database_path, protector)?;
+            let client = crate::profile::open_or_create_client(database_path, protector)?;
             if !json {
                 println!("Device identity is ready.");
             }
             print_identity(client.identity_info(), json);
         }
         IdentityCommand::Csr { output } => {
-            let client = match Client::open_existing(database_path, protector) {
+            let client = match crate::profile::open_existing_client(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
                     return Err(CliError::missing_identity().into());
@@ -703,16 +704,18 @@ fn execute_identity(
                 print!("{csr_pem}");
             }
         }
-        IdentityCommand::Show => match Client::open_existing(database_path, protector) {
-            Ok(client) => print_identity(client.identity_info(), json),
-            Err(CoreError::MissingIdentity) => {
-                return Err(CliError::missing_identity().into());
+        IdentityCommand::Show => {
+            match crate::profile::open_existing_client(database_path, protector) {
+                Ok(client) => print_identity(client.identity_info(), json),
+                Err(CoreError::MissingIdentity) => {
+                    return Err(CliError::missing_identity().into());
+                }
+                Err(error) => return Err(Box::new(error)),
             }
-            Err(error) => return Err(Box::new(error)),
-        },
+        }
         IdentityCommand::Pin { .. } => {
             let (bundle, fingerprint) = pin_input.expect("pin input was parsed before storage");
-            let mut client = match Client::open_existing(database_path, protector) {
+            let mut client = match crate::profile::open_existing_client(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
                     return Err(CliError::missing_identity().into());
@@ -728,7 +731,7 @@ fn execute_identity(
         }
         IdentityCommand::Pinned { .. } => {
             let fingerprint = lookup_fingerprint.expect("lookup fingerprint was parsed");
-            let client = match Client::open_existing(database_path, protector) {
+            let client = match crate::profile::open_existing_client(database_path, protector) {
                 Ok(client) => client,
                 Err(CoreError::MissingIdentity) => {
                     return Err(CliError::missing_identity().into());
@@ -758,7 +761,7 @@ fn execute_unpin_identity(
     protector: &OsKeyringProtector,
     json: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
@@ -916,7 +919,7 @@ fn execute_space_leave(
     let SpaceCommandInput::Leave((space_id, group_reference)) = input else {
         return Err(CliError::invalid_input("Leave identifiers were not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
@@ -943,7 +946,7 @@ fn execute_space_edit(
     let SpaceCommandInput::Edit((space_id, group_reference, channel_id, target)) = input else {
         return Err(CliError::invalid_input("edit identifiers were not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
@@ -969,7 +972,7 @@ fn execute_space_history(
     let SpaceCommandInput::History((space_id, group_reference, channel_id)) = input else {
         return Err(CliError::invalid_input("history identifiers were not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
@@ -989,7 +992,7 @@ fn execute_space_search(
     let SpaceCommandInput::Search((space_id, group_reference, channel_id)) = input else {
         return Err(CliError::invalid_input("search identifiers were not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
@@ -1016,7 +1019,7 @@ fn execute_send(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (space_id, group_reference, channel_id) = input;
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(CliError::missing_identity().into());
@@ -1044,7 +1047,7 @@ fn execute_space_list(
         .map(parse_space_cursor)
         .transpose()
         .map_err(|error| CliError::invalid_input(format!("invalid --after cursor: {error}")))?;
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(CliError::missing_identity().into());
@@ -1071,7 +1074,7 @@ fn execute_space_join(
     let SpaceCommandInput::Join(expected_inviter) = input else {
         return Err(CliError::invalid_input("inviter fingerprint was not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(CliError::missing_identity().into());
@@ -1125,14 +1128,16 @@ fn execute_space_key_package(
 ) -> Result<(), Box<dyn std::error::Error>> {
     ensure_new_output_paths(&[output])?;
     let now = unix_time_now()?;
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
     };
     let credential = Credential::new(CredentialType::X509, credential_bytes);
+    let trust_policy = client.credential_trust_policy().clone();
     let credential = client.with_mls_transaction(|identity, _, _| {
-        DeviceCredentialInput::from_x509_credential(identity, credential).map_err(CoreError::Mls)
+        DeviceCredentialInput::from_x509_credential_with_policy(identity, credential, &trust_policy)
+            .map_err(CoreError::Mls)
     })?;
     let wire = client.publish_key_package(&credential, now)?;
     write_new_files(&[(output, &wire)])?;
@@ -1174,15 +1179,20 @@ fn execute_space_invite(
     protector: &OsKeyringProtector,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
         Err(error) => return Err(Box::new(error)),
     };
     let credential_content = Credential::new(CredentialType::X509, credential_bytes);
+    let trust_policy = client.credential_trust_policy().clone();
     let credential = client.with_mls_transaction(|identity, _, _| {
-        DeviceCredentialInput::from_x509_credential(identity, credential_content)
-            .map_err(CoreError::Mls)
+        DeviceCredentialInput::from_x509_credential_with_policy(
+            identity,
+            credential_content,
+            &trust_policy,
+        )
+        .map_err(CoreError::Mls)
     })?;
     let mut space = client.restore_space(&space_id, &group_reference)?;
     let invitation = client.create_space_invite(
@@ -1304,7 +1314,7 @@ fn execute_space_recovery(
     let SpaceCommandInput::Recover((space_id, prior_group_reference)) = input else {
         return Err(CliError::invalid_input("recovery identifiers were not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(CliError::missing_identity().into());
@@ -1353,7 +1363,7 @@ fn execute_space_restore(
     let SpaceCommandInput::Restore((space_id, group_reference)) = input else {
         return Err(CliError::invalid_input("restore identifiers were not parsed").into());
     };
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(CliError::missing_identity().into());
@@ -1439,15 +1449,17 @@ fn execute_space_create(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let credential = Credential::new(CredentialType::X509, credential_bytes);
-    let mut client = match Client::open_existing(database_path, protector) {
+    let mut client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(CliError::missing_identity().into());
         }
         Err(error) => return Err(Box::new(error)),
     };
+    let trust_policy = client.credential_trust_policy().clone();
     let credential = client.with_mls_transaction(|identity, _, _| {
-        DeviceCredentialInput::from_x509_credential(identity, credential).map_err(CoreError::Mls)
+        DeviceCredentialInput::from_x509_credential_with_policy(identity, credential, &trust_policy)
+            .map_err(CoreError::Mls)
     })?;
     let channels = channel_names
         .into_iter()
@@ -1509,7 +1521,7 @@ fn execute_status(
     protector: &OsKeyringProtector,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match Client::open_existing(database_path, protector) {
+    match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => {
             let sequence = client.next_author_sequence()?;
             if json {

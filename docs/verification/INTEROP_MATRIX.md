@@ -2,6 +2,8 @@
 
 `VERIFIED` means the sender produced a real Lattice event and the receiver consumed it through its normal authenticated Core/sync path. Compile success, unit tests, or direct database insertion do not count. Final states are `VERIFIED`, `BLOCKED-EXTERNAL`, or `FAILED`; `BLOCKED-EXTERNAL` names a missing environment prerequisite, while `FAILED` means the required client capability is absent or acceptance is unmet.
 
+Development-only certificate issuance and five-identity client fixture: [development PKI procedure](../development-pki.md). Issuer/vector tests are not cross-client or physical-device acceptance.
+
 | Sender | Receiver | Required | Result | Evidence / blocker |
 | --- | --- | --- | --- | --- |
 | Android | Android | Yes | BLOCKED-EXTERNAL | Physical devices and offline BLE exchange unavailable; procedure in [physical acceptance](PHYSICAL_ANDROID_ACCEPTANCE.md). |

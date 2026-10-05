@@ -35,6 +35,10 @@ futures-util = "=0.3.34"
 tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
 url = "=2.5.8"
 serde = { version = "1", features = ["derive"] }
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+rcgen = { version = "=0.14.10", features = ["x509-parser"] }
 
 
 [lints]

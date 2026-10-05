@@ -2,6 +2,8 @@
 
 Status: **not run**. Current workstation has no physical Android device or `adb`; no BLE acceptance is claimed. Use this procedure when hardware is attached. Keep this document as a ready-to-run gate, not evidence.
 
+The Android CSR/system-root provisioning requirements for the development-only test CA are specified in [development PKI](../development-pki.md); until a disposable system image is prepared, this path remains externally blocked.
+
 ## Run record
 
 Copy this template into a dated evidence file. Leave unknown fields blank and mark the step blocked; do not infer an outcome from a successful scan.

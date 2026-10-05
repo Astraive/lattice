@@ -10,9 +10,9 @@ if (-not (Test-Path -LiteralPath $certificate -PathType Leaf)) { throw "Certific
 if ($Action -eq 'Install') {
     & certutil.exe -user -addstore Root $certificate
 } else {
-    $thumbprint = (& openssl x509 -in $certificate -noout -fingerprint -sha1)
-    if ($LASTEXITCODE -ne 0) { throw 'Could not read CA certificate fingerprint.' }
-    $thumbprint = ($thumbprint -replace '^.*=', '') -replace ':', ''
+    $x509 = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
+    $thumbprint = $x509.Thumbprint
+    $x509.Dispose()
     & certutil.exe -user -delstore Root $thumbprint
 }
 if ($LASTEXITCODE -ne 0) { throw "Windows certificate store operation failed ($Action)." }

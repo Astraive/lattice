@@ -2,6 +2,8 @@
 
 Current evidence is mostly bounded crate/Core tests. No row implies an end-to-end network security audit. Invalid input must fail before authorized projection and plaintext release.
 
+The test-only CA/CSR procedure and artifact containment rules are in [development PKI](../development-pki.md); its crate validator tests do not establish per-client or physical acceptance.
+
 | Input / boundary | Existing evidence | Current status | Missing cross-layer acceptance |
 | --- | --- | --- | --- |
 | Wrong-key, expired, untrusted-root X.509 credential | Windows PKI workflow exercised production CLI credential validation; see quality ledger | VERIFIED for CLI validator scenarios | Android/Desktop/Web certificate and trust-bootstrap tests. |

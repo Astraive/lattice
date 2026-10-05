@@ -290,7 +290,7 @@ fn fetch_once(
         event_id,
         scope: space_generation_scope_id(&space_id, &group_reference),
     };
-    let mut client = Client::open_existing(database_path, protector)?;
+    let mut client = crate::profile::open_existing_client(database_path, protector)?;
     let mut created = client.restore_space(&target.space_id, &target.group_reference)?;
     if client.pinned_identity(&target.peer_fingerprint)?.is_none() {
         return Err(io::Error::new(
@@ -632,7 +632,7 @@ fn serve_once(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let scope = space_generation_scope_id(&space_id, &group_reference);
 
-    let client = Client::open_existing(database_path, protector)?;
+    let client = crate::profile::open_existing_client(database_path, protector)?;
     if client.pinned_identity(&peer_fingerprint)?.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -1057,7 +1057,7 @@ fn reconcile(
         event_id: None,
         scope: space_generation_scope_id(&space_id, &group_reference),
     };
-    let mut client = Client::open_existing(database_path, protector)?;
+    let mut client = crate::profile::open_existing_client(database_path, protector)?;
     let mut created = client.restore_space(&target.space_id, &target.group_reference)?;
     if client.pinned_identity(&target.peer_fingerprint)?.is_none() {
         return Err(io::Error::new(
@@ -1437,7 +1437,7 @@ fn print_status(
     protector: &OsKeyringProtector,
     json: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let client = match Client::open_existing(database_path, protector) {
+    let client = match crate::profile::open_existing_client(database_path, protector) {
         Ok(client) => client,
         Err(CoreError::MissingIdentity) => {
             return Err(Box::new(CoreError::MissingIdentity));
