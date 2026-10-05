@@ -10,7 +10,7 @@ use lattice_core::{
     MAX_DIRECT_MESSAGE_PACKET_BYTES, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
     MAX_DIRECT_MESSAGE_TEXT_BYTES, MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES, MAX_OUTBOX_PAGE_SIZE,
     MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxEntry, OutboxState,
-    SpaceGenesisCursor, SyncedApplicationOutcome,
+    SpaceGenesisCursor, SyncedApplicationOutcome, TextMessagePin, TextMessageReaction,
     space::{Channel, ChannelType, MAX_SPACE_PAYLOAD_BYTES, MemberStatus},
 };
 use lattice_files::{
@@ -22,9 +22,10 @@ use lattice_identity::{
 };
 
 use lattice_node::sync::{
-    DirectMessageIngressReceipt, DirectMessageIngressState,
-    execute_authenticated_direct_message_once, receive_authenticated_attachment_once,
-    send_authenticated_attachment_once, serve_authenticated_direct_message_once,
+    AttachmentReceiveResult, AuthenticatedDirectMessageExchange, DirectMessageIngressReceipt,
+    DirectMessageIngressState, execute_authenticated_direct_message_once,
+    receive_authenticated_attachment_once, send_authenticated_attachment_once,
+    serve_authenticated_direct_message_once,
 };
 use lattice_platform::MAX_ENVELOPE_BYTES;
 use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
@@ -92,11 +93,11 @@ impl ProjectionSignal {
     }
 
     fn notify(&self, change: MobileProjectionChange) {
-        if let Ok(mut state) = self.state.lock() {
-            if !state.closed {
-                state.pending |= projection_change_mask(change);
-                self.changed.notify_one();
-            }
+        if let Ok(mut state) = self.state.lock()
+            && !state.closed
+        {
+            state.pending |= projection_change_mask(change);
+            self.changed.notify_one();
         }
     }
 
@@ -111,7 +112,7 @@ impl ProjectionSignal {
     }
 
     fn is_closed(&self) -> bool {
-        self.state.lock().map(|state| state.closed).unwrap_or(true)
+        self.state.lock().map_or(true, |state| state.closed)
     }
 
     fn wait(&self, timeout: Duration) -> Result<Option<MobileProjectionChange>, MobileError> {
@@ -140,6 +141,12 @@ pub struct MobileProjectionSubscription {
 #[uniffi::export]
 impl MobileProjectionSubscription {
     /// Waits for one coalesced change; `None` means timeout or closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidProjectionWait` for a timeout outside the supported
+    /// range, or `ProjectionObserverUnavailable` if observer synchronization
+    /// fails.
     pub fn wait_for_change(
         &self,
         timeout_ms: u64,
@@ -151,6 +158,7 @@ impl MobileProjectionSubscription {
     }
 
     /// Reports whether this subscription has been closed.
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.signal.is_closed()
     }
@@ -525,7 +533,7 @@ impl MobileClient {
         }
 
         let platform = ProfileProtector {
-            profile_id: profile_id.clone(),
+            profile_id,
             platform: protector,
         };
         let client = Client::open_or_create(&database_path, &platform)
@@ -539,12 +547,16 @@ impl MobileClient {
     }
 
     /// Subscribes to bounded, coalesced Core projection changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileUnavailable` if the subscription limit is reached or
+    /// the observer registry is unavailable.
     pub fn subscribe_projection_changes(
         &self,
     ) -> Result<Arc<MobileProjectionSubscription>, MobileError> {
         self.projection_observers.subscribe()
     }
-
     /// Returns the non-secret public identity information for native UI.
     ///
     /// # Errors
@@ -583,7 +595,7 @@ impl MobileClient {
     /// `FingerprintMismatch` for a valid but nonmatching bundle, or
     /// `PinnedIdentityConflict` if that fingerprint already maps to other bytes.
     // UniFFI exports byte buffers as owned Vec values at the Rust boundary.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn pin_identity(
         &self,
         public_bundle: Vec<u8>,
@@ -629,7 +641,7 @@ impl MobileClient {
     /// Returns `InvalidFingerprint` for a non-32-byte fingerprint, or
     /// `ProfileUnavailable` if the profile cannot update its trust store.
     // UniFFI exports byte buffers as owned Vec values at the Rust boundary.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn unpin_identity(&self, fingerprint: Vec<u8>) -> Result<bool, MobileError> {
         let fingerprint: [u8; 32] = fingerprint
             .try_into()
@@ -660,7 +672,7 @@ impl MobileClient {
     /// credential bytes; `InvalidSpaceInput` for bounded channel policy input
     /// errors; `ProfileUnavailable` if the profile lock is poisoned; and
     /// `SpaceCreationFailed` for other core transaction failures.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned record and byte buffers at the FFI boundary.
     pub fn create_local_space(
         &self,
         credential_vector: Vec<u8>,
@@ -712,11 +724,17 @@ impl MobileClient {
             .publish(MobileProjectionChange::Spaces);
         Ok(result)
     }
-    /// Publishes one locally retained X.509 KeyPackage for offline invitation.
+    /// Publishes one locally retained X.509 `KeyPackage` for offline invitation.
     ///
     /// The output is intended for explicit out-of-band transfer; no relay or
-    /// network is contacted. The matching private KeyPackage remains local.
-    #[allow(clippy::needless_pass_by_value)]
+    /// network is contacted. The matching private `KeyPackage` remains local.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceCredential` for empty or oversized credential
+    /// bytes, `ProfileUnavailable` if the profile lock is poisoned, and
+    /// `SpaceKeyPackagePublicationFailed` if publication fails.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned byte buffer at the FFI boundary.
     pub fn publish_space_key_package(
         &self,
         credential_vector: Vec<u8>,
@@ -736,12 +754,19 @@ impl MobileClient {
             })
     }
 
-    /// Commits an offline invitation for one published target KeyPackage.
+    /// Commits an offline invitation for one published target `KeyPackage`.
     ///
     /// The invitation event and Welcome checkpoint are created by Core as one
     /// membership transaction. The token and bootstrap are returned for an
     /// explicit out-of-band handoff; no network is contacted.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `InvalidSpaceCredential` or `InvalidSpaceKeyPackage` for invalid input,
+    /// `InvalidSpaceInput` for invalid expiry/use limits, and
+    /// `SpaceInvitationFailed` if restoring or committing the invitation fails.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn create_space_invitation(
         &self,
         space_id: Vec<u8>,
@@ -817,7 +842,7 @@ impl MobileClient {
     /// `InvalidSpaceCredential` for malformed or untrusted X.509 bytes,
     /// `UntrustedSpaceInviter` when the exact inviter bundle is not pinned, and
     /// `SpaceJoinFailed` for other policy, MLS, or storage failures.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn join_space_from_welcome_bootstrap(
         &self,
         bootstrap_package: Vec<u8>,
@@ -871,7 +896,7 @@ impl MobileClient {
     /// credential, `ProfileUnavailable` if the profile lock is poisoned, and
     /// `SpaceRecoveryFailed` if restoring the prior generation or creating the
     /// recovery generation fails.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn recover_local_space_generation(
         &self,
         space_id: Vec<u8>,
@@ -960,7 +985,7 @@ impl MobileClient {
     /// `InvalidOutboxCursor` for a non-32-byte cursor,
     /// `InvalidOutboxPage` for a zero or oversized page, and
     /// `OutboxUnavailable` for storage failures.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned cursor byte buffer at the FFI boundary.
     pub fn outbox_page(
         &self,
         after_event_id: Option<Vec<u8>>,
@@ -989,7 +1014,7 @@ impl MobileClient {
     ///
     /// Returns `InvalidOutboxEventId`, `InvalidOutboxSchedule`, or
     /// `OutboxTransitionRejected`.
-    #[allow(clippy::needless_pass_by_value)] // UniFFI exposes owned bytes as generated byte arrays.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned byte buffer at the FFI boundary.
     pub fn mark_outbox_attempt(
         &self,
         event_id: Vec<u8>,
@@ -1013,7 +1038,7 @@ impl MobileClient {
     /// # Errors
     ///
     /// Returns `InvalidOutboxEventId` or `OutboxTransitionRejected`.
-    #[allow(clippy::needless_pass_by_value)] // UniFFI exposes owned bytes as generated byte arrays.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned byte buffer at the FFI boundary.
     pub fn record_peer_ingress_accepted(&self, event_id: Vec<u8>) -> Result<(), MobileError> {
         let event_id: [u8; 32] = event_id
             .as_slice()
@@ -1035,7 +1060,7 @@ impl MobileClient {
     ///
     /// Returns `SyncIngestFailed` unless Core accepts, recognizes, excludes, or
     /// safely retains the event as pending.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned byte buffer at the FFI boundary.
     pub fn ingest_synced_application_event(
         &self,
         canonical_bytes: Vec<u8>,
@@ -1082,6 +1107,12 @@ impl MobileClient {
     ///
     /// The identifier is an opaque lowercase-hex token; this API never accepts
     /// a caller-selected filesystem path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentOperationFailed` if the source cannot be read or its
+    /// metadata cannot be computed.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned strings at the FFI boundary.
     pub fn create_attachment_manifest(
         &self,
         source_id: String,
@@ -1095,7 +1126,15 @@ impl MobileClient {
 
     /// Queues one Core-authorized signed Space manifest and durably stages the
     /// verified source under its event-bound transfer identity.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `InvalidSpaceCredential` for invalid credentials,
+    /// `AttachmentOperationFailed` for invalid metadata or staging failures,
+    /// `AttachmentManifestSourceChanged` if the imported file no longer matches
+    /// the preview, or `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned arguments at the FFI boundary.
     pub fn queue_attachment_manifest(
         &self,
         space_id: Vec<u8>,
@@ -1145,10 +1184,9 @@ impl MobileClient {
         let source_retained =
             persist_sender_source(&self.database_path, &manifest, event_id, &mut source).is_ok();
         drop(source);
-        if source_retained {
-            if let Ok(path) = attachment_import_path(&self.database_path, &source_id) {
-                let _ = fs::remove_file(path);
-            }
+        if source_retained && let Ok(path) = attachment_import_path(&self.database_path, &source_id)
+        {
+            let _ = fs::remove_file(path);
         }
 
         let transfer_id = manifest
@@ -1175,7 +1213,13 @@ impl MobileClient {
 
     /// Returns a display-only summary only when Core authorizes this exact
     /// event ID in the restored Space generation.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
+    /// `AttachmentOperationFailed` if its summary cannot be formed.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn authorized_attachment_manifest(
         &self,
         space_id: Vec<u8>,
@@ -1203,7 +1247,13 @@ impl MobileClient {
     }
     /// Reopens the private receiver store and verifies staged chunks before
     /// reporting resumable progress.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
+    /// `AttachmentOperationFailed` when staged data cannot be verified.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn attachment_staging_status(
         &self,
         space_id: Vec<u8>,
@@ -1273,7 +1323,15 @@ impl MobileClient {
 
     /// Sends one authorized manifest over TCP and a separately domain-bound
     /// Noise session pinned to the exact active Space member.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+    /// identifiers, `AttachmentPeerNotPinned` or `AttachmentPeerNotAuthorized`
+    /// when the exact peer lacks required trust/membership, and
+    /// `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
+    /// authorization, connection, verification, or transfer failures.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers and strings at the FFI boundary.
     pub fn send_attachment_once(
         &self,
         space_id: Vec<u8>,
@@ -1299,27 +1357,13 @@ impl MobileClient {
             .map_err(|_| MobileError::AttachmentOperationFailed)?;
 
         let mut client = self.lock_client()?;
-        let local_fingerprint = client.identity_info().fingerprint;
-        if local_fingerprint == peer_fingerprint
-            || client
-                .pinned_identity(&peer_fingerprint)
-                .map_err(|_| MobileError::AttachmentOperationFailed)?
-                .is_none()
-        {
-            return Err(MobileError::AttachmentPeerNotPinned);
-        }
-        let space = client
-            .restore_space(&space_id, &group_reference)
-            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
-        if !space_has_active_member(&space, &peer_fingerprint) {
-            return Err(MobileError::AttachmentPeerNotAuthorized);
-        }
-        let authorized = space
-            .reducer()
-            .authorized_attachment_manifest(&event_id)
-            .ok_or(MobileError::AttachmentNotAuthorized)?;
-        let manifest = authorized.manifest().clone();
-        ensure_mobile_attachment_size(&manifest)?;
+        let manifest = authorized_attachment_manifest_for_peer(
+            &mut client,
+            space_id,
+            group_reference,
+            event_id,
+            peer_fingerprint,
+        )?;
         let transfer_id = manifest
             .transfer_id(&event_id)
             .map_err(|_| MobileError::AttachmentOperationFailed)?;
@@ -1391,7 +1435,16 @@ impl MobileClient {
 
     /// Receives one authorized manifest into persistent private staging after
     /// explicit user consent and exact pinned-peer authorization.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentConsentRequired` without explicit consent,
+    /// `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+    /// identifiers, `AttachmentPeerNotPinned` or `AttachmentPeerNotAuthorized`
+    /// when the exact peer lacks required trust/membership, and
+    /// `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
+    /// authorization, connection, verification, or transfer failures.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers and strings at the FFI boundary.
     pub fn receive_attachment_once(
         &self,
         space_id: Vec<u8>,
@@ -1421,27 +1474,13 @@ impl MobileClient {
             .map_err(|_| MobileError::AttachmentOperationFailed)?;
 
         let mut client = self.lock_client()?;
-        let local_fingerprint = client.identity_info().fingerprint;
-        if local_fingerprint == peer_fingerprint
-            || client
-                .pinned_identity(&peer_fingerprint)
-                .map_err(|_| MobileError::AttachmentOperationFailed)?
-                .is_none()
-        {
-            return Err(MobileError::AttachmentPeerNotPinned);
-        }
-        let space = client
-            .restore_space(&space_id, &group_reference)
-            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
-        if !space_has_active_member(&space, &peer_fingerprint) {
-            return Err(MobileError::AttachmentPeerNotAuthorized);
-        }
-        let authorized = space
-            .reducer()
-            .authorized_attachment_manifest(&event_id)
-            .ok_or(MobileError::AttachmentNotAuthorized)?;
-        let manifest = authorized.manifest().clone();
-        ensure_mobile_attachment_size(&manifest)?;
+        let manifest = authorized_attachment_manifest_for_peer(
+            &mut client,
+            space_id,
+            group_reference,
+            event_id,
+            peer_fingerprint,
+        )?;
         let transfer_id = manifest
             .transfer_id(&event_id)
             .map_err(|_| MobileError::AttachmentOperationFailed)?;
@@ -1456,57 +1495,15 @@ impl MobileClient {
         )
         .map_err(|_| MobileError::AttachmentOperationFailed)?;
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| MobileError::AttachmentOperationFailed)?;
-        let listener = runtime
-            .block_on(TcpPeerListener::bind(
-                listen_address,
-                ATTACHMENT_FRAME_LIMIT,
-            ))
-            .map_err(|_| MobileError::AttachmentOperationFailed)?;
-        let (adapter, _) = runtime
-            .block_on(async {
-                tokio::time::timeout(ATTACHMENT_SESSION_TIMEOUT, listener.accept()).await
-            })
-            .map_err(|_| MobileError::AttachmentOperationFailed)?
-            .map_err(|_| MobileError::AttachmentOperationFailed)?;
-        let cancellation = CancellationToken::new();
-        let transfer = runtime
-            .block_on(async {
-                tokio::time::timeout(
-                    ATTACHMENT_SESSION_TIMEOUT,
-                    client.with_pinned_identity(
-                        &peer_fingerprint,
-                        |identity, pinned_peer| async move {
-                            receive_authenticated_attachment_once(
-                            &adapter,
-                            identity,
-                            pinned_peer,
-                            event_id,
-                            &manifest,
-                            &mut receiver,
-                            |authenticated_peer, candidate_event_id, candidate_manifest| {
-                                authenticated_peer.fingerprint() == peer_fingerprint
-                                    && candidate_event_id == &event_id
-                                    && candidate_manifest == &manifest
-                            },
-                            |_authenticated_peer, _candidate_manifest| async move {
-                                user_consented
-                            },
-                            &cancellation,
-                        )
-                        .await
-                        },
-                    ),
-                )
-                .await
-            })
-            .map_err(|_| MobileError::AttachmentOperationFailed)?
-            .map_err(|_| MobileError::AttachmentOperationFailed)?
-            .ok_or(MobileError::AttachmentPeerNotPinned)?
-            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let transfer = run_attachment_receive(
+            &mut client,
+            listen_address,
+            peer_fingerprint,
+            event_id,
+            &manifest,
+            &mut receiver,
+            user_consented,
+        )?;
         if transfer.authenticated_peer.fingerprint() != peer_fingerprint
             || transfer.transfer_id != transfer_id
             || !transfer.verified_complete
@@ -1529,7 +1526,14 @@ impl MobileClient {
 
     /// Copies an already-complete staged attachment to a bounded app-private
     /// temporary file for the native document picker to export.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `AttachmentNotAuthorized` unless Core authorizes the exact manifest,
+    /// `AttachmentOperationFailed` if staged bytes are incomplete or fail
+    /// verification, or a profile/filesystem error.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn prepare_attachment_export(
         &self,
         space_id: Vec<u8>,
@@ -1597,6 +1601,12 @@ impl MobileClient {
     }
 
     /// Removes one internal export temporary file after document-picker use.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttachmentOperationFailed` for an invalid export identifier or
+    /// when the temporary file cannot safely be removed.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned string at the FFI boundary.
     pub fn finish_attachment_export(&self, export_id: String) -> Result<bool, MobileError> {
         let path = attachment_export_path(&self.database_path, &export_id)?;
         match fs::symlink_metadata(&path) {
@@ -1604,9 +1614,8 @@ impl MobileClient {
                 fs::remove_file(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
                 Ok(true)
             }
-            Ok(_) => Err(MobileError::AttachmentOperationFailed),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(_) => Err(MobileError::AttachmentOperationFailed),
+            Ok(_) | Err(_) => Err(MobileError::AttachmentOperationFailed),
         }
     }
 
@@ -1620,7 +1629,7 @@ impl MobileClient {
     ///
     /// Returns `InvalidSpaceMessageId` for malformed identifier lengths and
     /// `MessageHistoryUnavailable` when local recovery or authentication fails.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn list_local_text_messages(
         &self,
         space_id: Vec<u8>,
@@ -1653,7 +1662,7 @@ impl MobileClient {
     /// Returns `InvalidSpaceMessageId` for malformed IDs, `InvalidMessageSearch`
     /// for an empty or oversized query, and `MessageHistoryUnavailable` when
     /// local recovery, decryption, or event validation fails.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers and query text at the FFI boundary.
     pub fn search_local_text_messages(
         &self,
         space_id: Vec<u8>,
@@ -1709,7 +1718,7 @@ impl MobileClient {
     /// `InvalidMessageInput` for text exceeding the payload bound,
     /// `MessageRejected` when local policy denies the message, and
     /// `MessageQueueFailed` for other queue/restore failures.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned bytes and text at the FFI boundary.
     pub fn queue_local_text_message(
         &self,
         space_id: Vec<u8>,
@@ -1762,7 +1771,7 @@ impl MobileClient {
     /// `InvalidSpaceCredential` for malformed or untrusted credentials,
     /// `InvalidMessageInput` for oversized text, `MessageRejected` when local
     /// policy denies the edit, or `MessageQueueFailed` for other failures.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned bytes and text at the FFI boundary.
     pub fn queue_local_text_message_edit(
         &self,
         space_id: Vec<u8>,
@@ -1809,7 +1818,14 @@ impl MobileClient {
         Ok(result)
     }
     /// Queues a locally authorized immutable thread reply.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `InvalidSpaceCredential` for malformed or untrusted credentials,
+    /// `InvalidMessageInput` for oversized text, `MessageRejected` when local
+    /// policy denies the reply, or `MessageQueueFailed` for other failures.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned bytes and text at the FFI boundary.
     pub fn queue_local_text_message_reply(
         &self,
         space_id: Vec<u8>,
@@ -1856,7 +1872,14 @@ impl MobileClient {
     }
 
     /// Queues a locally authorized tombstone for a locally authored message.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers,
+    /// `InvalidSpaceCredential` for malformed or untrusted credentials,
+    /// `MessageRejected` when local policy denies the tombstone, or
+    /// `MessageQueueFailed` for other failures.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned bytes at the FFI boundary.
     pub fn queue_local_text_message_tombstone(
         &self,
         space_id: Vec<u8>,
@@ -1898,7 +1921,16 @@ impl MobileClient {
     }
 
     /// Queues a tagged reaction add or observed-tag removal.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers or tags,
+    /// `InvalidSpaceCredential` for malformed or untrusted credentials,
+    /// `InvalidMessageInput` for an invalid reaction token, `MessageRejected`
+    /// when local policy denies the reaction, or `MessageQueueFailed` for
+    /// other failures.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned bytes and token text at the FFI boundary.
+    #[allow(clippy::too_many_arguments)] // The UniFFI positional API is already public and cannot be grouped without a breaking change.
     pub fn queue_local_text_message_reaction(
         &self,
         space_id: Vec<u8>,
@@ -1940,11 +1972,13 @@ impl MobileClient {
                 &space_id,
                 &group_reference,
                 credential_vector,
-                channel_id,
-                target,
-                &token,
-                add,
-                tag,
+                &TextMessageReaction {
+                    channel_id,
+                    target,
+                    token,
+                    add,
+                    tag,
+                },
             )
             .map_err(|error| map_queue_message_error(&error))?;
         self.projection_observers
@@ -1955,7 +1989,15 @@ impl MobileClient {
     }
 
     /// Queues a pin add or observed-tag removal.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed identifiers or tags,
+    /// `InvalidSpaceCredential` for malformed or untrusted credentials,
+    /// `MessageRejected` when local policy denies the pin, or
+    /// `MessageQueueFailed` for other failures.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned bytes at the FFI boundary.
+    #[allow(clippy::too_many_arguments)] // The UniFFI positional API is already public and cannot be grouped without a breaking change.
     pub fn queue_local_text_message_pin(
         &self,
         space_id: Vec<u8>,
@@ -1993,10 +2035,12 @@ impl MobileClient {
                 &space_id,
                 &group_reference,
                 credential_vector,
-                channel_id,
-                target,
-                add,
-                tag,
+                TextMessagePin {
+                    channel_id,
+                    target,
+                    add,
+                    tag,
+                },
             )
             .map_err(|error| map_queue_message_error(&error))?;
         self.projection_observers
@@ -2006,8 +2050,14 @@ impl MobileClient {
         })
     }
 
-    /// Publishes one validated local KeyPackage for a pairwise DM invitation.
-    #[allow(clippy::needless_pass_by_value)]
+    /// Publishes one validated local `KeyPackage` for a pairwise DM invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceCredential` for empty or oversized credentials,
+    /// `ProfileUnavailable` if the profile lock is poisoned, or
+    /// `DirectMessageFailed` if Core cannot publish the package.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned credential buffer at the FFI boundary.
     pub fn publish_direct_message_key_package(
         &self,
         credential_vector: Vec<u8>,
@@ -2022,7 +2072,13 @@ impl MobileClient {
     }
 
     /// Creates and durably queues an opaque MLS Welcome invitation packet.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidFingerprint` for malformed peer identity bytes,
+    /// `DirectMessageFailed` for invalid package/scheduling input or failed
+    /// creation, or `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn create_direct_message(
         &self,
         credential_vector: Vec<u8>,
@@ -2061,7 +2117,14 @@ impl MobileClient {
     }
 
     /// Imports a routed Welcome only after explicit user acceptance.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `DirectMessageNotAccepted` without explicit acceptance,
+    /// `InvalidFingerprint` for malformed peer identity bytes,
+    /// `DirectMessageFailed` for invalid packet/credential bytes or failed
+    /// import, or `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn accept_direct_message_invitation(
         &self,
         credential_vector: Vec<u8>,
@@ -2097,7 +2160,13 @@ impl MobileClient {
     }
 
     /// Encrypts text locally and commits the resulting opaque packet to Core.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for a malformed conversation ID,
+    /// `DirectMessageFailed` for invalid input or a failed queue operation, or
+    /// `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers and text at the FFI boundary.
     pub fn queue_direct_message_text(
         &self,
         credential_vector: Vec<u8>,
@@ -2131,7 +2200,13 @@ impl MobileClient {
     }
 
     /// Authenticates one opaque application packet from the pinned peer.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidFingerprint` for malformed peer identity bytes,
+    /// `DirectMessageFailed` for invalid packets or failed authenticated
+    /// ingress, or `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn ingest_direct_message_packet(
         &self,
         authenticated_peer_identity: Vec<u8>,
@@ -2186,6 +2261,12 @@ impl MobileClient {
     }
 
     /// Lists local pairwise conversations in stable bounded order.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DirectMessageFailed` for an invalid page size or failed
+    /// conversation lookup, or `ProfileUnavailable` if the profile lock is
+    /// unavailable.
     pub fn direct_message_conversations(
         &self,
         limit: u32,
@@ -2209,7 +2290,13 @@ impl MobileClient {
     }
 
     /// Verifies that an outbox packet targets the authenticated BLE peer.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` or `InvalidFingerprint` for malformed
+    /// IDs, `DirectMessageFailed` if the conversation lookup fails, or
+    /// `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn direct_message_is_for_peer(
         &self,
         group_reference: Vec<u8>,
@@ -2227,7 +2314,13 @@ impl MobileClient {
     }
 
     /// Reads decrypted local history for one pairwise conversation.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for a malformed conversation ID,
+    /// `DirectMessageFailed` for an invalid page size or failed history lookup,
+    /// or `ProfileUnavailable` if the profile lock is unavailable.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires an owned byte buffer at the FFI boundary.
     pub fn direct_message_history(
         &self,
         group_reference: Vec<u8>,
@@ -2256,6 +2349,12 @@ impl MobileClient {
     }
 
     /// Reads a bounded page of durable opaque DM packets awaiting forwarding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOutboxCursor` for a malformed cursor,
+    /// `InvalidOutboxPage` for an invalid page size, `OutboxUnavailable` for
+    /// storage failures, or `ProfileUnavailable` if the profile lock fails.
     pub fn direct_message_outbox_page(
         &self,
         after_packet_id: Option<Vec<u8>>,
@@ -2283,6 +2382,12 @@ impl MobileClient {
     }
 
     /// Persists the retry attempt before routing the DM packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOutboxEventId` for a malformed packet ID,
+    /// `InvalidOutboxSchedule` for a negative retry time, or
+    /// `OutboxTransitionRejected` if the state transition is invalid.
     pub fn mark_direct_message_attempt(
         &self,
         packet_id: Vec<u8>,
@@ -2300,6 +2405,11 @@ impl MobileClient {
     }
 
     /// Records authenticated peer-ingress acceptance, not destination delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOutboxEventId` for a malformed packet ID or
+    /// `OutboxTransitionRejected` if the ingress transition is invalid.
     pub fn record_direct_message_peer_ingress_accepted(
         &self,
         packet_id: Vec<u8>,
@@ -2314,7 +2424,15 @@ impl MobileClient {
 
     /// Runs one authenticated, pinned TCP direct-message exchange over a local
     /// LAN path. It sends at most one due opaque packet in each direction.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidFingerprint` for a malformed fingerprint,
+    /// `DirectMessageFailed` for invalid addresses, an unpinned peer, or
+    /// exchange failures, `OutboxUnavailable` for storage failures,
+    /// `OutboxTransitionRejected` for invalid state changes, or
+    /// `ProfileOpenFailed` if a read-only ingress client cannot be opened.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned strings and byte buffers at the FFI boundary.
     pub fn exchange_direct_messages_once(
         &self,
         connect_address: String,
@@ -2380,95 +2498,18 @@ impl MobileClient {
                 .map_err(|_| MobileError::OutboxTransitionRejected)?;
         }
 
-        let mut ingress_client =
-            Client::open_existing(&self.database_path, &self.profile_protector)
-                .map_err(|_| MobileError::ProfileOpenFailed)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| MobileError::DirectMessageFailed)?;
-        let listener = runtime
-            .block_on(TcpPeerListener::bind(listen, MAX_ENVELOPE_BYTES))
-            .map_err(|_| MobileError::DirectMessageFailed)?;
-        let bound = listener
-            .local_addr()
-            .map_err(|_| MobileError::DirectMessageFailed)?;
-        let (outbound, (inbound, _remote)) = runtime
-            .block_on(async {
-                tokio::time::timeout(Duration::from_secs(30), async {
-                    tokio::try_join!(
-                        TcpPeerAdapter::connect(connect, MAX_ENVELOPE_BYTES),
-                        listener.accept()
-                    )
-                })
-                .await
-            })
-            .map_err(|_| MobileError::DirectMessageFailed)?
-            .map_err(|_| MobileError::DirectMessageFailed)?;
-        let is_initiator = local_fingerprint < peer_fingerprint;
-        let exchange = runtime
-            .block_on(async {
-                tokio::time::timeout(
-                    Duration::from_secs(30),
-                    client.with_pinned_identity(
-                        &peer_fingerprint,
-                        |identity, pinned_peer| async move {
-                            let cancellation = CancellationToken::new();
-                            let mut ingest =
-                                |peer: &lattice_identity::PinnedIdentity, bytes: &[u8]| {
-                                    let outcome = ingress_client
-                                        .ingest_direct_message_packet(peer.fingerprint(), bytes)
-                                        .map_err(|error| error.to_string())?;
-                                    let (packet_id, state) = match outcome {
-                                        DirectMessageIngressOutcome::Accepted {
-                                            packet_id, ..
-                                        } => (packet_id, DirectMessageIngressState::Accepted),
-                                        DirectMessageIngressOutcome::InvitationPending {
-                                            packet_id,
-                                            ..
-                                        } => (
-                                            packet_id,
-                                            DirectMessageIngressState::InvitationPending,
-                                        ),
-                                        DirectMessageIngressOutcome::Duplicate { packet_id } => {
-                                            (packet_id, DirectMessageIngressState::Duplicate)
-                                        }
-                                    };
-                                    Ok(DirectMessageIngressReceipt { packet_id, state })
-                                };
-                            let outgoing = outgoing_id
-                                .zip(outgoing_bytes)
-                                .map(|(packet_id, bytes)| (packet_id, bytes));
-                            if is_initiator {
-                                execute_authenticated_direct_message_once(
-                                    &outbound,
-                                    identity,
-                                    pinned_peer,
-                                    outgoing,
-                                    &mut ingest,
-                                    &cancellation,
-                                )
-                                .await
-                            } else {
-                                serve_authenticated_direct_message_once(
-                                    &inbound,
-                                    identity,
-                                    pinned_peer,
-                                    outgoing,
-                                    &mut ingest,
-                                    &cancellation,
-                                )
-                                .await
-                            }
-                            .map_err(|_| MobileError::DirectMessageFailed)
-                        },
-                    ),
-                )
-                .await
-            })
-            .map_err(|_| MobileError::DirectMessageFailed)?
-            .map_err(|_| MobileError::DirectMessageFailed)?
-            .ok_or(MobileError::DirectMessageFailed)??;
+        let (bound, exchange) = run_direct_message_exchange(
+            &mut client,
+            DirectMessageExchangeRequest {
+                database_path: &self.database_path,
+                profile_protector: &self.profile_protector,
+                connect,
+                listen,
+                local_fingerprint,
+                peer_fingerprint,
+                outgoing: outgoing_id.zip(outgoing_bytes),
+            },
+        )?;
         if let Some(receipt) = exchange.outgoing {
             if Some(receipt.packet_id) != outgoing_id {
                 return Err(MobileError::DirectMessageFailed);
@@ -2496,6 +2537,11 @@ impl MobileClient {
     }
 
     /// Lists bounded invitations saved from authenticated transport ingress.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DirectMessageFailed` for an invalid page size or failed lookup,
+    /// or `ProfileUnavailable` if the profile lock is unavailable.
     pub fn pending_direct_message_invitations(
         &self,
         limit: u32,
@@ -2519,7 +2565,14 @@ impl MobileClient {
     }
 
     /// Accepts a persisted invitation only with user consent and matching peer.
-    #[allow(clippy::needless_pass_by_value)]
+    ///
+    /// # Errors
+    ///
+    /// Returns `DirectMessageNotAccepted` without explicit acceptance,
+    /// `InvalidFingerprint` or `InvalidOutboxEventId` for malformed identifiers,
+    /// `InvalidSpaceCredential` for invalid credentials, or
+    /// `DirectMessageFailed` if importing the accepted invitation fails.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned byte buffers at the FFI boundary.
     pub fn accept_pending_direct_message_invitation(
         &self,
         credential_vector: Vec<u8>,
@@ -2554,6 +2607,11 @@ impl MobileClient {
     }
 
     /// Declines a pending invitation without importing its MLS Welcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOutboxEventId` for a malformed packet ID or
+    /// `DirectMessageFailed` if the pending invitation cannot be declined.
     pub fn decline_pending_direct_message_invitation(
         &self,
         packet_id: Vec<u8>,
@@ -2566,9 +2624,177 @@ impl MobileClient {
             .map_err(|_| MobileError::DirectMessageFailed)
     }
 }
+#[derive(Clone, Copy)]
+struct DirectMessageExchangeRequest<'a> {
+    database_path: &'a str,
+    profile_protector: &'a ProfileProtector,
+    connect: SocketAddr,
+    listen: SocketAddr,
+    local_fingerprint: [u8; 32],
+    peer_fingerprint: [u8; 32],
+    outgoing: Option<([u8; 32], &'a [u8])>,
+}
+
+fn run_direct_message_exchange(
+    client: &mut Client,
+    request: DirectMessageExchangeRequest<'_>,
+) -> Result<(SocketAddr, AuthenticatedDirectMessageExchange), MobileError> {
+    let DirectMessageExchangeRequest {
+        database_path,
+        profile_protector,
+        connect,
+        listen,
+        local_fingerprint,
+        peer_fingerprint,
+        outgoing,
+    } = request;
+    let mut ingress_client = Client::open_existing(database_path, profile_protector)
+        .map_err(|_| MobileError::ProfileOpenFailed)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| MobileError::DirectMessageFailed)?;
+    let listener = runtime
+        .block_on(TcpPeerListener::bind(listen, MAX_ENVELOPE_BYTES))
+        .map_err(|_| MobileError::DirectMessageFailed)?;
+    let bound = listener
+        .local_addr()
+        .map_err(|_| MobileError::DirectMessageFailed)?;
+    let (outbound, (inbound, _remote)) = runtime
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                tokio::try_join!(
+                    TcpPeerAdapter::connect(connect, MAX_ENVELOPE_BYTES),
+                    listener.accept()
+                )
+            })
+            .await
+        })
+        .map_err(|_| MobileError::DirectMessageFailed)?
+        .map_err(|_| MobileError::DirectMessageFailed)?;
+    let is_initiator = local_fingerprint < peer_fingerprint;
+    let exchange = runtime
+        .block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                client.with_pinned_identity(
+                    &peer_fingerprint,
+                    |identity, pinned_peer| async move {
+                        let cancellation = CancellationToken::new();
+                        let mut ingest = |peer: &lattice_identity::PinnedIdentity, bytes: &[u8]| {
+                            let outcome = ingress_client
+                                .ingest_direct_message_packet(peer.fingerprint(), bytes)
+                                .map_err(|error| error.to_string())?;
+                            let (packet_id, state) = match outcome {
+                                DirectMessageIngressOutcome::Accepted { packet_id, .. } => {
+                                    (packet_id, DirectMessageIngressState::Accepted)
+                                }
+                                DirectMessageIngressOutcome::InvitationPending {
+                                    packet_id,
+                                    ..
+                                } => (packet_id, DirectMessageIngressState::InvitationPending),
+                                DirectMessageIngressOutcome::Duplicate { packet_id } => {
+                                    (packet_id, DirectMessageIngressState::Duplicate)
+                                }
+                            };
+                            Ok(DirectMessageIngressReceipt { packet_id, state })
+                        };
+                        if is_initiator {
+                            execute_authenticated_direct_message_once(
+                                &outbound,
+                                identity,
+                                pinned_peer,
+                                outgoing,
+                                &mut ingest,
+                                &cancellation,
+                            )
+                            .await
+                        } else {
+                            serve_authenticated_direct_message_once(
+                                &inbound,
+                                identity,
+                                pinned_peer,
+                                outgoing,
+                                &mut ingest,
+                                &cancellation,
+                            )
+                            .await
+                        }
+                        .map_err(|_| MobileError::DirectMessageFailed)
+                    },
+                ),
+            )
+            .await
+        })
+        .map_err(|_| MobileError::DirectMessageFailed)?
+        .map_err(|_| MobileError::DirectMessageFailed)?
+        .ok_or(MobileError::DirectMessageFailed)??;
+    Ok((bound, exchange))
+}
+fn run_attachment_receive<S: io::Read + io::Write + Seek>(
+    client: &mut Client,
+    listen_address: SocketAddr,
+    peer_fingerprint: [u8; 32],
+    event_id: [u8; 32],
+    manifest: &AttachmentManifest,
+    receiver: &mut StreamedAttachmentReceiver<S>,
+    user_consented: bool,
+) -> Result<AttachmentReceiveResult, MobileError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let listener = runtime
+        .block_on(TcpPeerListener::bind(
+            listen_address,
+            ATTACHMENT_FRAME_LIMIT,
+        ))
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let (adapter, _) = runtime
+        .block_on(async {
+            tokio::time::timeout(ATTACHMENT_SESSION_TIMEOUT, listener.accept()).await
+        })
+        .map_err(|_| MobileError::AttachmentOperationFailed)?
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let cancellation = CancellationToken::new();
+    runtime
+        .block_on(async {
+            tokio::time::timeout(
+                ATTACHMENT_SESSION_TIMEOUT,
+                client.with_pinned_identity(
+                    &peer_fingerprint,
+                    |identity, pinned_peer| async move {
+                        receive_authenticated_attachment_once(
+                            &adapter,
+                            identity,
+                            pinned_peer,
+                            event_id,
+                            manifest,
+                            receiver,
+                            |authenticated_peer, candidate_event_id, candidate_manifest| {
+                                authenticated_peer.fingerprint() == peer_fingerprint
+                                    && candidate_event_id == &event_id
+                                    && candidate_manifest == manifest
+                            },
+                            |_authenticated_peer, _candidate_manifest| async move {
+                                user_consented
+                            },
+                            &cancellation,
+                        )
+                        .await
+                    },
+                ),
+            )
+            .await
+        })
+        .map_err(|_| MobileError::AttachmentOperationFailed)?
+        .map_err(|_| MobileError::AttachmentOperationFailed)?
+        .ok_or(MobileError::AttachmentPeerNotPinned)?
+        .map_err(|_| MobileError::AttachmentOperationFailed)
+}
 
 const ATTACHMENT_FRAME_LIMIT: usize = CHUNK_SIZE + 1024;
-const ATTACHMENT_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const ATTACHMENT_SESSION_TIMEOUT: Duration = Duration::from_mins(30);
 const MAX_MOBILE_ATTACHMENT_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_MOBILE_ATTACHMENT_STAGING_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -2595,6 +2821,36 @@ fn ensure_mobile_attachment_size(manifest: &AttachmentManifest) -> Result<(), Mo
     } else {
         Ok(())
     }
+}
+fn authorized_attachment_manifest_for_peer(
+    client: &mut Client,
+    space_id: [u8; 16],
+    group_reference: [u8; 32],
+    event_id: [u8; 32],
+    peer_fingerprint: [u8; 32],
+) -> Result<AttachmentManifest, MobileError> {
+    let local_fingerprint = client.identity_info().fingerprint;
+    if local_fingerprint == peer_fingerprint
+        || client
+            .pinned_identity(&peer_fingerprint)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .is_none()
+    {
+        return Err(MobileError::AttachmentPeerNotPinned);
+    }
+    let space = client
+        .restore_space(&space_id, &group_reference)
+        .map_err(|_| MobileError::AttachmentNotAuthorized)?;
+    if !space_has_active_member(&space, &peer_fingerprint) {
+        return Err(MobileError::AttachmentPeerNotAuthorized);
+    }
+    let authorized = space
+        .reducer()
+        .authorized_attachment_manifest(&event_id)
+        .ok_or(MobileError::AttachmentNotAuthorized)?;
+    let manifest = authorized.manifest().clone();
+    ensure_mobile_attachment_size(&manifest)?;
+    Ok(manifest)
 }
 
 fn mobile_authorized_attachment_manifest(
@@ -2715,7 +2971,7 @@ fn sender_attachment_store(database_path: &str) -> Result<AttachmentStagingStore
     let directory = attachment_subdirectory(database_path, "senders")?;
     AttachmentStagingStore::new(
         directory,
-        attachment_staging_limits(Duration::from_secs(7 * 24 * 60 * 60))?,
+        attachment_staging_limits(Duration::from_hours(168))?,
     )
     .map_err(|_| MobileError::AttachmentOperationFailed)
 }
@@ -2724,7 +2980,7 @@ fn receive_attachment_store(database_path: &str) -> Result<AttachmentStagingStor
     let directory = attachment_subdirectory(database_path, "receives")?;
     AttachmentStagingStore::new(
         directory,
-        attachment_staging_limits(Duration::from_secs(30 * 24 * 60 * 60))?,
+        attachment_staging_limits(Duration::from_hours(720))?,
     )
     .map_err(|_| MobileError::AttachmentOperationFailed)
 }
@@ -2894,7 +3150,7 @@ fn create_private_export_file(
             .modified()
             .ok()
             .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-            .is_some_and(|age| age >= Duration::from_secs(24 * 60 * 60))
+            .is_some_and(|age| age >= Duration::from_hours(24))
         {
             fs::remove_file(entry.path()).map_err(|_| MobileError::AttachmentOperationFailed)?;
         } else {

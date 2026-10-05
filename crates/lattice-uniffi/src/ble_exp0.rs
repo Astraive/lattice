@@ -611,6 +611,12 @@ impl MobileBleSession {
     }
 
     /// Returns the pinned fingerprint bound to this authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlePeerNotAuthenticated` before peer confirmation,
+    /// `BleRecordRejected` if the authenticated session has no peer identity,
+    /// or `BleSessionFailed` if the session state mutex is poisoned.
     pub fn peer_identity_fingerprint(&self) -> Result<Vec<u8>, MobileError> {
         let state = self.lock_state()?;
         if state.confirmation_progress != ConfirmationProgress::Authenticated {

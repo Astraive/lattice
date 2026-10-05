@@ -1,6 +1,11 @@
 use sha2::{Digest, Sha256};
 
-use crate::*;
+use crate::{
+    Client, CoreError, DeviceCredentialInput, DirectMessageConversation, DirectMessageOutboxEntry,
+    DirectMessageRecord, OutboxState, PendingDirectMessageInvitation, Store,
+};
+use lattice_mls::api::IncomingResult;
+use lattice_protocol::{Value, decode_canonical, encode_canonical};
 
 const DIRECT_MESSAGE_MAGIC: &[u8; 4] = b"LDMP";
 const DIRECT_MESSAGE_VERSION: u8 = 1;
@@ -69,6 +74,14 @@ pub enum DirectMessageIngressOutcome {
     },
 }
 
+struct DecodedInvitationBody {
+    inviter: [u8; 32],
+    target: [u8; 32],
+    group_id: Vec<u8>,
+    welcome: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
 struct RoutedDirectMessage<'a> {
     kind: u8,
     group_reference: [u8; 32],
@@ -92,7 +105,11 @@ impl Client {
         .map_err(|_| CoreError::SpaceCredentialInvalid)
     }
 
-    /// Publishes a KeyPackage bound to a validated local X.509 credential.
+    /// Publishes a `KeyPackage` bound to a validated local X.509 credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credential validation or key-package publication fails.
     pub fn publish_direct_message_key_package(
         &mut self,
         credential_content: Vec<u8>,
@@ -103,6 +120,11 @@ impl Client {
     }
 
     /// Creates a routed pairwise MLS conversation from a validated credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the credential or peer key package is invalid, or if
+    /// the conversation cannot be created and durably queued.
     pub fn create_direct_message_from_x509_credential(
         &mut self,
         credential_content: Vec<u8>,
@@ -120,6 +142,11 @@ impl Client {
     }
 
     /// Accepts an invitation only after caller consent and peer binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if consent is absent, the peer binding is invalid, or
+    /// the invitation cannot be imported and stored.
     pub fn accept_direct_message_invitation_from_x509_credential(
         &mut self,
         credential_content: Vec<u8>,
@@ -137,6 +164,11 @@ impl Client {
     }
 
     /// Queues one direct-message text packet under a validated credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the credential, conversation, or message is invalid,
+    /// or if encryption and durable queueing fail.
     pub fn queue_direct_message_text_from_x509_credential(
         &mut self,
         credential_content: Vec<u8>,
@@ -149,6 +181,11 @@ impl Client {
     }
 
     /// Creates a durable pairwise MLS conversation and queues its routed Welcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the credential or peer key package is invalid, or if
+    /// the conversation cannot be created and durably queued.
     ///
     /// `peer_key_package` must contain an X.509 credential for `peer_identity`.
     /// The returned packet is intended for an authenticated transport addressed
@@ -181,7 +218,7 @@ impl Client {
                 let invitation_body = encode_invitation_body(
                     &local_identity,
                     &peer_identity,
-                    &group_id,
+                    group_id,
                     invitation.welcome().as_bytes(),
                 )?;
                 let envelope_bytes = encode_routed_packet(
@@ -226,6 +263,11 @@ impl Client {
     }
 
     /// Accepts an invitation only after caller consent and authenticated peer binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if consent is absent, the credential or peer binding is
+    /// invalid, or the invitation cannot be imported and stored.
     pub fn accept_direct_message_invitation(
         &mut self,
         credential: &DeviceCredentialInput,
@@ -241,7 +283,12 @@ impl Client {
         if routed.kind != DIRECT_MESSAGE_INVITATION {
             return Err(CoreError::DirectMessagePacketInvalid);
         }
-        let (inviter, target, group_id, welcome) = decode_invitation_body(routed.body)?;
+        let DecodedInvitationBody {
+            inviter,
+            target,
+            group_id,
+            welcome,
+        } = decode_invitation_body(routed.body)?;
         if inviter != authenticated_peer_identity || target != self.identity.fingerprint() {
             return Err(CoreError::DirectMessagePeerMismatch);
         }
@@ -275,6 +322,11 @@ impl Client {
     }
 
     /// Encrypts, retains, and queues one immutable direct-message text packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the credential, conversation, or message is invalid,
+    /// or if encryption and durable queueing fail.
     pub fn queue_direct_message_text(
         &mut self,
         credential: &DeviceCredentialInput,
@@ -345,41 +397,32 @@ impl Client {
         })
     }
 
-    /// Authenticates and stores one incoming DM application packet from its pinned peer.
-    pub fn ingest_direct_message_packet(
+    fn ingest_direct_message_invitation(
         &mut self,
         authenticated_peer_identity: [u8; 32],
+        packet_id: [u8; 32],
+        routed: RoutedDirectMessage<'_>,
         envelope_bytes: &[u8],
     ) -> Result<DirectMessageIngressOutcome, CoreError> {
-        let routed = decode_routed_packet(envelope_bytes)?;
-        let packet_id = packet_id(envelope_bytes);
-        if routed.kind == DIRECT_MESSAGE_INVITATION {
-            let (inviter, target, _, _) = decode_invitation_body(routed.body)?;
-            let local_identity = self.identity.fingerprint();
-            if inviter != authenticated_peer_identity || target != local_identity {
-                return Err(CoreError::DirectMessagePeerMismatch);
-            }
-            if self
-                .store
-                .load_direct_message_conversation(&routed.group_reference)?
-                .is_some_and(|conversation| {
-                    !conversation.closed
-                        && conversation.peer_identity == authenticated_peer_identity
-                })
-            {
-                return Ok(DirectMessageIngressOutcome::Duplicate { packet_id });
-            }
-            if let Some(pending) = self
-                .store
-                .load_pending_direct_message_invitation(&packet_id)?
-            {
-                if pending.group_reference != routed.group_reference
-                    || pending.peer_identity != authenticated_peer_identity
-                {
-                    return Err(CoreError::DirectMessagePacketInvalid);
-                }
-                return Ok(DirectMessageIngressOutcome::Duplicate { packet_id });
-            }
+        let invitation = decode_invitation_body(routed.body)?;
+        let local_identity = self.identity.fingerprint();
+        if invitation.inviter != authenticated_peer_identity || invitation.target != local_identity
+        {
+            return Err(CoreError::DirectMessagePeerMismatch);
+        }
+        if self
+            .store
+            .load_direct_message_conversation(&routed.group_reference)?
+            .is_some_and(|conversation| {
+                !conversation.closed && conversation.peer_identity == authenticated_peer_identity
+            })
+        {
+            return Ok(DirectMessageIngressOutcome::Duplicate { packet_id });
+        }
+        let Some(pending) = self
+            .store
+            .load_pending_direct_message_invitation(&packet_id)?
+        else {
             let group_reference = routed.group_reference;
             let invitation_envelope = envelope_bytes.to_vec();
             return self.with_mls_transaction(move |identity, _, transaction| {
@@ -406,10 +449,21 @@ impl Client {
                     peer_identity: authenticated_peer_identity,
                 })
             });
-        }
-        if routed.kind != DIRECT_MESSAGE_APPLICATION {
+        };
+        if pending.group_reference != routed.group_reference
+            || pending.peer_identity != authenticated_peer_identity
+        {
             return Err(CoreError::DirectMessagePacketInvalid);
         }
+        Ok(DirectMessageIngressOutcome::Duplicate { packet_id })
+    }
+
+    fn ingest_direct_message_application(
+        &mut self,
+        authenticated_peer_identity: [u8; 32],
+        packet_id: [u8; 32],
+        routed: RoutedDirectMessage<'_>,
+    ) -> Result<DirectMessageIngressOutcome, CoreError> {
         let group_reference = routed.group_reference;
         let conversation = self
             .store
@@ -436,9 +490,10 @@ impl Client {
                 authenticated_peer_identity,
                 &trust_policy,
             )?;
-            let application = match group.process_incoming(provider, &wire)? {
-                IncomingResult::Application(application) => application,
-                _ => return Err(CoreError::DirectMessagePacketInvalid),
+            let IncomingResult::Application(application) =
+                group.process_incoming(provider, &wire)?
+            else {
+                return Err(CoreError::DirectMessagePacketInvalid);
             };
             if application.member_identity_fingerprint() != Some(&authenticated_peer_identity) {
                 return Err(CoreError::DirectMessagePeerMismatch);
@@ -461,7 +516,38 @@ impl Client {
         })
     }
 
+    /// Authenticates and stores one incoming DM application packet from its pinned peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the packet is malformed, is not from the pinned peer,
+    /// or cannot be authenticated and stored.
+    pub fn ingest_direct_message_packet(
+        &mut self,
+        authenticated_peer_identity: [u8; 32],
+        envelope_bytes: &[u8],
+    ) -> Result<DirectMessageIngressOutcome, CoreError> {
+        let routed = decode_routed_packet(envelope_bytes)?;
+        let packet_id = packet_id(envelope_bytes);
+        if routed.kind == DIRECT_MESSAGE_INVITATION {
+            return self.ingest_direct_message_invitation(
+                authenticated_peer_identity,
+                packet_id,
+                routed,
+                envelope_bytes,
+            );
+        }
+        if routed.kind != DIRECT_MESSAGE_APPLICATION {
+            return Err(CoreError::DirectMessagePacketInvalid);
+        }
+        self.ingest_direct_message_application(authenticated_peer_identity, packet_id, routed)
+    }
+
     /// Returns recent direct-message conversations in stable order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the conversation store fails.
     pub fn direct_message_conversations(
         &self,
         limit: usize,
@@ -470,6 +556,10 @@ impl Client {
     }
 
     /// Checks whether an open local conversation is bound to one peer identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the conversation store fails.
     pub fn direct_message_is_for_peer(
         &self,
         group_reference: [u8; 32],
@@ -484,6 +574,10 @@ impl Client {
     }
 
     /// Returns one bounded page of encrypted direct-message retry packets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the outbox fails.
     pub fn direct_message_outbox_page(
         &self,
         after_packet_id: Option<[u8; 32]>,
@@ -495,6 +589,10 @@ impl Client {
     }
 
     /// Records a forwarding attempt before a DM packet is placed on transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if updating the outbox fails.
     pub fn mark_direct_message_attempt(
         &mut self,
         packet_id: [u8; 32],
@@ -506,6 +604,10 @@ impl Client {
     }
 
     /// Records only authenticated peer-ingress acceptance, never delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if updating the outbox fails.
     pub fn record_direct_message_peer_ingress_accepted(
         &mut self,
         packet_id: [u8; 32],
@@ -516,6 +618,11 @@ impl Client {
     }
 
     /// Returns local decrypted DM history after authenticating its at-rest records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if history cannot be read or its protected records fail
+    /// authentication or validation.
     pub fn direct_message_history(
         &mut self,
         group_reference: [u8; 32],
@@ -549,6 +656,10 @@ impl Client {
     }
 
     /// Lists invitations persisted from authenticated transport ingress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading pending invitations fails.
     pub fn pending_direct_message_invitations(
         &self,
         limit: usize,
@@ -566,6 +677,11 @@ impl Client {
     }
 
     /// Accepts a persisted invitation only after explicit user consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if consent is absent, the peer binding is invalid, or
+    /// the persisted invitation cannot be opened and accepted.
     pub fn accept_pending_direct_message_invitation_from_x509_credential(
         &mut self,
         credential_content: Vec<u8>,
@@ -586,6 +702,11 @@ impl Client {
     }
 
     /// Accepts a persisted invitation only after explicit user consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if consent is absent, the credential or peer binding is
+    /// invalid, or the persisted invitation cannot be opened and accepted.
     pub fn accept_pending_direct_message_invitation(
         &mut self,
         credential: &lattice_mls::api::DeviceCredentialInput,
@@ -636,6 +757,10 @@ impl Client {
     }
 
     /// Declines one persisted invitation without importing its MLS Welcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if removing the pending invitation fails.
     pub fn decline_pending_direct_message_invitation(
         &mut self,
         packet_id: [u8; 32],
@@ -703,9 +828,7 @@ fn encode_invitation_body(
     .map_err(CoreError::from)
 }
 
-fn decode_invitation_body(
-    bytes: &[u8],
-) -> Result<([u8; 32], [u8; 32], Vec<u8>, Vec<u8>), CoreError> {
+fn decode_invitation_body(bytes: &[u8]) -> Result<DecodedInvitationBody, CoreError> {
     let value = decode_canonical(bytes).map_err(|_| CoreError::DirectMessagePacketInvalid)?;
     let Value::Map(fields) = value else {
         return Err(CoreError::DirectMessagePacketInvalid);
@@ -741,18 +864,18 @@ fn decode_invitation_body(
     {
         return Err(CoreError::DirectMessagePacketInvalid);
     }
-    Ok((
-        inviter
+    Ok(DecodedInvitationBody {
+        inviter: inviter
             .as_slice()
             .try_into()
             .map_err(|_| CoreError::DirectMessagePacketInvalid)?,
-        target
+        target: target
             .as_slice()
             .try_into()
             .map_err(|_| CoreError::DirectMessagePacketInvalid)?,
-        group_id.clone(),
-        welcome.clone(),
-    ))
+        group_id: group_id.clone(),
+        welcome: welcome.clone(),
+    })
 }
 
 fn encode_text_body(content: &str) -> Result<Vec<u8>, CoreError> {

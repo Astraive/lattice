@@ -723,6 +723,7 @@ mod tests {
             .collect()
     }
 
+    #[test]
     fn ephemeral_and_relay_mailbox_event_kinds_are_recognized_as_mandatory() {
         assert_eq!(EventKind::try_from(10), Ok(EventKind::Ephemeral));
         assert_eq!(EventKind::try_from(11), Ok(EventKind::RelayMailboxControl));

@@ -113,7 +113,7 @@ pub struct OutboxEntry {
     pub state: OutboxState,
 }
 
-/// Durable peer and OpenMLS identifiers for one two-device DM conversation.
+/// Durable peer and `OpenMLS` identifiers for one two-device DM conversation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectMessageConversation {
     pub group_reference: [u8; ID_BYTES],
@@ -909,6 +909,10 @@ impl Store {
         Ok(())
     }
     /// Loads the locally encrypted mailbox token for exactly one Space generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored mailbox data is invalid or the database query fails.
     pub fn load_space_relay_mailbox(
         &self,
         space_id: &[u8; 16],
@@ -918,6 +922,10 @@ impl Store {
     }
 
     /// Loads the locally encrypted mailbox token inside a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored mailbox data is invalid or the transaction query fails.
     pub fn load_space_relay_mailbox_in_transaction(
         transaction: &Transaction<'_>,
         space_id: &[u8; 16],
@@ -927,6 +935,10 @@ impl Store {
     }
 
     /// Inserts one locally encrypted mailbox token without replacing a generation's token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is invalid or the transaction insert fails.
     pub fn insert_space_relay_mailbox_in_transaction(
         transaction: &Transaction<'_>,
         space_id: &[u8; 16],
@@ -948,6 +960,10 @@ impl Store {
     }
 
     /// Persists one peer-bound direct-message conversation in an MLS transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the conversation is invalid, conflicts with stored metadata, or a database operation fails.
     pub fn save_direct_message_conversation_in_transaction(
         transaction: &Transaction<'_>,
         conversation: &DirectMessageConversation,
@@ -994,6 +1010,10 @@ impl Store {
     }
 
     /// Loads the exact peer-bound group metadata for one DM reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if stored conversation metadata is invalid or the database query fails.
     pub fn load_direct_message_conversation(
         &self,
         group_reference: &[u8; ID_BYTES],
@@ -1035,6 +1055,10 @@ impl Store {
     }
 
     /// Returns direct-message conversations in stable group-reference order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored metadata is malformed, or a database operation fails.
     pub fn list_direct_message_conversations(
         &self,
         limit: usize,
@@ -1077,6 +1101,10 @@ impl Store {
     }
 
     /// Tests the durable history deduplication key inside the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction query fails.
     pub fn direct_message_history_contains_in_transaction(
         transaction: &Transaction<'_>,
         packet_id: &[u8; ID_BYTES],
@@ -1091,6 +1119,10 @@ impl Store {
     }
 
     /// Commits an encrypted direct-message packet to its durable retry queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the envelope or schedule is invalid, the outbox conflicts or exceeds its bounds, or a database operation fails.
     pub fn commit_direct_message_outbox_in_transaction(
         transaction: &Transaction<'_>,
         entry: &DirectMessageOutboxEntry,
@@ -1148,6 +1180,10 @@ impl Store {
     }
 
     /// Returns a bounded DM outbox page in stable packet-ID order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored entries are malformed, or a database operation fails.
     pub fn list_direct_message_outbox_page(
         &self,
         after_packet_id: Option<[u8; ID_BYTES]>,
@@ -1194,6 +1230,10 @@ impl Store {
     }
 
     /// Persists an attempt before a DM packet is sent to an authenticated peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the schedule is invalid, the outbox transition is invalid, or a database operation fails.
     pub fn mark_direct_message_forwarding_attempt(
         &mut self,
         packet_id: [u8; ID_BYTES],
@@ -1218,6 +1258,10 @@ impl Store {
     }
 
     /// Records authenticated peer-ingress acceptance for a DM packet only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outbox transition is invalid or a database operation fails.
     pub fn record_direct_message_peer_ingress_accepted(
         &mut self,
         packet_id: [u8; ID_BYTES],
@@ -1243,6 +1287,10 @@ impl Store {
     }
 
     /// Commits one protected direct-message history record atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record is invalid or conflicts with stored metadata, or a database operation fails.
     pub fn save_direct_message_record_in_transaction(
         transaction: &Transaction<'_>,
         record: &DirectMessageRecord,
@@ -1280,6 +1328,10 @@ impl Store {
     }
 
     /// Returns a bounded oldest-first history page for one DM conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored records are malformed, or a database operation fails.
     pub fn list_direct_message_history(
         &self,
         group_reference: &[u8; ID_BYTES],
@@ -1323,6 +1375,10 @@ impl Store {
     }
 
     /// Atomically retains one encrypted invitation pending user consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the invitation is invalid or conflicts with stored metadata, the pending limit is reached, or a database operation fails.
     pub fn save_pending_direct_message_invitation_in_transaction(
         transaction: &Transaction<'_>,
         invitation: &PendingDirectMessageInvitation,
@@ -1375,6 +1431,10 @@ impl Store {
     }
 
     /// Returns one pending invitation by immutable packet identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if stored invitation data is malformed or the database query fails.
     pub fn load_pending_direct_message_invitation(
         &self,
         packet_id: &[u8; ID_BYTES],
@@ -1408,6 +1468,10 @@ impl Store {
     }
 
     /// Lists bounded pending invitation metadata and protected packet bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored invitations are malformed, or a database operation fails.
     pub fn list_pending_direct_message_invitations(
         &self,
         limit: usize,
@@ -1441,6 +1505,10 @@ impl Store {
     }
 
     /// Removes one pending invitation; false means it was already absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database delete fails.
     pub fn remove_pending_direct_message_invitation(
         &mut self,
         packet_id: &[u8; ID_BYTES],
@@ -2763,6 +2831,10 @@ impl Store {
         Ok(changed == 1)
     }
     /// Loads the OS-protected relay-only Schnorr key for one device identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored ciphertext is invalid or the database query fails.
     pub fn load_protected_relay_signing_key(
         &self,
         identity_fingerprint: &[u8; ID_BYTES],
@@ -2789,6 +2861,10 @@ impl Store {
     }
 
     /// Saves OS-protected relay-only Schnorr key ciphertext without replacing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is invalid or the database insert fails.
     pub fn save_protected_relay_signing_key(
         &mut self,
         identity_fingerprint: &[u8; ID_BYTES],
@@ -2859,6 +2935,10 @@ impl Store {
     ///
     /// The attempt keeps the original event/envelope identity and remains
     /// retryable after transport failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the schedule is invalid, the outbox transition is invalid, or a database operation fails.
     pub fn mark_forwarding_attempt(
         &mut self,
         event_id: [u8; ID_BYTES],
@@ -2884,6 +2964,10 @@ impl Store {
 
     /// Records a relay/next-hop acceptance after a persisted forwarding attempt.
     /// This is forwarding, not delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the schedule is invalid, the outbox transition is invalid, or a database operation fails.
     pub fn mark_forwarded(&mut self, event_id: [u8; ID_BYTES], next_attempt_ms: i64) -> Result<()> {
         if next_attempt_ms < 0 {
             return Err(StoreError::InvalidOutboxSchedule);
@@ -2905,6 +2989,10 @@ impl Store {
     ///
     /// This is not evidence of durable Core acceptance, destination delivery,
     /// or reading. Duplicate acknowledgements are idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outbox transition is invalid or a database operation fails.
     pub fn record_peer_ingress_accepted(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE outbox SET state = 'peer_ingress_accepted'
@@ -2919,6 +3007,10 @@ impl Store {
     }
 
     /// Marks an undelivered envelope failed or expired. Repeating failure is safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outbox transition is invalid or a database operation fails.
     pub fn mark_failed(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE outbox SET state = 'failed'
