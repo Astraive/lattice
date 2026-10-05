@@ -9,11 +9,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Button
+import com.astraive.lattice.ui.LatticeActionButton as Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.astraive.lattice.ui.LatticeFormField as OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
+import com.astraive.lattice.ui.LatticeSurface as Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -26,6 +26,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileCreatedSpace
 import uniffi.lattice_uniffi.MobileSpaceSummary
+import com.astraive.lattice.ui.LatticeSurface
+import com.astraive.lattice.ui.LatticeActionButton
+import com.astraive.lattice.ui.LatticeStatusNotice
+import com.astraive.lattice.ui.LatticeNoticeKind
+import com.astraive.lattice.ui.LatticeFormField
 
 
 internal data class LocalSpaceRecoveryUiState(
@@ -123,7 +128,7 @@ internal fun LocalSpaceRecoveryCard(
                     Text(if (state.recovering) "Recovering locally…" else "Create local recovery generation")
                 }
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.status)
             state.recovered?.let { recovered ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -243,7 +248,7 @@ internal fun SpaceWelcomeJoinCard(
             ) {
                 Text(if (state.joining) "Validating and joining…" else "Import verified Welcome")
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.status)
             state.joined?.let { joined ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -275,32 +280,25 @@ internal fun SpaceCreationCard(
 ) {
     val credentialIsValid = isCredentialVectorHex(state.credentialVectorHex)
     val channelNameIsValid = isValidInitialChannelName(state.channelName)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        tonalElevation = 2.dp,
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                "Create a local Space",
-                modifier = Modifier.semantics { heading() },
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                "Paste the exact leaf-first RFC 9420 TLS X.509 credential vector as hexadecimal. The OS trust chain and local signing identity are checked before local MLS state is committed. This does not join another member or contact a network.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedTextField(
+    LatticeSurface {
+        Text(
+            "Create a local Space",
+            modifier = Modifier.semantics { heading() },
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            "Paste the exact leaf-first RFC 9420 TLS X.509 credential vector as hexadecimal. The OS trust chain and local signing identity are checked before local MLS state is committed. This does not join another member or contact a network.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+            LatticeFormField(
                 value = state.credentialVectorHex,
                 onValueChange = onCredentialVectorHexChanged,
-                label = { Text("Trusted X.509 credential vector (hex)") },
-                supportingText = { Text("Up to 16 KiB decoded. Do not paste a PEM-encoded certificate.") },
+                label = "Trusted X.509 credential vector (hex)",
+                supportingText = "Up to 16 KiB decoded. Do not paste a PEM-encoded certificate.",
                 enabled = profileReady && !state.creating,
-                isError = state.credentialVectorHex.isNotEmpty() && !credentialIsValid,
+                error = if (state.credentialVectorHex.isNotEmpty() && !credentialIsValid) "Enter a valid credential vector within the 16 KiB decoded limit." else null,
+                singleLine = false,
                 minLines = 4,
                 maxLines = 8,
                 keyboardOptions = KeyboardOptions(
@@ -308,26 +306,23 @@ internal fun SpaceCreationCard(
                     autoCorrectEnabled = false,
                     keyboardType = KeyboardType.Ascii,
                 ),
-                modifier = Modifier.fillMaxWidth(),
             )
-            OutlinedTextField(
+            LatticeFormField(
                 value = state.channelName,
                 onValueChange = onChannelNameChanged,
-                label = { Text("Initial text channel name") },
-                supportingText = { Text("Nonblank, up to 128 UTF-8 bytes; NUL is not allowed.") },
+                label = "Initial text channel name",
+                supportingText = "Nonblank, up to 128 UTF-8 bytes; NUL is not allowed.",
                 enabled = profileReady && !state.creating,
-                isError = !channelNameIsValid,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                error = if (!channelNameIsValid) "Enter a nonblank channel name within the UTF-8 byte limit; NUL is not allowed." else null,
             )
-            Button(
-                onClick = onCreateLocalSpace,
+            LatticeActionButton(
+                if (state.creating) "Creating local Space" else "Create local Space",
+                onCreateLocalSpace,
                 enabled = profileReady && !state.creating && credentialIsValid && channelNameIsValid,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (state.creating) "Creating local Space…" else "Create local Space")
-            }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+                busy = state.creating,
+                tone = com.astraive.lattice.ui.LatticeActionTone.PRIMARY,
+            )
+            LatticeStatusNotice(com.astraive.lattice.ui.LatticeNoticeKind.INFO, message = state.status)
             state.created?.let { created ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -338,7 +333,6 @@ internal fun SpaceCreationCard(
                     }
                 }
             }
-        }
     }
 }
 
@@ -415,7 +409,7 @@ internal fun SpaceMembershipCard(
             ) {
                 Text(if (state.publishingKeyPackage) "Publishing locally…" else "Publish this device's KeyPackage")
             }
-            Text(state.keyPackageStatus, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.keyPackageStatus)
             state.publishedKeyPackageBase64?.let { keyPackage ->
                 Text("Share this one-time public KeyPackage with the inviter:", style = MaterialTheme.typography.bodySmall)
                 SelectionContainer { Text(keyPackage, style = MaterialTheme.typography.bodySmall) }
@@ -480,7 +474,7 @@ internal fun SpaceMembershipCard(
             ) {
                 Text(if (state.creatingInvitation) "Committing invitation…" else "Create signed invitation")
             }
-            Text(state.invitationStatus, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.invitationStatus)
             state.invitation?.let { invitation ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
