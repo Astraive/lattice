@@ -838,6 +838,54 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -863,6 +911,8 @@ fun uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileblesession_peer_identity_fingerprint(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message(
@@ -879,13 +929,41 @@ fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_messa
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_accept_direct_message_invitation(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_accept_pending_direct_message_invitation(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_attachment_staging_status(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_authorized_attachment_manifest(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_attachment_manifest(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_direct_message(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_decline_pending_direct_message_invitation(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_conversations(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_history(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_is_for_peer(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_outbox_page(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_exchange_direct_messages_once(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_finish_attachment_export(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_direct_message_packet(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event(
 ): Short
@@ -895,17 +973,29 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_direct_message_attempt(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_pending_direct_message_invitations(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_prepare_attachment_export(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_direct_message_key_package(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_attachment_manifest(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_direct_message_text(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
 ): Short
@@ -919,11 +1009,17 @@ fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone(
 ): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_receive_attachment_once(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_direct_message_peer_ingress_accepted(
+): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages(
+): Short
+fun uniffi_lattice_uniffi_checksum_method_mobileclient_send_attachment_once(
 ): Short
 fun uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes(
 ): Short
@@ -1009,6 +1105,8 @@ fun uniffi_lattice_uniffi_fn_method_mobileblesession_handshake_complete(`ptr`: P
 ): Byte
 fun uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_lattice_uniffi_fn_method_mobileblesession_peer_identity_fingerprint(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_confirmation(`ptr`: Pointer,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_handshake_message(`ptr`: Pointer,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1031,13 +1129,41 @@ fun uniffi_lattice_uniffi_fn_free_mobileclient(`ptr`: Pointer,uniffi_out_err: Un
 ): Unit
 fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
+fun uniffi_lattice_uniffi_fn_method_mobileclient_accept_direct_message_invitation(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`authenticatedPeerIdentity`: RustBuffer.ByValue,`invitationPacket`: RustBuffer.ByValue,`userAccepted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_accept_pending_direct_message_invitation(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`authenticatedPeerIdentity`: RustBuffer.ByValue,`packetId`: RustBuffer.ByValue,`userAccepted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_attachment_staging_status(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_authorized_attachment_manifest(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_create_attachment_manifest(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,`filename`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_create_direct_message(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`peerIdentity`: RustBuffer.ByValue,`peerKeyPackage`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`channels`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`keyPackageWire`: RustBuffer.ByValue,`expiresAtUnixSeconds`: Long,`maxUses`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_decline_pending_direct_message_invitation(`ptr`: Pointer,`packetId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_conversations(`ptr`: Pointer,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_history(`ptr`: Pointer,`groupReference`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_is_for_peer(`ptr`: Pointer,`groupReference`: RustBuffer.ByValue,`peerIdentity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_outbox_page(`ptr`: Pointer,`afterPacketId`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(`ptr`: Pointer,`connectAddress`: RustBuffer.ByValue,`listenAddress`: RustBuffer.ByValue,`peerFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(`ptr`: Pointer,`exportId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
 fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(`ptr`: Pointer,`authenticatedPeerIdentity`: RustBuffer.ByValue,`envelopeBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(`ptr`: Pointer,`canonicalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1047,17 +1173,29 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Pointe
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(`ptr`: Pointer,`packetId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(`ptr`: Pointer,`afterEventId`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_pending_direct_message_invitations(`ptr`: Pointer,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Pointer,`publicBundle`: RustBuffer.ByValue,`expectedFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Pointer,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_prepare_attachment_export(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_direct_message_key_package(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`nowUnixSeconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_attachment_manifest(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`sourceId`: RustBuffer.ByValue,`preview`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_direct_message_text(`ptr`: Pointer,`credentialVector`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1071,11 +1209,17 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_receive_attachment_once(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,`peerFingerprint`: RustBuffer.ByValue,`listenAddress`: RustBuffer.ByValue,`userConsented`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingress_accepted(`ptr`: Pointer,`packetId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_lattice_uniffi_fn_method_mobileclient_send_attachment_once(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,`peerFingerprint`: RustBuffer.ByValue,`connectAddress`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
@@ -1242,6 +1386,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated() != 20122.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_peer_identity_fingerprint() != 32823.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation() != 19143.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1266,7 +1413,25 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof() != 48589.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_accept_direct_message_invitation() != 65512.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_accept_pending_direct_message_invitation() != 61640.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_attachment_staging_status() != 62827.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_authorized_attachment_manifest() != 62572.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request() != 35576.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_attachment_manifest() != 38788.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_direct_message() != 6023.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space() != 46165.toShort()) {
@@ -1275,7 +1440,31 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation() != 11611.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_decline_pending_direct_message_invitation() != 38224.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_conversations() != 56892.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_history() != 53903.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_is_for_peer() != 59158.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_outbox_page() != 18634.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_exchange_direct_messages_once() != 39663.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_finish_attachment_export() != 17951.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info() != 64369.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_direct_message_packet() != 10770.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event() != 49026.toShort()) {
@@ -1290,6 +1479,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages() != 10804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_direct_message_attempt() != 25612.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt() != 52438.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1299,13 +1491,28 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page() != 15966.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pending_direct_message_invitations() != 16007.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity() != 30926.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity() != 24120.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_prepare_attachment_export() != 40669.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_direct_message_key_package() != 7026.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package() != 45561.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_attachment_manifest() != 1711.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_direct_message_text() != 311.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message() != 19845.toShort()) {
@@ -1326,6 +1533,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone() != 10575.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_receive_attachment_once() != 4570.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_direct_message_peer_ingress_accepted() != 37184.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted() != 33011.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1333,6 +1546,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages() != 1752.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_send_attachment_once() != 29674.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes() != 60636.toShort()) {
@@ -1884,6 +2100,11 @@ public interface MobileBleSessionInterface {
     fun `isAuthenticated`(): kotlin.Boolean
     
     /**
+     * Returns the pinned fingerprint bound to this authenticated session.
+     */
+    fun `peerIdentityFingerprint`(): kotlin.ByteArray
+    
+    /**
      * Verifies the peer confirmation; responders must then write their own confirmation.
      *
      * # Errors
@@ -2170,6 +2391,22 @@ open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterfac
     callWithPointer {
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Returns the pinned fingerprint bound to this authenticated session.
+     */
+    @Throws(MobileException::class)override fun `peerIdentityFingerprint`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileblesession_peer_identity_fingerprint(
         it, _status)
 }
     }
@@ -2484,6 +2721,28 @@ public object FfiConverterTypeMobileBleSession: FfiConverter<MobileBleSession, P
 public interface MobileClientInterface {
     
     /**
+     * Imports a routed Welcome only after explicit user acceptance.
+     */
+    fun `acceptDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `invitationPacket`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray
+    
+    /**
+     * Accepts a persisted invitation only with user consent and matching peer.
+     */
+    fun `acceptPendingDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `packetId`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray
+    
+    /**
+     * Reopens the private receiver store and verifies staged chunks before
+     * reporting resumable progress.
+     */
+    fun `attachmentStagingStatus`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentStagingStatus
+    
+    /**
+     * Returns a display-only summary only when Core authorizes this exact
+     * event ID in the restored Space generation.
+     */
+    fun `authorizedAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAuthorizedAttachmentManifest
+    
+    /**
      * Creates a DER PKCS#10 request for the local identity without exposing private keys.
      *
      * # Errors
@@ -2492,6 +2751,19 @@ public interface MobileClientInterface {
      * `CertificateSigningRequestFailed` when the bounded CSR cannot be encoded.
      */
     fun `certificateSigningRequest`(): kotlin.ByteArray
+    
+    /**
+     * Computes bounded manifest metadata from one app-private imported source.
+     *
+     * The identifier is an opaque lowercase-hex token; this API never accepts
+     * a caller-selected filesystem path.
+     */
+    fun `createAttachmentManifest`(`sourceId`: kotlin.String, `filename`: kotlin.String): MobileAttachmentManifest
+    
+    /**
+     * Creates and durably queues an opaque MLS Welcome invitation packet.
+     */
+    fun `createDirectMessage`(`credentialVector`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray, `peerKeyPackage`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long): MobileCreatedDirectMessage
     
     /**
      * Creates a local one-member Space after OS-trust validation of the supplied RFC 9420 X.509 vector.
@@ -2518,6 +2790,42 @@ public interface MobileClientInterface {
     fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation
     
     /**
+     * Declines a pending invitation without importing its MLS Welcome.
+     */
+    fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean
+    
+    /**
+     * Lists local pairwise conversations in stable bounded order.
+     */
+    fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation>
+    
+    /**
+     * Reads decrypted local history for one pairwise conversation.
+     */
+    fun `directMessageHistory`(`groupReference`: kotlin.ByteArray, `limit`: kotlin.UInt): List<MobileDirectMessageHistoryEntry>
+    
+    /**
+     * Verifies that an outbox packet targets the authenticated BLE peer.
+     */
+    fun `directMessageIsForPeer`(`groupReference`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray): kotlin.Boolean
+    
+    /**
+     * Reads a bounded page of durable opaque DM packets awaiting forwarding.
+     */
+    fun `directMessageOutboxPage`(`afterPacketId`: kotlin.ByteArray?, `limit`: kotlin.UInt): List<MobileDirectMessageOutboxEntry>
+    
+    /**
+     * Runs one authenticated, pinned TCP direct-message exchange over a local
+     * LAN path. It sends at most one due opaque packet in each direction.
+     */
+    fun `exchangeDirectMessagesOnce`(`connectAddress`: kotlin.String, `listenAddress`: kotlin.String, `peerFingerprint`: kotlin.ByteArray): MobileDirectMessageExchange
+    
+    /**
+     * Removes one internal export temporary file after document-picker use.
+     */
+    fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean
+    
+    /**
      * Returns the non-secret public identity information for native UI.
      *
      * # Errors
@@ -2525,6 +2833,11 @@ public interface MobileClientInterface {
      * Returns `ProfileUnavailable` if the local profile lock is poisoned.
      */
     fun `identityInfo`(): MobileIdentityInfo
+    
+    /**
+     * Authenticates one opaque application packet from the pinned peer.
+     */
+    fun `ingestDirectMessagePacket`(`authenticatedPeerIdentity`: kotlin.ByteArray, `envelopeBytes`: kotlin.ByteArray): MobileDirectMessageIngressResult
     
     /**
      * Sends one signed event through Rust's signature, MLS, dependency, and
@@ -2586,6 +2899,11 @@ public interface MobileClientInterface {
     fun `listLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray): List<MobileLocalTextMessage>
     
     /**
+     * Persists the retry attempt before routing the DM packet.
+     */
+    fun `markDirectMessageAttempt`(`packetId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+    
+    /**
      * Persists one forwarding attempt before its envelope is placed on transport.
      *
      * # Errors
@@ -2619,6 +2937,11 @@ public interface MobileClientInterface {
     fun `outboxPage`(`afterEventId`: kotlin.ByteArray?, `limit`: kotlin.Int): List<MobileOutboxEntry>
     
     /**
+     * Lists bounded invitations saved from authenticated transport ingress.
+     */
+    fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation>
+    
+    /**
      * Stores one exact identity bundle after checking its caller-supplied full
      * fingerprint.
      *
@@ -2648,12 +2971,34 @@ public interface MobileClientInterface {
     fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity?
     
     /**
+     * Copies an already-complete staged attachment to a bounded app-private
+     * temporary file for the native document picker to export.
+     */
+    fun `prepareAttachmentExport`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentExport
+    
+    /**
+     * Publishes one validated local KeyPackage for a pairwise DM invitation.
+     */
+    fun `publishDirectMessageKeyPackage`(`credentialVector`: kotlin.ByteArray, `nowUnixSeconds`: kotlin.ULong): kotlin.ByteArray
+    
+    /**
      * Publishes one locally retained X.509 KeyPackage for offline invitation.
      *
      * The output is intended for explicit out-of-band transfer; no relay or
      * network is contacted. The matching private KeyPackage remains local.
      */
     fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray
+    
+    /**
+     * Queues one Core-authorized signed Space manifest and durably stages the
+     * verified source under its event-bound transfer identity.
+     */
+    fun `queueAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `sourceId`: kotlin.String, `preview`: MobileAttachmentManifest): MobileAttachmentQueueReceipt
+    
+    /**
+     * Encrypts text locally and commits the resulting opaque packet to Core.
+     */
+    fun `queueDirectMessageText`(`credentialVector`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `content`: kotlin.String, `nextAttemptMs`: kotlin.Long): MobileDirectMessagePacket
     
     /**
      * Validates and commits a text event to this device's local durable outbox.
@@ -2708,6 +3053,17 @@ public interface MobileClientInterface {
     fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage
     
     /**
+     * Receives one authorized manifest into persistent private staging after
+     * explicit user consent and exact pinned-peer authorization.
+     */
+    fun `receiveAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `listenAddress`: kotlin.String, `userConsented`: kotlin.Boolean): MobileAttachmentTransferReceipt
+    
+    /**
+     * Records authenticated peer-ingress acceptance, not destination delivery.
+     */
+    fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray)
+    
+    /**
      * Records only authenticated peer acceptance into bounded BLE ingress.
      * It is not proof of destination delivery or reading.
      *
@@ -2747,6 +3103,12 @@ public interface MobileClientInterface {
      * local recovery, decryption, or event validation fails.
      */
     fun `searchLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `query`: kotlin.String): MobileLocalTextMessageSearch
+    
+    /**
+     * Sends one authorized manifest over TCP and a separately domain-bound
+     * Noise session pinned to the exact active Space member.
+     */
+    fun `sendAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `connectAddress`: kotlin.String): MobileAttachmentTransferReceipt
     
     /**
      * Subscribes to bounded, coalesced Core projection changes.
@@ -2856,6 +3218,72 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Imports a routed Welcome only after explicit user acceptance.
+     */
+    @Throws(MobileException::class)override fun `acceptDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `invitationPacket`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_accept_direct_message_invitation(
+        it, FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`authenticatedPeerIdentity`),FfiConverterByteArray.lower(`invitationPacket`),FfiConverterBoolean.lower(`userAccepted`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Accepts a persisted invitation only with user consent and matching peer.
+     */
+    @Throws(MobileException::class)override fun `acceptPendingDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `packetId`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_accept_pending_direct_message_invitation(
+        it, FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`authenticatedPeerIdentity`),FfiConverterByteArray.lower(`packetId`),FfiConverterBoolean.lower(`userAccepted`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Reopens the private receiver store and verifies staged chunks before
+     * reporting resumable progress.
+     */
+    @Throws(MobileException::class)override fun `attachmentStagingStatus`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentStagingStatus {
+            return FfiConverterTypeMobileAttachmentStagingStatus.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_attachment_staging_status(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Returns a display-only summary only when Core authorizes this exact
+     * event ID in the restored Space generation.
+     */
+    @Throws(MobileException::class)override fun `authorizedAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAuthorizedAttachmentManifest {
+            return FfiConverterTypeMobileAuthorizedAttachmentManifest.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_authorized_attachment_manifest(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Creates a DER PKCS#10 request for the local identity without exposing private keys.
      *
      * # Errors
@@ -2869,6 +3297,41 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(
         it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Computes bounded manifest metadata from one app-private imported source.
+     *
+     * The identifier is an opaque lowercase-hex token; this API never accepts
+     * a caller-selected filesystem path.
+     */
+    @Throws(MobileException::class)override fun `createAttachmentManifest`(`sourceId`: kotlin.String, `filename`: kotlin.String): MobileAttachmentManifest {
+            return FfiConverterTypeMobileAttachmentManifest.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_create_attachment_manifest(
+        it, FfiConverterString.lower(`sourceId`),FfiConverterString.lower(`filename`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Creates and durably queues an opaque MLS Welcome invitation packet.
+     */
+    @Throws(MobileException::class)override fun `createDirectMessage`(`credentialVector`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray, `peerKeyPackage`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long): MobileCreatedDirectMessage {
+            return FfiConverterTypeMobileCreatedDirectMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_create_direct_message(
+        it, FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`peerIdentity`),FfiConverterByteArray.lower(`peerKeyPackage`),FfiConverterLong.lower(`nextAttemptMs`),_status)
 }
     }
     )
@@ -2923,6 +3386,119 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Declines a pending invitation without importing its MLS Welcome.
+     */
+    @Throws(MobileException::class)override fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_decline_pending_direct_message_invitation(
+        it, FfiConverterByteArray.lower(`packetId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Lists local pairwise conversations in stable bounded order.
+     */
+    @Throws(MobileException::class)override fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation> {
+            return FfiConverterSequenceTypeMobileDirectMessageConversation.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_conversations(
+        it, FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Reads decrypted local history for one pairwise conversation.
+     */
+    @Throws(MobileException::class)override fun `directMessageHistory`(`groupReference`: kotlin.ByteArray, `limit`: kotlin.UInt): List<MobileDirectMessageHistoryEntry> {
+            return FfiConverterSequenceTypeMobileDirectMessageHistoryEntry.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_history(
+        it, FfiConverterByteArray.lower(`groupReference`),FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Verifies that an outbox packet targets the authenticated BLE peer.
+     */
+    @Throws(MobileException::class)override fun `directMessageIsForPeer`(`groupReference`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_is_for_peer(
+        it, FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`peerIdentity`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Reads a bounded page of durable opaque DM packets awaiting forwarding.
+     */
+    @Throws(MobileException::class)override fun `directMessageOutboxPage`(`afterPacketId`: kotlin.ByteArray?, `limit`: kotlin.UInt): List<MobileDirectMessageOutboxEntry> {
+            return FfiConverterSequenceTypeMobileDirectMessageOutboxEntry.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_outbox_page(
+        it, FfiConverterOptionalByteArray.lower(`afterPacketId`),FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Runs one authenticated, pinned TCP direct-message exchange over a local
+     * LAN path. It sends at most one due opaque packet in each direction.
+     */
+    @Throws(MobileException::class)override fun `exchangeDirectMessagesOnce`(`connectAddress`: kotlin.String, `listenAddress`: kotlin.String, `peerFingerprint`: kotlin.ByteArray): MobileDirectMessageExchange {
+            return FfiConverterTypeMobileDirectMessageExchange.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(
+        it, FfiConverterString.lower(`connectAddress`),FfiConverterString.lower(`listenAddress`),FfiConverterByteArray.lower(`peerFingerprint`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Removes one internal export temporary file after document-picker use.
+     */
+    @Throws(MobileException::class)override fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(
+        it, FfiConverterString.lower(`exportId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Returns the non-secret public identity information for native UI.
      *
      * # Errors
@@ -2935,6 +3511,22 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(
         it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Authenticates one opaque application packet from the pinned peer.
+     */
+    @Throws(MobileException::class)override fun `ingestDirectMessagePacket`(`authenticatedPeerIdentity`: kotlin.ByteArray, `envelopeBytes`: kotlin.ByteArray): MobileDirectMessageIngressResult {
+            return FfiConverterTypeMobileDirectMessageIngressResult.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(
+        it, FfiConverterByteArray.lower(`authenticatedPeerIdentity`),FfiConverterByteArray.lower(`envelopeBytes`),_status)
 }
     }
     )
@@ -3046,6 +3638,21 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Persists the retry attempt before routing the DM packet.
+     */
+    @Throws(MobileException::class)override fun `markDirectMessageAttempt`(`packetId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(
+        it, FfiConverterByteArray.lower(`packetId`),FfiConverterLong.lower(`nextAttemptMs`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Persists one forwarding attempt before its envelope is placed on transport.
      *
      * # Errors
@@ -3111,6 +3718,22 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Lists bounded invitations saved from authenticated transport ingress.
+     */
+    @Throws(MobileException::class)override fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation> {
+            return FfiConverterSequenceTypeMobileDirectMessagePendingInvitation.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_pending_direct_message_invitations(
+        it, FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Stores one exact identity bundle after checking its caller-supplied full
      * fingerprint.
      *
@@ -3162,6 +3785,39 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Copies an already-complete staged attachment to a bounded app-private
+     * temporary file for the native document picker to export.
+     */
+    @Throws(MobileException::class)override fun `prepareAttachmentExport`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentExport {
+            return FfiConverterTypeMobileAttachmentExport.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_prepare_attachment_export(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Publishes one validated local KeyPackage for a pairwise DM invitation.
+     */
+    @Throws(MobileException::class)override fun `publishDirectMessageKeyPackage`(`credentialVector`: kotlin.ByteArray, `nowUnixSeconds`: kotlin.ULong): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_publish_direct_message_key_package(
+        it, FfiConverterByteArray.lower(`credentialVector`),FfiConverterULong.lower(`nowUnixSeconds`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Publishes one locally retained X.509 KeyPackage for offline invitation.
      *
      * The output is intended for explicit out-of-band transfer; no relay or
@@ -3173,6 +3829,39 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(
         it, FfiConverterByteArray.lower(`credentialVector`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Queues one Core-authorized signed Space manifest and durably stages the
+     * verified source under its event-bound transfer identity.
+     */
+    @Throws(MobileException::class)override fun `queueAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `sourceId`: kotlin.String, `preview`: MobileAttachmentManifest): MobileAttachmentQueueReceipt {
+            return FfiConverterTypeMobileAttachmentQueueReceipt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_attachment_manifest(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`channelId`),FfiConverterString.lower(`sourceId`),FfiConverterTypeMobileAttachmentManifest.lower(`preview`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Encrypts text locally and commits the resulting opaque packet to Core.
+     */
+    @Throws(MobileException::class)override fun `queueDirectMessageText`(`credentialVector`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `content`: kotlin.String, `nextAttemptMs`: kotlin.Long): MobileDirectMessagePacket {
+            return FfiConverterTypeMobileDirectMessagePacket.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_queue_direct_message_text(
+        it, FfiConverterByteArray.lower(`credentialVector`),FfiConverterByteArray.lower(`groupReference`),FfiConverterString.lower(`content`),FfiConverterLong.lower(`nextAttemptMs`),_status)
 }
     }
     )
@@ -3299,6 +3988,38 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
 
     
     /**
+     * Receives one authorized manifest into persistent private staging after
+     * explicit user consent and exact pinned-peer authorization.
+     */
+    @Throws(MobileException::class)override fun `receiveAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `listenAddress`: kotlin.String, `userConsented`: kotlin.Boolean): MobileAttachmentTransferReceipt {
+            return FfiConverterTypeMobileAttachmentTransferReceipt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_receive_attachment_once(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`eventId`),FfiConverterByteArray.lower(`peerFingerprint`),FfiConverterString.lower(`listenAddress`),FfiConverterBoolean.lower(`userConsented`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Records authenticated peer-ingress acceptance, not destination delivery.
+     */
+    @Throws(MobileException::class)override fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingress_accepted(
+        it, FfiConverterByteArray.lower(`packetId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Records only authenticated peer acceptance into bounded BLE ingress.
      * It is not proof of destination delivery or reading.
      *
@@ -3364,6 +4085,23 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(
         it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`channelId`),FfiConverterString.lower(`query`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Sends one authorized manifest over TCP and a separately domain-bound
+     * Noise session pinned to the exact active Space member.
+     */
+    @Throws(MobileException::class)override fun `sendAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `connectAddress`: kotlin.String): MobileAttachmentTransferReceipt {
+            return FfiConverterTypeMobileAttachmentTransferReceipt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_send_attachment_once(
+        it, FfiConverterByteArray.lower(`spaceId`),FfiConverterByteArray.lower(`groupReference`),FfiConverterByteArray.lower(`eventId`),FfiConverterByteArray.lower(`peerFingerprint`),FfiConverterString.lower(`connectAddress`),_status)
 }
     }
     )
@@ -4103,6 +4841,289 @@ public object FfiConverterTypePlatformKeyProtector: FfiConverter<PlatformKeyProt
 
 
 /**
+ * Verified bytes copied to an app-private temporary export file.
+ */
+data class MobileAttachmentExport (
+    var `exportId`: kotlin.String, 
+    var `filename`: kotlin.String, 
+    var `fileSize`: kotlin.ULong, 
+    var `fileHash`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAttachmentExport: FfiConverterRustBuffer<MobileAttachmentExport> {
+    override fun read(buf: ByteBuffer): MobileAttachmentExport {
+        return MobileAttachmentExport(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAttachmentExport) = (
+            FfiConverterString.allocationSize(value.`exportId`) +
+            FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterByteArray.allocationSize(value.`fileHash`)
+    )
+
+    override fun write(value: MobileAttachmentExport, buf: ByteBuffer) {
+            FfiConverterString.write(value.`exportId`, buf)
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterByteArray.write(value.`fileHash`, buf)
+    }
+}
+
+
+
+/**
+ * Locally computed attachment metadata preview. The file hash is display and
+ * change-detection data; only Core's signed manifest event authorizes a transfer.
+ */
+data class MobileAttachmentManifest (
+    var `filename`: kotlin.String, 
+    var `fileSize`: kotlin.ULong, 
+    var `fileHash`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAttachmentManifest: FfiConverterRustBuffer<MobileAttachmentManifest> {
+    override fun read(buf: ByteBuffer): MobileAttachmentManifest {
+        return MobileAttachmentManifest(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAttachmentManifest) = (
+            FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterByteArray.allocationSize(value.`fileHash`)
+    )
+
+    override fun write(value: MobileAttachmentManifest, buf: ByteBuffer) {
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterByteArray.write(value.`fileHash`, buf)
+    }
+}
+
+
+
+/**
+ * Result of queueing one signed attachment manifest and retaining its source.
+ */
+data class MobileAttachmentQueueReceipt (
+    var `manifest`: MobileAuthorizedAttachmentManifest, 
+    var `sourceRetained`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAttachmentQueueReceipt: FfiConverterRustBuffer<MobileAttachmentQueueReceipt> {
+    override fun read(buf: ByteBuffer): MobileAttachmentQueueReceipt {
+        return MobileAttachmentQueueReceipt(
+            FfiConverterTypeMobileAuthorizedAttachmentManifest.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAttachmentQueueReceipt) = (
+            FfiConverterTypeMobileAuthorizedAttachmentManifest.allocationSize(value.`manifest`) +
+            FfiConverterBoolean.allocationSize(value.`sourceRetained`)
+    )
+
+    override fun write(value: MobileAttachmentQueueReceipt, buf: ByteBuffer) {
+            FfiConverterTypeMobileAuthorizedAttachmentManifest.write(value.`manifest`, buf)
+            FfiConverterBoolean.write(value.`sourceRetained`, buf)
+    }
+}
+
+
+
+/**
+ * Resumable progress reconstructed from verified staged chunks.
+ */
+data class MobileAttachmentStagingStatus (
+    var `eventId`: kotlin.ByteArray, 
+    var `fileSize`: kotlin.ULong, 
+    var `verifiedChunks`: kotlin.ULong, 
+    var `totalChunks`: kotlin.ULong, 
+    var `complete`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAttachmentStagingStatus: FfiConverterRustBuffer<MobileAttachmentStagingStatus> {
+    override fun read(buf: ByteBuffer): MobileAttachmentStagingStatus {
+        return MobileAttachmentStagingStatus(
+            FfiConverterByteArray.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAttachmentStagingStatus) = (
+            FfiConverterByteArray.allocationSize(value.`eventId`) +
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterULong.allocationSize(value.`verifiedChunks`) +
+            FfiConverterULong.allocationSize(value.`totalChunks`) +
+            FfiConverterBoolean.allocationSize(value.`complete`)
+    )
+
+    override fun write(value: MobileAttachmentStagingStatus, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterULong.write(value.`verifiedChunks`, buf)
+            FfiConverterULong.write(value.`totalChunks`, buf)
+            FfiConverterBoolean.write(value.`complete`, buf)
+    }
+}
+
+
+
+/**
+ * Truthful receipt for one authenticated attachment transfer.
+ */
+data class MobileAttachmentTransferReceipt (
+    var `eventId`: kotlin.ByteArray, 
+    var `peerFingerprint`: kotlin.ByteArray, 
+    var `transferId`: kotlin.ByteArray, 
+    var `isSender`: kotlin.Boolean, 
+    var `chunksTransferred`: kotlin.ULong, 
+    var `peerVerified`: kotlin.Boolean, 
+    var `localFileVerifiedComplete`: kotlin.Boolean, 
+    var `remoteFileVerifiedComplete`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAttachmentTransferReceipt: FfiConverterRustBuffer<MobileAttachmentTransferReceipt> {
+    override fun read(buf: ByteBuffer): MobileAttachmentTransferReceipt {
+        return MobileAttachmentTransferReceipt(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAttachmentTransferReceipt) = (
+            FfiConverterByteArray.allocationSize(value.`eventId`) +
+            FfiConverterByteArray.allocationSize(value.`peerFingerprint`) +
+            FfiConverterByteArray.allocationSize(value.`transferId`) +
+            FfiConverterBoolean.allocationSize(value.`isSender`) +
+            FfiConverterULong.allocationSize(value.`chunksTransferred`) +
+            FfiConverterBoolean.allocationSize(value.`peerVerified`) +
+            FfiConverterBoolean.allocationSize(value.`localFileVerifiedComplete`) +
+            FfiConverterBoolean.allocationSize(value.`remoteFileVerifiedComplete`)
+    )
+
+    override fun write(value: MobileAttachmentTransferReceipt, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`peerFingerprint`, buf)
+            FfiConverterByteArray.write(value.`transferId`, buf)
+            FfiConverterBoolean.write(value.`isSender`, buf)
+            FfiConverterULong.write(value.`chunksTransferred`, buf)
+            FfiConverterBoolean.write(value.`peerVerified`, buf)
+            FfiConverterBoolean.write(value.`localFileVerifiedComplete`, buf)
+            FfiConverterBoolean.write(value.`remoteFileVerifiedComplete`, buf)
+    }
+}
+
+
+
+/**
+ * Summary of a manifest admitted by the restored Space policy.
+ */
+data class MobileAuthorizedAttachmentManifest (
+    var `eventId`: kotlin.ByteArray, 
+    var `spaceId`: kotlin.ByteArray, 
+    var `groupReference`: kotlin.ByteArray, 
+    var `filename`: kotlin.String, 
+    var `mimeType`: kotlin.String?, 
+    var `fileSize`: kotlin.ULong, 
+    var `fileHash`: kotlin.ByteArray, 
+    var `transferId`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAuthorizedAttachmentManifest: FfiConverterRustBuffer<MobileAuthorizedAttachmentManifest> {
+    override fun read(buf: ByteBuffer): MobileAuthorizedAttachmentManifest {
+        return MobileAuthorizedAttachmentManifest(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAuthorizedAttachmentManifest) = (
+            FfiConverterByteArray.allocationSize(value.`eventId`) +
+            FfiConverterByteArray.allocationSize(value.`spaceId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterOptionalString.allocationSize(value.`mimeType`) +
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterByteArray.allocationSize(value.`fileHash`) +
+            FfiConverterByteArray.allocationSize(value.`transferId`)
+    )
+
+    override fun write(value: MobileAuthorizedAttachmentManifest, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterOptionalString.write(value.`mimeType`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterByteArray.write(value.`fileHash`, buf)
+            FfiConverterByteArray.write(value.`transferId`, buf)
+    }
+}
+
+
+
+/**
  * Public peer identity and comparison string from a transcript-verified proof.
  */
 data class MobileBlePeerInfo (
@@ -4201,6 +5222,41 @@ public object FfiConverterTypeMobileChannelSummary: FfiConverterRustBuffer<Mobil
 
 
 /**
+ * Conversation plus a durable invitation packet ready for transport.
+ */
+data class MobileCreatedDirectMessage (
+    var `conversation`: MobileDirectMessageConversation, 
+    var `invitation`: MobileDirectMessagePacket
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileCreatedDirectMessage: FfiConverterRustBuffer<MobileCreatedDirectMessage> {
+    override fun read(buf: ByteBuffer): MobileCreatedDirectMessage {
+        return MobileCreatedDirectMessage(
+            FfiConverterTypeMobileDirectMessageConversation.read(buf),
+            FfiConverterTypeMobileDirectMessagePacket.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileCreatedDirectMessage) = (
+            FfiConverterTypeMobileDirectMessageConversation.allocationSize(value.`conversation`) +
+            FfiConverterTypeMobileDirectMessagePacket.allocationSize(value.`invitation`)
+    )
+
+    override fun write(value: MobileCreatedDirectMessage, buf: ByteBuffer) {
+            FfiConverterTypeMobileDirectMessageConversation.write(value.`conversation`, buf)
+            FfiConverterTypeMobileDirectMessagePacket.write(value.`invitation`, buf)
+    }
+}
+
+
+
+/**
  * Non-secret identifiers returned after a local Space transaction commits.
  */
 data class MobileCreatedSpace (
@@ -4250,6 +5306,319 @@ public object FfiConverterTypeMobileCreatedSpace: FfiConverterRustBuffer<MobileC
             FfiConverterByteArray.write(value.`groupReference`, buf)
             FfiConverterByteArray.write(value.`genesisEventId`, buf)
             FfiConverterSequenceTypeMobileChannelSummary.write(value.`channels`, buf)
+    }
+}
+
+
+
+/**
+ * Local participant metadata for one pairwise MLS conversation.
+ */
+data class MobileDirectMessageConversation (
+    var `groupReference`: kotlin.ByteArray, 
+    var `peerIdentity`: kotlin.ByteArray, 
+    var `closed`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessageConversation: FfiConverterRustBuffer<MobileDirectMessageConversation> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageConversation {
+        return MobileDirectMessageConversation(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessageConversation) = (
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`peerIdentity`) +
+            FfiConverterBoolean.allocationSize(value.`closed`)
+    )
+
+    override fun write(value: MobileDirectMessageConversation, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`peerIdentity`, buf)
+            FfiConverterBoolean.write(value.`closed`, buf)
+    }
+}
+
+
+
+/**
+ * Result of one authenticated bounded direct-message TCP exchange.
+ */
+data class MobileDirectMessageExchange (
+    var `listenAddress`: kotlin.String, 
+    var `peerFingerprint`: kotlin.ByteArray, 
+    var `outgoingPacketId`: kotlin.ByteArray?, 
+    var `outgoingIngressState`: kotlin.String?, 
+    var `incomingPacketId`: kotlin.ByteArray?, 
+    var `incomingIngressState`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessageExchange: FfiConverterRustBuffer<MobileDirectMessageExchange> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageExchange {
+        return MobileDirectMessageExchange(
+            FfiConverterString.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterOptionalByteArray.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalByteArray.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessageExchange) = (
+            FfiConverterString.allocationSize(value.`listenAddress`) +
+            FfiConverterByteArray.allocationSize(value.`peerFingerprint`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`outgoingPacketId`) +
+            FfiConverterOptionalString.allocationSize(value.`outgoingIngressState`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`incomingPacketId`) +
+            FfiConverterOptionalString.allocationSize(value.`incomingIngressState`)
+    )
+
+    override fun write(value: MobileDirectMessageExchange, buf: ByteBuffer) {
+            FfiConverterString.write(value.`listenAddress`, buf)
+            FfiConverterByteArray.write(value.`peerFingerprint`, buf)
+            FfiConverterOptionalByteArray.write(value.`outgoingPacketId`, buf)
+            FfiConverterOptionalString.write(value.`outgoingIngressState`, buf)
+            FfiConverterOptionalByteArray.write(value.`incomingPacketId`, buf)
+            FfiConverterOptionalString.write(value.`incomingIngressState`, buf)
+    }
+}
+
+
+
+/**
+ * Decrypted message retained in the local protected direct-message history.
+ */
+data class MobileDirectMessageHistoryEntry (
+    var `packetId`: kotlin.ByteArray, 
+    var `groupReference`: kotlin.ByteArray, 
+    var `authorIdentity`: kotlin.ByteArray, 
+    var `content`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessageHistoryEntry: FfiConverterRustBuffer<MobileDirectMessageHistoryEntry> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageHistoryEntry {
+        return MobileDirectMessageHistoryEntry(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessageHistoryEntry) = (
+            FfiConverterByteArray.allocationSize(value.`packetId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`authorIdentity`) +
+            FfiConverterString.allocationSize(value.`content`)
+    )
+
+    override fun write(value: MobileDirectMessageHistoryEntry, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`authorIdentity`, buf)
+            FfiConverterString.write(value.`content`, buf)
+    }
+}
+
+
+
+/**
+ * Result of authenticating and storing one incoming MLS packet.
+ */
+data class MobileDirectMessageIngressResult (
+    var `packetId`: kotlin.ByteArray, 
+    var `duplicate`: kotlin.Boolean, 
+    var `invitationPending`: kotlin.Boolean, 
+    var `groupReference`: kotlin.ByteArray?, 
+    var `peerIdentity`: kotlin.ByteArray?, 
+    var `content`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessageIngressResult: FfiConverterRustBuffer<MobileDirectMessageIngressResult> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageIngressResult {
+        return MobileDirectMessageIngressResult(
+            FfiConverterByteArray.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalByteArray.read(buf),
+            FfiConverterOptionalByteArray.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessageIngressResult) = (
+            FfiConverterByteArray.allocationSize(value.`packetId`) +
+            FfiConverterBoolean.allocationSize(value.`duplicate`) +
+            FfiConverterBoolean.allocationSize(value.`invitationPending`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`peerIdentity`) +
+            FfiConverterOptionalString.allocationSize(value.`content`)
+    )
+
+    override fun write(value: MobileDirectMessageIngressResult, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterBoolean.write(value.`duplicate`, buf)
+            FfiConverterBoolean.write(value.`invitationPending`, buf)
+            FfiConverterOptionalByteArray.write(value.`groupReference`, buf)
+            FfiConverterOptionalByteArray.write(value.`peerIdentity`, buf)
+            FfiConverterOptionalString.write(value.`content`, buf)
+    }
+}
+
+
+
+/**
+ * Durable outbox packet and retry metadata.
+ */
+data class MobileDirectMessageOutboxEntry (
+    var `packetId`: kotlin.ByteArray, 
+    var `groupReference`: kotlin.ByteArray, 
+    var `envelopeBytes`: kotlin.ByteArray, 
+    var `nextAttemptMs`: kotlin.Long, 
+    var `attemptCount`: kotlin.UInt, 
+    var `state`: MobileOutboxState
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessageOutboxEntry: FfiConverterRustBuffer<MobileDirectMessageOutboxEntry> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageOutboxEntry {
+        return MobileDirectMessageOutboxEntry(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterTypeMobileOutboxState.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessageOutboxEntry) = (
+            FfiConverterByteArray.allocationSize(value.`packetId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`envelopeBytes`) +
+            FfiConverterLong.allocationSize(value.`nextAttemptMs`) +
+            FfiConverterUInt.allocationSize(value.`attemptCount`) +
+            FfiConverterTypeMobileOutboxState.allocationSize(value.`state`)
+    )
+
+    override fun write(value: MobileDirectMessageOutboxEntry, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`envelopeBytes`, buf)
+            FfiConverterLong.write(value.`nextAttemptMs`, buf)
+            FfiConverterUInt.write(value.`attemptCount`, buf)
+            FfiConverterTypeMobileOutboxState.write(value.`state`, buf)
+    }
+}
+
+
+
+/**
+ * Immutable routed invitation or ciphertext packet.
+ */
+data class MobileDirectMessagePacket (
+    var `packetId`: kotlin.ByteArray, 
+    var `groupReference`: kotlin.ByteArray, 
+    var `envelopeBytes`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessagePacket: FfiConverterRustBuffer<MobileDirectMessagePacket> {
+    override fun read(buf: ByteBuffer): MobileDirectMessagePacket {
+        return MobileDirectMessagePacket(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessagePacket) = (
+            FfiConverterByteArray.allocationSize(value.`packetId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`envelopeBytes`)
+    )
+
+    override fun write(value: MobileDirectMessagePacket, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`envelopeBytes`, buf)
+    }
+}
+
+
+
+/**
+ * Authenticated invitation stored until the user accepts or declines it.
+ */
+data class MobileDirectMessagePendingInvitation (
+    var `packetId`: kotlin.ByteArray, 
+    var `groupReference`: kotlin.ByteArray, 
+    var `peerIdentity`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileDirectMessagePendingInvitation: FfiConverterRustBuffer<MobileDirectMessagePendingInvitation> {
+    override fun read(buf: ByteBuffer): MobileDirectMessagePendingInvitation {
+        return MobileDirectMessagePendingInvitation(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileDirectMessagePendingInvitation) = (
+            FfiConverterByteArray.allocationSize(value.`packetId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`peerIdentity`)
+    )
+
+    override fun write(value: MobileDirectMessagePendingInvitation, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`peerIdentity`, buf)
     }
 }
 
@@ -5129,6 +6498,24 @@ sealed class MobileException: kotlin.Exception() {
     }
     
     /**
+     * A direct-message identifier or packet failed validation or storage.
+     */
+    class DirectMessageFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * A direct-message packet was not explicitly accepted by the user.
+     */
+    class DirectMessageNotAccepted(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
      * The local message-search query is empty or exceeds its byte limit.
      */
     class InvalidMessageSearch(
@@ -5281,6 +6668,60 @@ sealed class MobileException: kotlin.Exception() {
             get() = ""
     }
     
+    /**
+     * Attachment metadata, private staging, or transfer operation failed.
+     */
+    class AttachmentOperationFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * An authorized Space event does not contain the requested attachment manifest.
+     */
+    class AttachmentNotAuthorized(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The selected private source changed after its manifest preview was created.
+     */
+    class AttachmentManifestSourceChanged(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The receiver has not explicitly consented to private staging.
+     */
+    class AttachmentConsentRequired(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The exact pinned peer is not an active member of the selected Space.
+     */
+    class AttachmentPeerNotAuthorized(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
+    /**
+     * The remote identity has not been pinned in this profile.
+     */
+    class AttachmentPeerNotPinned(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileException> {
         override fun lift(error_buf: RustBuffer.ByValue): MobileException = FfiConverterTypeMobileError.lift(error_buf)
@@ -5322,23 +6763,31 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             23 -> MobileException.ProjectionObserverUnavailable()
             24 -> MobileException.InvalidSpaceMessageId()
             25 -> MobileException.InvalidMessageInput()
-            26 -> MobileException.InvalidMessageSearch()
-            27 -> MobileException.MessageRejected()
-            28 -> MobileException.MessageQueueFailed()
-            29 -> MobileException.MessageHistoryUnavailable()
-            30 -> MobileException.InvalidOutboxEventId()
-            31 -> MobileException.InvalidOutboxSchedule()
-            32 -> MobileException.OutboxTransitionRejected()
-            33 -> MobileException.InvalidOutboxCursor()
-            34 -> MobileException.InvalidOutboxPage()
-            35 -> MobileException.OutboxUnavailable()
-            36 -> MobileException.SyncIngestFailed()
-            37 -> MobileException.InvalidBleDiscoveryToken()
-            38 -> MobileException.BleSessionFailed()
-            39 -> MobileException.BleRecordRejected()
-            40 -> MobileException.BlePeerNotPinned()
-            41 -> MobileException.BlePeerIdentityMismatch()
-            42 -> MobileException.BlePeerNotAuthenticated()
+            26 -> MobileException.DirectMessageFailed()
+            27 -> MobileException.DirectMessageNotAccepted()
+            28 -> MobileException.InvalidMessageSearch()
+            29 -> MobileException.MessageRejected()
+            30 -> MobileException.MessageQueueFailed()
+            31 -> MobileException.MessageHistoryUnavailable()
+            32 -> MobileException.InvalidOutboxEventId()
+            33 -> MobileException.InvalidOutboxSchedule()
+            34 -> MobileException.OutboxTransitionRejected()
+            35 -> MobileException.InvalidOutboxCursor()
+            36 -> MobileException.InvalidOutboxPage()
+            37 -> MobileException.OutboxUnavailable()
+            38 -> MobileException.SyncIngestFailed()
+            39 -> MobileException.InvalidBleDiscoveryToken()
+            40 -> MobileException.BleSessionFailed()
+            41 -> MobileException.BleRecordRejected()
+            42 -> MobileException.BlePeerNotPinned()
+            43 -> MobileException.BlePeerIdentityMismatch()
+            44 -> MobileException.BlePeerNotAuthenticated()
+            45 -> MobileException.AttachmentOperationFailed()
+            46 -> MobileException.AttachmentNotAuthorized()
+            47 -> MobileException.AttachmentManifestSourceChanged()
+            48 -> MobileException.AttachmentConsentRequired()
+            49 -> MobileException.AttachmentPeerNotAuthorized()
+            50 -> MobileException.AttachmentPeerNotPinned()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -5445,6 +6894,14 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
+            is MobileException.DirectMessageFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.DirectMessageNotAccepted -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
             is MobileException.InvalidMessageSearch -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
@@ -5510,6 +6967,30 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 4UL
             )
             is MobileException.BlePeerNotAuthenticated -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.AttachmentOperationFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.AttachmentNotAuthorized -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.AttachmentManifestSourceChanged -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.AttachmentConsentRequired -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.AttachmentPeerNotAuthorized -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is MobileException.AttachmentPeerNotPinned -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
@@ -5618,72 +7099,104 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
                 buf.putInt(25)
                 Unit
             }
-            is MobileException.InvalidMessageSearch -> {
+            is MobileException.DirectMessageFailed -> {
                 buf.putInt(26)
                 Unit
             }
-            is MobileException.MessageRejected -> {
+            is MobileException.DirectMessageNotAccepted -> {
                 buf.putInt(27)
                 Unit
             }
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.InvalidMessageSearch -> {
                 buf.putInt(28)
                 Unit
             }
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.MessageRejected -> {
                 buf.putInt(29)
                 Unit
             }
-            is MobileException.InvalidOutboxEventId -> {
+            is MobileException.MessageQueueFailed -> {
                 buf.putInt(30)
                 Unit
             }
-            is MobileException.InvalidOutboxSchedule -> {
+            is MobileException.MessageHistoryUnavailable -> {
                 buf.putInt(31)
                 Unit
             }
-            is MobileException.OutboxTransitionRejected -> {
+            is MobileException.InvalidOutboxEventId -> {
                 buf.putInt(32)
                 Unit
             }
-            is MobileException.InvalidOutboxCursor -> {
+            is MobileException.InvalidOutboxSchedule -> {
                 buf.putInt(33)
                 Unit
             }
-            is MobileException.InvalidOutboxPage -> {
+            is MobileException.OutboxTransitionRejected -> {
                 buf.putInt(34)
                 Unit
             }
-            is MobileException.OutboxUnavailable -> {
+            is MobileException.InvalidOutboxCursor -> {
                 buf.putInt(35)
                 Unit
             }
-            is MobileException.SyncIngestFailed -> {
+            is MobileException.InvalidOutboxPage -> {
                 buf.putInt(36)
                 Unit
             }
-            is MobileException.InvalidBleDiscoveryToken -> {
+            is MobileException.OutboxUnavailable -> {
                 buf.putInt(37)
                 Unit
             }
-            is MobileException.BleSessionFailed -> {
+            is MobileException.SyncIngestFailed -> {
                 buf.putInt(38)
                 Unit
             }
-            is MobileException.BleRecordRejected -> {
+            is MobileException.InvalidBleDiscoveryToken -> {
                 buf.putInt(39)
                 Unit
             }
-            is MobileException.BlePeerNotPinned -> {
+            is MobileException.BleSessionFailed -> {
                 buf.putInt(40)
                 Unit
             }
-            is MobileException.BlePeerIdentityMismatch -> {
+            is MobileException.BleRecordRejected -> {
                 buf.putInt(41)
                 Unit
             }
-            is MobileException.BlePeerNotAuthenticated -> {
+            is MobileException.BlePeerNotPinned -> {
                 buf.putInt(42)
+                Unit
+            }
+            is MobileException.BlePeerIdentityMismatch -> {
+                buf.putInt(43)
+                Unit
+            }
+            is MobileException.BlePeerNotAuthenticated -> {
+                buf.putInt(44)
+                Unit
+            }
+            is MobileException.AttachmentOperationFailed -> {
+                buf.putInt(45)
+                Unit
+            }
+            is MobileException.AttachmentNotAuthorized -> {
+                buf.putInt(46)
+                Unit
+            }
+            is MobileException.AttachmentManifestSourceChanged -> {
+                buf.putInt(47)
+                Unit
+            }
+            is MobileException.AttachmentConsentRequired -> {
+                buf.putInt(48)
+                Unit
+            }
+            is MobileException.AttachmentPeerNotAuthorized -> {
+                buf.putInt(49)
+                Unit
+            }
+            is MobileException.AttachmentPeerNotPinned -> {
+                buf.putInt(50)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -6102,6 +7615,118 @@ public object FfiConverterSequenceTypeMobileChannelSummary: FfiConverterRustBuff
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileChannelSummary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileDirectMessageConversation: FfiConverterRustBuffer<List<MobileDirectMessageConversation>> {
+    override fun read(buf: ByteBuffer): List<MobileDirectMessageConversation> {
+        val len = buf.getInt()
+        return List<MobileDirectMessageConversation>(len) {
+            FfiConverterTypeMobileDirectMessageConversation.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileDirectMessageConversation>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileDirectMessageConversation.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileDirectMessageConversation>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileDirectMessageConversation.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileDirectMessageHistoryEntry: FfiConverterRustBuffer<List<MobileDirectMessageHistoryEntry>> {
+    override fun read(buf: ByteBuffer): List<MobileDirectMessageHistoryEntry> {
+        val len = buf.getInt()
+        return List<MobileDirectMessageHistoryEntry>(len) {
+            FfiConverterTypeMobileDirectMessageHistoryEntry.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileDirectMessageHistoryEntry>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileDirectMessageHistoryEntry.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileDirectMessageHistoryEntry>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileDirectMessageHistoryEntry.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileDirectMessageOutboxEntry: FfiConverterRustBuffer<List<MobileDirectMessageOutboxEntry>> {
+    override fun read(buf: ByteBuffer): List<MobileDirectMessageOutboxEntry> {
+        val len = buf.getInt()
+        return List<MobileDirectMessageOutboxEntry>(len) {
+            FfiConverterTypeMobileDirectMessageOutboxEntry.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileDirectMessageOutboxEntry>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileDirectMessageOutboxEntry.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileDirectMessageOutboxEntry>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileDirectMessageOutboxEntry.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileDirectMessagePendingInvitation: FfiConverterRustBuffer<List<MobileDirectMessagePendingInvitation>> {
+    override fun read(buf: ByteBuffer): List<MobileDirectMessagePendingInvitation> {
+        val len = buf.getInt()
+        return List<MobileDirectMessagePendingInvitation>(len) {
+            FfiConverterTypeMobileDirectMessagePendingInvitation.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileDirectMessagePendingInvitation>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileDirectMessagePendingInvitation.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileDirectMessagePendingInvitation>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileDirectMessagePendingInvitation.write(it, buf)
         }
     }
 }
