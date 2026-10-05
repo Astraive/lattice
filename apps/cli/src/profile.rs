@@ -12,7 +12,7 @@ pub(crate) fn open_existing_client(
     database_path: impl AsRef<Path>,
     protector: &OsKeyringProtector,
 ) -> Result<Client, CoreError> {
-    let policy = credential_trust_policy(explicit_data_directory())
+    let policy = credential_trust_policy(explicit_data_directory().as_deref())
         .map_err(|_| CoreError::Mls(lattice_mls::api::MlsError::CredentialValidationFailed))?;
     Client::open_existing_with_trust_policy(database_path, protector, policy)
 }
@@ -21,7 +21,7 @@ pub(crate) fn open_or_create_client(
     database_path: impl AsRef<Path>,
     protector: &OsKeyringProtector,
 ) -> Result<Client, CoreError> {
-    let policy = credential_trust_policy(explicit_data_directory())
+    let policy = credential_trust_policy(explicit_data_directory().as_deref())
         .map_err(|_| CoreError::Mls(lattice_mls::api::MlsError::CredentialValidationFailed))?;
     Client::open_or_create_with_trust_policy(database_path, protector, policy)
 }
@@ -42,10 +42,10 @@ fn explicit_data_directory() -> Option<PathBuf> {
     None
 }
 
-fn credential_trust_policy(data_dir: Option<PathBuf>) -> Result<CredentialTrustPolicy, String> {
+fn credential_trust_policy(data_dir: Option<&Path>) -> Result<CredentialTrustPolicy, String> {
     let root_path = std::env::var_os(DEBUG_TRUST_ROOT_DER_ENV);
     let expected_sha256 = std::env::var_os(DEBUG_TRUST_ROOT_SHA256_ENV);
-    trust_policy_from_settings(data_dir.as_deref(), root_path, expected_sha256)
+    trust_policy_from_settings(data_dir, root_path, expected_sha256)
 }
 
 fn trust_policy_from_settings(
@@ -149,10 +149,11 @@ mod tests {
         ];
         let cert = params.self_signed(&root_key).unwrap();
         std::fs::write(&root, cert.der()).unwrap();
-        let digest = Sha256::digest(cert.der())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let mut digest = String::with_capacity(64);
+        for byte in Sha256::digest(cert.der()) {
+            use std::fmt::Write as _;
+            write!(&mut digest, "{byte:02x}").unwrap();
+        }
         let profile = std::env::temp_dir();
         let result = trust_policy_from_settings(
             Some(&profile),
