@@ -1,24 +1,50 @@
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Seek, SeekFrom};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lattice_core::{
-    Client, CoreError, InitialChannel, LocalTextMessageRecord, MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES,
-    MAX_OUTBOX_PAGE_SIZE, MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES,
-    OutboxEntry, OutboxState, SpaceGenesisCursor, SyncedApplicationOutcome,
-    space::{Channel, ChannelType, MAX_SPACE_PAYLOAD_BYTES},
+    Client, CoreError, DirectMessageIngressOutcome, InitialChannel, LocalTextMessageRecord,
+    MAX_DIRECT_MESSAGE_PACKET_BYTES, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
+    MAX_DIRECT_MESSAGE_TEXT_BYTES, MAX_LOCAL_TEXT_SEARCH_QUERY_BYTES, MAX_OUTBOX_PAGE_SIZE,
+    MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxEntry, OutboxState,
+    SpaceGenesisCursor, SyncedApplicationOutcome,
+    space::{Channel, ChannelType, MAX_SPACE_PAYLOAD_BYTES, MemberStatus},
+};
+use lattice_files::{
+    AttachmentManifest, AttachmentStagingLimits, AttachmentStagingStore, CHUNK_SIZE,
+    StreamedAttachmentReceiver,
 };
 use lattice_identity::{
     BleExp0IdentitySignature, IdentityError, PrivateKeyProtectionError, PrivateKeyProtector,
 };
 
+use lattice_node::sync::{
+    DirectMessageIngressReceipt, DirectMessageIngressState,
+    execute_authenticated_direct_message_once, receive_authenticated_attachment_once,
+    send_authenticated_attachment_once, serve_authenticated_direct_message_once,
+};
+use lattice_platform::MAX_ENVELOPE_BYTES;
+use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
+use tokio_util::sync::CancellationToken;
+
 use super::{
-    MobileChannelSummary, MobileChannelType, MobileCreatedSpace, MobileError, MobileIdentityInfo,
-    MobileInitialChannel, MobileLocalTextMessage, MobileLocalTextMessageSearch, MobileOutboxEntry,
-    MobileOutboxState, MobilePinnedIdentity, MobileProjectionChange, MobileQueuedMessage,
-    MobileSpaceCursor, MobileSpaceInvitation, MobileSpacePage, MobileSpaceSummary,
-    MobileSyncEventResult, MobileSyncEventState, PlatformKeyProtector,
+    MobileAttachmentExport, MobileAttachmentManifest, MobileAttachmentQueueReceipt,
+    MobileAttachmentStagingStatus, MobileAttachmentTransferReceipt,
+    MobileAuthorizedAttachmentManifest, MobileChannelSummary, MobileChannelType,
+    MobileCreatedDirectMessage, MobileCreatedSpace, MobileDirectMessageConversation,
+    MobileDirectMessageExchange, MobileDirectMessageHistoryEntry, MobileDirectMessageIngressResult,
+    MobileDirectMessageOutboxEntry, MobileDirectMessagePacket,
+    MobileDirectMessagePendingInvitation, MobileError, MobileIdentityInfo, MobileInitialChannel,
+    MobileLocalTextMessage, MobileLocalTextMessageSearch, MobileOutboxEntry, MobileOutboxState,
+    MobilePinnedIdentity, MobileProjectionChange, MobileQueuedMessage, MobileSpaceCursor,
+    MobileSpaceInvitation, MobileSpacePage, MobileSpaceSummary, MobileSyncEventResult,
+    MobileSyncEventState, PlatformKeyProtector,
 };
 
+#[derive(Clone)]
 struct ProfileProtector {
     profile_id: String,
     platform: Arc<dyn PlatformKeyProtector>,
@@ -342,10 +368,134 @@ mod projection_observer_tests {
     }
 }
 
+#[cfg(test)]
+mod direct_message_lan_tests {
+    use super::*;
+
+    struct TestProtector;
+
+    impl PlatformKeyProtector for TestProtector {
+        fn wrap(
+            &self,
+            _profile_id: String,
+            clear_material: Vec<u8>,
+        ) -> Result<Vec<u8>, super::super::ProtectorError> {
+            Ok(clear_material)
+        }
+
+        fn unwrap(
+            &self,
+            _profile_id: String,
+            ciphertext: Vec<u8>,
+        ) -> Result<Vec<u8>, super::super::ProtectorError> {
+            Ok(ciphertext)
+        }
+    }
+
+    fn available_loopback_address() -> SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test port");
+        let address = listener.local_addr().expect("read test port");
+        drop(listener);
+        address
+    }
+
+    #[test]
+    fn two_profiles_exchange_over_exact_pin_authenticated_tcp() {
+        let directory = tempfile::tempdir().expect("create test profiles");
+        let alice = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("alice.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "alice-lan-test".to_owned(),
+            Arc::new(TestProtector),
+        )
+        .expect("open Alice");
+        let bob = MobileClient::open_or_create(
+            directory
+                .path()
+                .join("bob.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+            "bob-lan-test".to_owned(),
+            Arc::new(TestProtector),
+        )
+        .expect("open Bob");
+        let alice_identity = alice.identity_info().expect("read Alice identity");
+        let bob_identity = bob.identity_info().expect("read Bob identity");
+        alice
+            .pin_identity(
+                bob_identity.public_bundle.clone(),
+                bob_identity.fingerprint.clone(),
+            )
+            .expect("Alice pins Bob");
+        bob.pin_identity(
+            alice_identity.public_bundle.clone(),
+            alice_identity.fingerprint.clone(),
+        )
+        .expect("Bob pins Alice");
+
+        let alice_listen = available_loopback_address();
+        let bob_listen = available_loopback_address();
+        let mut unpinned_fingerprint = bob_identity.fingerprint.clone();
+        unpinned_fingerprint[0] ^= 1;
+        assert!(matches!(
+            alice.exchange_direct_messages_once(
+                bob_listen.to_string(),
+                alice_listen.to_string(),
+                unpinned_fingerprint,
+            ),
+            Err(MobileError::DirectMessageFailed)
+        ));
+
+        let alice_task = {
+            let alice = Arc::clone(&alice);
+            let peer_fingerprint = bob_identity.fingerprint.clone();
+            std::thread::spawn(move || {
+                alice.exchange_direct_messages_once(
+                    bob_listen.to_string(),
+                    alice_listen.to_string(),
+                    peer_fingerprint,
+                )
+            })
+        };
+        let bob_task = {
+            let bob = Arc::clone(&bob);
+            let peer_fingerprint = alice_identity.fingerprint.clone();
+            std::thread::spawn(move || {
+                bob.exchange_direct_messages_once(
+                    alice_listen.to_string(),
+                    bob_listen.to_string(),
+                    peer_fingerprint,
+                )
+            })
+        };
+        let alice_exchange = alice_task
+            .join()
+            .expect("Alice LAN worker")
+            .expect("Alice exchange");
+        let bob_exchange = bob_task
+            .join()
+            .expect("Bob LAN worker")
+            .expect("Bob exchange");
+        assert_eq!(alice_exchange.peer_fingerprint, bob_identity.fingerprint);
+        assert_eq!(bob_exchange.peer_fingerprint, alice_identity.fingerprint);
+        assert_eq!(alice_exchange.listen_address, alice_listen.to_string());
+        assert_eq!(bob_exchange.listen_address, bob_listen.to_string());
+        assert_eq!(alice_exchange.outgoing_packet_id, None);
+        assert_eq!(alice_exchange.incoming_packet_id, None);
+        assert_eq!(bob_exchange.outgoing_packet_id, None);
+        assert_eq!(bob_exchange.incoming_packet_id, None);
+    }
+}
+
 /// Thread-safe handle to one durable local profile.
 #[derive(uniffi::Object)]
 pub struct MobileClient {
     client: Mutex<Client>,
+    database_path: String,
+    profile_protector: ProfileProtector,
     projection_observers: ProjectionObserverHub,
 }
 
@@ -375,13 +525,15 @@ impl MobileClient {
         }
 
         let platform = ProfileProtector {
-            profile_id,
+            profile_id: profile_id.clone(),
             platform: protector,
         };
-        let client = Client::open_or_create(database_path, &platform)
+        let client = Client::open_or_create(&database_path, &platform)
             .map_err(|error| map_open_error(&error))?;
         Ok(Arc::new(Self {
             client: Mutex::new(client),
+            database_path,
+            profile_protector: platform,
             projection_observers: ProjectionObserverHub::default(),
         }))
     }
@@ -926,6 +1078,538 @@ impl MobileClient {
         Ok(result)
     }
 
+    /// Computes bounded manifest metadata from one app-private imported source.
+    ///
+    /// The identifier is an opaque lowercase-hex token; this API never accepts
+    /// a caller-selected filesystem path.
+    pub fn create_attachment_manifest(
+        &self,
+        source_id: String,
+        filename: String,
+    ) -> Result<MobileAttachmentManifest, MobileError> {
+        let mut source = open_attachment_import(&self.database_path, &source_id)?;
+        let manifest = AttachmentManifest::from_reader(&mut source, &filename, None)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        Ok(mobile_attachment_preview(&manifest))
+    }
+
+    /// Queues one Core-authorized signed Space manifest and durably stages the
+    /// verified source under its event-bound transfer identity.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_attachment_manifest(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        channel_id: Vec<u8>,
+        source_id: String,
+        preview: MobileAttachmentManifest,
+    ) -> Result<MobileAttachmentQueueReceipt, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let channel_id: [u8; 16] = channel_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        if preview.file_hash.len() != 32 || preview.file_size > MAX_MOBILE_ATTACHMENT_BYTES {
+            return Err(MobileError::AttachmentOperationFailed);
+        }
+
+        let mut source = open_attachment_import(&self.database_path, &source_id)?;
+        let manifest = AttachmentManifest::from_reader(&mut source, &preview.filename, None)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        if !attachment_preview_matches(&preview, &manifest) {
+            return Err(MobileError::AttachmentManifestSourceChanged);
+        }
+
+        let mut client = self.lock_client()?;
+        let queued = client
+            .queue_file_manifest_from_x509_credential(
+                &space_id,
+                &group_reference,
+                credential_vector,
+                channel_id,
+                &manifest,
+            )
+            .map_err(|error| match error {
+                CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
+                _ => MobileError::AttachmentOperationFailed,
+            })?;
+        let event_id = *queued.event_id();
+        let source_retained =
+            persist_sender_source(&self.database_path, &manifest, event_id, &mut source).is_ok();
+        drop(source);
+        if source_retained {
+            if let Ok(path) = attachment_import_path(&self.database_path, &source_id) {
+                let _ = fs::remove_file(path);
+            }
+        }
+
+        let transfer_id = manifest
+            .transfer_id(&event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let receipt = MobileAttachmentQueueReceipt {
+            manifest: MobileAuthorizedAttachmentManifest {
+                event_id: event_id.to_vec(),
+                space_id: space_id.to_vec(),
+                group_reference: group_reference.to_vec(),
+                filename: manifest.filename.clone(),
+                mime_type: manifest.mime_type.clone(),
+                file_size: manifest.file_size,
+                file_hash: manifest.file_hash.to_vec(),
+                transfer_id: transfer_id.0.to_vec(),
+            },
+            source_retained,
+        };
+        drop(client);
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(receipt)
+    }
+
+    /// Returns a display-only summary only when Core authorizes this exact
+    /// event ID in the restored Space generation.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn authorized_attachment_manifest(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        event_id: Vec<u8>,
+    ) -> Result<MobileAuthorizedAttachmentManifest, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let mut client = self.lock_client()?;
+        let space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
+        let authorized = space
+            .reducer()
+            .authorized_attachment_manifest(&event_id)
+            .ok_or(MobileError::AttachmentNotAuthorized)?;
+        mobile_authorized_attachment_manifest(space_id, group_reference, &authorized)
+    }
+    /// Reopens the private receiver store and verifies staged chunks before
+    /// reporting resumable progress.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn attachment_staging_status(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        event_id: Vec<u8>,
+    ) -> Result<MobileAttachmentStagingStatus, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let mut client = self.lock_client()?;
+        let space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
+        let authorized = space
+            .reducer()
+            .authorized_attachment_manifest(&event_id)
+            .ok_or(MobileError::AttachmentNotAuthorized)?;
+        let manifest = authorized.manifest().clone();
+        ensure_mobile_attachment_size(&manifest)?;
+        let transfer_id = manifest
+            .transfer_id(&event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let total_chunks = manifest.chunk_hashes.len();
+        if !staged_transfer_exists(&self.database_path, "receives", transfer_id.0)? {
+            return Ok(MobileAttachmentStagingStatus {
+                event_id: event_id.to_vec(),
+                file_size: manifest.file_size,
+                verified_chunks: 0,
+                total_chunks: total_chunks as u64,
+                complete: false,
+            });
+        }
+        let store = receive_attachment_store(&self.database_path)?;
+        let staged_file = store
+            .open(&manifest, &event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let mut receiver = StreamedAttachmentReceiver::new(
+            manifest.clone(),
+            MAX_MOBILE_ATTACHMENT_BYTES,
+            staged_file,
+        )
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        receiver
+            .accept()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let missing_chunks = receiver
+            .missing_ranges()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .iter()
+            .map(|range| range.end_exclusive.saturating_sub(range.start))
+            .sum::<usize>();
+        let verified_chunks = total_chunks.saturating_sub(missing_chunks);
+        Ok(MobileAttachmentStagingStatus {
+            event_id: event_id.to_vec(),
+            file_size: manifest.file_size,
+            verified_chunks: verified_chunks as u64,
+            total_chunks: total_chunks as u64,
+            complete: receiver.is_complete(),
+        })
+    }
+
+    /// Sends one authorized manifest over TCP and a separately domain-bound
+    /// Noise session pinned to the exact active Space member.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn send_attachment_once(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        event_id: Vec<u8>,
+        peer_fingerprint: Vec<u8>,
+        connect_address: String,
+    ) -> Result<MobileAttachmentTransferReceipt, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let peer_fingerprint: [u8; 32] = peer_fingerprint
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let connect_address = connect_address
+            .parse::<SocketAddr>()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+
+        let mut client = self.lock_client()?;
+        let local_fingerprint = client.identity_info().fingerprint;
+        if local_fingerprint == peer_fingerprint
+            || client
+                .pinned_identity(&peer_fingerprint)
+                .map_err(|_| MobileError::AttachmentOperationFailed)?
+                .is_none()
+        {
+            return Err(MobileError::AttachmentPeerNotPinned);
+        }
+        let space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
+        if !space_has_active_member(&space, &peer_fingerprint) {
+            return Err(MobileError::AttachmentPeerNotAuthorized);
+        }
+        let authorized = space
+            .reducer()
+            .authorized_attachment_manifest(&event_id)
+            .ok_or(MobileError::AttachmentNotAuthorized)?;
+        let manifest = authorized.manifest().clone();
+        ensure_mobile_attachment_size(&manifest)?;
+        let transfer_id = manifest
+            .transfer_id(&event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let mut source = open_verified_sender_source(&self.database_path, &manifest, event_id)?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let adapter = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    TcpPeerAdapter::connect(connect_address, ATTACHMENT_FRAME_LIMIT),
+                )
+                .await
+            })
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let cancellation = CancellationToken::new();
+        let transfer = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    ATTACHMENT_SESSION_TIMEOUT,
+                    client.with_pinned_identity(
+                        &peer_fingerprint,
+                        |identity, pinned_peer| async move {
+                            send_authenticated_attachment_once(
+                                &adapter,
+                                identity,
+                                pinned_peer,
+                                event_id,
+                                &manifest,
+                                &mut source,
+                                |authenticated_peer, candidate_event_id, candidate_manifest| {
+                                    authenticated_peer.fingerprint() == peer_fingerprint
+                                        && candidate_event_id == &event_id
+                                        && candidate_manifest == &manifest
+                                },
+                                &cancellation,
+                            )
+                            .await
+                        },
+                    ),
+                )
+                .await
+            })
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .ok_or(MobileError::AttachmentPeerNotPinned)?
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        if transfer.authenticated_peer.fingerprint() != peer_fingerprint
+            || transfer.transfer_id != transfer_id
+            || !transfer.receiver_verified_complete
+        {
+            return Err(MobileError::AttachmentOperationFailed);
+        }
+        Ok(MobileAttachmentTransferReceipt {
+            event_id: event_id.to_vec(),
+            peer_fingerprint: peer_fingerprint.to_vec(),
+            transfer_id: transfer_id.0.to_vec(),
+            is_sender: true,
+            chunks_transferred: transfer.chunks_sent as u64,
+            peer_verified: true,
+            local_file_verified_complete: true,
+            remote_file_verified_complete: transfer.receiver_verified_complete,
+        })
+    }
+
+    /// Receives one authorized manifest into persistent private staging after
+    /// explicit user consent and exact pinned-peer authorization.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn receive_attachment_once(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        event_id: Vec<u8>,
+        peer_fingerprint: Vec<u8>,
+        listen_address: String,
+        user_consented: bool,
+    ) -> Result<MobileAttachmentTransferReceipt, MobileError> {
+        if !user_consented {
+            return Err(MobileError::AttachmentConsentRequired);
+        }
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let peer_fingerprint: [u8; 32] = peer_fingerprint
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let listen_address = listen_address
+            .parse::<SocketAddr>()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+
+        let mut client = self.lock_client()?;
+        let local_fingerprint = client.identity_info().fingerprint;
+        if local_fingerprint == peer_fingerprint
+            || client
+                .pinned_identity(&peer_fingerprint)
+                .map_err(|_| MobileError::AttachmentOperationFailed)?
+                .is_none()
+        {
+            return Err(MobileError::AttachmentPeerNotPinned);
+        }
+        let space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
+        if !space_has_active_member(&space, &peer_fingerprint) {
+            return Err(MobileError::AttachmentPeerNotAuthorized);
+        }
+        let authorized = space
+            .reducer()
+            .authorized_attachment_manifest(&event_id)
+            .ok_or(MobileError::AttachmentNotAuthorized)?;
+        let manifest = authorized.manifest().clone();
+        ensure_mobile_attachment_size(&manifest)?;
+        let transfer_id = manifest
+            .transfer_id(&event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let store = receive_attachment_store(&self.database_path)?;
+        let staged_file = store
+            .open(&manifest, &event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let mut receiver = StreamedAttachmentReceiver::new(
+            manifest.clone(),
+            MAX_MOBILE_ATTACHMENT_BYTES,
+            staged_file,
+        )
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let listener = runtime
+            .block_on(TcpPeerListener::bind(
+                listen_address,
+                ATTACHMENT_FRAME_LIMIT,
+            ))
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let (adapter, _) = runtime
+            .block_on(async {
+                tokio::time::timeout(ATTACHMENT_SESSION_TIMEOUT, listener.accept()).await
+            })
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let cancellation = CancellationToken::new();
+        let transfer = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    ATTACHMENT_SESSION_TIMEOUT,
+                    client.with_pinned_identity(
+                        &peer_fingerprint,
+                        |identity, pinned_peer| async move {
+                            receive_authenticated_attachment_once(
+                            &adapter,
+                            identity,
+                            pinned_peer,
+                            event_id,
+                            &manifest,
+                            &mut receiver,
+                            |authenticated_peer, candidate_event_id, candidate_manifest| {
+                                authenticated_peer.fingerprint() == peer_fingerprint
+                                    && candidate_event_id == &event_id
+                                    && candidate_manifest == &manifest
+                            },
+                            |_authenticated_peer, _candidate_manifest| async move {
+                                user_consented
+                            },
+                            &cancellation,
+                        )
+                        .await
+                        },
+                    ),
+                )
+                .await
+            })
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .map_err(|_| MobileError::AttachmentOperationFailed)?
+            .ok_or(MobileError::AttachmentPeerNotPinned)?
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        if transfer.authenticated_peer.fingerprint() != peer_fingerprint
+            || transfer.transfer_id != transfer_id
+            || !transfer.verified_complete
+        {
+            return Err(MobileError::AttachmentOperationFailed);
+        }
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(MobileAttachmentTransferReceipt {
+            event_id: event_id.to_vec(),
+            peer_fingerprint: peer_fingerprint.to_vec(),
+            transfer_id: transfer_id.0.to_vec(),
+            is_sender: false,
+            chunks_transferred: transfer.chunks_received as u64,
+            peer_verified: true,
+            local_file_verified_complete: transfer.verified_complete,
+            remote_file_verified_complete: false,
+        })
+    }
+
+    /// Copies an already-complete staged attachment to a bounded app-private
+    /// temporary file for the native document picker to export.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn prepare_attachment_export(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        event_id: Vec<u8>,
+    ) -> Result<MobileAttachmentExport, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let mut client = self.lock_client()?;
+        let space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::AttachmentNotAuthorized)?;
+        let authorized = space
+            .reducer()
+            .authorized_attachment_manifest(&event_id)
+            .ok_or(MobileError::AttachmentNotAuthorized)?;
+        let manifest = authorized.manifest().clone();
+        ensure_mobile_attachment_size(&manifest)?;
+        let transfer_id = manifest
+            .transfer_id(&event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        ensure_staged_transfer_exists(&self.database_path, "receives", transfer_id.0)?;
+        let store = receive_attachment_store(&self.database_path)?;
+        let staged_file = store
+            .open(&manifest, &event_id)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        let mut receiver = StreamedAttachmentReceiver::new(
+            manifest.clone(),
+            MAX_MOBILE_ATTACHMENT_BYTES,
+            staged_file,
+        )
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        receiver
+            .accept()
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        if !receiver.is_complete() {
+            return Err(MobileError::AttachmentOperationFailed);
+        }
+
+        let export_id = lower_hex(&transfer_id.0);
+        let export_path = attachment_export_path(&self.database_path, &export_id)?;
+        let (mut output, already_verified) = create_private_export_file(&export_path, &manifest)?;
+        if !already_verified {
+            if receiver.copy_verified_to(&mut output).is_err() {
+                let _ = fs::remove_file(&export_path);
+                return Err(MobileError::AttachmentOperationFailed);
+            }
+            output
+                .sync_all()
+                .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        }
+        Ok(MobileAttachmentExport {
+            export_id,
+            filename: manifest.filename,
+            file_size: manifest.file_size,
+            file_hash: manifest.file_hash.to_vec(),
+        })
+    }
+
+    /// Removes one internal export temporary file after document-picker use.
+    pub fn finish_attachment_export(&self, export_id: String) -> Result<bool, MobileError> {
+        let path = attachment_export_path(&self.database_path, &export_id)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                fs::remove_file(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+                Ok(true)
+            }
+            Ok(_) => Err(MobileError::AttachmentOperationFailed),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(MobileError::AttachmentOperationFailed),
+        }
+    }
+
     /// Returns the newest bounded history of locally retained authorized text messages.
     ///
     /// History includes messages accepted from peers as well as locally authored
@@ -1321,6 +2005,974 @@ impl MobileClient {
             event_id: queued.event_id().to_vec(),
         })
     }
+
+    /// Publishes one validated local KeyPackage for a pairwise DM invitation.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn publish_direct_message_key_package(
+        &self,
+        credential_vector: Vec<u8>,
+        now_unix_seconds: u64,
+    ) -> Result<Vec<u8>, MobileError> {
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        self.lock_client()?
+            .publish_direct_message_key_package(credential_vector, now_unix_seconds)
+            .map_err(|_| MobileError::DirectMessageFailed)
+    }
+
+    /// Creates and durably queues an opaque MLS Welcome invitation packet.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn create_direct_message(
+        &self,
+        credential_vector: Vec<u8>,
+        peer_identity: Vec<u8>,
+        peer_key_package: Vec<u8>,
+        next_attempt_ms: i64,
+    ) -> Result<MobileCreatedDirectMessage, MobileError> {
+        let peer_identity: [u8; 32] = peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        if credential_vector.is_empty()
+            || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES
+            || peer_key_package.is_empty()
+            || peer_key_package.len() > MAX_SPACE_WELCOME_BOOTSTRAP_BYTES
+            || next_attempt_ms < 0
+        {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        let created = self
+            .lock_client()?
+            .create_direct_message_from_x509_credential(
+                credential_vector,
+                peer_identity,
+                &peer_key_package,
+                next_attempt_ms,
+            )
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        Ok(MobileCreatedDirectMessage {
+            conversation: MobileDirectMessageConversation {
+                group_reference: created.group_reference.to_vec(),
+                peer_identity: created.peer_identity.to_vec(),
+                closed: false,
+            },
+            invitation: mobile_direct_message_packet(created.invitation),
+        })
+    }
+
+    /// Imports a routed Welcome only after explicit user acceptance.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn accept_direct_message_invitation(
+        &self,
+        credential_vector: Vec<u8>,
+        authenticated_peer_identity: Vec<u8>,
+        invitation_packet: Vec<u8>,
+        user_accepted: bool,
+    ) -> Result<Vec<u8>, MobileError> {
+        if !user_accepted {
+            return Err(MobileError::DirectMessageNotAccepted);
+        }
+        let authenticated_peer_identity: [u8; 32] = authenticated_peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        if credential_vector.is_empty()
+            || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES
+            || invitation_packet.is_empty()
+            || invitation_packet.len() > MAX_DIRECT_MESSAGE_PACKET_BYTES
+        {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        let group_reference = self
+            .lock_client()?
+            .accept_direct_message_invitation_from_x509_credential(
+                credential_vector,
+                authenticated_peer_identity,
+                &invitation_packet,
+                true,
+            )
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(group_reference.to_vec())
+    }
+
+    /// Encrypts text locally and commits the resulting opaque packet to Core.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn queue_direct_message_text(
+        &self,
+        credential_vector: Vec<u8>,
+        group_reference: Vec<u8>,
+        content: String,
+        next_attempt_ms: i64,
+    ) -> Result<MobileDirectMessagePacket, MobileError> {
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if credential_vector.is_empty()
+            || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES
+            || content.is_empty()
+            || content.len() > MAX_DIRECT_MESSAGE_TEXT_BYTES
+            || next_attempt_ms < 0
+        {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        let packet = self
+            .lock_client()?
+            .queue_direct_message_text_from_x509_credential(
+                credential_vector,
+                group_reference,
+                &content,
+                next_attempt_ms,
+            )
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(mobile_direct_message_packet(packet))
+    }
+
+    /// Authenticates one opaque application packet from the pinned peer.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn ingest_direct_message_packet(
+        &self,
+        authenticated_peer_identity: Vec<u8>,
+        envelope_bytes: Vec<u8>,
+    ) -> Result<MobileDirectMessageIngressResult, MobileError> {
+        let authenticated_peer_identity: [u8; 32] = authenticated_peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        if envelope_bytes.is_empty() || envelope_bytes.len() > MAX_DIRECT_MESSAGE_PACKET_BYTES {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        let outcome = self
+            .lock_client()?
+            .ingest_direct_message_packet(authenticated_peer_identity, &envelope_bytes)
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(match outcome {
+            DirectMessageIngressOutcome::Accepted { packet_id, content } => {
+                MobileDirectMessageIngressResult {
+                    packet_id: packet_id.to_vec(),
+                    duplicate: false,
+                    invitation_pending: false,
+                    group_reference: None,
+                    peer_identity: None,
+                    content: Some(content),
+                }
+            }
+            DirectMessageIngressOutcome::InvitationPending {
+                packet_id,
+                group_reference,
+                peer_identity,
+            } => MobileDirectMessageIngressResult {
+                packet_id: packet_id.to_vec(),
+                duplicate: false,
+                invitation_pending: true,
+                group_reference: Some(group_reference.to_vec()),
+                peer_identity: Some(peer_identity.to_vec()),
+                content: None,
+            },
+            DirectMessageIngressOutcome::Duplicate { packet_id } => {
+                MobileDirectMessageIngressResult {
+                    packet_id: packet_id.to_vec(),
+                    duplicate: true,
+                    invitation_pending: false,
+                    group_reference: None,
+                    peer_identity: None,
+                    content: None,
+                }
+            }
+        })
+    }
+
+    /// Lists local pairwise conversations in stable bounded order.
+    pub fn direct_message_conversations(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<MobileDirectMessageConversation>, MobileError> {
+        if limit == 0 || limit as usize > MAX_OUTBOX_PAGE_SIZE {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        self.lock_client()?
+            .direct_message_conversations(limit as usize)
+            .map(|conversations| {
+                conversations
+                    .into_iter()
+                    .map(|conversation| MobileDirectMessageConversation {
+                        group_reference: conversation.group_reference.to_vec(),
+                        peer_identity: conversation.peer_identity.to_vec(),
+                        closed: conversation.closed,
+                    })
+                    .collect()
+            })
+            .map_err(|_| MobileError::DirectMessageFailed)
+    }
+
+    /// Verifies that an outbox packet targets the authenticated BLE peer.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn direct_message_is_for_peer(
+        &self,
+        group_reference: Vec<u8>,
+        peer_identity: Vec<u8>,
+    ) -> Result<bool, MobileError> {
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let peer_identity: [u8; 32] = peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        self.lock_client()?
+            .direct_message_is_for_peer(group_reference, peer_identity)
+            .map_err(|_| MobileError::DirectMessageFailed)
+    }
+
+    /// Reads decrypted local history for one pairwise conversation.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn direct_message_history(
+        &self,
+        group_reference: Vec<u8>,
+        limit: u32,
+    ) -> Result<Vec<MobileDirectMessageHistoryEntry>, MobileError> {
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        if limit == 0 || limit as usize > MAX_OUTBOX_PAGE_SIZE {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        self.lock_client()?
+            .direct_message_history(group_reference, limit as usize)
+            .map(|history| {
+                history
+                    .into_iter()
+                    .map(|message| MobileDirectMessageHistoryEntry {
+                        packet_id: message.packet_id.to_vec(),
+                        group_reference: message.group_reference.to_vec(),
+                        author_identity: message.author_identity.to_vec(),
+                        content: message.content,
+                    })
+                    .collect()
+            })
+            .map_err(|_| MobileError::DirectMessageFailed)
+    }
+
+    /// Reads a bounded page of durable opaque DM packets awaiting forwarding.
+    pub fn direct_message_outbox_page(
+        &self,
+        after_packet_id: Option<Vec<u8>>,
+        limit: u32,
+    ) -> Result<Vec<MobileDirectMessageOutboxEntry>, MobileError> {
+        let after_packet_id = after_packet_id
+            .map(|packet_id| {
+                packet_id
+                    .try_into()
+                    .map_err(|_| MobileError::InvalidOutboxCursor)
+            })
+            .transpose()?;
+        if limit == 0 || limit as usize > MAX_OUTBOX_PAGE_SIZE {
+            return Err(MobileError::InvalidOutboxPage);
+        }
+        self.lock_client()?
+            .direct_message_outbox_page(after_packet_id, limit as usize)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(mobile_direct_message_outbox_entry)
+                    .collect()
+            })
+            .map_err(|_| MobileError::OutboxUnavailable)
+    }
+
+    /// Persists the retry attempt before routing the DM packet.
+    pub fn mark_direct_message_attempt(
+        &self,
+        packet_id: Vec<u8>,
+        next_attempt_ms: i64,
+    ) -> Result<(), MobileError> {
+        let packet_id: [u8; 32] = packet_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidOutboxEventId)?;
+        if next_attempt_ms < 0 {
+            return Err(MobileError::InvalidOutboxSchedule);
+        }
+        self.lock_client()?
+            .mark_direct_message_attempt(packet_id, next_attempt_ms)
+            .map_err(|_| MobileError::OutboxTransitionRejected)
+    }
+
+    /// Records authenticated peer-ingress acceptance, not destination delivery.
+    pub fn record_direct_message_peer_ingress_accepted(
+        &self,
+        packet_id: Vec<u8>,
+    ) -> Result<(), MobileError> {
+        let packet_id: [u8; 32] = packet_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidOutboxEventId)?;
+        self.lock_client()?
+            .record_direct_message_peer_ingress_accepted(packet_id)
+            .map_err(|_| MobileError::OutboxTransitionRejected)
+    }
+
+    /// Runs one authenticated, pinned TCP direct-message exchange over a local
+    /// LAN path. It sends at most one due opaque packet in each direction.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn exchange_direct_messages_once(
+        &self,
+        connect_address: String,
+        listen_address: String,
+        peer_fingerprint: Vec<u8>,
+    ) -> Result<MobileDirectMessageExchange, MobileError> {
+        let connect = connect_address
+            .parse::<SocketAddr>()
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        let listen = listen_address
+            .parse::<SocketAddr>()
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        let peer_fingerprint: [u8; 32] = peer_fingerprint
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let mut client = self.lock_client()?;
+        let local_fingerprint = client.identity_info().fingerprint;
+        if local_fingerprint == peer_fingerprint
+            || client
+                .pinned_identity(&peer_fingerprint)
+                .map_err(|_| MobileError::DirectMessageFailed)?
+                .is_none()
+        {
+            return Err(MobileError::DirectMessageFailed);
+        }
+
+        let now_ms = unix_millis_i64();
+        let mut cursor = None;
+        let mut outgoing = None;
+        loop {
+            let page = client
+                .direct_message_outbox_page(cursor, 64)
+                .map_err(|_| MobileError::OutboxUnavailable)?;
+            for packet in &page {
+                if packet.next_attempt_ms <= now_ms
+                    && matches!(
+                        packet.state,
+                        OutboxState::Queued | OutboxState::Forwarding | OutboxState::Forwarded
+                    )
+                    && client
+                        .direct_message_is_for_peer(packet.group_reference, peer_fingerprint)
+                        .map_err(|_| MobileError::DirectMessageFailed)?
+                {
+                    outgoing = Some(packet.clone());
+                    break;
+                }
+            }
+            if outgoing.is_some() || page.len() < 64 {
+                break;
+            }
+            cursor = page.last().map(|packet| packet.packet_id);
+        }
+        let outgoing_id = outgoing.as_ref().map(|packet| packet.packet_id);
+        let outgoing_bytes = outgoing
+            .as_ref()
+            .map(|packet| packet.envelope_bytes.as_slice());
+        if outgoing_bytes.is_some_and(|bytes| bytes.len() > MAX_ENVELOPE_BYTES) {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        if let Some(packet_id) = outgoing_id {
+            client
+                .mark_direct_message_attempt(packet_id, now_ms.saturating_add(30_000))
+                .map_err(|_| MobileError::OutboxTransitionRejected)?;
+        }
+
+        let mut ingress_client =
+            Client::open_existing(&self.database_path, &self.profile_protector)
+                .map_err(|_| MobileError::ProfileOpenFailed)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        let listener = runtime
+            .block_on(TcpPeerListener::bind(listen, MAX_ENVELOPE_BYTES))
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        let bound = listener
+            .local_addr()
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        let (outbound, (inbound, _remote)) = runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::try_join!(
+                        TcpPeerAdapter::connect(connect, MAX_ENVELOPE_BYTES),
+                        listener.accept()
+                    )
+                })
+                .await
+            })
+            .map_err(|_| MobileError::DirectMessageFailed)?
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        let is_initiator = local_fingerprint < peer_fingerprint;
+        let exchange = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    client.with_pinned_identity(
+                        &peer_fingerprint,
+                        |identity, pinned_peer| async move {
+                            let cancellation = CancellationToken::new();
+                            let mut ingest =
+                                |peer: &lattice_identity::PinnedIdentity, bytes: &[u8]| {
+                                    let outcome = ingress_client
+                                        .ingest_direct_message_packet(peer.fingerprint(), bytes)
+                                        .map_err(|error| error.to_string())?;
+                                    let (packet_id, state) = match outcome {
+                                        DirectMessageIngressOutcome::Accepted {
+                                            packet_id, ..
+                                        } => (packet_id, DirectMessageIngressState::Accepted),
+                                        DirectMessageIngressOutcome::InvitationPending {
+                                            packet_id,
+                                            ..
+                                        } => (
+                                            packet_id,
+                                            DirectMessageIngressState::InvitationPending,
+                                        ),
+                                        DirectMessageIngressOutcome::Duplicate { packet_id } => {
+                                            (packet_id, DirectMessageIngressState::Duplicate)
+                                        }
+                                    };
+                                    Ok(DirectMessageIngressReceipt { packet_id, state })
+                                };
+                            let outgoing = outgoing_id
+                                .zip(outgoing_bytes)
+                                .map(|(packet_id, bytes)| (packet_id, bytes));
+                            if is_initiator {
+                                execute_authenticated_direct_message_once(
+                                    &outbound,
+                                    identity,
+                                    pinned_peer,
+                                    outgoing,
+                                    &mut ingest,
+                                    &cancellation,
+                                )
+                                .await
+                            } else {
+                                serve_authenticated_direct_message_once(
+                                    &inbound,
+                                    identity,
+                                    pinned_peer,
+                                    outgoing,
+                                    &mut ingest,
+                                    &cancellation,
+                                )
+                                .await
+                            }
+                            .map_err(|_| MobileError::DirectMessageFailed)
+                        },
+                    ),
+                )
+                .await
+            })
+            .map_err(|_| MobileError::DirectMessageFailed)?
+            .map_err(|_| MobileError::DirectMessageFailed)?
+            .ok_or(MobileError::DirectMessageFailed)??;
+        if let Some(receipt) = exchange.outgoing {
+            if Some(receipt.packet_id) != outgoing_id {
+                return Err(MobileError::DirectMessageFailed);
+            }
+            client
+                .record_direct_message_peer_ingress_accepted(receipt.packet_id)
+                .map_err(|_| MobileError::OutboxTransitionRejected)?;
+        }
+        if exchange.incoming.is_some() || exchange.outgoing.is_some() {
+            self.projection_observers
+                .publish(MobileProjectionChange::Messages);
+        }
+        Ok(MobileDirectMessageExchange {
+            listen_address: bound.to_string(),
+            peer_fingerprint: peer_fingerprint.to_vec(),
+            outgoing_packet_id: exchange.outgoing.map(|receipt| receipt.packet_id.to_vec()),
+            outgoing_ingress_state: exchange
+                .outgoing
+                .map(|receipt| direct_message_ingress_label(receipt.state).to_owned()),
+            incoming_packet_id: exchange.incoming.map(|receipt| receipt.packet_id.to_vec()),
+            incoming_ingress_state: exchange
+                .incoming
+                .map(|receipt| direct_message_ingress_label(receipt.state).to_owned()),
+        })
+    }
+
+    /// Lists bounded invitations saved from authenticated transport ingress.
+    pub fn pending_direct_message_invitations(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<MobileDirectMessagePendingInvitation>, MobileError> {
+        if limit == 0 || limit as usize > MAX_DIRECT_MESSAGE_PENDING_INVITATIONS {
+            return Err(MobileError::DirectMessageFailed);
+        }
+        self.lock_client()?
+            .pending_direct_message_invitations(limit as usize)
+            .map(|invitations| {
+                invitations
+                    .into_iter()
+                    .map(|invitation| MobileDirectMessagePendingInvitation {
+                        packet_id: invitation.packet_id.to_vec(),
+                        group_reference: invitation.group_reference.to_vec(),
+                        peer_identity: invitation.peer_identity.to_vec(),
+                    })
+                    .collect()
+            })
+            .map_err(|_| MobileError::DirectMessageFailed)
+    }
+
+    /// Accepts a persisted invitation only with user consent and matching peer.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn accept_pending_direct_message_invitation(
+        &self,
+        credential_vector: Vec<u8>,
+        authenticated_peer_identity: Vec<u8>,
+        packet_id: Vec<u8>,
+        user_accepted: bool,
+    ) -> Result<Vec<u8>, MobileError> {
+        if !user_accepted {
+            return Err(MobileError::DirectMessageNotAccepted);
+        }
+        let authenticated_peer_identity: [u8; 32] = authenticated_peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let packet_id: [u8; 32] = packet_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidOutboxEventId)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let group_reference = self
+            .lock_client()?
+            .accept_pending_direct_message_invitation_from_x509_credential(
+                credential_vector,
+                authenticated_peer_identity,
+                packet_id,
+                true,
+            )
+            .map_err(|_| MobileError::DirectMessageFailed)?;
+        self.projection_observers
+            .publish(MobileProjectionChange::Messages);
+        Ok(group_reference.to_vec())
+    }
+
+    /// Declines a pending invitation without importing its MLS Welcome.
+    pub fn decline_pending_direct_message_invitation(
+        &self,
+        packet_id: Vec<u8>,
+    ) -> Result<bool, MobileError> {
+        let packet_id: [u8; 32] = packet_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidOutboxEventId)?;
+        self.lock_client()?
+            .decline_pending_direct_message_invitation(packet_id)
+            .map_err(|_| MobileError::DirectMessageFailed)
+    }
+}
+
+const ATTACHMENT_FRAME_LIMIT: usize = CHUNK_SIZE + 1024;
+const ATTACHMENT_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_MOBILE_ATTACHMENT_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_MOBILE_ATTACHMENT_STAGING_BYTES: u64 = 512 * 1024 * 1024;
+
+fn mobile_attachment_preview(manifest: &AttachmentManifest) -> MobileAttachmentManifest {
+    MobileAttachmentManifest {
+        filename: manifest.filename.clone(),
+        file_size: manifest.file_size,
+        file_hash: manifest.file_hash.to_vec(),
+    }
+}
+
+fn attachment_preview_matches(
+    preview: &MobileAttachmentManifest,
+    manifest: &AttachmentManifest,
+) -> bool {
+    preview.filename == manifest.filename
+        && preview.file_size == manifest.file_size
+        && preview.file_hash.as_slice() == manifest.file_hash.as_slice()
+}
+
+fn ensure_mobile_attachment_size(manifest: &AttachmentManifest) -> Result<(), MobileError> {
+    if manifest.file_size > MAX_MOBILE_ATTACHMENT_BYTES {
+        Err(MobileError::AttachmentOperationFailed)
+    } else {
+        Ok(())
+    }
+}
+
+fn mobile_authorized_attachment_manifest(
+    space_id: [u8; 16],
+    group_reference: [u8; 32],
+    authorized: &lattice_core::space::AuthorizedAttachmentManifest,
+) -> Result<MobileAuthorizedAttachmentManifest, MobileError> {
+    let manifest = authorized.manifest();
+    let transfer_id = authorized
+        .transfer_id()
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    Ok(MobileAuthorizedAttachmentManifest {
+        event_id: authorized.event_id().to_vec(),
+        space_id: space_id.to_vec(),
+        group_reference: group_reference.to_vec(),
+        filename: manifest.filename.clone(),
+        mime_type: manifest.mime_type.clone(),
+        file_size: manifest.file_size,
+        file_hash: manifest.file_hash.to_vec(),
+        transfer_id: transfer_id.0.to_vec(),
+    })
+}
+
+fn space_has_active_member(space: &lattice_core::CreatedSpace, fingerprint: &[u8; 32]) -> bool {
+    space.reducer().policy().is_some_and(|policy| {
+        policy.members.iter().any(|member| {
+            member.fingerprint == *fingerprint && member.status == MemberStatus::Active
+        })
+    })
+}
+
+fn attachment_root(database_path: &str) -> Result<PathBuf, MobileError> {
+    let database_parent = Path::new(database_path)
+        .parent()
+        .ok_or(MobileError::AttachmentOperationFailed)?;
+    let root = database_parent.join("attachments");
+    ensure_private_directory(&root)?;
+    Ok(root)
+}
+
+fn attachment_subdirectory(database_path: &str, name: &str) -> Result<PathBuf, MobileError> {
+    let root = attachment_root(database_path)?;
+    let directory = root.join(name);
+    ensure_private_directory(&directory)?;
+    let root = fs::canonicalize(root).map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let directory =
+        fs::canonicalize(directory).map_err(|_| MobileError::AttachmentOperationFailed)?;
+    if directory.parent() != Some(root.as_path()) {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    Ok(directory)
+}
+
+fn ensure_private_directory(path: &Path) -> Result<(), MobileError> {
+    fs::create_dir_all(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::Permissions::from_mode(0o700);
+        fs::set_permissions(path, permissions)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    }
+    Ok(())
+}
+
+fn valid_lower_hex(value: &str, width: usize) -> bool {
+    value.len() == width
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn attachment_import_path(database_path: &str, source_id: &str) -> Result<PathBuf, MobileError> {
+    if !valid_lower_hex(source_id, 32) {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    Ok(attachment_subdirectory(database_path, "imports")?.join(format!("{source_id}.import")))
+}
+
+fn open_attachment_import(database_path: &str, source_id: &str) -> Result<File, MobileError> {
+    let path = attachment_import_path(database_path, source_id)?;
+    let before = fs::symlink_metadata(&path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+    if !before.is_file()
+        || before.file_type().is_symlink()
+        || before.len() > MAX_MOBILE_ATTACHMENT_BYTES
+    {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    let file = File::open(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    if !metadata.is_file()
+        || metadata.len() != before.len()
+        || metadata.len() > MAX_MOBILE_ATTACHMENT_BYTES
+    {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    Ok(file)
+}
+
+fn attachment_staging_limits(retention: Duration) -> Result<AttachmentStagingLimits, MobileError> {
+    AttachmentStagingLimits::new(
+        MAX_MOBILE_ATTACHMENT_BYTES,
+        MAX_MOBILE_ATTACHMENT_STAGING_BYTES,
+        64,
+        retention,
+    )
+    .map_err(|_| MobileError::AttachmentOperationFailed)
+}
+
+fn sender_attachment_store(database_path: &str) -> Result<AttachmentStagingStore, MobileError> {
+    let directory = attachment_subdirectory(database_path, "senders")?;
+    AttachmentStagingStore::new(
+        directory,
+        attachment_staging_limits(Duration::from_secs(7 * 24 * 60 * 60))?,
+    )
+    .map_err(|_| MobileError::AttachmentOperationFailed)
+}
+
+fn receive_attachment_store(database_path: &str) -> Result<AttachmentStagingStore, MobileError> {
+    let directory = attachment_subdirectory(database_path, "receives")?;
+    AttachmentStagingStore::new(
+        directory,
+        attachment_staging_limits(Duration::from_secs(30 * 24 * 60 * 60))?,
+    )
+    .map_err(|_| MobileError::AttachmentOperationFailed)
+}
+
+fn persist_sender_source(
+    database_path: &str,
+    manifest: &AttachmentManifest,
+    event_id: [u8; 32],
+    source: &mut File,
+) -> Result<(), MobileError> {
+    let store = sender_attachment_store(database_path)?;
+    let staged_file = store
+        .open(manifest, &event_id)
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let mut receiver =
+        StreamedAttachmentReceiver::new(manifest.clone(), MAX_MOBILE_ATTACHMENT_BYTES, staged_file)
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    receiver
+        .accept()
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let missing_ranges = receiver
+        .missing_ranges()
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let mut chunk = Vec::new();
+    chunk
+        .try_reserve_exact(CHUNK_SIZE)
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    chunk.resize(CHUNK_SIZE, 0);
+    for range in missing_ranges {
+        for index in range.start..range.end_exclusive {
+            let offset = u64::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_mul(CHUNK_SIZE as u64))
+                .ok_or(MobileError::AttachmentOperationFailed)?;
+            let chunk_length = manifest
+                .file_size
+                .checked_sub(offset)
+                .map(|remaining| remaining.min(CHUNK_SIZE as u64))
+                .and_then(|length| usize::try_from(length).ok())
+                .ok_or(MobileError::AttachmentOperationFailed)?;
+            manifest
+                .read_verified_chunk_into(source, index, &mut chunk[..chunk_length])
+                .map_err(|_| MobileError::AttachmentOperationFailed)?;
+            receiver
+                .submit_chunk(index, &chunk[..chunk_length])
+                .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        }
+    }
+    if !receiver.is_complete() {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    receiver
+        .copy_verified_to(&mut io::sink())
+        .map_err(|_| MobileError::AttachmentOperationFailed)
+}
+
+fn transfer_record_path(
+    database_path: &str,
+    store_name: &str,
+    transfer_id: [u8; 32],
+    suffix: &str,
+) -> Result<PathBuf, MobileError> {
+    let directory = attachment_subdirectory(database_path, store_name)?;
+    let key = lower_hex(&transfer_id);
+    Ok(directory.join(format!("{key}.{suffix}")))
+}
+
+fn staged_transfer_exists(
+    database_path: &str,
+    store_name: &str,
+    transfer_id: [u8; 32],
+) -> Result<bool, MobileError> {
+    let data = transfer_record_path(database_path, store_name, transfer_id, "part")?;
+    let reservation = transfer_record_path(database_path, store_name, transfer_id, "reserve")?;
+    let data_metadata = match fs::symlink_metadata(data) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(MobileError::AttachmentOperationFailed),
+    };
+    let reservation_metadata = match fs::symlink_metadata(reservation) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(MobileError::AttachmentOperationFailed),
+    };
+    if !data_metadata.is_file()
+        || data_metadata.file_type().is_symlink()
+        || !reservation_metadata.is_file()
+        || reservation_metadata.file_type().is_symlink()
+        || reservation_metadata.len() != 16
+    {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    Ok(true)
+}
+
+fn ensure_staged_transfer_exists(
+    database_path: &str,
+    store_name: &str,
+    transfer_id: [u8; 32],
+) -> Result<(), MobileError> {
+    if staged_transfer_exists(database_path, store_name, transfer_id)? {
+        Ok(())
+    } else {
+        Err(MobileError::AttachmentOperationFailed)
+    }
+}
+
+fn open_verified_sender_source(
+    database_path: &str,
+    manifest: &AttachmentManifest,
+    event_id: [u8; 32],
+) -> Result<lattice_files::ManagedAttachmentFile, MobileError> {
+    let transfer_id = manifest
+        .transfer_id(&event_id)
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    ensure_staged_transfer_exists(database_path, "senders", transfer_id.0)?;
+    let store = sender_attachment_store(database_path)?;
+    let mut source = store
+        .open(manifest, &event_id)
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    let observed = AttachmentManifest::from_reader(
+        &mut source,
+        &manifest.filename,
+        manifest.mime_type.as_deref(),
+    )
+    .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    if observed != *manifest {
+        return Err(MobileError::AttachmentManifestSourceChanged);
+    }
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    Ok(source)
+}
+
+fn attachment_export_path(database_path: &str, export_id: &str) -> Result<PathBuf, MobileError> {
+    if !valid_lower_hex(export_id, 64) {
+        return Err(MobileError::AttachmentOperationFailed);
+    }
+    Ok(attachment_subdirectory(database_path, "exports")?.join(format!("{export_id}.export")))
+}
+
+fn create_private_export_file(
+    path: &Path,
+    manifest: &AttachmentManifest,
+) -> Result<(File, bool), MobileError> {
+    let directory = path
+        .parent()
+        .ok_or(MobileError::AttachmentOperationFailed)?;
+    let file_name = path
+        .file_name()
+        .ok_or(MobileError::AttachmentOperationFailed)?;
+    for entry in fs::read_dir(directory).map_err(|_| MobileError::AttachmentOperationFailed)? {
+        let entry = entry.map_err(|_| MobileError::AttachmentOperationFailed)?;
+        if entry.file_name() == file_name {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || !entry.file_name().to_string_lossy().ends_with(".export")
+        {
+            return Err(MobileError::AttachmentOperationFailed);
+        }
+        if metadata
+            .modified()
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= Duration::from_secs(24 * 60 * 60))
+        {
+            fs::remove_file(entry.path()).map_err(|_| MobileError::AttachmentOperationFailed)?;
+        } else {
+            return Err(MobileError::AttachmentOperationFailed);
+        }
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(MobileError::AttachmentOperationFailed);
+            }
+            let mut existing =
+                File::open(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+            let existing_manifest = AttachmentManifest::from_reader(
+                &mut existing,
+                &manifest.filename,
+                manifest.mime_type.as_deref(),
+            )
+            .map_err(|_| MobileError::AttachmentOperationFailed)?;
+            if existing_manifest == *manifest {
+                return Ok((existing, true));
+            }
+            fs::remove_file(path).map_err(|_| MobileError::AttachmentOperationFailed)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(MobileError::AttachmentOperationFailed),
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).read(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let output = options
+        .open(path)
+        .map_err(|_| MobileError::AttachmentOperationFailed)?;
+    Ok((output, false))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn mobile_direct_message_packet(
+    packet: lattice_core::DirectMessagePacket,
+) -> MobileDirectMessagePacket {
+    MobileDirectMessagePacket {
+        packet_id: packet.packet_id.to_vec(),
+        group_reference: packet.group_reference.to_vec(),
+        envelope_bytes: packet.envelope_bytes,
+    }
+}
+
+fn mobile_direct_message_outbox_entry(
+    entry: lattice_core::DirectMessageOutboxEntry,
+) -> MobileDirectMessageOutboxEntry {
+    MobileDirectMessageOutboxEntry {
+        packet_id: entry.packet_id.to_vec(),
+        group_reference: entry.group_reference.to_vec(),
+        envelope_bytes: entry.envelope_bytes,
+        next_attempt_ms: entry.next_attempt_ms,
+        attempt_count: entry.attempt_count,
+        state: match entry.state {
+            OutboxState::Queued => MobileOutboxState::Queued,
+            OutboxState::Forwarding => MobileOutboxState::Forwarding,
+            OutboxState::Forwarded => MobileOutboxState::Forwarded,
+            OutboxState::PeerIngressAccepted => MobileOutboxState::PeerIngressAccepted,
+            OutboxState::Delivered => MobileOutboxState::Delivered,
+            OutboxState::Failed => MobileOutboxState::Failed,
+        },
+    }
 }
 
 fn mobile_text_message(message: LocalTextMessageRecord) -> MobileLocalTextMessage {
@@ -1442,5 +3094,21 @@ fn map_pin_error(error: &CoreError) -> MobileError {
         CoreError::Identity(_) => MobileError::InvalidIdentityBundle,
         CoreError::PinnedIdentityConflict => MobileError::PinnedIdentityConflict,
         _ => MobileError::ProfileUnavailable,
+    }
+}
+
+fn unix_millis_i64() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(i64::MAX)
+}
+
+const fn direct_message_ingress_label(state: DirectMessageIngressState) -> &'static str {
+    match state {
+        DirectMessageIngressState::Accepted => "accepted",
+        DirectMessageIngressState::InvitationPending => "invitation_pending_user_consent",
+        DirectMessageIngressState::Duplicate => "duplicate",
     }
 }
