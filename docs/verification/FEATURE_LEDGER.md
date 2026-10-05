@@ -16,7 +16,7 @@ This is the current evidence-oriented view of product capabilities. Historical i
 
 ## Source inventory
 
-The historical feature map, requirement links, implementation paths, tests, audit observations, and campaign evidence are recorded in [`docs/quality/FEATURE_LEDGER.md`](../quality/FEATURE_LEDGER.md). It covers the 225-commit default-branch inventory performed for this effort. The 28 grouped capabilities are individually classified below; each state is limited to the acceptance boundary stated in its row.
+The historical feature map, requirement links, implementation paths, tests, audit observations, and campaign evidence are recorded in [`docs/quality/FEATURE_LEDGER.md`](../quality/FEATURE_LEDGER.md). Its generated Git-union inventory covers 388 commits across `origin/main`, `origin/beta`, and the checkout base: 225 previously reviewed assignments and 163 explicitly labeled subject/path heuristics. The 28 grouped capabilities are individually classified below; each state is limited to the acceptance boundary stated in its row.
 
 ## Historical source capability groups
 
