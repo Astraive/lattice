@@ -29,7 +29,17 @@ Message history may be partial; use an explicit gap indicator. Presence is a rec
 
 ## Accessibility and design tokens
 
-Source design tokens for color, type scale, spacing, radius, elevation and motion live in `design/tokens/` and can generate mobile/desktop representations. Respect system dark/light mode and text scaling; no color-only delivery or mute state. TalkBack and desktop screen-reader/keyboard behavior, reduced motion, semantic labels and announcement of call state are release gates. Changes in theme cannot bypass security/protocol states.
+Canonical color, type, spacing, radius, elevation, and motion tokens live in `packages/theme/src/index.ts`; the visual surfaces use zero-radius corners, while status indicators may remain circular. Shared React primitives live in `packages/ui/shared`; Desktop and Web page shells live in `packages/ui/desktop` and `packages/ui/web`. React implementations are organized into feature-oriented files, and each package `index.ts`/`index.tsx` is a re-export-only public barrel. Android Compose implementations are split by theme, brand, workspace, identity, spaces, nearby, and messaging under `packages/ui/android`; app-specific destination content and domain state remain in each app. Respect system text scaling and reduced motion; no color-only delivery or mute state. TalkBack and desktop screen-reader/keyboard behavior, semantic labels and announcement of call state are release gates. Theme changes cannot bypass security/protocol states.
+
+### Iconography
+
+Navigation uses Phosphor regular-weight glyphs with visible labels across React and Compose surfaces. Every icon-only action has an accessible semantic name.
+
+## Cross-platform workspace surfaces
+
+Desktop uses a destination rail and a Space/channel sidebar where applicable. At narrow widths the sidebar collapses; the Direct Messages conversation list, selected thread/composer, and Pairing & setup pane stack. Web keeps its profile-creation/open flow ahead of workspace navigation; after unlock, compact navigation uses a bottom bar and a drawer for spaces and channels. Android uses a navigation rail on expanded windows and a bottom bar on compact windows, with destination state preserved while switching.
+
+Desktop Direct Messages keeps the conversation list, selected thread/composer, and Pairing & setup pane in the main workspace. Current conversations, pending invitations, KeyPackage/credential details, and authenticated exchange open only from labeled dialogs; they do not take space as persistent panels below the inbox. Android exposes setup through an action sheet. Web supports Space/channel messaging and has no separate Direct Messages destination. On Desktop conversation changes, only the active conversation's history is shown; stale history remains hidden while matching history loads. Closing a dialog or sheet does not accept or decline an invitation; those transitions require an explicit action. Queued or peer-ingress state must not be presented as destination delivery.
 
 ## Edge-case interactions
 
