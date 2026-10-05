@@ -32,24 +32,24 @@ fn status_from_client(client: &Client) -> Result<DeviceIdentityStatus, String> {
 #[tauri::command]
 pub(crate) fn initialize_device_identity() -> Result<DeviceIdentityStatus, String> {
     let (database_path, protector) = profile::open_profile()?;
-    let client =
-        profile::open_or_create_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let client = profile::open_or_create_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     status_from_client(&client)
 }
 
 #[tauri::command]
 pub(crate) fn get_device_identity() -> Result<DeviceIdentityStatus, String> {
     let (database_path, protector) = profile::open_profile()?;
-    let client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     status_from_client(&client)
 }
 
 #[tauri::command]
 pub(crate) fn get_device_certificate_signing_request() -> Result<String, String> {
     let (database_path, protector) = profile::open_profile()?;
-    let client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let csr = client
         .certificate_signing_request()
         .map_err(|error| error.to_string())?;
@@ -75,8 +75,8 @@ pub(crate) fn pin_peer_identity(
     let expected_fingerprint =
         encoding::parse_fixed_hex::<32>(&expected_fingerprint_hex, "fingerprint")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let pinned = client
         .pin_identity(&public_bundle, expected_fingerprint)
         .map_err(|error| error.to_string())?;
@@ -94,8 +94,8 @@ pub(crate) fn get_pinned_identity(
 ) -> Result<Option<PinnedIdentityStatus>, String> {
     let fingerprint = encoding::parse_fixed_hex::<32>(&fingerprint_hex, "fingerprint")?;
     let (database_path, protector) = profile::open_profile()?;
-    let client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let Some(pinned) = client
         .pinned_identity(&fingerprint)
         .map_err(|error| error.to_string())?
@@ -114,8 +114,8 @@ pub(crate) fn get_pinned_identity(
 pub(crate) fn unpin_peer_identity(fingerprint_hex: String) -> Result<bool, String> {
     let fingerprint = encoding::parse_fixed_hex::<32>(&fingerprint_hex, "fingerprint")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     client
         .unpin_identity(&fingerprint)
         .map_err(|error| error.to_string())

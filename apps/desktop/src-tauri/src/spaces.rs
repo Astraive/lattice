@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lattice_core::{
-    CoreError, CreatedSpace, InitialChannel, LocalTextMessageRecord,
-    MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
+    CoreError, CreatedSpace, InitialChannel, LocalTextMessageRecord, MAX_SPACE_CREDENTIAL_BYTES,
+    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
     space::{Channel, ChannelType},
 };
 use lattice_mls::api::{DeviceCredentialInput, MAX_MLS_WIRE_BYTES};
@@ -157,8 +157,8 @@ pub(crate) fn create_local_space(
         })
         .collect();
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let created = client
         .create_space_from_x509_credential(credential_vector, channels)
         .map_err(|error| error.to_string())?;
@@ -201,8 +201,8 @@ pub(crate) fn publish_local_space_key_package(
         .map_err(|error| format!("read system time: {error}"))?
         .as_secs();
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let trust_policy = profile::credential_trust_policy()?;
     let credential = Credential::new(CredentialType::X509, credential_vector);
     let credential = client
@@ -212,7 +212,7 @@ pub(crate) fn publish_local_space_key_package(
                 credential,
                 &trust_policy,
             )
-                .map_err(CoreError::Mls)
+            .map_err(CoreError::Mls)
         })
         .map_err(|error| error.to_string())?;
     let wire = client
@@ -274,8 +274,8 @@ pub(crate) fn import_local_space_welcome_bootstrap(
         "expected inviter fingerprint",
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let imported = client
         .join_space_from_welcome_bootstrap_from_x509_credential(
             &package,
@@ -326,8 +326,8 @@ pub(crate) fn queue_local_text_message(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let queued = client
         .queue_text_message_from_x509_credential(
             &space_id,
@@ -379,8 +379,8 @@ pub(crate) fn queue_local_text_message_edit(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let queued = client
         .queue_text_message_edit_from_x509_credential(
             &space_id,
@@ -428,8 +428,8 @@ pub(crate) fn queue_local_text_message_tombstone(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let queued = client
         .queue_text_message_tombstone_from_x509_credential(
             &space_id,
@@ -481,8 +481,8 @@ pub(crate) fn queue_local_text_message_reply(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let queued = client
         .queue_text_message_reply_from_x509_credential(
             &space_id,
@@ -541,8 +541,8 @@ pub(crate) fn queue_local_text_message_reaction(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let queued = client
         .queue_text_message_reaction_from_x509_credential(
             &space_id,
@@ -599,8 +599,8 @@ pub(crate) fn queue_local_text_message_pin(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let queued = client
         .queue_text_message_pin_from_x509_credential(
             &space_id,
@@ -642,8 +642,8 @@ pub(crate) fn list_local_text_messages(
         encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
     let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let history = client
         .local_text_message_history(&space_id, &group_reference, &channel_id)
         .map_err(|_| "local message history is unavailable or failed authentication".to_owned())?;
@@ -667,8 +667,8 @@ pub(crate) fn search_local_text_messages(
         encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
     let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let result = client
         .search_local_text_messages(&space_id, &group_reference, &channel_id, &query)
         .map_err(|_| "local message search is unavailable or the query is invalid".to_owned())?;
@@ -692,8 +692,8 @@ pub(crate) fn list_local_spaces(after: Option<String>) -> Result<LocalSpacePage,
         .map(encoding::parse_space_cursor)
         .transpose()?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let page = client
         .restore_space_page(after)
         .map_err(|error| error.to_string())?;
@@ -731,8 +731,8 @@ pub(crate) fn recover_local_space_generation(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        profile::open_existing_client(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| error.to_string())?;
     let space = client
         .recover_space_generation_from_x509_credential(
             &space_id,
