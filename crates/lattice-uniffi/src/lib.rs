@@ -198,6 +198,79 @@ pub struct MobileLocalTextMessage {
     pub outbox_state: Option<String>,
 }
 
+/// Local participant metadata for one pairwise MLS conversation.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessageConversation {
+    pub group_reference: Vec<u8>,
+    pub peer_identity: Vec<u8>,
+    pub closed: bool,
+}
+
+/// Immutable routed invitation or ciphertext packet.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessagePacket {
+    pub packet_id: Vec<u8>,
+    pub group_reference: Vec<u8>,
+    pub envelope_bytes: Vec<u8>,
+}
+
+/// Conversation plus a durable invitation packet ready for transport.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileCreatedDirectMessage {
+    pub conversation: MobileDirectMessageConversation,
+    pub invitation: MobileDirectMessagePacket,
+}
+
+/// Decrypted message retained in the local protected direct-message history.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessageHistoryEntry {
+    pub packet_id: Vec<u8>,
+    pub group_reference: Vec<u8>,
+    pub author_identity: Vec<u8>,
+    pub content: String,
+}
+
+/// Durable outbox packet and retry metadata.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessageOutboxEntry {
+    pub packet_id: Vec<u8>,
+    pub group_reference: Vec<u8>,
+    pub envelope_bytes: Vec<u8>,
+    pub next_attempt_ms: i64,
+    pub attempt_count: u32,
+    pub state: MobileOutboxState,
+}
+
+/// Result of authenticating and storing one incoming MLS packet.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessageIngressResult {
+    pub packet_id: Vec<u8>,
+    pub duplicate: bool,
+    pub invitation_pending: bool,
+    pub group_reference: Option<Vec<u8>>,
+    pub peer_identity: Option<Vec<u8>>,
+    pub content: Option<String>,
+}
+
+/// Result of one authenticated bounded direct-message TCP exchange.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessageExchange {
+    pub listen_address: String,
+    pub peer_fingerprint: Vec<u8>,
+    pub outgoing_packet_id: Option<Vec<u8>>,
+    pub outgoing_ingress_state: Option<String>,
+    pub incoming_packet_id: Option<Vec<u8>>,
+    pub incoming_ingress_state: Option<String>,
+}
+
+/// Authenticated invitation stored until the user accepts or declines it.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileDirectMessagePendingInvitation {
+    pub packet_id: Vec<u8>,
+    pub group_reference: Vec<u8>,
+    pub peer_identity: Vec<u8>,
+}
+
 /// Bounded offline search result over locally retained message history.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct MobileLocalTextMessageSearch {
@@ -254,6 +327,66 @@ pub struct MobileSpacePage {
     pub spaces: Vec<MobileSpaceSummary>,
     /// Exclusive cursor to request the next page.
     pub next_cursor: Option<MobileSpaceCursor>,
+}
+
+/// Locally computed attachment metadata preview. The file hash is display and
+/// change-detection data; only Core's signed manifest event authorizes a transfer.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileAttachmentManifest {
+    pub filename: String,
+    pub file_size: u64,
+    pub file_hash: Vec<u8>,
+}
+
+/// Summary of a manifest admitted by the restored Space policy.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileAuthorizedAttachmentManifest {
+    pub event_id: Vec<u8>,
+    pub space_id: Vec<u8>,
+    pub group_reference: Vec<u8>,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub file_size: u64,
+    pub file_hash: Vec<u8>,
+    pub transfer_id: Vec<u8>,
+}
+
+/// Result of queueing one signed attachment manifest and retaining its source.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileAttachmentQueueReceipt {
+    pub manifest: MobileAuthorizedAttachmentManifest,
+    pub source_retained: bool,
+}
+
+/// Truthful receipt for one authenticated attachment transfer.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileAttachmentTransferReceipt {
+    pub event_id: Vec<u8>,
+    pub peer_fingerprint: Vec<u8>,
+    pub transfer_id: Vec<u8>,
+    pub is_sender: bool,
+    pub chunks_transferred: u64,
+    pub peer_verified: bool,
+    pub local_file_verified_complete: bool,
+    pub remote_file_verified_complete: bool,
+}
+
+/// Resumable progress reconstructed from verified staged chunks.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileAttachmentStagingStatus {
+    pub event_id: Vec<u8>,
+    pub file_size: u64,
+    pub verified_chunks: u64,
+    pub total_chunks: u64,
+    pub complete: bool,
+}
+/// Verified bytes copied to an app-private temporary export file.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileAttachmentExport {
+    pub export_id: String,
+    pub filename: String,
+    pub file_size: u64,
+    pub file_hash: Vec<u8>,
 }
 
 /// Stable mobile-safe failures that do not disclose key material or SQL details.
@@ -335,6 +468,12 @@ pub enum MobileError {
     /// Text exceeds the bounded Space application payload size.
     #[error("invalid text message size")]
     InvalidMessageInput,
+    /// A direct-message identifier or packet failed validation or storage.
+    #[error("direct message operation failed")]
+    DirectMessageFailed,
+    /// A direct-message packet was not explicitly accepted by the user.
+    #[error("direct message invitation was not accepted")]
+    DirectMessageNotAccepted,
     /// The local message-search query is empty or exceeds its byte limit.
     #[error("invalid local message search query")]
     InvalidMessageSearch,
@@ -386,6 +525,24 @@ pub enum MobileError {
     /// Application records are forbidden before transcript confirmation.
     #[error("BLE peer is not authenticated")]
     BlePeerNotAuthenticated,
+    /// Attachment metadata, private staging, or transfer operation failed.
+    #[error("attachment operation failed")]
+    AttachmentOperationFailed,
+    /// An authorized Space event does not contain the requested attachment manifest.
+    #[error("attachment manifest is not authorized by this Space")]
+    AttachmentNotAuthorized,
+    /// The selected private source changed after its manifest preview was created.
+    #[error("attachment source changed after manifest preview")]
+    AttachmentManifestSourceChanged,
+    /// The receiver has not explicitly consented to private staging.
+    #[error("attachment receive consent is required")]
+    AttachmentConsentRequired,
+    /// The exact pinned peer is not an active member of the selected Space.
+    #[error("pinned peer is not an active member of this Space")]
+    AttachmentPeerNotAuthorized,
+    /// The remote identity has not been pinned in this profile.
+    #[error("attachment peer identity is not pinned")]
+    AttachmentPeerNotPinned,
 }
 
 #[cfg(test)]
@@ -1119,5 +1276,40 @@ mod tests {
             std::sync::Arc::new(TestProtector::default()),
         );
         assert!(matches!(result, Err(MobileError::InvalidProfileId)));
+    }
+    #[test]
+    fn attachment_queue_rejects_private_source_changed_after_preview() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let database_path = directory.path().join("profile.sqlite");
+        let import_directory = directory.path().join("attachments").join("imports");
+        std::fs::create_dir_all(&import_directory).expect("create private import directory");
+        let source_id = "00000000000000000000000000000001".to_owned();
+        let source_path = import_directory.join(format!("{source_id}.import"));
+        std::fs::write(&source_path, b"before").expect("write selected source");
+        let client = MobileClient::open_or_create(
+            database_path.to_string_lossy().into_owned(),
+            "android-attachment-profile".to_owned(),
+            std::sync::Arc::new(TestProtector::default()),
+        )
+        .expect("open local profile");
+
+        let preview = client
+            .create_attachment_manifest(source_id.clone(), "report.bin".to_owned())
+            .expect("compute bounded source manifest");
+        assert_eq!(preview.file_size, 6);
+        assert_eq!(preview.filename, "report.bin");
+
+        std::fs::write(&source_path, b"befoRe").expect("change bytes without changing size");
+        assert!(matches!(
+            client.queue_attachment_manifest(
+                vec![0; 16],
+                vec![0; 32],
+                vec![1],
+                vec![0; 16],
+                source_id,
+                preview,
+            ),
+            Err(MobileError::AttachmentManifestSourceChanged)
+        ));
     }
 }
