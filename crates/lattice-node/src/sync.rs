@@ -35,10 +35,13 @@ pub use attachment_transfer::{
 mod direct_session;
 pub use direct_session::AuthenticatedSyncError;
 pub use direct_session::{
-    AuthenticatedPathUpgradeError, AuthenticatedPathUpgradeNegotiation, AuthenticatedSyncExchange,
-    AuthenticatedSyncServeResult, AuthenticatedSyncV2Exchange, AuthenticatedSyncV2ServeResult,
-    execute_authenticated_sync_once, execute_authenticated_sync_v2_once,
-    negotiate_authenticated_path_upgrades_once, serve_authenticated_sync_request_once,
+    AuthenticatedDirectMessageExchange, AuthenticatedPathUpgradeError,
+    AuthenticatedPathUpgradeNegotiation, AuthenticatedSyncExchange, AuthenticatedSyncServeResult,
+    AuthenticatedSyncV2Exchange, AuthenticatedSyncV2ServeResult, DirectMessageIngressReceipt,
+    DirectMessageIngressState, DirectMessageTransportError,
+    execute_authenticated_direct_message_once, execute_authenticated_sync_once,
+    execute_authenticated_sync_v2_once, negotiate_authenticated_path_upgrades_once,
+    serve_authenticated_direct_message_once, serve_authenticated_sync_request_once,
     serve_authenticated_sync_v2_once,
 };
 pub(crate) use direct_session::{
