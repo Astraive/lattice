@@ -111,7 +111,9 @@ fn trust_policy_from_settings(
 
     let root_path = PathBuf::from(root_path);
     if !root_path.is_absolute() {
-        return Err(format!("{DEBUG_TRUST_ROOT_DER_ENV} must be an absolute path"));
+        return Err(format!(
+            "{DEBUG_TRUST_ROOT_DER_ENV} must be an absolute path"
+        ));
     }
     let expected_sha256 = expected_sha256
         .into_string()
@@ -192,7 +194,11 @@ mod tests {
         assert!(
             trust_policy_from_settings(
                 true,
-                Some(std::env::temp_dir().join("lattice-missing-root.der").into_os_string()),
+                Some(
+                    std::env::temp_dir()
+                        .join("lattice-missing-root.der")
+                        .into_os_string()
+                ),
                 Some(OsString::from("not-a-fingerprint")),
             )
             .is_err()
