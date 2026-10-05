@@ -8,7 +8,10 @@ use lattice_mesh::{
     CourierMetadata, EnvelopeId as LocalEnvelopeId, EventId as LocalEventId, PeerId, TrafficClass,
 };
 use lattice_node::courier::{receive_courier_once, send_courier_once};
-use lattice_platform::{MAX_ENVELOPE_BYTES, TransportAdapter};
+use lattice_platform::{
+    EnvelopeBytes, MAX_ENVELOPE_BYTES, PortFuture, TransportAdapter, TransportCapabilities,
+    TransportError, TransportLifecycle, TransportReceipt,
+};
 use lattice_relay::{DeliveryClass, EnvelopeV1};
 use lattice_storage::{DEFAULT_COURIER_LIMITS, Store};
 use lattice_transport::{TcpPeerAdapter, TcpPeerListener};
@@ -32,6 +35,46 @@ fn database_path(label: &str) -> std::path::PathBuf {
         "lattice-courier-transfer-{label}-{}-{nonce}.sqlite",
         std::process::id()
     ))
+}
+
+struct DropAfterRetentionAck {
+    inner: TcpPeerAdapter,
+    sends: std::sync::atomic::AtomicUsize,
+}
+
+impl TransportAdapter for DropAfterRetentionAck {
+    fn capabilities(&self) -> TransportCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn lifecycle(&self) -> TransportLifecycle {
+        self.inner.lifecycle()
+    }
+
+    fn start(&self) -> PortFuture<'_, Result<(), TransportError>> {
+        self.inner.start()
+    }
+
+    fn stop(&self) -> PortFuture<'_, Result<(), TransportError>> {
+        self.inner.stop()
+    }
+
+    fn send(
+        &self,
+        envelope: EnvelopeBytes,
+    ) -> PortFuture<'_, Result<TransportReceipt, TransportError>> {
+        if self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+            return Box::pin(async move {
+                let _ = self.inner.stop().await;
+                Err(TransportError::OperationFailed)
+            });
+        }
+        self.inner.send(envelope)
+    }
+
+    fn receive(&self) -> PortFuture<'_, Result<Option<EnvelopeBytes>, TransportError>> {
+        self.inner.receive()
+    }
 }
 
 fn envelope(identity: &DeviceIdentity) -> EnvelopeV1 {
@@ -190,6 +233,107 @@ async fn pinned_tcp_transfer_consumes_budget_and_persists_only_on_receiver() {
     let _ = std::fs::remove_file(bob_path);
 }
 
+#[tokio::test]
+async fn source_copy_survives_receiver_retention_without_ack() {
+    let alice = DeviceIdentity::generate().expect("generate sender identity");
+    let bob = DeviceIdentity::generate().expect("generate receiver identity");
+    let alice_pins_bob =
+        PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+            .expect("pin receiver");
+    let bob_pins_alice =
+        PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+            .expect("pin sender");
+    let alice_path = database_path("sender-no-ack");
+    let bob_path = database_path("receiver-no-ack");
+    let mut alice_store = Store::open(&alice_path).expect("open sender store");
+    let mut bob_store = Store::open(&bob_path).expect("open receiver store");
+    alice_store
+        .configure_courier_queue(true, DEFAULT_COURIER_LIMITS)
+        .expect("enable sender queue");
+    bob_store
+        .configure_courier_queue(true, DEFAULT_COURIER_LIMITS)
+        .expect("enable receiver queue");
+    let source = envelope(&alice);
+    let source_id = queue_envelope(&mut alice_store, &source);
+
+    let listener = TcpPeerListener::bind("127.0.0.1:0", MAX_ENVELOPE_BYTES)
+        .await
+        .expect("bind listener");
+    let endpoint = listener.local_addr().expect("read listener address");
+    let sender_adapter = TcpPeerAdapter::connect(endpoint, MAX_ENVELOPE_BYTES)
+        .await
+        .expect("connect sender");
+    let (receiver_adapter, _) = listener.accept().await.expect("accept sender");
+    let receiver_adapter = DropAfterRetentionAck {
+        inner: receiver_adapter,
+        sends: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let sender_cancel = CancellationToken::new();
+    let receiver_cancel = CancellationToken::new();
+    let bob_identity = &bob;
+    let receiver_store = &mut bob_store;
+    let (sent, received) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            async {
+                let sent = send_courier_once(
+                    &sender_adapter,
+                    &alice,
+                    alice_pins_bob,
+                    &mut alice_store,
+                    source_id,
+                    &sender_cancel,
+                )
+                .await;
+                sender_adapter.stop().await.expect("close sender");
+                sent
+            },
+            async move {
+                receive_courier_once(
+                    &receiver_adapter,
+                    bob_identity,
+                    bob_pins_alice,
+                    receiver_store,
+                    &receiver_cancel,
+                )
+                .await
+            },
+        )
+    })
+    .await
+    .expect("courier TCP session stays bounded");
+
+    assert!(sent.is_err(), "sender must not report success without ACK");
+    assert!(
+        received.is_err(),
+        "receiver deliberately drops the final ACK"
+    );
+    assert_eq!(
+        alice_store
+            .courier_queue_status()
+            .expect("sender status")
+            .usage
+            .items,
+        1,
+        "source copy remains queued after missing retention ACK"
+    );
+    assert_eq!(
+        bob_store
+            .courier_queue_status()
+            .expect("receiver status")
+            .usage
+            .items,
+        1,
+        "receiver stored the copy before losing its ACK"
+    );
+    let retained_source = alice_store
+        .read_courier_envelope(source_id)
+        .expect("source copy survives");
+    assert_eq!(retained_source.encrypted_opaque_bytes, source.encode());
+    drop(alice_store);
+    drop(bob_store);
+    let _ = std::fs::remove_file(alice_path);
+    let _ = std::fs::remove_file(bob_path);
+}
 #[tokio::test]
 async fn pin_mismatch_does_not_consume_source_copy() {
     let alice = DeviceIdentity::generate().expect("generate sender identity");
