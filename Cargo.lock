@@ -3188,11 +3188,13 @@ dependencies = [
  "lattice-identity",
  "lattice-mls",
  "lattice-protocol",
+ "lattice-relay",
  "lattice-storage",
  "lattice-testkit",
  "openmls",
  "openmls_rust_crypto",
  "rusqlite",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "zeroize",
 ]
@@ -3218,6 +3220,7 @@ dependencies = [
  "lattice-core",
  "lattice-events",
  "lattice-files",
+ "lattice-identity",
  "lattice-mls",
  "lattice-node",
  "lattice-platform",
@@ -3315,6 +3318,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "zeroize",
 ]
 
 [[package]]
@@ -3344,6 +3348,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
+ "getrandom 0.4.3",
  "k256",
  "lattice-events",
  "lattice-identity",
@@ -3356,6 +3361,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -3392,10 +3398,16 @@ version = "0.1.0"
 dependencies = [
  "lattice-core",
  "lattice-crypto",
+ "lattice-files",
  "lattice-identity",
+ "lattice-node",
+ "lattice-platform",
+ "lattice-transport",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
  "uniffi",
 ]
 
