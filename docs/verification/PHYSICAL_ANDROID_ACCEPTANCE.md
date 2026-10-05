@@ -19,7 +19,7 @@ Copy this template into a dated evidence file. Leave unknown fields blank and ma
 | Peer pins and runtime permissions | |
 | Wi-Fi and cellular disabled on both | |
 
-| Direction / attempt | Event ID | Sender outbox before / after | Receiver Core outcome | Receiver history count | Duplicate count | Disconnect, retry, and restart result | Timestamp |
+| Direction / attempt | Event or DM packet ID | Sender outbox before / after | Receiver Core outcome | Receiver history count | Duplicate count | Disconnect, retry, and restart result | Timestamp |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | A→B first send | | | | | | | |
 | B→A first send | | | | | | | |
@@ -90,6 +90,19 @@ adb -s $serialB logcat -c
 adb -s $serialA logcat -d -v threadtime > android-a-logcat.txt
 adb -s $serialB logcat -d -v threadtime > android-b-logcat.txt
 ```
+
+## Pairwise direct-message test
+
+Run after both Nearby screens establish authenticated BLE sessions and compare the pinned peer identities. A shared Space is not required for this section.
+
+1. On both devices, open Identity → Direct messages and enter each device's externally issued X.509 credential vector. Publish a fresh local KeyPackage on each device; exchange each public KeyPackage and full identity fingerprint out of band.
+2. On A, enter B's exact fingerprint and KeyPackage and create the pairwise conversation. Confirm the invitation is locally queued and not shown as accepted or delivered before transport.
+3. Transfer the invitation over the authenticated BLE session to B. Before consent, verify B shows one pending invitation and no active conversation. On B, explicitly accept; verify the Welcome imports and a conversation appears. Also run one declined invitation and confirm it creates no conversation.
+4. Send a new text packet A→B and B→A. Record packet IDs, sender outbox state, receiver Core result, and exactly one decrypted history entry per direction. Repeat one packet or reconnect to verify duplicate ingress does not create another history entry.
+5. Disconnect one peer before sending, then reconnect and confirm the same packet ID is retried and accepted once. Restart both apps and confirm conversations and protected local history persist.
+6. Capture redacted logs and screenshots. Do not capture credential vectors, Welcome bytes, private keys, or message bodies containing user data.
+
+An invitation still pending user consent is a successful peer-ingress receipt only after its durable pending record commits. It is not proof that the user accepted the conversation. Message peer-ingress acceptance is not a read receipt.
 
 ## Three-device carry test
 
