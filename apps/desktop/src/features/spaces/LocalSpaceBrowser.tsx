@@ -1,5 +1,6 @@
+import { ActionButton, EmptyState, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { DesktopWebRtcEventPanel } from "./DesktopWebRtcEventPanel";
 import { LocalSyncPanel } from "./LocalSyncPanel";
 
@@ -124,16 +125,38 @@ function localOutboxLabel(state: LocalTextMessage["outboxState"]): string {
 
 type LocalSpaceBrowserProps = {
   runtimeAvailable: boolean;
+  onSpacesChange?: (spaces: WorkspaceSpaceSnapshot[]) => void;
+  activeSpace?: string | null;
+  activeChannel?: string | null;
+  onChannelChange?: (id: string) => void;
+};
+
+export type WorkspaceSpaceSnapshot = {
+  id: string;
+  label: string;
+  channels: { id: string; label: string; kind: "text" | "announcement" }[];
 };
 
 const MAX_CREDENTIAL_HEX_LENGTH = 16 * 1024 * 2;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 
-function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
+function LocalMessageComposer({
+  space,
+  activeChannel,
+  onChannelChange,
+}: {
+  space: LocalSpaceSummary;
+  activeChannel?: string | null;
+  onChannelChange?: (id: string) => void;
+}) {
   const channels = space.channels.filter(
     (channel) => !channel.archived && channel.channelType !== "voice",
   );
-  const [channelId, setChannelId] = useState(channels[0]?.id ?? "");
+  const [channelId, setChannelId] = useState(activeChannel ?? channels[0]?.id ?? "");
+  useEffect(() => {
+    if (activeChannel && channels.some((channel) => channel.id === activeChannel))
+      setChannelId(activeChannel);
+  }, [activeChannel, channels]);
   const [credentialVectorHex, setCredentialVectorHex] = useState("");
   const [content, setContent] = useState("");
   const [busy, setBusy] = useState(false);
@@ -501,12 +524,13 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
         <p>This Space has no active text or announcement channels.</p>
       ) : (
         <>
-          <label>
-            Channel
+          <FormField label="Channel" htmlFor="message-channel">
             <select
+              id="message-channel"
               value={channelId}
               onChange={(event) => {
                 setChannelId(event.target.value);
+                onChannelChange?.(event.target.value);
                 setEditTarget(null);
                 setReplyTarget(null);
                 setContent("");
@@ -518,10 +542,13 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                 </option>
               ))}
             </select>
-          </label>
-          <label>
-            RFC 9420 X.509 credential vector (hex)
+          </FormField>
+          <FormField
+            label="RFC 9420 X.509 credential vector (hex)"
+            htmlFor="message-credential-vector"
+          >
             <textarea
+              id="message-credential-vector"
               autoComplete="off"
               maxLength={MAX_CREDENTIAL_HEX_LENGTH}
               rows={3}
@@ -529,36 +556,43 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               onChange={(event) => setCredentialVectorHex(event.target.value.trim())}
               spellCheck={false}
             />
-          </label>
-          <label>
-            {editTarget ? "Replacement text" : replyTarget ? "Reply" : "Message"}
+          </FormField>
+          <FormField
+            label={editTarget ? "Replacement text" : replyTarget ? "Reply" : "Message"}
+            htmlFor="message-content"
+          >
             <textarea
+              id="message-content"
               maxLength={MAX_MESSAGE_BYTES}
               rows={3}
               value={content}
               onChange={(event) => setContent(event.target.value)}
             />
-          </label>
-          <label>
-            Reaction token
+          </FormField>
+          <FormField label="Reaction token" htmlFor="message-reaction-token">
             <input
+              id="message-reaction-token"
               maxLength={64}
               value={reactionToken}
               onChange={(event) => setReactionToken(event.target.value)}
               disabled={busy}
             />
-          </label>
-          <label>
-            Reaction or pin add-event ID for removal (32-byte hex)
+          </FormField>
+          <FormField
+            label="Reaction or pin add-event ID for removal (32-byte hex)"
+            htmlFor="message-mutation-tag"
+          >
             <input
+              id="message-mutation-tag"
               maxLength={64}
               value={mutationTag}
               onChange={(event) => setMutationTag(event.target.value.trim())}
               disabled={busy}
             />
-          </label>
-          <button
+          </FormField>
+          <ActionButton
             type="submit"
+            tone="primary"
             disabled={busy || !channelId || !credentialIsValid || !contentIsValid}
           >
             {busy
@@ -568,15 +602,16 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                 : replyTarget
                   ? "Queue reply"
                   : "Queue locally"}
-          </button>
+          </ActionButton>
           {!editTarget && (
-            <button
+            <ActionButton
               type="button"
+              tone="quiet"
               disabled={busy || !channelId || !credentialIsValid}
               onClick={() => void queueFileAttachment()}
             >
               {busy ? "Queuing file…" : "Choose file and queue attachment"}
-            </button>
+            </ActionButton>
           )}
           <p>
             Attachments are capped at 128 MiB per file and 512 MiB in the local source cache. The
@@ -592,13 +627,14 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                 leaves that manifest without source bytes for future transfer.
               </p>
             </div>
-            <button
+            <ActionButton
               type="button"
+              tone="quiet"
               disabled={attachmentCacheBusy}
               onClick={() => void refreshAttachmentSources()}
             >
               {attachmentCacheBusy ? "Working…" : "Load or refresh retained files"}
-            </button>
+            </ActionButton>
             {attachmentCacheBytes !== null && (
               <p>
                 {attachmentSources.length} retained file
@@ -606,7 +642,9 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                 bytes used
               </p>
             )}
-            {attachmentCacheError && <p role="alert">{attachmentCacheError}</p>}
+            {attachmentCacheError && (
+              <StatusNotice kind="error">{attachmentCacheError}</StatusNotice>
+            )}
             {attachmentSources.length > 0 && (
               <ul>
                 {attachmentSources.map((source) => (
@@ -614,13 +652,14 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                     <span>
                       {source.name} · {source.size} bytes
                     </span>
-                    <button
+                    <ActionButton
                       type="button"
+                      tone="danger"
                       disabled={attachmentCacheBusy}
                       onClick={() => void removeAttachmentSource(source.hash)}
                     >
                       Remove source copy
-                    </button>
+                    </ActionButton>
                   </li>
                 ))}
               </ul>
@@ -634,38 +673,46 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               The receiver selects an export path, authenticates the sender, then asks for consent
               before accepting bytes. Transfers time out after 30 minutes.
             </p>
-            <label htmlFor="attachment-transfer-event-id">Authorized attachment event ID</label>
-            <input
-              autoComplete="off"
-              id="attachment-transfer-event-id"
-              maxLength={64}
-              onChange={(event) => setAttachmentEventId(event.target.value.trim())}
-              spellCheck={false}
-              value={attachmentEventId}
-            />
-            <label htmlFor="attachment-transfer-peer-pin">
-              Exact pinned peer fingerprint (64 hex characters)
-            </label>
-            <input
-              autoComplete="off"
-              id="attachment-transfer-peer-pin"
-              maxLength={64}
-              onChange={(event) => setAttachmentPeerFingerprint(event.target.value.trim())}
-              spellCheck={false}
-              value={attachmentPeerFingerprint}
-            />
-            <label htmlFor="attachment-transfer-connect-address">Peer TCP address</label>
-            <input
-              autoComplete="off"
-              id="attachment-transfer-connect-address"
-              maxLength={128}
-              onChange={(event) => setAttachmentConnectAddress(event.target.value.trim())}
-              placeholder="192.168.1.20:7332"
-              spellCheck={false}
-              value={attachmentConnectAddress}
-            />
-            <button
+            <FormField
+              label="Authorized attachment event ID"
+              htmlFor="attachment-transfer-event-id"
+            >
+              <input
+                autoComplete="off"
+                id="attachment-transfer-event-id"
+                maxLength={64}
+                onChange={(event) => setAttachmentEventId(event.target.value.trim())}
+                spellCheck={false}
+                value={attachmentEventId}
+              />
+            </FormField>
+            <FormField
+              label="Exact pinned peer fingerprint (64 hex characters)"
+              htmlFor="attachment-transfer-peer-pin"
+            >
+              <input
+                autoComplete="off"
+                id="attachment-transfer-peer-pin"
+                maxLength={64}
+                onChange={(event) => setAttachmentPeerFingerprint(event.target.value.trim())}
+                spellCheck={false}
+                value={attachmentPeerFingerprint}
+              />
+            </FormField>
+            <FormField label="Peer TCP address" htmlFor="attachment-transfer-connect-address">
+              <input
+                autoComplete="off"
+                id="attachment-transfer-connect-address"
+                maxLength={128}
+                onChange={(event) => setAttachmentConnectAddress(event.target.value.trim())}
+                placeholder="192.168.1.20:7332"
+                spellCheck={false}
+                value={attachmentConnectAddress}
+              />
+            </FormField>
+            <ActionButton
               type="button"
+              tone="primary"
               disabled={
                 attachmentTransferBusy ||
                 attachmentEventId.length !== 64 ||
@@ -675,18 +722,23 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               onClick={() => void sendAttachment()}
             >
               {attachmentTransferBusy ? "Transferring…" : "Send authorized attachment"}
-            </button>
-            <label htmlFor="attachment-transfer-listen-address">Local TCP listen address</label>
-            <input
-              autoComplete="off"
-              id="attachment-transfer-listen-address"
-              maxLength={128}
-              onChange={(event) => setAttachmentListenAddress(event.target.value.trim())}
-              spellCheck={false}
-              value={attachmentListenAddress}
-            />
-            <button
+            </ActionButton>
+            <FormField
+              label="Local TCP listen address"
+              htmlFor="attachment-transfer-listen-address"
+            >
+              <input
+                autoComplete="off"
+                id="attachment-transfer-listen-address"
+                maxLength={128}
+                onChange={(event) => setAttachmentListenAddress(event.target.value.trim())}
+                spellCheck={false}
+                value={attachmentListenAddress}
+              />
+            </FormField>
+            <ActionButton
               type="button"
+              tone="primary"
               disabled={
                 attachmentTransferBusy ||
                 attachmentEventId.length !== 64 ||
@@ -696,7 +748,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               onClick={() => void receiveAttachment()}
             >
               {attachmentTransferBusy ? "Transferring…" : "Receive and export attachment"}
-            </button>
+            </ActionButton>
             <p>
               The local address must be reachable by the sender; firewall and network reachability
               are not tested. Source bytes stay local on send; received bytes are staged privately
@@ -709,8 +761,9 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
             )}
           </section>
           {editTarget && (
-            <button
+            <ActionButton
               type="button"
+              tone="quiet"
               disabled={busy}
               onClick={() => {
                 setEditTarget(null);
@@ -719,11 +772,12 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               }}
             >
               Cancel edit
-            </button>
+            </ActionButton>
           )}
           {replyTarget && (
-            <button
+            <ActionButton
               type="button"
+              tone="quiet"
               disabled={busy}
               onClick={() => {
                 setReplyTarget(null);
@@ -732,7 +786,7 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
               }}
             >
               Cancel reply
-            </button>
+            </ActionButton>
           )}
           <section className="local-message-history" aria-label="Recent local message history">
             <div>
@@ -744,12 +798,17 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                 Neither path proves destination delivery.
               </p>
             </div>
-            <button type="button" disabled={historyBusy} onClick={() => void loadHistory()}>
+            <ActionButton
+              type="button"
+              tone="quiet"
+              disabled={historyBusy}
+              onClick={() => void loadHistory()}
+            >
               {historyBusy ? "Loading…" : "Load recent history"}
-            </button>
-            <label>
-              Search all locally retained messages
+            </ActionButton>
+            <FormField label="Search all locally retained messages" htmlFor="local-history-search">
               <input
+                id="local-history-search"
                 type="search"
                 value={historyQuery}
                 onChange={(event) => {
@@ -766,28 +825,31 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                 aria-label="Search all locally retained messages"
                 disabled={historyBusy}
               />
-            </label>
-            <button
+            </FormField>
+            <ActionButton
               type="button"
+              tone="primary"
               disabled={historyBusy || !historyQuery.trim()}
               onClick={() => void searchHistory()}
             >
               {historyBusy ? "Searching…" : "Search history"}
-            </button>
-            <p aria-live="polite">
+            </ActionButton>
+            <StatusNotice kind="info">
               {historyChannelId === channelId
                 ? historySearchSummary
                   ? `${history.length} of ${historySearchSummary.totalMatches} matches across ${historySearchSummary.scannedMessages} locally retained messages.`
                   : `${history.length} recent locally cached messages shown.`
                 : "Search scans all locally retained messages in the selected channel without contacting the network."}
-            </p>
-            {historyError && <p role="alert">History unavailable: {historyError}</p>}
+            </StatusNotice>
+            {historyError && (
+              <StatusNotice kind="error">History unavailable: {historyError}</StatusNotice>
+            )}
             {historyChannelId === channelId && history.length === 0 && (
-              <p role="status">
+              <StatusNotice kind="info">
                 {historySearchSummary
                   ? "No locally retained messages match this search."
                   : "No locally retained messages."}
-              </p>
+              </StatusNotice>
             )}
             {historyChannelId === channelId && visibleHistory.length > 0 && (
               <ol>
@@ -797,49 +859,64 @@ function LocalMessageComposer({ space }: { space: LocalSpaceSummary }) {
                     <small>
                       {localOutboxLabel(message.outboxState)} · event {message.eventId}
                     </small>
-                    <button type="button" disabled={busy} onClick={() => beginReply(message)}>
-                      Reply in thread
-                    </button>
-                    <button
+                    <ActionButton
                       type="button"
+                      tone="quiet"
+                      disabled={busy}
+                      onClick={() => beginReply(message)}
+                    >
+                      Reply in thread
+                    </ActionButton>
+                    <ActionButton
+                      type="button"
+                      tone="quiet"
                       disabled={busy || !credentialIsValid || !reactionToken.trim()}
                       onClick={() => void queueTaggedMutation(message, "reaction", true)}
                     >
                       Add reaction
-                    </button>
-                    <button
+                    </ActionButton>
+                    <ActionButton
                       type="button"
+                      tone="quiet"
                       disabled={busy || !credentialIsValid || !/^[\da-f]{64}$/i.test(mutationTag)}
                       onClick={() => void queueTaggedMutation(message, "reaction", false)}
                     >
                       Remove reaction by tag
-                    </button>
-                    <button
+                    </ActionButton>
+                    <ActionButton
                       type="button"
+                      tone="quiet"
                       disabled={busy || !credentialIsValid}
                       onClick={() => void queueTaggedMutation(message, "pin", true)}
                     >
                       Pin
-                    </button>
-                    <button
+                    </ActionButton>
+                    <ActionButton
                       type="button"
+                      tone="quiet"
                       disabled={busy || !credentialIsValid || !/^[\da-f]{64}$/i.test(mutationTag)}
                       onClick={() => void queueTaggedMutation(message, "pin", false)}
                     >
                       Remove pin by tag
-                    </button>
+                    </ActionButton>
                     {message.outboxState !== null && (
                       <>
-                        <button type="button" disabled={busy} onClick={() => beginEdit(message)}>
-                          Edit locally
-                        </button>
-                        <button
+                        <ActionButton
                           type="button"
+                          tone="quiet"
+                          disabled={busy}
+                          onClick={() => beginEdit(message)}
+                        >
+                          Edit locally
+                        </ActionButton>
+                        <ActionButton
+                          type="button"
+                          tone="danger"
                           disabled={busy || !credentialIsValid}
                           onClick={() => void tombstoneMessage(message)}
                         >
                           Queue delete tombstone
-                        </button>
+                        </ActionButton>
                       </>
                     )}
                   </li>
@@ -905,9 +982,12 @@ function LocalSpaceRecovery({ space }: { space: LocalSpaceSummary }) {
 
   return (
     <form className="local-recovery-form" onSubmit={(event) => void recover(event)}>
-      <label>
-        Recovery credential vector (hex)
+      <FormField
+        label="Recovery credential vector (hex)"
+        htmlFor={`space-recovery-credential-${space.spaceId}`}
+      >
         <textarea
+          id={`space-recovery-credential-${space.spaceId}`}
           aria-label={`Recovery credential vector for Space ${space.spaceId}`}
           autoComplete="off"
           inputMode="text"
@@ -916,18 +996,39 @@ function LocalSpaceRecovery({ space }: { space: LocalSpaceSummary }) {
           spellCheck={false}
           value={credentialVectorHex}
         />
-      </label>
-      <button type="submit" disabled={busy}>
+      </FormField>
+      <ActionButton type="submit" tone="primary" disabled={busy}>
         {busy ? "Recovering locally…" : "Create one-member recovery generation"}
-      </button>
-      {feedback && <p role="status">{feedback}</p>}
-      {error && <p role="alert">Recovery failed: {error}</p>}
+      </ActionButton>
+      {feedback && <StatusNotice kind="success">{feedback}</StatusNotice>}
+      {error && <StatusNotice kind="error">Recovery failed: {error}</StatusNotice>}
     </form>
   );
 }
 
-export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) {
+export function LocalSpaceBrowser({
+  runtimeAvailable,
+  onSpacesChange,
+  activeSpace,
+  activeChannel,
+  onChannelChange,
+}: LocalSpaceBrowserProps) {
   const [spaces, setSpaces] = useState<LocalSpaceSummary[]>([]);
+  useEffect(() => {
+    onSpacesChange?.(
+      spaces.map((space) => ({
+        id: `${space.spaceId}:${space.groupReference}`,
+        label: `Space ${space.spaceId.slice(0, 8)}`,
+        channels: space.channels
+          .filter((channel) => !channel.archived && channel.channelType !== "voice")
+          .map((channel) => ({
+            id: channel.id,
+            label: channel.name,
+            kind: channel.channelType as "text" | "announcement",
+          })),
+      })),
+    );
+  }, [spaces, onSpacesChange]);
   const [spaceCursor, setSpaceCursor] = useState<string | null>(null);
   const [spaceError, setSpaceError] = useState<string | null>(null);
   const [spacesBusy, setSpacesBusy] = useState(false);
@@ -1051,7 +1152,8 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
           </p>
         </div>
         {runtimeAvailable && (
-          <button
+          <ActionButton
+            tone="quiet"
             type="button"
             disabled={spacesBusy || importBusy}
             onClick={() => void runSpacesCommand(spacesLoaded ? spaceCursor : null)}
@@ -1063,7 +1165,7 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
                 : spacesLoaded
                   ? "Refresh snapshots"
                   : "Load snapshots"}
-          </button>
+          </ActionButton>
         )}
       </div>
       {runtimeAvailable && (
@@ -1073,23 +1175,28 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
             The validated package can be given to an inviter. Its matching private material stays in
             this protected profile; publishing it does not contact a peer or join a Space.
           </p>
-          <label htmlFor="space-key-package-credential">Local X.509 credential vector (hex)</label>
-          <textarea
-            id="space-key-package-credential"
-            autoComplete="off"
-            maxLength={MAX_CREDENTIAL_HEX_LENGTH}
-            disabled={keyPackageBusy}
-            value={keyPackageCredentialHex}
-            onChange={(event) => {
-              setKeyPackageCredentialHex(event.currentTarget.value);
-              setKeyPackageError(null);
-              setKeyPackageResult(null);
-            }}
-            spellCheck={false}
-          />
-          <p>Maximum credential size: 16 KiB before hex encoding.</p>
-          <button
+          <FormField
+            label="Local X.509 credential vector (hex)"
+            htmlFor="space-key-package-credential"
+            hint="Maximum credential size: 16 KiB before hex encoding."
+          >
+            <textarea
+              id="space-key-package-credential"
+              autoComplete="off"
+              maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+              disabled={keyPackageBusy}
+              value={keyPackageCredentialHex}
+              onChange={(event) => {
+                setKeyPackageCredentialHex(event.currentTarget.value);
+                setKeyPackageError(null);
+                setKeyPackageResult(null);
+              }}
+              spellCheck={false}
+            />
+          </FormField>
+          <ActionButton
             type="submit"
+            tone="primary"
             disabled={
               keyPackageBusy ||
               keyPackageCredentialHex.trim().length === 0 ||
@@ -1099,25 +1206,39 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
             }
           >
             {keyPackageBusy ? "Publishing locally…" : "Publish one-time KeyPackage"}
-          </button>
-          {keyPackageError && <p role="alert">Could not publish KeyPackage: {keyPackageError}</p>}
+          </ActionButton>
+          {keyPackageError && (
+            <StatusNotice kind="error">
+              Could not publish KeyPackage: {keyPackageError}
+            </StatusNotice>
+          )}
           {keyPackageResult && (
             <div className="identity-status" role="status" aria-live="polite">
               <p>
                 One-time KeyPackage published locally. Share these public bytes with the inviter; no
                 network was contacted.
               </p>
-              <textarea
-                aria-label="Published public KeyPackage bytes in hexadecimal"
-                maxLength={MAX_KEY_PACKAGE_HEX_LENGTH}
-                onFocus={(event) => event.currentTarget.select()}
-                readOnly
-                spellCheck={false}
-                value={keyPackageResult.keyPackageHex}
-              />
-              <button type="button" onClick={() => void copyPublishedKeyPackage()}>
+              <FormField
+                label="Published public KeyPackage bytes in hexadecimal"
+                htmlFor="published-key-package-hex"
+              >
+                <textarea
+                  id="published-key-package-hex"
+                  maxLength={MAX_KEY_PACKAGE_HEX_LENGTH}
+                  onFocus={(event) => event.currentTarget.select()}
+                  readOnly
+                  spellCheck={false}
+                  value={keyPackageResult.keyPackageHex}
+                  aria-label="Published public KeyPackage bytes in hexadecimal"
+                />
+              </FormField>
+              <ActionButton
+                type="button"
+                tone="quiet"
+                onClick={() => void copyPublishedKeyPackage()}
+              >
                 Copy KeyPackage
-              </button>
+              </ActionButton>
               <p>{keyPackageCopyStatus}</p>
             </div>
           )}
@@ -1134,60 +1255,67 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
             profile. It does not prove package delivery or independently replay historical events.
             No relay or network is contacted.
           </p>
-          <label htmlFor="space-welcome-package">Versioned Welcome bootstrap package (hex)</label>
-          <textarea
-            id="space-welcome-package"
-            autoComplete="off"
-            maxLength={MAX_BOOTSTRAP_HEX_LENGTH}
-            disabled={importBusy}
-            value={packageHex}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              if (value.length <= MAX_BOOTSTRAP_HEX_LENGTH) setPackageHex(value);
-              setImported(null);
-              setImportError(null);
-            }}
-            spellCheck={false}
-            aria-describedby="space-welcome-package-help"
-          />
-          <p id="space-welcome-package-help">Maximum package size: 1 MiB before hex encoding.</p>
-          <label htmlFor="space-welcome-inviter">Pinned inviter's full fingerprint (hex)</label>
-          <input
-            id="space-welcome-inviter"
-            autoComplete="off"
-            maxLength={INVITER_FINGERPRINT_HEX_LENGTH}
-            disabled={importBusy}
-            value={inviterFingerprintHex}
-            onChange={(event) => {
-              setInviterFingerprintHex(event.currentTarget.value);
-              setImported(null);
-              setImportError(null);
-            }}
-            spellCheck={false}
-          />
-          <label htmlFor="space-welcome-credential">
-            Joining device's X.509 credential vector (hex)
-          </label>
-          <textarea
-            id="space-welcome-credential"
-            autoComplete="off"
-            maxLength={MAX_CREDENTIAL_HEX_LENGTH}
-            disabled={importBusy}
-            value={credentialVectorHex}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              if (value.length <= MAX_CREDENTIAL_HEX_LENGTH) setCredentialVectorHex(value);
-              setImported(null);
-              setImportError(null);
-            }}
-            spellCheck={false}
-          />
-          <p>
-            Supply this profile's credential vector, not the inviter's. Maximum credential size:
-            16 KiB before hex encoding.
-          </p>
-          <button
+          <FormField
+            label="Versioned Welcome bootstrap package (hex)"
+            htmlFor="space-welcome-package"
+            hint="Maximum package size: 1 MiB before hex encoding."
+          >
+            <textarea
+              id="space-welcome-package"
+              autoComplete="off"
+              maxLength={MAX_BOOTSTRAP_HEX_LENGTH}
+              disabled={importBusy}
+              value={packageHex}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                if (value.length <= MAX_BOOTSTRAP_HEX_LENGTH) setPackageHex(value);
+                setImported(null);
+                setImportError(null);
+              }}
+              spellCheck={false}
+            />
+          </FormField>
+          <FormField
+            label="Pinned inviter's full fingerprint (hex)"
+            htmlFor="space-welcome-inviter"
+          >
+            <input
+              id="space-welcome-inviter"
+              autoComplete="off"
+              maxLength={INVITER_FINGERPRINT_HEX_LENGTH}
+              disabled={importBusy}
+              value={inviterFingerprintHex}
+              onChange={(event) => {
+                setInviterFingerprintHex(event.currentTarget.value);
+                setImported(null);
+                setImportError(null);
+              }}
+              spellCheck={false}
+            />
+          </FormField>
+          <FormField
+            label="Joining device's X.509 credential vector (hex)"
+            htmlFor="space-welcome-credential"
+            hint="Supply this profile's credential vector, not the inviter's. Maximum credential size: 16 KiB before hex encoding."
+          >
+            <textarea
+              id="space-welcome-credential"
+              autoComplete="off"
+              maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+              disabled={importBusy}
+              value={credentialVectorHex}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                if (value.length <= MAX_CREDENTIAL_HEX_LENGTH) setCredentialVectorHex(value);
+                setImported(null);
+                setImportError(null);
+              }}
+              spellCheck={false}
+            />
+          </FormField>
+          <ActionButton
             type="submit"
+            tone="primary"
             disabled={
               importBusy ||
               packageHex.length === 0 ||
@@ -1203,34 +1331,49 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
             }
           >
             {importBusy ? "Importing locally…" : "Import Welcome bootstrap"}
-          </button>
+          </ActionButton>
         </form>
       )}
       {importBusy && (
-        <p role="status">
+        <StatusNotice kind="info">
           Validating the pinned inviter, credential, Welcome, and signed checkpoint…
-        </p>
+        </StatusNotice>
       )}
-      {importError && <p role="alert">Could not import the Welcome bootstrap: {importError}</p>}
+      {importError && (
+        <StatusNotice kind="error">
+          Could not import the Welcome bootstrap: {importError}
+        </StatusNotice>
+      )}
       {imported && (
-        <p role="status">
+        <StatusNotice kind="success">
           Signed policy checkpoint and Welcome imported locally for Space {imported.spaceId}. No
           network was contacted; delivery and independent historical replay are not established.
-        </p>
+        </StatusNotice>
       )}
       {!runtimeAvailable && <p>Open the desktop app to inspect its protected local Space store.</p>}
-      {spacesBusy && <p role="status">Checking local Space snapshots…</p>}
+      {spacesBusy && <StatusNotice kind="info">Checking local Space snapshots…</StatusNotice>}
       {spaceError && (
-        <p role="alert">
+        <StatusNotice kind="error">
           Could not load local Space snapshots: {spaceError}
           {spacesLoaded && " Previously loaded results are still shown."}
-        </p>
+        </StatusNotice>
       )}
-      {spacesLoaded && spaces.length === 0 && <p>No local Space snapshots were found.</p>}
+      {spacesLoaded && spaces.length === 0 && (
+        <EmptyState
+          title="No local Spaces found"
+          body="Create a local Space or import an existing Welcome from a pinned inviter. No network is contacted by these local operations."
+          action={<a href="#space-create-title">Create a local Space</a>}
+        />
+      )}
       {spaces.length > 0 && (
         <ul id="local-space-results" className="space-list" aria-live="polite">
           {spaces.map((space) => (
-            <li key={`${space.spaceId}:${space.groupReference}`}>
+            <li
+              key={`${space.spaceId}:${space.groupReference}`}
+              hidden={
+                activeSpace !== null && activeSpace !== `${space.spaceId}:${space.groupReference}`
+              }
+            >
               <span>Space ID</span>
               <code>{space.spaceId}</code>
               <span>MLS group</span>
@@ -1247,7 +1390,17 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
                   </div>
                 ))}
               </div>
-              {runtimeAvailable && <LocalMessageComposer space={space} />}
+              {runtimeAvailable && (
+                <LocalMessageComposer
+                  space={space}
+                  activeChannel={
+                    (activeSpace === `${space.spaceId}:${space.groupReference}`
+                      ? activeChannel
+                      : null) ?? null
+                  }
+                  {...(onChannelChange ? { onChannelChange } : {})}
+                />
+              )}
               {runtimeAvailable && (
                 <LocalSyncPanel spaceId={space.spaceId} groupReference={space.groupReference} />
               )}
@@ -1257,10 +1410,10 @@ export function LocalSpaceBrowser({ runtimeAvailable }: LocalSpaceBrowserProps) 
         </ul>
       )}
       {spacesLoaded && spaces.length > 0 && (
-        <p role="status" aria-live="polite">
+        <StatusNotice kind="success">
           {spaces.length} locally verified snapshot{spaces.length === 1 ? "" : "s"} loaded. Current
           membership has not been checked.
-        </p>
+        </StatusNotice>
       )}
     </section>
   );
