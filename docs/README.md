@@ -65,25 +65,25 @@ local one-member Genesis snapshots from a system-trusted X.509 credential
 vector, browse local snapshots, pin peers, remove local pins without revoking
 remote identities or changing Space membership, and export a CSR. Android
 exposes a protected identity snapshot, exact peer pins with local-only removal,
-CSR export, permission-aware BLE discovery/fragment framing, bounded local
-Space creation from an OS-trusted X.509 vector, and local Genesis listing.
-Space creation creates only a local
-one-member candidate; it does not establish remote membership or contact a
-network. CSR export does not issue certificates.
+CSR export, permission-aware BLE discovery, foreground central/peripheral GATT
+sessions with Noise authentication and consent-gated envelope forwarding, local
+Core ingress diagnostics, bounded local Space creation, Welcome import, and
+local history. Android now publishes a target-bound one-time KeyPackage, creates
+signed offline invitations for a selected local Space, and imports an inviter's
+Welcome after the inviter's exact full fingerprint is pinned. Certificate
+issuance remains external; each device needs a trusted X.509 vector matching
+its protected identity. Invitation creation commits the membership transition
+locally and exports the bootstrap for out-of-band transfer.
 
-Core now has an atomic membership-transition entry point that binds the exact
-MLS Commit to its signed parent-epoch control event and MemberTransition
-application event, applies the reducer policy, stores both events, and merges
-the Commit in one rollback-capable transaction. A focused integration test
-proves successful admission and rollback on an invalid control author. Client
-workflows do not yet integrate this API or restore the later policy reducer.
-Durable conflict recovery, durable messaging, voice authorization/media,
-native BLE GATT exchange, authenticated LAN discovery, independent-relay
-interoperability, and end-to-end app workflows remain incomplete. Certificate
-issuance and profile-wide credential installation are unavailable; the
-supplied X.509 vector is consumed only during local Space creation. Joined-group
-membership is unavailable. ADR-001 and ADR-002 record the conflict and
-channel-read decisions, but operational workflows and acceptance evidence remain
-open. Treat performance numbers in `spec.md` as design targets until measured on
-named devices and networks. No
-interoperability or secure-Space claim follows from component-level tests.
+The BLE foreground session is exercised by focused automated transport tests,
+but no physical Android run is available in the current environment. Persistent
+nearby mode is a separate scan-and-advertise foreground service; it does not
+connect or exchange messages. Android GATT physical reliability, cross-device
+membership enrollment and restart behavior, durable later-policy replay, and
+three-device courier forwarding remain open. Certificate issuance and
+profile-wide credential installation are unavailable; credential vectors must
+be issued externally and installed at operation time. ADR-001 and ADR-002 record
+the conflict and channel-read decisions, but broader operational workflows and
+acceptance evidence remain open. Treat performance numbers in `spec.md` as
+design targets until measured on named devices and networks. No interoperability
+or secure-Space claim follows from component-level tests.

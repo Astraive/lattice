@@ -1,3 +1,4 @@
+import { ActionButton, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 
@@ -67,52 +68,60 @@ export function LocalSyncPanel({ spaceId, groupReference }: Props) {
         Run once on both pinned peers at the same time. Each run exchanges one bounded v2 history
         round and applies received events through Core; it does not claim full convergence.
       </p>
-      <label>
-        Peer listener address
+      <FormField label="Peer listener address" htmlFor="space-sync-peer-address">
         <input
+          id="space-sync-peer-address"
           autoComplete="off"
           onChange={(event) => setConnectAddress(event.target.value)}
           placeholder="192.168.1.20:7331"
           spellCheck={false}
           value={connectAddress}
         />
-      </label>
-      <label>
-        Local sync listen address
+      </FormField>
+      <FormField label="Local sync listen address" htmlFor="space-sync-listen-address">
         <input
+          id="space-sync-listen-address"
           autoComplete="off"
           onChange={(event) => setListenAddress(event.target.value)}
           spellCheck={false}
           value={listenAddress}
         />
-      </label>
+      </FormField>
       <p>
         The listener defaults to loopback and accepts only the exact pinned identity. On the same
         machine, use a different listen port in each profile; for another device, bind a local
         interface address explicitly.
       </p>
-      <label>
-        Exact pinned peer fingerprint (64 hex characters)
+      <FormField
+        label="Exact pinned peer fingerprint (64 hex characters)"
+        htmlFor="space-sync-fingerprint"
+      >
         <input
+          id="space-sync-fingerprint"
           autoComplete="off"
           maxLength={64}
           onChange={(event) => setPeerFingerprint(event.target.value.trim())}
           spellCheck={false}
           value={peerFingerprint}
         />
-      </label>
-      <button type="button" disabled={!canSync} onClick={() => void syncOnce()}>
+      </FormField>
+      <ActionButton
+        type="button"
+        tone="primary"
+        disabled={!canSync}
+        onClick={() => void syncOnce()}
+      >
         {busy ? "Synchronizing…" : "Run one authenticated sync round"}
-      </button>
-      {error && <p role="alert">Sync failed: {error}</p>}
+      </ActionButton>
+      {error && <StatusNotice kind="error">Sync failed: {error}</StatusNotice>}
       {result && (
-        <p role="status" aria-live="polite">
+        <StatusNotice kind="success">
           Round completed with {result.peerFingerprint} via {result.listenAddress}: accepted{" "}
           {result.acceptedEvents}, pending {result.pendingEvents}, duplicates{" "}
           {result.duplicateEvents}, checkpoint-excluded {result.checkpointExcludedEvents}, offered{" "}
           {result.offeredEvents}. Run additional rounds if history remains incomplete. Load recent
           history to view accepted events.
-        </p>
+        </StatusNotice>
       )}
     </section>
   );

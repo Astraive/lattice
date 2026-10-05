@@ -1,0 +1,5 @@
+{
+  "extends": "@lattice/config/typescript/base.json",
+  "include": ["src"],
+  "compilerOptions": { "jsx": "react-jsx" }
+}

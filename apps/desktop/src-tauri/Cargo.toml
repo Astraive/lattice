@@ -16,6 +16,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 tauri = { version = "=2.11.6", features = [] }
 lattice-core = { path = "../../../crates/lattice-core" }
+lattice-identity = { path = "../../../crates/lattice-identity" }
 lattice-platform = { path = "../../../crates/lattice-platform" }
 lattice-relay = { path = "../../../crates/lattice-relay" }
 lattice-node = { path = "../../../crates/lattice-node" }

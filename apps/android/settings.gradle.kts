@@ -15,4 +15,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Lattice"
-include(":app")
+include(":app", ":ui-android")
+project(":ui-android").projectDir = rootProject.projectDir.resolve("../../packages/ui/android")

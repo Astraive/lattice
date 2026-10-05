@@ -750,6 +750,57 @@ impl SpaceReducer {
             .map(|policy| effective_space(policy, member))
     }
 
+    /// Returns whether an active, non-conflicted member currently has `SPACE_MANAGE`.
+    #[must_use]
+    pub fn can_manage_space(&self, member: &Fingerprint) -> bool {
+        if self.conflicted {
+            return false;
+        }
+        let Some(policy) = self.policy.as_ref() else {
+            return false;
+        };
+        member_status(policy, member) == Some(MemberStatus::Active)
+            && effective_space(policy, member) & SPACE_MANAGE == SPACE_MANAGE
+    }
+
+    /// Authorizes a current Space manager's MLS-protected relay-mailbox control event.
+    ///
+    /// The event must carry the complete current policy heads in its ancestor
+    /// graph. MLS authentication and payload decoding remain Core responsibilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns a rejection reason if the event is not a valid, current manager-authored mailbox control event.
+    pub fn authorize_relay_mailbox_control(
+        &self,
+        event: &VerifiedSignatureOnlyEvent,
+    ) -> Result<(), RejectReason> {
+        if event.kind() != EventKind::RelayMailboxControl {
+            return Err(RejectReason::WrongEventKind);
+        }
+        if event.channel_id().is_some() {
+            return Err(RejectReason::NonNullChannel);
+        }
+        if self.conflicted {
+            return Err(RejectReason::GraphConflict);
+        }
+        let policy = self.policy.as_ref().ok_or(RejectReason::MissingPolicy)?;
+        if event.space_id() != &policy.space_id
+            || event.mls_group_reference() != &policy.group_reference
+        {
+            return Err(RejectReason::WrongGeneration);
+        }
+        let metadata = EventMetadata::from_verified(event);
+        let ancestors = self.ancestor_set(&metadata).map_err(|error| match error {
+            AncestorError::Pending => RejectReason::IncompletePolicyHeads,
+            AncestorError::Rejected(reason) => reason,
+        })?;
+        if !policy.heads.iter().all(|head| ancestors.contains(head)) {
+            return Err(RejectReason::IncompletePolicyHeads);
+        }
+        require_permission(policy, *event.author_fingerprint(), SPACE_MANAGE)
+    }
+
     /// Returns `None` for a conflicted generation, unknown/archived channel,
     /// or inactive member. Returned masks remain candidate-only.
     #[must_use]
@@ -2580,9 +2631,10 @@ fn parse_application_action(
         EventKind::FileManifest => parse_file_manifest_action(&payload)
             .map(|manifest| (ApplicationAction::FileManifest, Some(manifest))),
         EventKind::VoiceSignal => Err(RejectReason::UnsupportedAction),
-        EventKind::Membership | EventKind::MlsControl | EventKind::Ephemeral => {
-            Err(RejectReason::WrongEventKind)
-        }
+        EventKind::Membership
+        | EventKind::MlsControl
+        | EventKind::Ephemeral
+        | EventKind::RelayMailboxControl => Err(RejectReason::WrongEventKind),
     }
 }
 

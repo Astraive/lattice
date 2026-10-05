@@ -1,3 +1,4 @@
+import { ActionButton, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
@@ -107,12 +108,12 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
       <div className="section-heading">
         <div>
           <p className="eyebrow">Connectivity</p>
-          <h3 id="local-network-title">Local paths and relays</h3>
+          <h2 id="local-network-title">Local paths and relays</h2>
         </div>
         {runtimeAvailable && (
-          <button type="button" disabled={busy} onClick={() => void refresh()}>
+          <ActionButton type="button" tone="quiet" disabled={busy} onClick={() => void refresh()}>
             Refresh local status
-          </button>
+          </ActionButton>
         )}
       </div>
       {!runtimeAvailable ? (
@@ -128,13 +129,18 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
             <span>BLE, Wi-Fi Aware, and Wi-Fi Direct are not probed on desktop.</span>
           </div>
           <div className="identity-actions">
-            <button type="button" disabled={busy} onClick={() => void discoverLanEndpoints()}>
+            <ActionButton
+              type="button"
+              tone="quiet"
+              disabled={busy}
+              onClick={() => void discoverLanEndpoints()}
+            >
               Scan LAN for Lattice endpoints
-            </button>
+            </ActionButton>
           </div>
           {lanDiscovery && (
             <section className="relay-settings" aria-labelledby="lan-discovery-title">
-              <h4 id="lan-discovery-title">LAN endpoint observations</h4>
+              <h3 id="lan-discovery-title">LAN endpoint observations</h3>
               <p>
                 {lanDiscovery.state === "endpoint_observed"
                   ? "The scan observed these endpoints in mDNS records."
@@ -160,7 +166,7 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
           <div className="relay-settings">
             <div className="relay-settings-heading">
               <div>
-                <h4>Optional relay URLs</h4>
+                <h3>Optional relay URLs</h3>
                 <p>
                   Stored only in this local profile. Saving or removing a URL makes no connection.
                 </p>
@@ -168,31 +174,44 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
               <span>{relayUrls.length}/64</span>
             </div>
             <form className="relay-settings-form" onSubmit={(event) => void addRelay(event)}>
-              <label htmlFor="local-relay-url">Secure relay URL</label>
-              <div>
-                <input
-                  autoComplete="url"
-                  id="local-relay-url"
-                  maxLength={2048}
-                  onChange={(event) => setRelayInput(event.target.value)}
-                  placeholder="wss://relay.example"
-                  type="text"
-                  value={relayInput}
-                />
-                <button type="submit" disabled={busy || relayInput.length === 0}>
-                  Add relay
-                </button>
-              </div>
-              <small>Only wss:// URLs are accepted; credentials and fragments are rejected.</small>
+              <FormField
+                label="Secure relay URL"
+                htmlFor="local-relay-url"
+                hint="Only wss:// URLs are accepted; credentials and fragments are rejected."
+              >
+                <div>
+                  <input
+                    autoComplete="url"
+                    id="local-relay-url"
+                    maxLength={2048}
+                    onChange={(event) => setRelayInput(event.target.value)}
+                    placeholder="wss://relay.example"
+                    type="text"
+                    value={relayInput}
+                  />
+                  <ActionButton
+                    type="submit"
+                    tone="primary"
+                    disabled={busy || relayInput.length === 0}
+                  >
+                    Add relay
+                  </ActionButton>
+                </div>
+              </FormField>
             </form>
             {relayUrls.length > 0 ? (
               <ul className="relay-settings-list">
                 {relayUrls.map((url) => (
                   <li key={url}>
                     <code>{url}</code>
-                    <button type="button" disabled={busy} onClick={() => void removeRelay(url)}>
+                    <ActionButton
+                      type="button"
+                      tone="danger"
+                      disabled={busy}
+                      onClick={() => void removeRelay(url)}
+                    >
                       Remove
-                    </button>
+                    </ActionButton>
                   </li>
                 ))}
               </ul>
@@ -202,9 +221,9 @@ export function LocalNetworkSettings({ runtimeAvailable }: Props) {
           </div>
         </>
       )}
-      {busy && <p role="status">Working with local connectivity settings…</p>}
-      {status && <p role="status">{status}</p>}
-      {error && <p role="alert">{error}</p>}
+      {busy && <StatusNotice kind="info">Working with local connectivity settings…</StatusNotice>}
+      {status && <StatusNotice kind="success">{status}</StatusNotice>}
+      {error && <StatusNotice kind="error">{error}</StatusNotice>}
     </section>
   );
 }

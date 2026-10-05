@@ -25,12 +25,22 @@ The current SQLite v6 store adds OS-protected identity and MLS-key ciphertext, a
 ```mermaid
 stateDiagram-v2
     [*] --> Queued: local durable commit
-    Queued --> Forwarded: path accepts envelope
-    Forwarded --> Delivered: destination receipt
-    Delivered --> Read: optional read receipt
+    Queued --> Forwarding: persist attempt before transmission
+    Queued --> Forwarded: relay or next hop accepts
+    Forwarding --> Forwarded: relay or next hop accepts
+    Forwarding --> PeerIngressAccepted: authenticated LBFA
+    Forwarded --> PeerIngressAccepted: authenticated LBFA
+    PeerIngressAccepted --> Forwarding: retry unchanged envelope
+    Forwarded --> Forwarding: retry unchanged envelope
+    PeerIngressAccepted --> Delivered: verified destination receipt (not implemented)
+    Delivered --> Read: optional verified read receipt (not implemented)
     Queued --> Failed: retention or policy ends
+    Forwarding --> Failed: expiry without receipt
     Forwarded --> Failed: expiry without receipt
+    PeerIngressAccepted --> Failed: expiry without receipt
 ```
+
+`Queued` means the authored event and envelope were committed locally. `Forwarding` means a transport attempt was persisted before transmission. `Forwarded` records a relay or next-hop acceptance. `PeerIngressAccepted` records an authenticated peer's `LBFA` for one complete envelope entering bounded ingress; it does not prove Core validation, authorization, destination delivery, or reading. `Delivered` requires a verified destination receipt, and `Read` requires a separate verified read receipt. The current BLE profile defines neither receipt, so it cannot set either state. Retries keep the original event ID and envelope bytes.
 
 On remote receive: parse bounded frame → authenticate envelope/session → decode canonical event → check ID/signature/MLS/policy/causal parents → commit event, summary and projection atomically → enqueue receipts. Missing epoch/parent is stored in a bounded pending area and requested; a bad signature is rejected. Crash before commit changes no visible projection. MLS-state persistence requires an atomic transaction or recoverable journal with explicit crash tests.
 

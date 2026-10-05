@@ -33,7 +33,7 @@ fn status_from_client(client: &Client) -> Result<DeviceIdentityStatus, String> {
 pub(crate) fn initialize_device_identity() -> Result<DeviceIdentityStatus, String> {
     let (database_path, protector) = profile::open_profile()?;
     let client =
-        Client::open_or_create(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_or_create_client(database_path, &protector).map_err(|error| error.clone())?;
     status_from_client(&client)
 }
 
@@ -41,7 +41,7 @@ pub(crate) fn initialize_device_identity() -> Result<DeviceIdentityStatus, Strin
 pub(crate) fn get_device_identity() -> Result<DeviceIdentityStatus, String> {
     let (database_path, protector) = profile::open_profile()?;
     let client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     status_from_client(&client)
 }
 
@@ -49,7 +49,7 @@ pub(crate) fn get_device_identity() -> Result<DeviceIdentityStatus, String> {
 pub(crate) fn get_device_certificate_signing_request() -> Result<String, String> {
     let (database_path, protector) = profile::open_profile()?;
     let client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     let csr = client
         .certificate_signing_request()
         .map_err(|error| error.to_string())?;
@@ -76,7 +76,7 @@ pub(crate) fn pin_peer_identity(
         encoding::parse_fixed_hex::<32>(&expected_fingerprint_hex, "fingerprint")?;
     let (database_path, protector) = profile::open_profile()?;
     let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     let pinned = client
         .pin_identity(&public_bundle, expected_fingerprint)
         .map_err(|error| error.to_string())?;
@@ -95,7 +95,7 @@ pub(crate) fn get_pinned_identity(
     let fingerprint = encoding::parse_fixed_hex::<32>(&fingerprint_hex, "fingerprint")?;
     let (database_path, protector) = profile::open_profile()?;
     let client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     let Some(pinned) = client
         .pinned_identity(&fingerprint)
         .map_err(|error| error.to_string())?
@@ -115,7 +115,7 @@ pub(crate) fn unpin_peer_identity(fingerprint_hex: String) -> Result<bool, Strin
     let fingerprint = encoding::parse_fixed_hex::<32>(&fingerprint_hex, "fingerprint")?;
     let (database_path, protector) = profile::open_profile()?;
     let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     client
         .unpin_identity(&fingerprint)
         .map_err(|error| error.to_string())

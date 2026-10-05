@@ -1,3 +1,4 @@
+import { ActionButton, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 
@@ -173,7 +174,7 @@ export function PeerIdentityPinPanel({
   return (
     <>
       <section className="identity-csr" aria-labelledby="identity-csr-title">
-        <h4 id="identity-csr-title">Device certificate request</h4>
+        <h3 id="identity-csr-title">Device certificate request</h3>
         <p>
           Generate a PKCS#10 request for a certificate authority. The request binds this device's
           signing key to its full-fingerprint URI; it never exports private key material. The issued
@@ -181,13 +182,14 @@ export function PeerIdentityPinPanel({
         </p>
         {runtimeAvailable ? (
           <div className="identity-pin-actions">
-            <button
+            <ActionButton
               type="button"
+              tone="quiet"
               disabled={busy || !identityReady}
               onClick={() => void createCertificateRequest()}
             >
               {activeTask === "csr" ? "Generating…" : "Generate certificate request"}
-            </button>
+            </ActionButton>
           </div>
         ) : (
           <p>Open the Tauri desktop app to generate a local certificate request.</p>
@@ -197,30 +199,36 @@ export function PeerIdentityPinPanel({
         )}
         {csrPem && (
           <>
-            <label className="identity-csr-output">
-              Certificate signing request (PEM)
-              <textarea
-                readOnly
-                rows={10}
-                spellCheck={false}
-                value={csrPem}
-                aria-label="Certificate signing request in PEM format"
-              />
-            </label>
-            <div className="identity-pin-actions">
-              <button type="button" disabled={busy} onClick={() => void copyCertificateRequest()}>
-                Copy PEM
-              </button>
+            <div className="identity-csr-output">
+              <FormField label="Certificate signing request (PEM)" htmlFor="identity-csr-pem">
+                <textarea
+                  id="identity-csr-pem"
+                  readOnly
+                  rows={10}
+                  spellCheck={false}
+                  value={csrPem}
+                  aria-label="Certificate signing request in PEM format"
+                />
+              </FormField>
             </div>
-            <p role="status" aria-live="polite">
-              {csrCopyStatus}
-            </p>
+            <div className="identity-pin-actions">
+              <ActionButton
+                type="button"
+                tone="quiet"
+                disabled={busy}
+                onClick={() => void copyCertificateRequest()}
+              >
+                Copy PEM
+              </ActionButton>
+            </div>
+            <StatusNotice kind={csrError ? "error" : "success"}>
+              {csrError ?? csrCopyStatus}
+            </StatusNotice>
           </>
         )}
-        {csrError && <p role="alert">{csrError}</p>}
       </section>
       <section className="identity-pin" aria-labelledby="identity-pin-title">
-        <h4 id="identity-pin-title">Pin a peer identity</h4>
+        <h3 id="identity-pin-title">Pin a peer identity</h3>
         <p>
           Compare the full fingerprint out of band before saving these public bytes. A pin does not
           connect to that peer or add it to a Space.
@@ -235,9 +243,13 @@ export function PeerIdentityPinPanel({
             }}
           >
             <div className="identity-pin-fields">
-              <label>
-                Public bundle (65 bytes, 130 hex characters)
+              <FormField
+                label="Public bundle (65 bytes, 130 hex characters)"
+                htmlFor="peer-pin-public-bundle"
+                error={invalidField === "bundle" ? (error ?? undefined) : undefined}
+              >
                 <input
+                  id="peer-pin-public-bundle"
                   type="text"
                   value={bundleHex}
                   maxLength={130}
@@ -252,10 +264,14 @@ export function PeerIdentityPinPanel({
                     clearPinResult();
                   }}
                 />
-              </label>
-              <label>
-                Full fingerprint (32 bytes, 64 hex characters)
+              </FormField>
+              <FormField
+                label="Full fingerprint (32 bytes, 64 hex characters)"
+                htmlFor="peer-pin-fingerprint"
+                error={invalidField === "fingerprint" ? (error ?? undefined) : undefined}
+              >
                 <input
+                  id="peer-pin-fingerprint"
                   type="text"
                   value={fingerprintHex}
                   maxLength={64}
@@ -270,7 +286,7 @@ export function PeerIdentityPinPanel({
                     clearPinResult();
                   }}
                 />
-              </label>
+              </FormField>
             </div>
             {!identityReady && (
               <p>
@@ -278,38 +294,34 @@ export function PeerIdentityPinPanel({
               </p>
             )}
             <div className="identity-pin-actions">
-              <button type="submit" disabled={busy || !identityReady}>
+              <ActionButton type="submit" tone="primary" disabled={busy || !identityReady}>
                 {activeTask === "pin" ? "Saving…" : "Pin exact identity"}
-              </button>
-              <button
+              </ActionButton>
+              <ActionButton
                 type="button"
+                tone="quiet"
                 disabled={busy || !identityReady}
                 onClick={() => void lookUpPin()}
               >
                 {activeTask === "lookup" ? "Looking up…" : "Look up saved pin"}
-              </button>
+              </ActionButton>
               {pinned && (
-                <button
+                <ActionButton
                   type="button"
+                  tone="danger"
                   disabled={busy || !identityReady}
                   onClick={() => void unpinIdentity()}
                 >
                   {activeTask === "unpin" ? "Removing local pin…" : "Remove local pin"}
-                </button>
+                </ActionButton>
               )}
             </div>
           </form>
         ) : (
           <p>Open the Tauri desktop app to save or look up a local pin.</p>
         )}
-        {error && (
-          <p id="pin-error" role="alert">
-            {error}
-          </p>
-        )}
-        <p role="status" aria-live="polite">
-          {status}
-        </p>
+        {error && <StatusNotice kind="error">{error}</StatusNotice>}
+        <StatusNotice kind={status ? "success" : "info"}>{status}</StatusNotice>
         {pinned && (
           <div className="identity-pin-result" aria-live="polite">
             <p>
