@@ -767,6 +767,10 @@ impl SpaceReducer {
     ///
     /// The event must carry the complete current policy heads in its ancestor
     /// graph. MLS authentication and payload decoding remain Core responsibilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns a rejection reason if the event is not a valid, current manager-authored mailbox control event.
     pub fn authorize_relay_mailbox_control(
         &self,
         event: &VerifiedSignatureOnlyEvent,

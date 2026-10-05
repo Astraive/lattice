@@ -58,6 +58,10 @@ impl std::error::Error for RelaySigningKeyError {}
 
 impl RelaySigningKey {
     /// Generates a fresh independent relay-only Schnorr key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating-system random source fails or no valid secret is generated.
     pub fn generate() -> Result<Self, RelaySigningKeyError> {
         let mut bytes = Zeroizing::new([0_u8; 32]);
         for _ in 0..4 {
@@ -70,6 +74,10 @@ impl RelaySigningKey {
     }
 
     /// Validates and owns an existing relay-only Schnorr secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are not a valid secp256k1 Schnorr secret.
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, RelaySigningKeyError> {
         let bytes = Zeroizing::new(bytes);
         if SigningKey::from_bytes(&bytes[..]).is_err() {

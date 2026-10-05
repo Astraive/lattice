@@ -300,8 +300,8 @@ fn send_attachment_blocking(
     target: AttachmentTransferTarget,
 ) -> Result<AttachmentTransferSummary, String> {
     let (database_path, protector) = profile::open_profile()?;
-    let mut client = profile::open_existing_client(database_path, &protector)
-        .map_err(|error| error.to_string())?;
+    let mut client =
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     if client
         .pinned_identity(&target.peer_fingerprint)
         .map_err(|error| format!("validate attachment peer pin: {error}"))?
@@ -374,8 +374,8 @@ fn receive_attachment_blocking(
     target: AttachmentTransferTarget,
 ) -> Result<Option<AttachmentTransferSummary>, String> {
     let (database_path, protector) = profile::open_profile()?;
-    let mut client = profile::open_existing_client(database_path, &protector)
-        .map_err(|error| error.to_string())?;
+    let mut client =
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     if client
         .pinned_identity(&target.peer_fingerprint)
         .map_err(|error| format!("validate attachment peer pin: {error}"))?
@@ -756,8 +756,8 @@ fn queue_selected_file(
     let source_dir = profile::data_dir()?.join("attachments").join("outgoing");
     let (manifest, _) = stage_source_file(source_path, &source_dir)?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client = profile::open_existing_client(database_path, &protector)
-        .map_err(|error| error.to_string())?;
+    let mut client =
+        profile::open_existing_client(database_path, &protector).map_err(|error| error.clone())?;
     let queued = client
         .queue_file_manifest_from_x509_credential(
             &space_id,

@@ -107,6 +107,8 @@ pub(crate) struct DesktopDirectMessageExchange {
     network_contacted: bool,
 }
 
+// Tauri decodes command payloads into owned strings.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub(crate) fn publish_local_direct_message_key_package(
     credential_hex: String,

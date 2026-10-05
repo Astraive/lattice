@@ -360,6 +360,7 @@ pub struct MobileAttachmentQueueReceipt {
 
 /// Truthful receipt for one authenticated attachment transfer.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)] // UniFFI exposes these independent transfer facts as stable record fields.
 pub struct MobileAttachmentTransferReceipt {
     pub event_id: Vec<u8>,
     pub peer_fingerprint: Vec<u8>,
@@ -443,10 +444,10 @@ pub enum MobileError {
     /// A validated Welcome could not be imported into the local profile.
     #[error("Space Welcome join failed")]
     SpaceJoinFailed,
-    /// A KeyPackage publication request exceeded mobile input bounds or failed validation.
+    /// A `KeyPackage` publication request exceeded mobile input bounds or failed validation.
     #[error("Space KeyPackage publication failed")]
     SpaceKeyPackagePublicationFailed,
-    /// The target KeyPackage is empty, oversized, or malformed.
+    /// The target `KeyPackage` is empty, oversized, or malformed.
     #[error("invalid Space KeyPackage")]
     InvalidSpaceKeyPackage,
     /// A membership invitation could not be committed locally.

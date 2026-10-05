@@ -295,6 +295,14 @@ fn relay_round(
             "current time exceeds the outbox schedule range",
         )
     })?;
+    let round = RelayRoundContext {
+        relay_urls,
+        mailbox,
+        space_id: &space_id,
+        group_reference: &group_reference,
+        now_seconds,
+        next_attempt_ms,
+    };
     let mut store = Store::open(database_path)?;
     let relay_client = lattice_relay::network::RelayClient::new(RELAY_TEST_TIMEOUT)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -302,59 +310,117 @@ fn relay_round(
         .build()?;
     let cancellation = CancellationToken::new();
 
-    let publication = if let Some(event_id_text) = event_id_text {
-        let event_id = super::parse_fixed_hex::<32>(event_id_text, "outbox event ID")
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        let event_bytes = find_outbox_event(&client, &space_id, &group_reference, event_id)?
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "event is not a publishable outbox application event for this Space generation",
-                )
-            })?;
-        let event = VerifiedSignatureOnlyEvent::decode_verify(&event_bytes)?;
-        if event.event_id().as_bytes() != &event_id
-            || event.space_id() != &space_id
-            || event.mls_group_reference() != &group_reference
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "outbox event is not bound to the selected Space generation",
-            )
-            .into());
-        }
-        let identity_fingerprint = client.identity_info().fingerprint;
-        let relay_signing_key =
-            load_or_create_relay_signing_key(&mut store, protector, &identity_fingerprint)?;
-        Some(runtime.block_on(publish_outbox_entry_to_two_relays(
-            &mut store,
-            &relay_client,
-            RelayOutboxRoundRequest {
-                event_id,
-                relay_urls,
-                mailbox,
-                relay_signing_key: &relay_signing_key,
-                now_seconds,
-                next_attempt_ms,
-            },
-            &cancellation,
-        ))?)
-    } else {
-        None
+    let services = RelayRoundServices {
+        protector,
+        relay_client: &relay_client,
+        runtime: &runtime,
+        cancellation: &cancellation,
     };
-
+    let publication =
+        publish_round_event(&mut client, &mut store, &services, &round, event_id_text)?;
     let received = runtime.block_on(retrieve_mailbox_from_two_relays(
         &relay_client,
-        relay_urls,
-        mailbox,
-        now_seconds,
+        round.relay_urls,
+        round.mailbox,
+        round.now_seconds,
         &cancellation,
     ))?;
+    let ingress = ingest_round_messages(
+        &mut client,
+        &mut created,
+        &space_id,
+        &group_reference,
+        &received,
+    )?;
+    print_round_result(
+        json,
+        &round,
+        event_id_text,
+        publication.as_ref(),
+        &received,
+        &ingress,
+    );
+    Ok(())
+}
+
+struct RelayRoundServices<'a> {
+    protector: &'a OsKeyringProtector,
+    relay_client: &'a lattice_relay::network::RelayClient,
+    runtime: &'a tokio::runtime::Runtime,
+    cancellation: &'a CancellationToken,
+}
+
+struct RelayRoundContext<'a> {
+    relay_urls: [&'a str; 2],
+    mailbox: lattice_relay::profile::MailboxToken,
+    space_id: &'a [u8; 16],
+    group_reference: &'a [u8; 32],
+    now_seconds: u64,
+    next_attempt_ms: i64,
+}
+
+fn publish_round_event(
+    client: &mut Client,
+    store: &mut Store,
+    services: &RelayRoundServices<'_>,
+    round: &RelayRoundContext<'_>,
+    event_id_text: Option<&str>,
+) -> Result<Option<[RelayPublishStatus; 2]>, Box<dyn Error>> {
+    let Some(event_id_text) = event_id_text else {
+        return Ok(None);
+    };
+    let event_id = super::parse_fixed_hex::<32>(event_id_text, "outbox event ID")
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let event_bytes = find_outbox_event(client, round.space_id, round.group_reference, event_id)?
+        .ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "event is not a publishable outbox application event for this Space generation",
+        )
+    })?;
+    let event = VerifiedSignatureOnlyEvent::decode_verify(&event_bytes)?;
+    if event.event_id().as_bytes() != &event_id
+        || event.space_id() != round.space_id
+        || event.mls_group_reference() != round.group_reference
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "outbox event is not bound to the selected Space generation",
+        )
+        .into());
+    }
+    let identity_fingerprint = client.identity_info().fingerprint;
+    let relay_signing_key =
+        load_or_create_relay_signing_key(store, services.protector, &identity_fingerprint)?;
+    Ok(Some(services.runtime.block_on(
+        publish_outbox_entry_to_two_relays(
+            store,
+            services.relay_client,
+            RelayOutboxRoundRequest {
+                event_id,
+                relay_urls: round.relay_urls,
+                mailbox: round.mailbox,
+                relay_signing_key: &relay_signing_key,
+                now_seconds: round.now_seconds,
+                next_attempt_ms: round.next_attempt_ms,
+            },
+            services.cancellation,
+        ),
+    )?))
+}
+
+fn ingest_round_messages(
+    client: &mut Client,
+    created: &mut lattice_core::CreatedSpace,
+    space_id: &[u8; 16],
+    group_reference: &[u8; 32],
+    received: &lattice_node::relay::RelayMailboxRound,
+) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
     let mut ingress = Vec::with_capacity(received.messages.len());
     for retrieved in &received.messages {
         let event = retrieved.message.envelope().event();
         let event_id = *event.event_id().as_bytes();
-        if event.space_id() != &space_id || event.mls_group_reference() != &group_reference {
+        if event.space_id() != space_id || event.mls_group_reference() != group_reference {
             ingress.push(serde_json::json!({
                 "event_id": super::hex(&event_id),
                 "status": "generation_mismatch",
@@ -362,7 +428,7 @@ fn relay_round(
             continue;
         }
         match client.accept_synced_application_event(
-            &mut created,
+            created,
             retrieved.message.envelope().signed_event_bytes(),
         ) {
             Ok(outcome) => {
@@ -371,7 +437,7 @@ fn relay_round(
                     &outcome,
                     &retrieved.source_relay_url,
                 ));
-                for retry in client.retry_ready_synced_application_events(&mut created)? {
+                for retry in client.retry_ready_synced_application_events(created)? {
                     let retry_id = match &retry {
                         SyncedApplicationOutcome::Accepted { event_id }
                         | SyncedApplicationOutcome::Duplicate { event_id }
@@ -389,9 +455,18 @@ fn relay_round(
             })),
         }
     }
+    Ok(ingress)
+}
 
+fn print_round_result(
+    json: bool,
+    round: &RelayRoundContext<'_>,
+    event_id_text: Option<&str>,
+    publication: Option<&[RelayPublishStatus; 2]>,
+    received: &lattice_node::relay::RelayMailboxRound,
+    ingress: &[serde_json::Value],
+) {
     let publication = publication
-        .as_ref()
         .map(|statuses| statuses.iter().map(publish_status).collect::<Vec<_>>())
         .unwrap_or_default();
     let relay_statuses = received
@@ -411,8 +486,8 @@ fn relay_round(
             serde_json::json!({
                 "schema_version": 1,
                 "command": "relay_round",
-                "space_id": super::hex(&space_id),
-                "group_reference": super::hex(&group_reference),
+                "space_id": super::hex(round.space_id),
+                "group_reference": super::hex(round.group_reference),
                 "publication": publication,
                 "retrieval": relay_statuses,
                 "ingress": ingress,
@@ -421,35 +496,49 @@ fn relay_round(
             })
         );
     } else {
-        if publication.is_empty() {
-            println!("No outbox event was selected for relay publication.");
-        } else {
-            for (index, status) in publication.iter().enumerate() {
-                println!(
-                    "{} publication result for outbox event {}: {}",
-                    relay_urls[index],
-                    event_id_text.unwrap_or("unknown"),
-                    status["status"],
-                );
-            }
-        }
-        for status in &received.relays {
-            match &status.error {
-                Some(error) => println!("{} retrieval failed: {error}", status.relay_url),
-                None => println!(
-                    "{} returned {} validated profile event(s).",
-                    status.relay_url, status.retrieved
-                ),
-            }
-        }
-        println!(
-            "Core reported {} ingress outcome(s); {} ID integrity conflict(s) were excluded.",
+        print_round_human(
+            round.relay_urls,
+            event_id_text,
+            &publication,
+            received,
             ingress.len(),
-            received.integrity_conflicts
         );
-        println!("Relay acceptance and local Core ingress are not recipient delivery.");
     }
-    Ok(())
+}
+
+fn print_round_human(
+    relay_urls: [&str; 2],
+    event_id_text: Option<&str>,
+    publication: &[serde_json::Value],
+    received: &lattice_node::relay::RelayMailboxRound,
+    ingress_count: usize,
+) {
+    if publication.is_empty() {
+        println!("No outbox event was selected for relay publication.");
+    } else {
+        for (index, status) in publication.iter().enumerate() {
+            println!(
+                "{} publication result for outbox event {}: {}",
+                relay_urls[index],
+                event_id_text.unwrap_or("unknown"),
+                status["status"],
+            );
+        }
+    }
+    for status in &received.relays {
+        match &status.error {
+            Some(error) => println!("{} retrieval failed: {error}", status.relay_url),
+            None => println!(
+                "{} returned {} validated profile event(s).",
+                status.relay_url, status.retrieved
+            ),
+        }
+    }
+    println!(
+        "Core reported {ingress_count} ingress outcome(s); {} ID integrity conflict(s) were excluded.",
+        received.integrity_conflicts
+    );
+    println!("Relay acceptance and local Core ingress are not recipient delivery.");
 }
 
 fn find_outbox_event(

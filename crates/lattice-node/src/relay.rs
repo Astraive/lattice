@@ -99,6 +99,10 @@ const RELAY_KEY_RECORD_DOMAIN: &[u8] = b"lattice:relay-signing-key-record:v1\0";
 
 /// Loads or initializes this identity's relay-only signing key under the
 /// platform profile protector. The raw secret is never persisted in app data.
+///
+/// # Errors
+///
+/// Returns an error if the stored key cannot be unprotected, key material cannot be generated, or a storage operation fails.
 pub fn load_or_create_relay_signing_key(
     store: &mut Store,
     protector: &OsKeyringProtector,
@@ -329,6 +333,10 @@ fn validate_relay_pair_for_retrieval(urls: [&str; 2]) -> Result<(), RelayRetriev
 /// to both independently configured endpoints. Each matching positive `OK`
 /// records relay acceptance as `Forwarded`, never recipient delivery. A failure
 /// from one relay does not prevent attempting the other.
+///
+/// # Errors
+///
+/// Returns an error if relay configuration, scheduling, the outbox row, or the envelope is invalid, or a storage operation fails.
 pub async fn publish_outbox_entry_to_two_relays(
     store: &mut Store,
     relay: &RelayClient,
@@ -409,6 +417,10 @@ fn record_relay_round_result(
 /// individually bounded results. Results preserve first-seen endpoint and
 /// response order; Core ingress remains responsible for causal dependency
 /// resolution and authentication before projection.
+///
+/// # Errors
+///
+/// Returns an error if relay configuration is invalid or retrieved messages conflict during exact deduplication. Per-relay network failures are returned in the round statuses.
 pub async fn retrieve_mailbox_from_two_relays(
     relay: &RelayClient,
     relay_urls: [&str; 2],
@@ -422,38 +434,44 @@ pub async fn retrieve_mailbox_from_two_relays(
         relay.retrieve(relay_urls[1], mailbox, now_seconds, cancellation),
     );
     let mut candidates = Vec::with_capacity(2 * MAX_RETRIEVED_EVENTS);
-    let mut relay_statuses = Vec::with_capacity(2);
-    for (relay_url, result) in relay_urls.into_iter().zip([first, second]) {
-        match result {
-            Ok(messages) => {
-                let retrieved = messages.len();
-                candidates.extend(
-                    messages
-                        .into_iter()
-                        .map(|message| (relay_url.to_owned(), message)),
-                );
-                relay_statuses.push(RelayRetrievalStatus {
-                    relay_url: relay_url.to_owned(),
-                    retrieved,
-                    error: None,
-                });
-            }
-            Err(error) => relay_statuses.push(RelayRetrievalStatus {
-                relay_url: relay_url.to_owned(),
-                retrieved: 0,
-                error: Some(error.to_string()),
-            }),
-        }
-    }
+    let relay_statuses = [
+        record_retrieval_result(&mut candidates, relay_urls[0], first),
+        record_retrieval_result(&mut candidates, relay_urls[1], second),
+    ];
     let (messages, integrity_conflicts) =
         deduplicate_relay_candidates(candidates).map_err(RelayRetrievalError::Profile)?;
     Ok(RelayMailboxRound {
         messages,
-        relays: relay_statuses
-            .try_into()
-            .expect("the relay round always has exactly two URLs"),
+        relays: relay_statuses,
         integrity_conflicts,
     })
+}
+
+fn record_retrieval_result(
+    candidates: &mut Vec<(String, RelayProfileMessage)>,
+    relay_url: &str,
+    result: Result<Vec<RelayProfileMessage>, RelayNetworkError>,
+) -> RelayRetrievalStatus {
+    match result {
+        Ok(messages) => {
+            let retrieved = messages.len();
+            candidates.extend(
+                messages
+                    .into_iter()
+                    .map(|message| (relay_url.to_owned(), message)),
+            );
+            RelayRetrievalStatus {
+                relay_url: relay_url.to_owned(),
+                retrieved,
+                error: None,
+            }
+        }
+        Err(error) => RelayRetrievalStatus {
+            relay_url: relay_url.to_owned(),
+            retrieved: 0,
+            error: Some(error.to_string()),
+        },
+    }
 }
 
 fn deduplicate_relay_candidates(
@@ -644,9 +662,9 @@ mod tests {
                 *event.author_fingerprint(),
                 event_id,
                 event.author_sequence(),
-                &event_bytes,
+                event_bytes,
                 &[],
-                &event_bytes,
+                event_bytes,
                 0,
             )
             .expect("commit exact signed-event outbox bytes");
@@ -753,7 +771,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let relay_signing_key = RelaySigningKey::from_bytes([1; 32]).expect("relay key");
         assert!(matches!(
-            publish_outbox_entry_to_two_relays(
+            Box::pin(publish_outbox_entry_to_two_relays(
                 &mut store,
                 &relay,
                 RelayOutboxRoundRequest {
@@ -765,12 +783,12 @@ mod tests {
                     next_attempt_ms: -1,
                 },
                 &cancellation,
-            )
+            ))
             .await,
             Err(RelayOutboxError::InvalidSchedule)
         ));
         assert!(matches!(
-            publish_outbox_entry_to_two_relays(
+            Box::pin(publish_outbox_entry_to_two_relays(
                 &mut store,
                 &relay,
                 RelayOutboxRoundRequest {
@@ -782,7 +800,7 @@ mod tests {
                     next_attempt_ms: 20,
                 },
                 &cancellation,
-            )
+            ))
             .await,
             Err(RelayOutboxError::Envelope(_))
         ));
@@ -799,7 +817,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let relay_signing_key = RelaySigningKey::from_bytes([1; 32]).expect("relay key");
         assert!(matches!(
-            publish_outbox_entry_to_two_relays(
+            Box::pin(publish_outbox_entry_to_two_relays(
                 &mut store,
                 &relay,
                 RelayOutboxRoundRequest {
@@ -811,7 +829,7 @@ mod tests {
                     next_attempt_ms: 20,
                 },
                 &cancellation,
-            )
+            ))
             .await,
             Err(RelayOutboxError::NotForwardable(OutboxState::Failed))
         ));

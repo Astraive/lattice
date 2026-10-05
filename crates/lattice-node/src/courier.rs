@@ -105,21 +105,9 @@ pub async fn receive_courier_once<A: TransportAdapter + ?Sized>(
     )
     .await?;
     let header = receive_courier_frame(adapter, &mut channel, cancellation).await?;
-    if header.len() != HEADER_BYTES || header[..6] != wire_header(START_KIND) {
+    let Some((length, chunk_count)) = courier_start_dimensions(&header) else {
         return reject(adapter, &mut channel, cancellation).await;
-    }
-    let length = u32::from_be_bytes(
-        header[6..10]
-            .try_into()
-            .map_err(|_| CourierTransferError::InvalidFrame)?,
-    ) as usize;
-    if length == 0 || length > MAX_ENVELOPE_BYTES {
-        return reject(adapter, &mut channel, cancellation).await;
-    }
-    let chunk_count = length.div_ceil(MAX_CHUNK_BYTES);
-    if chunk_count == 0 || chunk_count > MAX_CHUNK_COUNT {
-        return reject(adapter, &mut channel, cancellation).await;
-    }
+    };
     let mut encoded = Vec::with_capacity(length);
     for index in 0..chunk_count {
         let chunk = receive_courier_frame(adapter, &mut channel, cancellation).await?;
@@ -304,6 +292,18 @@ pub async fn send_courier_once<A: TransportAdapter + ?Sized>(
         source_sequence: consumed.sequence,
         bytes_sent: outgoing_bytes.len(),
     })
+}
+
+fn courier_start_dimensions(header: &[u8]) -> Option<(usize, usize)> {
+    if header.len() != HEADER_BYTES || header[..6] != wire_header(START_KIND) {
+        return None;
+    }
+    let length = u32::from_be_bytes(header[6..10].try_into().ok()?) as usize;
+    if length == 0 || length > MAX_ENVELOPE_BYTES {
+        return None;
+    }
+    let chunk_count = length.div_ceil(MAX_CHUNK_BYTES);
+    (chunk_count <= MAX_CHUNK_COUNT).then_some((length, chunk_count))
 }
 
 async fn reject<A: TransportAdapter + ?Sized, T>(

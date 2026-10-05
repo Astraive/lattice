@@ -1142,6 +1142,10 @@ pub enum DirectMessageTransportError {
 /// The inbound callback must pass the transcript-authenticated fingerprint to
 /// Core and return only after ingress is durably accepted. The peer ACK means
 /// that same Core ingress outcome, not user consent or a read receipt.
+///
+/// # Errors
+///
+/// Returns an error if authentication or transfer fails, the inbound callback rejects the packet, or the peer acknowledges a different packet.
 pub async fn execute_authenticated_direct_message_once<A, F>(
     adapter: &A,
     local_identity: &DeviceIdentity,
@@ -1171,6 +1175,10 @@ where
 /// The inbound callback must pass the transcript-authenticated fingerprint to
 /// Core and return only after ingress is durably accepted. The peer ACK means
 /// that same Core ingress outcome, not user consent or a read receipt.
+///
+/// # Errors
+///
+/// Returns an error if authentication or transfer fails, the inbound callback rejects the packet, or the peer acknowledges a different packet.
 pub async fn serve_authenticated_direct_message_once<A, F>(
     adapter: &A,
     local_identity: &DeviceIdentity,
