@@ -1,0 +1,28 @@
+{
+  "name": "@lattice/ui-shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "check": "tsc --noEmit --pretty false",
+    "lint": "biome check src test",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@lattice/config": "workspace:*",
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "2.1.10"
+  },
+  "peerDependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}
