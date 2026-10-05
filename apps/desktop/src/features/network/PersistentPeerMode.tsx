@@ -1,3 +1,4 @@
+import { ActionButton, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
@@ -200,12 +201,12 @@ export function PersistentPeerMode({ runtimeAvailable }: Props) {
       <div className="section-heading">
         <div>
           <p className="eyebrow">Optional background service</p>
-          <h3 id="persistent-peer-title">Persistent peer mode</h3>
+          <h2 id="persistent-peer-title">Persistent peer mode</h2>
         </div>
         {runtimeAvailable && (
-          <button type="button" disabled={busy} onClick={() => void refresh()}>
+          <ActionButton type="button" tone="quiet" disabled={busy} onClick={() => void refresh()}>
             Refresh peer status
-          </button>
+          </ActionButton>
         )}
       </div>
       {!runtimeAvailable ? (
@@ -234,50 +235,58 @@ export function PersistentPeerMode({ runtimeAvailable }: Props) {
             </span>
           </div>
           <form className="relay-settings-form" onSubmit={(event) => void configure(true, event)}>
-            <label htmlFor="persistent-peer-listen-address">TCP listen address</label>
-            <input
-              autoComplete="off"
-              id="persistent-peer-listen-address"
-              maxLength={128}
-              onChange={(event) => setListenAddress(event.target.value)}
-              placeholder="192.168.1.20:7331"
-              spellCheck={false}
-              value={listenAddress}
-            />
-            <small>
-              Default is loopback only. Enter a local interface address to accept connections from
-              other devices; binding is not a reachability test.
-            </small>
-            <label htmlFor="persistent-peer-fingerprint">
-              Pinned peer fingerprint (64 hex characters)
-            </label>
-            <input
-              autoComplete="off"
-              id="persistent-peer-fingerprint"
-              maxLength={FINGERPRINT_HEX_LENGTH}
-              onChange={(event) => setPeerFingerprint(event.target.value.trim())}
-              spellCheck={false}
-              value={peerFingerprint}
-            />
+            <FormField
+              label="TCP listen address"
+              htmlFor="persistent-peer-listen-address"
+              hint="Default is loopback only. Enter a local interface address to accept connections from other devices; binding is not a reachability test."
+            >
+              <input
+                autoComplete="off"
+                id="persistent-peer-listen-address"
+                maxLength={128}
+                onChange={(event) => setListenAddress(event.target.value)}
+                placeholder="192.168.1.20:7331"
+                spellCheck={false}
+                value={listenAddress}
+              />
+            </FormField>
+            <FormField
+              label="Pinned peer fingerprint (64 hex characters)"
+              htmlFor="persistent-peer-fingerprint"
+            >
+              <input
+                autoComplete="off"
+                id="persistent-peer-fingerprint"
+                maxLength={FINGERPRINT_HEX_LENGTH}
+                onChange={(event) => setPeerFingerprint(event.target.value.trim())}
+                spellCheck={false}
+                value={peerFingerprint}
+              />
+            </FormField>
             <div className="identity-actions">
-              <button type="submit" disabled={!canEnable}>
+              <ActionButton type="submit" tone="primary" disabled={!canEnable}>
                 {busy
                   ? "Updating…"
                   : status.enabled
                     ? "Save and restart listener"
                     : "Enable persistent peer mode"}
-              </button>
+              </ActionButton>
               {status.enabled && (
-                <button type="button" disabled={busy} onClick={() => void configure(false)}>
+                <ActionButton
+                  type="button"
+                  tone="danger"
+                  disabled={busy}
+                  onClick={() => void configure(false)}
+                >
                   Disable and clear queue
-                </button>
+                </ActionButton>
               )}
             </div>
           </form>
           <div className="relay-settings">
             <div className="relay-settings-heading">
               <div>
-                <h4>Forward a retained item</h4>
+                <h3>Forward a retained item</h3>
                 <p>
                   Send one queued envelope to a TCP listener you choose. The destination fingerprint
                   must already be pinned in this profile.
@@ -295,67 +304,71 @@ export function PersistentPeerMode({ runtimeAvailable }: Props) {
                 className="relay-settings-form"
                 onSubmit={(event) => void forwardSelectedItem(event)}
               >
-                <label htmlFor="courier-selected-item">Retained event</label>
-                <select
-                  id="courier-selected-item"
-                  onChange={(event) => setSelectedLocalEnvelopeId(event.target.value)}
-                  value={selectedLocalEnvelopeId}
-                  disabled={busy}
-                  required
-                >
-                  <option value="">Choose a retained event</option>
-                  {queue.items.map((item) => (
-                    <option key={item.localEnvelopeId} value={item.localEnvelopeId}>
-                      Event {item.eventId} · local item {item.localEnvelopeId}
-                    </option>
-                  ))}
-                </select>
+                <FormField label="Retained event" htmlFor="courier-selected-item">
+                  <select
+                    id="courier-selected-item"
+                    onChange={(event) => setSelectedLocalEnvelopeId(event.target.value)}
+                    value={selectedLocalEnvelopeId}
+                    disabled={busy}
+                    required
+                  >
+                    <option value="">Choose a retained event</option>
+                    {queue.items.map((item) => (
+                      <option key={item.localEnvelopeId} value={item.localEnvelopeId}>
+                        Event {item.eventId} · local item {item.localEnvelopeId}
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
                 {selectedItem && (
                   <p aria-live="polite">
                     Selected event ID: <code>{selectedItem.eventId}</code>
                   </p>
                 )}
-                <label htmlFor="courier-outbound-address">Peer TCP listener address</label>
-                <input
-                  autoComplete="off"
-                  id="courier-outbound-address"
-                  maxLength={128}
-                  onChange={(event) => setOutboundAddress(event.target.value)}
-                  placeholder="192.168.1.20:7331"
-                  spellCheck={false}
-                  value={outboundAddress}
-                  disabled={busy}
-                />
-                <label htmlFor="courier-outbound-fingerprint">
-                  Exact pinned peer fingerprint (64 hex characters)
-                </label>
-                <input
-                  autoComplete="off"
-                  id="courier-outbound-fingerprint"
-                  maxLength={FINGERPRINT_HEX_LENGTH}
-                  onChange={(event) => setOutboundFingerprint(event.target.value.trim())}
-                  spellCheck={false}
-                  value={outboundFingerprint}
-                  disabled={busy}
-                />
+                <FormField label="Peer TCP listener address" htmlFor="courier-outbound-address">
+                  <input
+                    autoComplete="off"
+                    id="courier-outbound-address"
+                    maxLength={128}
+                    onChange={(event) => setOutboundAddress(event.target.value)}
+                    placeholder="192.168.1.20:7331"
+                    spellCheck={false}
+                    value={outboundAddress}
+                    disabled={busy}
+                  />
+                </FormField>
+                <FormField
+                  label="Exact pinned peer fingerprint (64 hex characters)"
+                  htmlFor="courier-outbound-fingerprint"
+                >
+                  <input
+                    autoComplete="off"
+                    id="courier-outbound-fingerprint"
+                    maxLength={FINGERPRINT_HEX_LENGTH}
+                    onChange={(event) => setOutboundFingerprint(event.target.value.trim())}
+                    spellCheck={false}
+                    value={outboundFingerprint}
+                    disabled={busy}
+                  />
+                </FormField>
                 <small>
                   Use the peer fingerprint already pinned in this profile. No peers are discovered
                   automatically. Peer acceptance does not confirm recipient delivery.
                 </small>
                 <div className="identity-actions">
-                  <button type="submit" disabled={!canForward}>
+                  <ActionButton type="submit" tone="primary" disabled={!canForward}>
                     {busy ? "Forwarding…" : "Review and forward event"}
-                  </button>
+                  </ActionButton>
                 </div>
               </form>
             )}
           </div>
         </>
       )}
-      {busy && <p role="status">Working with peer mode or courier queue…</p>}
-      {feedback && <p role="status">{feedback}</p>}
-      {error && <p role="alert">{error}</p>}
-      {status.error && <p role="alert">Listener status: {status.error}</p>}
+      {busy && <StatusNotice kind="info">Working with peer mode or courier queue…</StatusNotice>}
+      {feedback && <StatusNotice kind="success">{feedback}</StatusNotice>}
+      {error && <StatusNotice kind="error">{error}</StatusNotice>}
+      {status.error && <StatusNotice kind="error">Listener status: {status.error}</StatusNotice>}
     </section>
   );
 }
