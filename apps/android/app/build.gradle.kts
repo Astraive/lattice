@@ -42,6 +42,7 @@ dependencies {
 
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("org.json:json:20250517")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

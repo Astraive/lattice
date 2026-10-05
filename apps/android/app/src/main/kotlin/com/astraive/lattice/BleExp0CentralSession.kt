@@ -31,7 +31,7 @@ internal class BleExp0CentralSession(
     private val decisionExecutor: ExecutorService = Executors.newSingleThreadExecutor { task ->
         Thread(task, "lattice-ble-central").apply { isDaemon = true }
     }
-    private enum class State { CONNECTING, MTU, DISCOVERY, CONTROL_CCCD, TX_CCCD, READY, CLOSED }
+    private enum class State { CONNECTING, MTU, DISCOVERY, CAPABILITIES, CONTROL_CCCD, TX_CCCD, READY, CLOSED }
 
     private val token = observedResponderToken.copyOf()
     private val adapter = BleGattCentralAdapter(context, this)
@@ -107,19 +107,17 @@ internal class BleExp0CentralSession(
         }
         val service = services.firstOrNull { it.uuid == BleExp0GattProfile.serviceUuid }
             ?: return fail("The peer does not expose the exp0 GATT service")
-        val discovered = characteristicSet(service) ?: return fail("The exp0 GATT service is incomplete")
+        val discovered = characteristicSet(service)
+            ?: return fail("The peer exp0 GATT service is incomplete")
+        // Public profile negotiation only: no control subscription or session traffic precedes this read.
         synchronized(lock) {
             if (state != State.DISCOVERY) return
             characteristics = discovered
-            state = State.CONTROL_CCCD
+            state = State.CAPABILITIES
         }
-        when (val result = adapter.setNotifications(
-            discovered.control,
-            requireNotNull(discovered.control.getDescriptor(BleExp0GattProfile.clientConfigurationUuid)),
-            true,
-        )) {
+        when (val result = adapter.read(discovered.capabilities)) {
             BleGattStatus.STARTED -> Unit
-            else -> fail("GATT control notifications could not start ($result)")
+            else -> fail("GATT capabilities read could not start ($result)")
         }
     }
 
@@ -128,7 +126,6 @@ internal class BleExp0CentralSession(
             fail("GATT notification subscription failed ($status)")
             return
         }
-        
         val discovered = synchronized(lock) { characteristics } ?: return fail("GATT characteristics disappeared")
         when (synchronized(lock) { state }) {
             State.CONTROL_CCCD -> {
@@ -161,7 +158,26 @@ internal class BleExp0CentralSession(
     }
 
     override fun onCharacteristicRead(characteristic: UUID, value: ByteArray, status: Int) {
-        fail("Unexpected GATT characteristic read callback ($status)")
+        if (characteristic != BleExp0GattProfile.capabilitiesUuid ||
+            status != BluetoothGatt.GATT_SUCCESS ||
+            !BleExp0GattProfile.acceptsCapabilities(value)
+        ) {
+            fail("Peer capabilities do not match the exact exp0 profile ($status)")
+            return
+        }
+        val discovered = synchronized(lock) {
+            if (state != State.CAPABILITIES) return fail("Capabilities response arrived outside profile negotiation")
+            state = State.CONTROL_CCCD
+            characteristics
+        } ?: return fail("GATT characteristics disappeared")
+        when (val result = adapter.setNotifications(
+            discovered.control,
+            requireNotNull(discovered.control.getDescriptor(BleExp0GattProfile.clientConfigurationUuid)),
+            true,
+        )) {
+            BleGattStatus.STARTED -> Unit
+            else -> fail("GATT control notifications could not start ($result)")
+        }
     }
 
     override fun onCharacteristicWrite(characteristic: UUID, status: Int) {

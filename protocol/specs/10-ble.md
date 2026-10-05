@@ -4,7 +4,7 @@
 **Status:** experimental candidate; not an interoperable release.  
 **Scope:** BLE discovery, authenticated link establishment, and link-layer envelope framing only. Event identity, authorization, MLS state, and envelope semantics remain transport-independent.
 
-This document assigns the first migration label and defines candidate service, discovery, first-contact identity-binding, and bounded-framing values for BLE. [`ADR-005`](../../docs/decisions/ADR-005-ble-exp0-profile.md) records their experimental status, and [`ble-exp0.json`](../vectors/ble-exp0.json) supplies candidate byte vectors. These are development/test values only; negative/replay coverage, a reproducible Noise transport vector, independent implementation checks, security/privacy review, and Android device acceptance remain release gates. No independent implementation may infer stable wire compatibility from this experimental profile.
+This document assigns the first migration label and defines candidate service, discovery, first-contact identity-binding, and bounded-framing values for BLE. [`ADR-005`](../../docs/decisions/ADR-005-ble-exp0-profile.md) records their experimental status, and [`ble-exp0.json`](../vectors/ble-exp0.json) supplies candidate byte vectors. Rust tests verify deterministic Noise XX transcript/ciphertext and identity signature vectors; Android JVM tests consume malformed advertisement, capability, control, and frame cases. These development/test results do not establish independent implementation, privacy/security review, or physical-device acceptance. No independent implementation may infer stable wire compatibility from this experimental profile.
 
 ## Version domains and migration labels
 
@@ -127,4 +127,4 @@ These ceilings bound one BLE session, not a measured throughput or battery promi
 
 ## Security and release boundary
 
-No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Candidate positive advertisement, prologue, identity-proof, frame, and credit vectors are in [`ble-exp0.json`](../vectors/ble-exp0.json); malformed/negative and replay coverage, a reproducible Noise XX transport vector, independent implementation checks, and physical two-/three-device acceptance remain release gates.
+No privacy guarantee is claimed for `lattice-ble-exp0` until passive-capture behavior and correlation risk are reviewed under ADR-005. Candidate positive advertisement, prologue, identity-proof, Noise transcript/transport, frame, and credit vectors are in [`ble-exp0.json`](../vectors/ble-exp0.json); replay/token-rotation coverage, independent implementation checks, and physical two-/three-device acceptance remain release gates.

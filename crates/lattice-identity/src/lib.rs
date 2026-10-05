@@ -680,7 +680,8 @@ fn fingerprint_for_bundle(bundle_bytes: &[u8; PUBLIC_BUNDLE_LEN]) -> [u8; 32] {
 mod tests {
     use super::{
         BleExp0IdentitySignature, DeviceIdentity, IdentityError, IdentityPublicBundle,
-        PinnedIdentity, PrivateKeyProtectionError, PrivateKeyProtector, verify,
+        PinnedIdentity, PrivateKeyProtectionError, PrivateKeyProtector, ble_exp0_signature_input,
+        verify, verify_ble_exp0_signature,
     };
     use ed25519_dalek::SigningKey;
     use ed25519_dalek::{Signature, VerifyingKey};
@@ -910,6 +911,94 @@ mod tests {
                     .expect("valid hexadecimal byte")
             })
             .collect()
+    }
+
+    #[test]
+    fn ble_exp0_fixture_signatures_verify_exact_transcripts_and_truncation_fails_closed() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../protocol/vectors/ble-exp0.json"))
+                .expect("parse BLE exp0 fixture");
+        let records = &fixture["identity_records"];
+        let handshake_hash: [u8; 32] = decode_hex(
+            fixture["noise_prologue"]["handshake_hash_for_identity_vectors_hex"]
+                .as_str()
+                .unwrap(),
+        )
+        .try_into()
+        .unwrap();
+        let responder_token: [u8; 9] = decode_hex(
+            fixture["noise_prologue"]["observed_responder_token_hex"]
+                .as_str()
+                .unwrap(),
+        )
+        .try_into()
+        .unwrap();
+        let initiator_record =
+            decode_hex(records["initiator_proof"]["record_hex"].as_str().unwrap());
+        let initiator_bundle: [u8; 65] = initiator_record[6..71].try_into().unwrap();
+        let responder_record =
+            decode_hex(records["responder_proof"]["record_hex"].as_str().unwrap());
+        let responder_bundle: [u8; 65] = responder_record[6..71].try_into().unwrap();
+        let cases = [
+            (
+                &records["initiator_proof"],
+                BleExp0IdentitySignature::InitiatorProof {
+                    handshake_hash,
+                    responder_token,
+                },
+                initiator_bundle,
+            ),
+            (
+                &records["responder_proof"],
+                BleExp0IdentitySignature::ResponderProof {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle,
+                },
+                responder_bundle,
+            ),
+            (
+                &records["initiator_confirmation"],
+                BleExp0IdentitySignature::InitiatorConfirmation {
+                    handshake_hash,
+                    responder_token,
+                    responder_bundle,
+                },
+                initiator_bundle,
+            ),
+            (
+                &records["responder_confirmation"],
+                BleExp0IdentitySignature::ResponderConfirmation {
+                    handshake_hash,
+                    responder_token,
+                    initiator_bundle,
+                },
+                responder_bundle,
+            ),
+        ];
+        for (record, context, bundle) in cases {
+            let signature_input = ble_exp0_signature_input(&bundle, &context).unwrap();
+            assert_eq!(
+                signature_input,
+                decode_hex(record["signature_input_hex"].as_str().unwrap())
+            );
+            let signature = decode_hex(record["signature_hex"].as_str().unwrap());
+            assert_eq!(
+                IdentityPublicBundle::from_bytes(&bundle)
+                    .unwrap()
+                    .to_bytes(),
+                bundle
+            );
+            verify_ble_exp0_signature(&bundle, &context, &signature)
+                .expect("fixture identity signature verifies");
+        }
+        for case in fixture["negative_cases"].as_array().unwrap() {
+            if case["target"] == "proof" {
+                let bytes = decode_hex(case["input_hex"].as_str().unwrap());
+                assert!(bytes.len() >= 6);
+                assert!(IdentityPublicBundle::from_bytes(&bytes[6..]).is_err());
+            }
+        }
     }
 
     #[test]

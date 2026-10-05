@@ -5,6 +5,14 @@
     "service_uuid": "1c9a0000-7d31-4f6a-9b43-4c4154544943",
     "service_uuid_canonical_hex": "1c9a00007d314f6a9b434c4154544943",
     "service_uuid_advertising_little_endian_hex": "43495454414c439b6a4f317d00009a1c",
+    "gatt_characteristics": {
+      "control_uuid": "1c9a0002-7d31-4f6a-9b43-4c4154544943",
+      "rx_uuid": "1c9a0003-7d31-4f6a-9b43-4c4154544943",
+      "tx_uuid": "1c9a0004-7d31-4f6a-9b43-4c4154544943",
+      "capabilities_uuid": "1c9a0005-7d31-4f6a-9b43-4c4154544943",
+      "upgrade_uuid": "1c9a0006-7d31-4f6a-9b43-4c4154544943",
+      "capabilities_value_hex": "000000"
+    },
     "att_mtu_min": 154,
     "att_mtu_requested": 247,
     "max_attribute_value": 512,
@@ -63,8 +71,7 @@
     "transfer_start_plaintext_hex": "4c42545300010102030405060708000002010005",
     "initial_credit_plaintext_hex": "4c425743000101020304050607080004",
     "credit_after_one_unique_frame_hex": "4c425743000101020304050607080005",
-    "completion_plaintext_hex": "4c42464100010102030405060708",
-    "noise_transport_ciphertext": "not included; requires a reproducible Noise XX handshake vector"
+    "completion_plaintext_hex": "4c42464100010102030405060708"
   },
   "framing": {
     "transfer_id_hex": "0102030405060708",
@@ -86,6 +93,69 @@
     "att_mtu_153": "reject before identity data",
     "att_mtu_154": "accept; identity-proof record is 135+16=151-byte GATT value and MTU includes 3-byte ATT overhead"
   },
+  "noise_transcript": {
+    "purpose": "test-only Noise primitive vector; not proof of MobileBleSession identity, pin, or ordering acceptance",
+    "initiator_static_private_key_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "initiator_ephemeral_private_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "responder_static_private_key_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "responder_ephemeral_private_key_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+    "message1_hex": "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a",
+    "message2_hex": "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f115705f1a6a87f273486edab4ed7283d993c0a106ad2450200961d17098029dc207d866723cb977c6f0aadaccf80be9944a28fec1bc5c432c653ccc0bec4a44d",
+    "message3_hex": "1c1005e7fc94bc1efe851c8d419f2563714adf5aad996dd13676ae9e7fd1eba278c728e1b2ae88cca5b7ce9a3a87f6552746e7dac7a814107f81b45a4bdf6403",
+    "handshake_hash_hex": "d698a87958fbc6e284e9314fd92f00643db8f8e37925dc690ad1d313cea96928",
+    "initiator_to_responder_ciphertext_hex": "b25ad79e0b5ab4d9050b20e98cd9914e3ab7d59758e2b72c7017ae792c6d82fc4d385d2c",
+    "responder_to_initiator_ciphertext_hex": "9b9847d8eaa2bea9e7c2f71bf3a5d712804907806b7c5ee376bfd59a878e2c88"
+  },
+  "negative_cases": [
+    {
+      "case_id": "advertisement-service-data-truncated",
+      "target": "advertisement",
+      "input_hex": "000123456789abcdef",
+      "expected": "reject"
+    },
+    {
+      "case_id": "advertisement-wrong-discriminator",
+      "target": "advertisement",
+      "input_hex": "010123456789abcdef01",
+      "expected": "reject"
+    },
+    {
+      "case_id": "capabilities-unknown-bits",
+      "target": "capabilities",
+      "input_hex": "000001",
+      "expected": "reject"
+    },
+    {
+      "case_id": "proof-truncated",
+      "target": "proof",
+      "input_hex": "4c424549000101",
+      "expected": "reject"
+    },
+    {
+      "case_id": "control-invalid-start-version",
+      "target": "control",
+      "input_hex": "4c42545300020102030405060708000002010005",
+      "expected": "reject"
+    },
+    {
+      "case_id": "frame-truncated-header",
+      "target": "frame",
+      "input_hex": "4c4601000102030405060708",
+      "expected": "reject"
+    },
+    {
+      "case_id": "frame-invalid-count",
+      "target": "frame",
+      "input_hex": "4c460100010203040506070800000000000000000000000000",
+      "expected": "reject"
+    },
+    {
+      "case_id": "noise-malformed-packet",
+      "target": "noise",
+      "input_hex": "00",
+      "expected": "session_close"
+    }
+  ],
   "test_only_private_keys": {
     "initiator_ed25519_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
     "initiator_x25519_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
