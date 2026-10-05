@@ -53,7 +53,7 @@ pub(crate) fn list_local_web_event_page(
         .map(|value| encoding::parse_fixed_hex::<32>(&value, "outbox cursor"))
         .transpose()?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client = Client::open_existing(database_path, &protector)
+    let mut client = profile::open_existing_client(database_path, &protector)
         .map_err(|error| format!("open Desktop profile: {error}"))?;
     client
         .restore_space(&space_id, &group_reference)
@@ -99,7 +99,7 @@ pub(crate) fn accept_local_web_event(
     let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
     let group_reference = encoding::parse_fixed_hex::<32>(&group_reference_hex, "group reference")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client = Client::open_existing(database_path, &protector)
+    let mut client = profile::open_existing_client(database_path, &protector)
         .map_err(|error| format!("open Desktop profile: {error}"))?;
     let mut created = client
         .restore_space(&space_id, &group_reference)
@@ -307,7 +307,7 @@ fn open_sync_profile(
     protector: &OsKeyringProtector,
     target: SyncTarget,
 ) -> Result<(Client, CreatedSpace), String> {
-    let mut client = Client::open_existing(database_path, protector)
+    let mut client = profile::open_existing_client(database_path, protector)
         .map_err(|error| format!("open Desktop profile: {error}"))?;
     let created = client
         .restore_space(&target.space_id, &target.group_reference)
@@ -462,7 +462,9 @@ fn apply_synced_events(
                     counts.2 += bundle_size;
                 }
             }
-            EventKind::Membership | EventKind::Ephemeral => counts.1 += 1,
+            EventKind::Membership | EventKind::Ephemeral | EventKind::RelayMailboxControl => {
+                counts.1 += 1;
+            }
             EventKind::Message
             | EventKind::Edit
             | EventKind::Tombstone
