@@ -10,6 +10,7 @@ mod local_network;
 mod profile;
 mod relay_settings;
 
+mod direct_messages;
 mod spaces;
 mod sync;
 
@@ -39,6 +40,7 @@ pub fn run() {
             identity::get_device_identity,
             identity::get_device_certificate_signing_request,
             spaces::list_local_spaces,
+            spaces::list_local_text_messages,
             spaces::recover_local_space_generation,
             spaces::create_local_space,
             spaces::publish_local_space_key_package,
@@ -49,7 +51,15 @@ pub fn run() {
             spaces::queue_local_text_message_reply,
             spaces::queue_local_text_message_reaction,
             spaces::queue_local_text_message_pin,
-            spaces::list_local_text_messages,
+            direct_messages::publish_local_direct_message_key_package,
+            direct_messages::create_local_direct_message,
+            direct_messages::list_local_direct_message_conversations,
+            direct_messages::list_pending_local_direct_message_invitations,
+            direct_messages::accept_local_direct_message_invitation,
+            direct_messages::decline_local_direct_message_invitation,
+            direct_messages::list_local_direct_message_history,
+            direct_messages::queue_local_direct_message_text,
+            direct_messages::sync_local_direct_messages_once,
             attachments::queue_local_file_attachment,
             attachments::list_local_attachment_sources,
             attachments::remove_local_attachment_source,
