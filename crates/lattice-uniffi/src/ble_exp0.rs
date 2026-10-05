@@ -610,6 +610,19 @@ impl MobileBleSession {
         Ok(self.lock_state()?.confirmation_progress == ConfirmationProgress::Authenticated)
     }
 
+    /// Returns the pinned fingerprint bound to this authenticated session.
+    pub fn peer_identity_fingerprint(&self) -> Result<Vec<u8>, MobileError> {
+        let state = self.lock_state()?;
+        if state.confirmation_progress != ConfirmationProgress::Authenticated {
+            return Err(MobileError::BlePeerNotAuthenticated);
+        }
+        state
+            .peer
+            .as_ref()
+            .map(|peer| peer.fingerprint.to_vec())
+            .ok_or(MobileError::BleRecordRejected)
+    }
+
     /// Encrypts one authenticated application/control record after identity confirmation.
     ///
     /// # Errors
