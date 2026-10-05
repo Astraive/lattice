@@ -16,12 +16,20 @@ internal interface BleExp0EnvelopeIo {
 internal interface BleExp0IngressProfile {
     fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long)
     fun recordPeerIngressAccepted(eventId: ByteArray)
-    fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): uniffi.lattice_uniffi.MobileSyncEventResult
+    fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult
+    fun markDirectMessageAttempt(packetId: ByteArray, nextAttemptMs: Long)
+    fun recordDirectMessagePeerIngressAccepted(packetId: ByteArray)
+    fun ingestDirectMessagePacket(
+        authenticatedPeerIdentity: ByteArray,
+        envelopeBytes: ByteArray,
+    ): uniffi.lattice_uniffi.MobileDirectMessageIngressResult
+    fun isDirectMessageRoutedToPeer(groupReference: ByteArray, peerIdentity: ByteArray): Boolean
 }
 
 /** Noise record operations bound to the already-authenticated session. */
 internal interface BleExp0SessionCipher {
     fun isAuthenticated(): Boolean
+    fun peerIdentityFingerprint(): ByteArray
     fun encryptRecord(plaintext: ByteArray): ByteArray
     fun decryptRecord(ciphertext: ByteArray): ByteArray
 }
@@ -30,14 +38,15 @@ internal class MobileBleSessionCipher(
     private val session: MobileBleSession,
 ) : BleExp0SessionCipher {
     override fun isAuthenticated(): Boolean = session.isAuthenticated()
+    override fun peerIdentityFingerprint(): ByteArray = session.peerIdentityFingerprint()
     override fun encryptRecord(plaintext: ByteArray): ByteArray = session.encryptRecord(plaintext)
     override fun decryptRecord(ciphertext: ByteArray): ByteArray = session.decryptRecord(ciphertext)
 }
 
 /**
  * Bridges authenticated Noise records, bounded exp0 transfers, FIFO GATT value
- * queues, Rust Core event ingress, and durable peer-ingress acknowledgements.
- * Invoke from a serialized worker, never directly from the main thread.
+ * queues, Rust Core sync and direct-message ingress, and durable peer-ingress
+ * acknowledgements. Invoke from a serialized worker, never directly from UI.
  */
 internal class BleExp0EnvelopeTransport(
     private val profile: BleExp0IngressProfile,
@@ -48,6 +57,7 @@ internal class BleExp0EnvelopeTransport(
 ) {
     private var closed = false
     private var activeOutboundEventId: ByteArray? = null
+    private var activeOutboundIsDirectMessage = false
 
     /** Starts a due durable envelope and records the attempt before GATT transmission. */
     @Synchronized
@@ -74,8 +84,14 @@ internal class BleExp0EnvelopeTransport(
             throw error
         }
         try {
-            profile.markOutboxAttempt(entry.eventId, retryAtUnixMillis)
+            val directMessage = isDirectMessageEnvelope(entry.envelopeBytes)
+            if (directMessage) {
+                profile.markDirectMessageAttempt(entry.eventId, retryAtUnixMillis)
+            } else {
+                profile.markOutboxAttempt(entry.eventId, retryAtUnixMillis)
+            }
             activeOutboundEventId = entry.eventId.copyOf()
+            activeOutboundIsDirectMessage = directMessage
             sendProtectedControl(start)
         } catch (error: Exception) {
             failClosed()
@@ -101,9 +117,14 @@ internal class BleExp0EnvelopeTransport(
                 hasMagic(plaintext, COMPLETION_MAGIC) -> {
                     transfer.acceptCompletion(plaintext, nowMillis)
                     val eventId = activeOutboundEventId
-                        ?: throw IllegalStateException("Completion has no active outbox event")
-                    profile.recordPeerIngressAccepted(eventId)
+                        ?: throw IllegalStateException("Completion has no active outbox entry")
+                    if (activeOutboundIsDirectMessage) {
+                        profile.recordDirectMessagePeerIngressAccepted(eventId)
+                    } else {
+                        profile.recordPeerIngressAccepted(eventId)
+                    }
                     activeOutboundEventId = null
+                    activeOutboundIsDirectMessage = false
                     eventId.copyOf()
                 }
                 else -> throw IllegalArgumentException("Unsupported exp0 transfer control")
@@ -122,13 +143,19 @@ internal class BleExp0EnvelopeTransport(
             val update = transfer.acceptFrame(frame, nowMillis)
             update.creditRecord?.let(::sendProtectedControl)
             val completedEnvelope = update.completedEnvelope ?: return
-            // Core outcomes (Accepted, Duplicate, Pending, or CheckpointExcluded)
-            // all mean the bounded ingress handoff succeeded; none means delivery.
-            val result = profile.ingestSyncedApplicationEvent(completedEnvelope)
-            try {
-                onCoreIngressResult(result)
-            } catch (_: RuntimeException) {
-                // Diagnostic observers cannot block ingress acknowledgement.
+            if (isDirectMessageEnvelope(completedEnvelope)) {
+                profile.ingestDirectMessagePacket(
+                    session.peerIdentityFingerprint(),
+                    completedEnvelope,
+                )
+            } else {
+                // Sync ingress acceptance is not destination delivery.
+                val result = profile.ingestSyncedApplicationEvent(completedEnvelope)
+                try {
+                    onCoreIngressResult(result)
+                } catch (_: RuntimeException) {
+                    // Diagnostic observers cannot block ingress acknowledgement.
+                }
             }
             sendProtectedControl(transfer.acknowledgeIngress(readTransferId(frame), nowMillis))
         } catch (error: Exception) {
@@ -157,6 +184,12 @@ internal class BleExp0EnvelopeTransport(
     @Synchronized
     fun close() = failClosed()
 
+    @Synchronized
+    fun authenticatedPeerIdentityFingerprint(): ByteArray {
+        requireAuthenticated()
+        return session.peerIdentityFingerprint()
+    }
+
     private fun requireAuthenticated() {
         check(!closed) { "BLE envelope transport is closed" }
         try {
@@ -182,6 +215,7 @@ internal class BleExp0EnvelopeTransport(
         if (closed) return
         closed = true
         activeOutboundEventId = null
+        activeOutboundIsDirectMessage = false
         transfer.close()
         io.disconnect()
     }
@@ -191,6 +225,9 @@ internal class BleExp0EnvelopeTransport(
         return magic.indices.all { record[it] == magic[it] }
     }
 
+    private fun isDirectMessageEnvelope(envelope: ByteArray): Boolean =
+        hasMagic(envelope, DIRECT_MESSAGE_MAGIC)
+
     private fun readTransferId(frame: ByteArray): Long =
         java.nio.ByteBuffer.wrap(frame).order(java.nio.ByteOrder.BIG_ENDIAN).getLong(4)
 
@@ -198,5 +235,6 @@ internal class BleExp0EnvelopeTransport(
         val START_MAGIC = byteArrayOf(0x4c, 0x42, 0x54, 0x53)
         val CREDIT_MAGIC = byteArrayOf(0x4c, 0x42, 0x57, 0x43)
         val COMPLETION_MAGIC = byteArrayOf(0x4c, 0x42, 0x46, 0x41)
+        val DIRECT_MESSAGE_MAGIC = byteArrayOf(0x4c, 0x44, 0x4d, 0x50)
     }
 }
