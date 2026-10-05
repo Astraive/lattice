@@ -302,7 +302,17 @@ fn execute(cli: Cli, json: bool) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Command::Peer { command } => peer::execute(command, json),
-        Command::Relay { command } => relay::execute(command, &data_dir, json),
+        Command::Relay { command } => {
+            let (database_path, protector) = open_profile(&data_dir)?;
+            relay::execute(
+                command,
+                &data_dir,
+                &database_path,
+                &protector,
+                space_credential,
+                json,
+            )
+        }
         Command::Identity { command } => {
             let (database_path, protector) = open_profile(&data_dir)?;
             execute_identity(
@@ -392,12 +402,9 @@ fn validate_command_inputs(command: &Command) -> Result<(), Box<dyn Error>> {
         Command::Node { command } => {
             node::validate_command(command).map_err(CliError::invalid_input)?;
         }
-        Command::Relay { command } => match command {
-            RelayCommand::Add { url }
-            | RelayCommand::Remove { url }
-            | RelayCommand::Test { url } => relay::validate_input_url(url)?,
-            RelayCommand::List => {}
-        },
+        Command::Relay { command } => {
+            relay::validate_command(command).map_err(CliError::invalid_input)?;
+        }
         Command::Space {
             command: SpaceCommand::Create { channels, .. },
         } => {
@@ -598,6 +605,9 @@ fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn E
                 | SpaceCommand::Invite { credential, .. }
                 | SpaceCommand::Join { credential, .. }
                 | SpaceCommand::Leave { credential, .. },
+        }
+        | Command::Relay {
+            command: RelayCommand::MailboxPublish { credential, .. },
         } => Some(credential),
         _ => None,
     };
