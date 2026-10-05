@@ -1,7 +1,7 @@
 //! Versioned, authenticated envelope transfer for opt-in courier queues.
 //!
-//! A send consumes its source queue row before transmitting the decremented
-//! envelope. Disconnects can lose that copy; the sender never restores it.
+//! A sender retains its source queue row while transferring and consumes it
+//! only after an authenticated retention ACK matches the forwarded envelope ID.
 
 use lattice_crypto::NoiseRole;
 use lattice_identity::{DeviceIdentity, PinnedIdentity};
@@ -21,7 +21,7 @@ use crate::sync::{
 };
 
 const WIRE_MAGIC: &[u8; 4] = b"LCOR";
-const WIRE_VERSION: u8 = 1;
+const WIRE_VERSION: u8 = 2;
 const START_KIND: u8 = 1;
 const CHUNK_KIND: u8 = 2;
 const ACCEPT_KIND: u8 = 3;
@@ -167,13 +167,40 @@ pub async fn receive_courier_once<A: TransportAdapter + ?Sized>(
         now_ms,
     ) {
         Ok(receipt) => receipt,
+        Err(error @ (CourierQueueError::DuplicateEnvelope | CourierQueueError::DuplicateEvent)) => {
+            match store.read_courier_envelope(local_id) {
+                Ok(existing)
+                    if existing.peer_id == quota_peer_id(pinned_peer.fingerprint())
+                        && existing.metadata == metadata
+                        && existing.encrypted_opaque_bytes == encoded =>
+                {
+                    lattice_storage::CourierQueueReceipt {
+                        peer_id: existing.peer_id,
+                        envelope_id: local_id,
+                        sequence: existing.sequence,
+                    }
+                }
+                _ => {
+                    let _ =
+                        send_courier_frame(adapter, &mut channel, &ack(REJECT_KIND), cancellation)
+                            .await;
+                    return Err(error.into());
+                }
+            }
+        }
         Err(error) => {
             let _ =
                 send_courier_frame(adapter, &mut channel, &ack(REJECT_KIND), cancellation).await;
             return Err(error.into());
         }
     };
-    send_courier_frame(adapter, &mut channel, &ack(ACCEPT_KIND), cancellation).await?;
+    send_courier_frame(
+        adapter,
+        &mut channel,
+        &retention_ack(envelope.envelope_id().as_bytes()),
+        cancellation,
+    )
+    .await?;
     Ok(CourierReceiveResult {
         local_envelope_id: *receipt.envelope_id.as_bytes(),
         sequence: receipt.sequence,
@@ -183,15 +210,16 @@ pub async fn receive_courier_once<A: TransportAdapter + ?Sized>(
 
 /// Sends one locally queued envelope to the exact pinned Noise peer.
 ///
-/// The source row is consumed after peer authentication but before the first
-/// transfer frame. Any later transport failure loses this copy rather than
-/// duplicating its copy budget.
+/// The source row remains durable during transfer. It is consumed only after
+/// the authenticated peer ACKs retention of the exact forwarded envelope.
+/// Disconnects, timeouts, malformed ACKs, and remote rejection leave it queued
+/// for retry.
 ///
 /// # Errors
 ///
 /// Returns authentication, storage, envelope-validation, framing, or remote
-/// queue-rejection failures. A failure after source consumption does not restore
-/// that source row.
+/// queue-rejection failures. A failure before a valid retention ACK preserves
+/// the source row.
 pub async fn send_courier_once<A: TransportAdapter + ?Sized>(
     adapter: &A,
     local_identity: &DeviceIdentity,
@@ -234,12 +262,11 @@ pub async fn send_courier_once<A: TransportAdapter + ?Sized>(
     let transfer_now_ms = unix_millis();
     let outgoing_at_transfer = EnvelopeV1::decode_at(&outgoing_bytes, transfer_now_ms / 1000)?;
     store.purge_expired_courier_envelopes(transfer_now_ms)?;
-    let consumed = store.take_courier_for_relay(source_id, next_local_id, transfer_now_ms)?;
-    if consumed.sequence != preview.sequence
-        || consumed.metadata.envelope_id() != next_local_id
-        || consumed.encrypted_opaque_bytes != preview.encrypted_opaque_bytes
-        || consumed.metadata.remaining_copy_budget()
-            != u16::from(outgoing_at_transfer.remaining_copy_budget())
+    let current = store.read_courier_envelope(source_id)?;
+    if current.sequence != preview.sequence
+        || current.peer_id != preview.peer_id
+        || current.metadata != preview.metadata
+        || current.encrypted_opaque_bytes != preview.encrypted_opaque_bytes
     {
         return Err(CourierTransferError::NotForwardable);
     }
@@ -259,8 +286,17 @@ pub async fn send_courier_once<A: TransportAdapter + ?Sized>(
     if response == ack(REJECT_KIND) {
         return Err(CourierTransferError::RemoteRejected);
     }
-    if response != ack(ACCEPT_KIND) {
+    if response != retention_ack(&forwarded_envelope_id) {
         return Err(CourierTransferError::InvalidFrame);
+    }
+    let consumed = store.take_courier_for_relay(source_id, next_local_id, unix_millis())?;
+    if consumed.sequence != preview.sequence
+        || consumed.metadata.envelope_id() != next_local_id
+        || consumed.encrypted_opaque_bytes != preview.encrypted_opaque_bytes
+        || consumed.metadata.remaining_copy_budget()
+            != u16::from(outgoing_at_transfer.remaining_copy_budget())
+    {
+        return Err(CourierTransferError::NotForwardable);
     }
     Ok(CourierSendResult {
         source_local_envelope_id: *source_id.as_bytes(),
@@ -280,14 +316,17 @@ async fn reject<A: TransportAdapter + ?Sized, T>(
 }
 
 fn wire_header(kind: u8) -> [u8; 6] {
-    [
-        WIRE_MAGIC[0],
-        WIRE_MAGIC[1],
-        WIRE_MAGIC[2],
-        WIRE_MAGIC[3],
-        WIRE_VERSION,
-        kind,
-    ]
+    let mut header = [0_u8; 6];
+    header[..4].copy_from_slice(WIRE_MAGIC);
+    header[4] = WIRE_VERSION;
+    header[5] = kind;
+    header
+}
+fn retention_ack(envelope_id: &[u8; 32]) -> [u8; 38] {
+    let mut frame = [0_u8; 38];
+    frame[..6].copy_from_slice(&wire_header(ACCEPT_KIND));
+    frame[6..].copy_from_slice(envelope_id);
+    frame
 }
 
 fn ack(kind: u8) -> [u8; 6] {
