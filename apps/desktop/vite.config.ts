@@ -4,6 +4,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   clearScreen: false,
   plugins: [react()],
+  publicDir: "../../assets/logo",
   server: {
     host: "127.0.0.1",
     port: 1420,
