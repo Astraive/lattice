@@ -6,11 +6,11 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
+import com.astraive.lattice.ui.LatticeActionButton as Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.astraive.lattice.ui.LatticeFormField as OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
+import com.astraive.lattice.ui.LatticeSurface as Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -23,6 +23,12 @@ import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileChannelSummary
 import uniffi.lattice_uniffi.MobileChannelType
 import uniffi.lattice_uniffi.MobileLocalTextMessage
+import com.astraive.lattice.ui.LatticeSurface
+import com.astraive.lattice.ui.LatticeActionButton
+import com.astraive.lattice.ui.LatticeActionTone
+import com.astraive.lattice.ui.LatticeStatusNotice
+import com.astraive.lattice.ui.LatticeNoticeKind
+import com.astraive.lattice.ui.LatticeFormField
 
 internal data class LocalMessageComposerState(
     val credentialVectorHex: String = "",
@@ -68,15 +74,7 @@ internal fun SpaceMessageComposer(
     val reactionTokenIsValid = state.reactionToken.toByteArray().size in 1..64
     val mutationTagIsValid = state.mutationTagHex.length == 64 &&
         state.mutationTagHex.all { it.digitToIntOrNull(16) != null }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        tonalElevation = 1.dp,
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+    LatticeSurface {
             Text(
                 when {
                     state.editTargetMessageIdHex != null -> "Edit local text message"
@@ -155,64 +153,41 @@ internal fun SpaceMessageComposer(
                         }
                     }
                 }
-                OutlinedTextField(
-                    value = state.credentialVectorHex,
-                    onValueChange = onCredentialVectorHexChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Trusted X.509 credential vector (hex)") },
-                    supportingText = { Text("Even-length hexadecimal, at most 16 KiB decoded") },
+                LatticeFormField(
+                    state.credentialVectorHex, onCredentialVectorHexChanged, "Trusted X.509 credential vector (hex)",
+                    supportingText = "Even-length hexadecimal, at most 16 KiB decoded",
+                    enabled = !state.submitting, singleLine = false,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, capitalization = KeyboardCapitalization.None),
-                    enabled = !state.submitting,
-                    singleLine = false,
                 )
-                OutlinedTextField(
-                    value = state.content,
-                    onValueChange = onContentChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = {
-                        Text(
-                            when {
-                                state.editTargetMessageIdHex != null -> "Replacement text"
-                                state.replyTargetMessageIdHex != null -> "Reply"
-                                else -> "Message"
-                            },
-                        )
+                LatticeFormField(
+                    state.content, onContentChanged,
+                    when {
+                        state.editTargetMessageIdHex != null -> "Replacement text"
+                        state.replyTargetMessageIdHex != null -> "Reply"
+                        else -> "Message"
                     },
+                    enabled = !state.submitting, singleLine = false, minLines = 3,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    enabled = !state.submitting,
-                    minLines = 3,
                 )
-                OutlinedTextField(
-                    value = state.reactionToken,
-                    onValueChange = onReactionTokenChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Reaction token") },
-                    supportingText = { Text("1–64 UTF-8 bytes") },
-                    enabled = !state.submitting,
-                    singleLine = true,
+                LatticeFormField(
+                    state.reactionToken, onReactionTokenChanged, "Reaction token",
+                    supportingText = "1–64 UTF-8 bytes", enabled = !state.submitting,
                 )
-                OutlinedTextField(
-                    value = state.mutationTagHex,
-                    onValueChange = onMutationTagHexChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Reaction or pin add-event ID for removal (32-byte hex)") },
-                    enabled = !state.submitting,
-                    singleLine = true,
+                LatticeFormField(
+                    state.mutationTagHex, onMutationTagHexChanged,
+                    "Reaction or pin add-event ID for removal (32-byte hex)", enabled = !state.submitting,
                 )
-                Button(
-                    onClick = onQueue,
+                LatticeActionButton(
+                    when {
+                        state.editTargetMessageIdHex != null -> "Queue edit locally"
+                        state.replyTargetMessageIdHex != null -> "Queue reply locally"
+                        else -> "Queue locally"
+                    },
+                    onQueue,
                     enabled = profileReady && !state.submitting && availableChannels.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        when {
-                            state.submitting -> "Committing locally…"
-                            state.editTargetMessageIdHex != null -> "Queue edit locally"
-                            state.replyTargetMessageIdHex != null -> "Queue reply locally"
-                            else -> "Queue locally"
-                        },
-                    )
-                }
+                    busy = state.submitting,
+                    tone = LatticeActionTone.PRIMARY,
+                )
                 if (
                     state.editTargetMessageIdHex != null ||
                     state.replyTargetMessageIdHex != null
@@ -233,7 +208,7 @@ internal fun SpaceMessageComposer(
                     Text(if (state.loadingHistory) "Loading history…" else "Refresh recent history")
                 }
                 state.historyStatus?.let { status ->
-                    Text(status, style = MaterialTheme.typography.bodySmall)
+                    LatticeStatusNotice(LatticeNoticeKind.INFO, message = status)
                 }
                 val historyChannelId = state.selectedChannelIdHex
                     ?: availableChannels.firstOrNull()?.id?.toLowerHex()
@@ -341,12 +316,11 @@ internal fun SpaceMessageComposer(
                     }
                 }
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.status)
             state.eventIdHex?.let { eventId ->
                 Text("Event ID (queued locally)", style = MaterialTheme.typography.labelMedium)
                 Text(eventId, style = MaterialTheme.typography.bodySmall)
             }
-        }
     }
 }
 
