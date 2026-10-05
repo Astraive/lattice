@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Transaction;
 
@@ -30,18 +31,29 @@ use lattice_mls::{
     migrate_protected_sqlite, with_mls_storage_key,
 };
 use lattice_protocol::{Value, decode_canonical, encode_canonical};
+use lattice_relay::profile::MailboxToken;
 use lattice_storage::{
-    CachedSpaceMessage, CommitOutcome, MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
+    CachedSpaceMessage, CommitOutcome, DirectMessageRecord, MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
     MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
     SpaceMembershipTransitionSnapshot, Store, StoreError,
 };
-pub use lattice_storage::{MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState, SpaceGenesisCursor};
+pub use lattice_storage::{
+    DirectMessageConversation, DirectMessageOutboxEntry, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
+    MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState, PendingDirectMessageInvitation,
+    SpaceGenesisCursor,
+};
 use openmls::credentials::Credential;
 use openmls::prelude::CredentialType;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
 mod bootstrap_snapshot;
+mod direct_message;
+pub use direct_message::{
+    CreatedDirectMessage, DirectMessageIngressOutcome, DirectMessagePacket,
+    DirectMessagePendingInvitation, LocalDirectMessage, MAX_DIRECT_MESSAGE_PACKET_BYTES,
+    MAX_DIRECT_MESSAGE_TEXT_BYTES,
+};
 mod identity_pin;
 mod space_bootstrap;
 mod space_invite;
@@ -90,6 +102,42 @@ pub struct InitialChannel {
     pub default_deny: u64,
     /// Sorted role-specific overrides using the candidate built-in role IDs.
     pub role_overrides: Vec<space::RoleOverride>,
+}
+/// Fields for one tagged reaction add or observed-tag removal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextMessageReaction {
+    /// Channel containing the target message.
+    pub channel_id: space::EntityId,
+    /// Immutable event identifier of the target message.
+    pub target: [u8; 32],
+    /// Reaction token to add or remove.
+    pub token: String,
+    /// Whether this operation adds a reaction.
+    pub add: bool,
+    /// Prior add-event identifier for a removal; absent for an add.
+    pub tag: Option<[u8; 32]>,
+}
+
+/// Fields for one pin add or observed-tag removal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextMessagePin {
+    /// Channel containing the target message.
+    pub channel_id: space::EntityId,
+    /// Immutable event identifier of the target message.
+    pub target: [u8; 32],
+    /// Whether this operation adds a pin.
+    pub add: bool,
+    /// Prior pin-add event identifier for a removal; absent for an add.
+    pub tag: Option<[u8; 32]>,
+}
+
+/// Parameters shared by local reaction and pin event construction.
+struct TextMessageUpdate {
+    channel_id: space::EntityId,
+    target: [u8; 32],
+    causal_tag: Option<[u8; 32]>,
+    event_kind: EventKind,
+    plaintext: Vec<u8>,
 }
 
 /// Result of creating a local candidate Space and its one-member MLS generation.
@@ -199,6 +247,27 @@ pub enum SyncedApplicationOutcome {
     },
     /// Signed ciphertext predates the local MLS checkpoint; retained only as DAG ancestry.
     CheckpointExcluded { event_id: [u8; 32] },
+}
+
+/// Receipt for queuing a generation-scoped MLS mailbox-control event.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PublishedSpaceRelayMailbox {
+    event_id: [u8; 32],
+    mailbox: MailboxToken,
+}
+
+impl PublishedSpaceRelayMailbox {
+    /// Returns the local signed control-event identifier.
+    #[must_use]
+    pub const fn event_id(&self) -> &[u8; 32] {
+        &self.event_id
+    }
+
+    /// Returns the protected generation mailbox selector for relay retrieval.
+    #[must_use]
+    pub const fn mailbox(&self) -> MailboxToken {
+        self.mailbox
+    }
 }
 
 impl CreatedSpace {
@@ -463,6 +532,9 @@ pub enum CoreError {
     /// A random identifier could not be generated for local Space creation.
     #[error("OS randomness failed while creating a Space identifier")]
     SpaceIdentifierRandomness,
+    /// The local clock could not provide a valid signed wall-time hint.
+    #[error("system wall clock is outside the supported Unix-millisecond range")]
+    SpaceWallClockInvalid,
     /// Locally generated Space genesis did not satisfy its exact policy schema.
     #[error("candidate Space genesis rejected: {0:?}")]
     SpaceGenesisRejected(space::RejectReason),
@@ -541,6 +613,28 @@ pub enum CoreError {
     /// A locally created Space Genesis or encrypted projection snapshot is absent.
     #[error("local Space Genesis snapshot was not found")]
     SpaceGenesisSnapshotNotFound,
+
+    /// A direct-message packet is malformed or is not an authenticated application message.
+    #[error("direct-message packet is invalid")]
+    DirectMessagePacketInvalid,
+    /// The requested direct-message conversation is absent or closed.
+    #[error("direct-message conversation is unavailable")]
+    DirectMessageConversationUnavailable,
+    /// The authenticated transport peer does not match the pinned DM peer.
+    #[error("direct-message authenticated peer mismatch")]
+    DirectMessagePeerMismatch,
+    /// A relay mailbox control payload or its protected local record is invalid.
+    #[error("Space relay mailbox control is invalid")]
+    SpaceRelayMailboxInvalid,
+    /// The OS random source could not provide a generation mailbox token.
+    #[error("OS randomness failed while creating a Space relay mailbox")]
+    SpaceRelayMailboxRandomness,
+    /// A generation attempted to replace its immutable relay mailbox token.
+    #[error("Space generation relay mailbox token conflicts with the accepted token")]
+    SpaceRelayMailboxConflict,
+    /// Relay mailbox publication requires at least one admitted peer.
+    #[error("relay mailbox control can be published only after a peer is admitted")]
+    SpaceRelayMailboxRequiresAdmission,
 }
 
 fn prepare_space_genesis(
@@ -990,6 +1084,62 @@ fn local_text_message_context(
     context
 }
 
+fn relay_mailbox_context(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+) -> Vec<u8> {
+    let mut context = Vec::with_capacity(38 + 16 + 32);
+    context.extend_from_slice(b"lattice-space-relay-mailbox-v1\0");
+    context.extend_from_slice(space_id);
+    context.extend_from_slice(group_reference);
+    context
+}
+
+fn encode_relay_mailbox_control(mailbox: MailboxToken) -> Result<Vec<u8>, CoreError> {
+    encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Bytes(mailbox.as_bytes().to_vec())),
+    ]))
+    .map_err(CoreError::from)
+}
+
+fn decode_relay_mailbox_control(plaintext: &[u8]) -> Result<MailboxToken, CoreError> {
+    let Value::Map(fields) =
+        decode_canonical(plaintext).map_err(|_| CoreError::SpaceRelayMailboxInvalid)?
+    else {
+        return Err(CoreError::SpaceRelayMailboxInvalid);
+    };
+    if fields.len() != 2 || fields[0].0 != 0 || fields[0].1 != Value::Unsigned(1) {
+        return Err(CoreError::SpaceRelayMailboxInvalid);
+    }
+    let (key, value) = &fields[1];
+    if *key != 1 {
+        return Err(CoreError::SpaceRelayMailboxInvalid);
+    }
+    let Value::Bytes(bytes) = value else {
+        return Err(CoreError::SpaceRelayMailboxInvalid);
+    };
+    let bytes: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| CoreError::SpaceRelayMailboxInvalid)?;
+    Ok(MailboxToken::from_bytes(bytes))
+}
+
+fn decode_protected_relay_mailbox(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+    ciphertext: &[u8],
+) -> Result<MailboxToken, CoreError> {
+    let context = relay_mailbox_context(space_id, group_reference);
+    let plaintext = lattice_mls::unprotect_local_record(&context, ciphertext)?;
+    let bytes: [u8; 32] = plaintext
+        .as_slice()
+        .try_into()
+        .map_err(|_| CoreError::SpaceRelayMailboxInvalid)?;
+    Ok(MailboxToken::from_bytes(bytes))
+}
+
 fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
     let Value::Map(fields) = decode_canonical(plaintext)? else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
@@ -1001,8 +1151,12 @@ fn decode_text_message(plaintext: &[u8]) -> Result<String, CoreError> {
     let Some((1, Value::Text(content))) = fields.next() else {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
     };
-    if fields.next() != Some((2, Value::Null))
-        || fields.next() != Some((3, Value::Bool(false)))
+    match fields.next() {
+        Some((2, Value::Null)) => {}
+        Some((2, Value::Bytes(root))) if root.len() == 32 => {}
+        _ => return Err(CoreError::LocalSpaceMessageCacheInvalid),
+    }
+    if fields.next() != Some((3, Value::Bool(false)))
         || fields.next() != Some((4, Value::Array(Vec::new())))
     {
         return Err(CoreError::LocalSpaceMessageCacheInvalid);
@@ -1801,6 +1955,62 @@ impl Client {
         created.reducer = staged_reducer;
         Ok(QueuedMessage { event_id })
     }
+    /// Queues a reply whose immutable thread root is an earlier message.
+    ///
+    /// The root is included as a causal parent and Core revalidates its
+    /// channel, Space generation, membership, and thread permission.
+    /// # Errors
+    ///
+    /// Returns an error when the credential, thread root, channel, policy, MLS,
+    /// signing, or storage operation is invalid or fails.
+    pub fn queue_text_message_reply(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        channel_id: space::EntityId,
+        thread_root: [u8; 32],
+        content: &str,
+    ) -> Result<QueuedMessage, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (mut parents, lamport) =
+            resolve_edit_parents(&self.store, policy, channel_id, thread_root)?;
+        parents.sort_unstable_by_key(|parent| *parent.as_bytes());
+        parents.dedup_by_key(|parent| *parent.as_bytes());
+        let plaintext = encode_text_reply(thread_root, content)?;
+        let message = LocalApplicationEvent {
+            group_id: created.group_id.clone(),
+            credential,
+            reducer: &created.reducer,
+            space_id: created.space_id,
+            group_reference: created.group_reference,
+            channel_id,
+            parents,
+            lamport,
+            plaintext,
+            cached_text: Some((None, content)),
+            event_kind: EventKind::Message,
+        };
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        let (event_id, staged_reducer) =
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                queue_application_event_in_transaction(
+                    identity,
+                    provider,
+                    transaction,
+                    &credential_trust_policy,
+                    message,
+                )
+            })?;
+        created.reducer = staged_reducer;
+        Ok(QueuedMessage { event_id })
+    }
     /// Queues an authorized text edit of an immutable message event.
     ///
     /// The edit is a separately signed and encrypted event referencing the
@@ -1860,6 +2070,192 @@ impl Client {
         created.reducer = staged_reducer;
         Ok(QueuedMessage { event_id })
     }
+    /// Queues an authenticated tombstone for a locally authored text message.
+    ///
+    /// The immutable message event remains in the event log. Honoring history
+    /// projections hide the content; this does not recall copies already read.
+    /// # Errors
+    ///
+    /// Returns an error when the target is not a locally authored authorized
+    /// message, cached history is invalid, or MLS/signing/storage fails.
+    pub fn queue_text_message_tombstone(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        channel_id: space::EntityId,
+        target: [u8; 32],
+    ) -> Result<QueuedMessage, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        self.restore_cached_local_message_projection(created, channel_id, target)?;
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (mut parents, lamport) = resolve_edit_parents(&self.store, policy, channel_id, target)?;
+        parents.sort_unstable_by_key(|parent| *parent.as_bytes());
+        parents.dedup_by_key(|parent| *parent.as_bytes());
+        let plaintext = encode_text_tombstone(target)?;
+        let message = LocalApplicationEvent {
+            group_id: created.group_id.clone(),
+            credential,
+            reducer: &created.reducer,
+            space_id: created.space_id,
+            group_reference: created.group_reference,
+            channel_id,
+            parents,
+            lamport,
+            plaintext,
+            cached_text: None,
+            event_kind: EventKind::Tombstone,
+        };
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        let (event_id, staged_reducer) =
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                queue_application_event_in_transaction(
+                    identity,
+                    provider,
+                    transaction,
+                    &credential_trust_policy,
+                    message,
+                )
+            })?;
+        created.reducer = staged_reducer;
+        Ok(QueuedMessage { event_id })
+    }
+    /// Queues one tagged reaction add or an observed-tag removal.
+    ///
+    /// For an add, `tag` must be `None`; its returned event ID is the immutable
+    /// tag. For a removal, `tag` names one earlier reaction-add event authored
+    /// by this device.
+    /// # Errors
+    ///
+    /// Returns an error if the target, reaction token, causal tag, policy,
+    /// current MLS membership, signing, or storage state is invalid.
+    pub fn queue_text_message_reaction(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        reaction: &TextMessageReaction,
+    ) -> Result<QueuedMessage, CoreError> {
+        let plaintext =
+            encode_text_reaction(reaction.target, &reaction.token, reaction.add, reaction.tag)?;
+        self.queue_text_message_update(
+            created,
+            credential,
+            TextMessageUpdate {
+                channel_id: reaction.channel_id,
+                target: reaction.target,
+                causal_tag: reaction.tag,
+                event_kind: EventKind::Reaction,
+                plaintext,
+            },
+        )
+    }
+
+    /// Queues one pin add or an observed pin-tag removal.
+    ///
+    /// For an add, `tag` must be `None`; its returned event ID is the pin tag.
+    /// A removal names the immutable ID of an earlier pin-add event.
+    /// # Errors
+    ///
+    /// Returns an error if the target, causal tag, policy, current MLS
+    /// membership, signing, or storage state is invalid.
+    pub fn queue_text_message_pin(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        pin: TextMessagePin,
+    ) -> Result<QueuedMessage, CoreError> {
+        let plaintext = encode_text_pin(pin.target, pin.add, pin.tag)?;
+        self.queue_text_message_update(
+            created,
+            credential,
+            TextMessageUpdate {
+                channel_id: pin.channel_id,
+                target: pin.target,
+                causal_tag: pin.tag,
+                event_kind: EventKind::Pin,
+                plaintext,
+            },
+        )
+    }
+
+    fn queue_text_message_update(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        update: TextMessageUpdate,
+    ) -> Result<QueuedMessage, CoreError> {
+        let TextMessageUpdate {
+            channel_id,
+            target,
+            causal_tag,
+            event_kind,
+            plaintext,
+        } = update;
+        self.ensure_credential_trust_policy(credential)?;
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        self.restore_cached_local_message_projection(created, channel_id, target)?;
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (mut parents, mut lamport) =
+            resolve_edit_parents(&self.store, policy, channel_id, target)?;
+        if let Some(tag) = causal_tag {
+            let stored = self
+                .store
+                .load_event(&tag)?
+                .ok_or(CoreError::SpaceParentEventMissing)?;
+            let event = VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)?;
+            if event.event_id().as_bytes() != &tag
+                || event.space_id() != &policy.space_id
+                || event.mls_group_reference() != &policy.group_reference
+                || event.channel_id() != Some(&channel_id)
+                || event.kind() != event_kind
+            {
+                return Err(CoreError::SpaceParentEventMissing);
+            }
+            parents.push(lattice_protocol::EventId::from_bytes(tag));
+            lamport = lamport
+                .max(event.lamport())
+                .checked_add(1)
+                .ok_or(CoreError::SpaceLamportExhausted)?;
+        }
+        parents.sort_unstable_by_key(|parent| *parent.as_bytes());
+        parents.dedup_by_key(|parent| *parent.as_bytes());
+        let message = LocalApplicationEvent {
+            group_id: created.group_id.clone(),
+            credential,
+            reducer: &created.reducer,
+            space_id: created.space_id,
+            group_reference: created.group_reference,
+            channel_id,
+            parents,
+            lamport,
+            plaintext,
+            cached_text: None,
+            event_kind,
+        };
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        let (event_id, staged_reducer) =
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                queue_application_event_in_transaction(
+                    identity,
+                    provider,
+                    transaction,
+                    &credential_trust_policy,
+                    message,
+                )
+            })?;
+        created.reducer = staged_reducer;
+        Ok(QueuedMessage { event_id })
+    }
 
     /// Restores the local Genesis policy, validates an RFC 9420 X.509 credential,
     /// then encrypts and atomically queues a text message without network I/O.
@@ -1893,6 +2289,112 @@ impl Client {
         .map_err(|_| CoreError::SpaceCredentialInvalid)?;
         let mut created = self.restore_space(space_id, group_reference)?;
         self.queue_text_message(&mut created, &credential, channel_id, content)
+    }
+    /// Restores the selected Space and queues an authenticated author tombstone
+    /// using a validated RFC 9420 X.509 credential.
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for invalid credential bytes; restoration
+    /// and tombstone queue errors are propagated.
+    pub fn queue_text_message_tombstone_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        channel_id: space::EntityId,
+        target: [u8; 32],
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_text_message_tombstone(&mut created, &credential, channel_id, target)
+    }
+    /// X.509 credential wrapper for [`Client::queue_text_message_reply`].
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for invalid credential bytes; restoration
+    /// and reply queue errors are propagated.
+    pub fn queue_text_message_reply_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        channel_id: space::EntityId,
+        thread_root: [u8; 32],
+        content: &str,
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_text_message_reply(&mut created, &credential, channel_id, thread_root, content)
+    }
+
+    /// X.509 credential wrapper for [`Client::queue_text_message_reaction`].
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for malformed, mismatched, or untrusted
+    /// credential bytes, or propagates Space restoration and reaction queue errors.
+    pub fn queue_text_message_reaction_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        reaction: &TextMessageReaction,
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_text_message_reaction(&mut created, &credential, reaction)
+    }
+
+    /// X.509 credential wrapper for [`Client::queue_text_message_pin`].
+    /// # Errors
+    ///
+    /// Returns `SpaceCredentialInvalid` for malformed, mismatched, or untrusted
+    /// credential bytes, or propagates Space restoration and pin queue errors.
+    pub fn queue_text_message_pin_from_x509_credential(
+        &mut self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+        credential_content: Vec<u8>,
+        pin: TextMessagePin,
+    ) -> Result<QueuedMessage, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        let mut created = self.restore_space(space_id, group_reference)?;
+        self.queue_text_message_pin(&mut created, &credential, pin)
     }
 
     /// Encrypts, policy-checks, and atomically queues one attachment manifest.
@@ -2098,6 +2600,9 @@ impl Client {
         {
             return Err(CoreError::MlsEventBindingFailed);
         }
+        if event.kind() == EventKind::RelayMailboxControl {
+            return self.accept_verified_relay_mailbox_control(created, canonical_bytes, event);
+        }
         let event_id = *event.event_id().as_bytes();
         if let Some(existing) = self.store.load_event(&event_id)? {
             if existing.canonical_bytes != canonical_bytes {
@@ -2187,6 +2692,102 @@ impl Client {
         Ok(SyncedApplicationOutcome::Accepted { event_id })
     }
 
+    fn accept_verified_relay_mailbox_control(
+        &mut self,
+        created: &mut CreatedSpace,
+        canonical_bytes: &[u8],
+        event: VerifiedSignatureOnlyEvent,
+    ) -> Result<SyncedApplicationOutcome, CoreError> {
+        if event.kind() != EventKind::RelayMailboxControl
+            || event.channel_id().is_some()
+            || event.space_id() != &created.space_id
+            || event.mls_group_reference() != &created.group_reference
+        {
+            return Err(CoreError::MlsEventBindingFailed);
+        }
+        let event_id = *event.event_id().as_bytes();
+        if let Some(existing) = self.store.load_event(&event_id)? {
+            if existing.canonical_bytes != canonical_bytes {
+                return Err(CoreError::Storage(StoreError::EventIdConflict));
+            }
+            self.store.resolve_pending(event_id)?;
+            self.store.resolve_dependency(event_id)?;
+            return Ok(SyncedApplicationOutcome::Duplicate { event_id });
+        }
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        let missing_dependencies = self.missing_synced_event_dependencies(created, &event)?;
+        if !missing_dependencies.is_empty() {
+            self.store
+                .store_pending(event_id, canonical_bytes, &missing_dependencies)?;
+            return Ok(SyncedApplicationOutcome::Pending {
+                event_id,
+                missing_dependencies,
+            });
+        }
+
+        let group_id = created.group_id.clone();
+        let space_id = created.space_id;
+        let group_reference = created.group_reference;
+        let reducer = created.reducer.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        self.with_mls_transaction(move |_identity, provider, transaction| {
+            let mut group =
+                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
+            if group.group_reference() != group_reference || event.mls_epoch() != group.epoch() {
+                return Err(CoreError::MlsEventBindingFailed);
+            }
+            let IncomingResult::Application(application) =
+                group.process_incoming(provider, event.protected_body())?
+            else {
+                return Err(CoreError::MlsEventBindingFailed);
+            };
+            let bound = bind_mls_application(event, application)?;
+            let mailbox = decode_relay_mailbox_control(bound.plaintext())?;
+            reducer
+                .authorize_relay_mailbox_control(bound.event())
+                .map_err(CoreError::SpaceControlRejected)?;
+
+            let encrypted = Store::load_space_relay_mailbox_in_transaction(
+                transaction,
+                &space_id,
+                &group_reference,
+            )?;
+            if let Some(encrypted) = encrypted {
+                if decode_protected_relay_mailbox(&space_id, &group_reference, &encrypted)?
+                    != mailbox
+                {
+                    return Err(CoreError::SpaceRelayMailboxConflict);
+                }
+            } else {
+                let context = relay_mailbox_context(&space_id, &group_reference);
+                let protected = lattice_mls::protect_local_record(&context, mailbox.as_bytes())?;
+                if !Store::insert_space_relay_mailbox_in_transaction(
+                    transaction,
+                    &space_id,
+                    &group_reference,
+                    &protected,
+                )? {
+                    let persisted = Store::load_space_relay_mailbox_in_transaction(
+                        transaction,
+                        &space_id,
+                        &group_reference,
+                    )?
+                    .ok_or(CoreError::SpaceRelayMailboxInvalid)?;
+                    if decode_protected_relay_mailbox(&space_id, &group_reference, &persisted)?
+                        != mailbox
+                    {
+                        return Err(CoreError::SpaceRelayMailboxConflict);
+                    }
+                }
+            }
+            store_received_event(transaction, bound.event())?;
+            Store::resolve_pending_in_transaction(transaction, event_id)?;
+            Ok(())
+        })?;
+        self.store.resolve_dependency(event_id)?;
+        Ok(SyncedApplicationOutcome::Accepted { event_id })
+    }
+
     /// Retries ready authenticated application events retained for this generation.
     ///
     /// Call after accepting a parent event. Returned outcomes include each
@@ -2221,6 +2822,7 @@ impl Client {
                             | EventKind::Reaction
                             | EventKind::Pin
                             | EventKind::FileManifest
+                            | EventKind::RelayMailboxControl
                     )
                 {
                     continue;
@@ -3865,7 +4467,10 @@ impl Client {
             }
             if event.space_id() == space_id
                 && event.mls_group_reference() == group_reference
-                && event.kind() == EventKind::Message
+                && matches!(
+                    event.kind(),
+                    EventKind::Message | EventKind::RelayMailboxControl
+                )
             {
                 events.push(record.canonical_bytes);
             }
@@ -3875,28 +4480,206 @@ impl Client {
             next_cursor,
         })
     }
-    /// Records one relay or direct-peer forwarding attempt for a durable outbox row.
+    /// Records one persisted forwarding attempt for a durable outbox row.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if the timestamp or outbox state transition is invalid.
-    pub fn mark_outbox_forwarded(
+    pub fn mark_outbox_attempt(
         &mut self,
         event_id: [u8; 32],
         next_attempt_ms: i64,
     ) -> Result<(), CoreError> {
-        self.store.mark_forwarded(event_id, next_attempt_ms)?;
+        self.store
+            .mark_forwarding_attempt(event_id, next_attempt_ms)?;
         Ok(())
     }
 
-    /// Records a destination receipt after an authenticated transport acknowledgement.
-    ///
+    /// Records authenticated peer ingress acceptance, never destination delivery.
     /// # Errors
     ///
-    /// Returns [`CoreError`] if the outbox row is missing, not forwarded, or storage fails.
-    pub fn record_destination_receipt(&mut self, event_id: [u8; 32]) -> Result<(), CoreError> {
-        self.store.record_destination_receipt(event_id)?;
+    /// Returns an error if the event identifier is unknown or the durable
+    /// ingress-acceptance update fails.
+    pub fn record_peer_ingress_accepted(&mut self, event_id: [u8; 32]) -> Result<(), CoreError> {
+        self.store.record_peer_ingress_accepted(event_id)?;
         Ok(())
+    }
+
+    /// Returns the protected mailbox token retained for one exact Space generation.
+    /// # Errors
+    ///
+    /// Returns an error if the protected mailbox record is malformed or cannot
+    /// be read or decrypted.
+    pub fn space_relay_mailbox(
+        &self,
+        space_id: &space::SpaceId,
+        group_reference: &space::GroupReference,
+    ) -> Result<Option<MailboxToken>, CoreError> {
+        let Some(ciphertext) = self
+            .store
+            .load_space_relay_mailbox(space_id, group_reference)?
+        else {
+            return Ok(None);
+        };
+        let context = relay_mailbox_context(space_id, group_reference);
+        let plaintext = with_mls_storage_key(&self.mls_storage_key[..], || {
+            lattice_mls::unprotect_local_record(&context, &ciphertext)
+        })??;
+        let bytes: [u8; 32] = plaintext
+            .as_slice()
+            .try_into()
+            .map_err(|_| CoreError::SpaceRelayMailboxInvalid)?;
+        Ok(Some(MailboxToken::from_bytes(bytes)))
+    }
+
+    /// Queues an MLS-protected relay-mailbox control after a member has been admitted.
+    ///
+    /// Each invocation publishes the generation's stable token to the current MLS
+    /// membership. The caller must invoke this only after the Add Commit is committed.
+    /// The local token and authored control event are committed atomically.
+    /// # Errors
+    ///
+    /// Returns an error for an untrusted credential, stale or unauthorized
+    /// generation, missing peer admission, invalid mailbox state, or failed
+    /// MLS, signing, or storage operation.
+    pub fn publish_space_relay_mailbox_control(
+        &mut self,
+        created: &CreatedSpace,
+        credential: &DeviceCredentialInput,
+        now_unix_millis: u64,
+    ) -> Result<PublishedSpaceRelayMailbox, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
+        self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
+        if now_unix_millis / 1_000 == 0 {
+            return Err(CoreError::SpaceRelayMailboxInvalid);
+        }
+        let local_fingerprint = self.identity.fingerprint();
+        if !created.reducer.can_manage_space(&local_fingerprint) {
+            return Err(CoreError::SpaceControlRejected(
+                space::RejectReason::Unauthorized,
+            ));
+        }
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceGenesisRejected(
+                space::RejectReason::MissingPolicy,
+            ))?;
+        let (parents, lamport) = resolve_policy_parents(&self.store, policy)?;
+        let parent_ids = parents
+            .iter()
+            .map(|parent| *parent.as_bytes())
+            .collect::<Vec<_>>();
+        let group_id = created.group_id.clone();
+        let space_id = created.space_id;
+        let group_reference = created.group_reference;
+        let reducer = created.reducer.clone();
+        let credential_trust_policy = self.credential_trust_policy.clone();
+        let credential = credential.clone();
+        let (event_id, mailbox) =
+            self.with_mls_transaction(move |identity, provider, transaction| {
+                let mut group = GroupState::load_with_trust_policy(
+                    provider,
+                    &group_id,
+                    &credential_trust_policy,
+                )?;
+                let active_members = reducer
+                    .policy()
+                    .ok_or(CoreError::SpaceRelayMailboxInvalid)?
+                    .members
+                    .iter()
+                    .filter(|member| member.status == space::MemberStatus::Active)
+                    .collect::<Vec<_>>();
+                if group.group_reference() != group_reference
+                    || group.epoch() == 0
+                    || active_members.len() < 2
+                    || group.member_count() != active_members.len()
+                    || active_members
+                        .iter()
+                        .any(|member| !group.contains_member_identity(&member.fingerprint))
+                    || !reducer.can_manage_space(&identity.fingerprint())
+                {
+                    return Err(CoreError::SpaceRelayMailboxRequiresAdmission);
+                }
+
+                let mailbox = load_or_create_relay_mailbox_in_transaction(
+                    transaction,
+                    &space_id,
+                    &group_reference,
+                )?;
+                let plaintext = encode_relay_mailbox_control(mailbox)?;
+                let protected =
+                    group.encrypt_application(provider, identity, &credential, &plaintext)?;
+                let sequence = Store::next_author_sequence_in_transaction(
+                    transaction,
+                    &identity.fingerprint(),
+                )?;
+                let event = VerifiedSignatureOnlyEvent::create(
+                    identity,
+                    EventDraft {
+                        space_id,
+                        channel_id: None,
+                        author_sequence: sequence,
+                        lamport,
+                        wall_time_hint: now_unix_millis,
+                        parents: parents.clone(),
+                        kind: EventKind::RelayMailboxControl,
+                        protected_body: protected.as_bytes().to_vec(),
+                        mls_group_reference: group_reference,
+                        mls_epoch: group.epoch(),
+                    },
+                )?;
+                reducer
+                    .authorize_relay_mailbox_control(&event)
+                    .map_err(CoreError::SpaceControlRejected)?;
+                if let CommitOutcome::Equivocation { existing_event_id } =
+                    Store::commit_authored_with_outbox_in_transaction(
+                        transaction,
+                        *event.author_fingerprint(),
+                        *event.event_id().as_bytes(),
+                        sequence,
+                        event.encoded_bytes(),
+                        &parent_ids,
+                        event.encoded_bytes(),
+                        0,
+                    )?
+                {
+                    return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
+                }
+                Ok((*event.event_id().as_bytes(), mailbox))
+            })?;
+        Ok(PublishedSpaceRelayMailbox { event_id, mailbox })
+    }
+}
+
+fn load_or_create_relay_mailbox_in_transaction(
+    transaction: &Transaction<'_>,
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+) -> Result<MailboxToken, CoreError> {
+    if let Some(ciphertext) =
+        Store::load_space_relay_mailbox_in_transaction(transaction, space_id, group_reference)?
+    {
+        return decode_protected_relay_mailbox(space_id, group_reference, &ciphertext);
+    }
+
+    let mut random = Zeroizing::new([0_u8; 32]);
+    getrandom::fill(&mut random[..]).map_err(|_| CoreError::SpaceRelayMailboxRandomness)?;
+    let candidate = MailboxToken::from_bytes(*random);
+    let context = relay_mailbox_context(space_id, group_reference);
+    let encrypted = lattice_mls::protect_local_record(&context, candidate.as_bytes())?;
+    if Store::insert_space_relay_mailbox_in_transaction(
+        transaction,
+        space_id,
+        group_reference,
+        &encrypted,
+    )? {
+        Ok(candidate)
+    } else {
+        let persisted =
+            Store::load_space_relay_mailbox_in_transaction(transaction, space_id, group_reference)?
+                .ok_or(CoreError::SpaceRelayMailboxInvalid)?;
+        decode_protected_relay_mailbox(space_id, group_reference, &persisted)
     }
 }
 
@@ -3985,6 +4768,29 @@ fn resolve_edit_parents(
         .ok_or(CoreError::SpaceLamportExhausted)?;
     Ok((parents, lamport))
 }
+fn encode_text_reply(thread_root: [u8; 32], content: &str) -> Result<Vec<u8>, CoreError> {
+    if content.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    let rich_text = space::rich_text::RichText::parse(content).map_err(rich_text_send_error)?;
+    let plaintext = encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(3)),
+        (1, Value::Text(content.to_owned())),
+        (2, Value::Bytes(thread_root.to_vec())),
+        (3, Value::Bool(false)),
+        (4, Value::Array(Vec::new())),
+        (5, Value::Array(Vec::new())),
+        (6, rich_text.spans_value()),
+    ]))?;
+    if plaintext.len() > space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::PayloadTooLarge),
+        ));
+    }
+    Ok(plaintext)
+}
 fn encode_text_message(content: &str) -> Result<Vec<u8>, CoreError> {
     encode_text_message_with_mentions(content, &[])
 }
@@ -4035,6 +4841,50 @@ fn encode_text_message_with_mentions(
         ));
     }
     Ok(plaintext)
+}
+fn encode_text_tombstone(target: [u8; 32]) -> Result<Vec<u8>, CoreError> {
+    encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Bytes(target.to_vec())),
+        (2, Value::Unsigned(0)),
+        (3, Value::Null),
+    ]))
+    .map_err(Into::into)
+}
+fn encode_text_reaction(
+    target: [u8; 32],
+    token: &str,
+    add: bool,
+    tag: Option<[u8; 32]>,
+) -> Result<Vec<u8>, CoreError> {
+    encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Bytes(target.to_vec())),
+        (2, Value::Text(token.to_owned())),
+        (3, Value::Unsigned(u64::from(!add))),
+        (
+            4,
+            tag.map_or(Value::Null, |value| Value::Bytes(value.to_vec())),
+        ),
+    ]))
+    .map_err(Into::into)
+}
+
+fn encode_text_pin(
+    target: [u8; 32],
+    add: bool,
+    tag: Option<[u8; 32]>,
+) -> Result<Vec<u8>, CoreError> {
+    encode_canonical(&Value::Map(vec![
+        (0, Value::Unsigned(1)),
+        (1, Value::Bytes(target.to_vec())),
+        (2, Value::Bool(add)),
+        (
+            3,
+            tag.map_or(Value::Null, |value| Value::Bytes(value.to_vec())),
+        ),
+    ]))
+    .map_err(Into::into)
 }
 fn encode_text_edit(target: [u8; 32], content: &str) -> Result<Vec<u8>, CoreError> {
     if content.len() > space::MAX_SPACE_PAYLOAD_BYTES {
@@ -4093,6 +4943,13 @@ fn encode_file_manifest(manifest: &AttachmentManifest) -> Result<Vec<u8>, CoreEr
     Ok(plaintext)
 }
 
+fn current_wall_time_hint() -> Result<u64, CoreError> {
+    let milliseconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CoreError::SpaceWallClockInvalid)?
+        .as_millis();
+    u64::try_from(milliseconds).map_err(|_| CoreError::SpaceWallClockInvalid)
+}
 fn queue_application_event_in_transaction(
     identity: &DeviceIdentity,
     provider: &ProtectedSqliteProvider<'_>,
@@ -4102,6 +4959,7 @@ fn queue_application_event_in_transaction(
 ) -> Result<([u8; 32], space::SpaceReducer), CoreError> {
     let mut group =
         GroupState::load_with_trust_policy(provider, &message.group_id, credential_trust_policy)?;
+
     let policy = message
         .reducer
         .policy()
@@ -4131,7 +4989,7 @@ fn queue_application_event_in_transaction(
             channel_id: Some(message.channel_id),
             author_sequence: sequence,
             lamport: message.lamport,
-            wall_time_hint: 0,
+            wall_time_hint: current_wall_time_hint()?,
             parents: message.parents,
             kind: message.event_kind,
             protected_body: protected.as_bytes().to_vec(),
@@ -4182,6 +5040,16 @@ fn queue_application_event_in_transaction(
                 author_sequence: sequence,
                 lamport: event.lamport(),
             },
+        )?;
+    }
+    if message.event_kind == EventKind::Tombstone {
+        let target = decode_tombstone_target(bound.plaintext())?;
+        Store::delete_cached_space_message_in_transaction(
+            transaction,
+            &target,
+            &message.space_id,
+            &message.group_reference,
+            &message.channel_id,
         )?;
     }
     Ok((*event.event_id().as_bytes(), staged_reducer))
@@ -4342,7 +5210,10 @@ mod tests {
     use super::space::ephemeral::{
         EphemeralApplyResult, EphemeralKind, EphemeralStateTable, EphemeralUpdate,
     };
-    use super::{Client, CoreError, InitialChannel, MlsBoundEvent, bind_mls_application};
+    use super::{
+        Client, CoreError, CreatedSpace, DirectMessageIngressOutcome, InitialChannel,
+        MlsBoundEvent, QueuedMessage, bind_mls_application,
+    };
     use lattice_events::{EventDraft, EventKind, VerifiedSignatureOnlyEvent};
     use lattice_identity::{
         DeviceIdentity, IdentityError, IdentityPublicBundle, PinnedIdentity,
@@ -5243,37 +6114,7 @@ mod tests {
             )
             .expect("queue authorized edit");
 
-        assert_ne!(original.event_id(), edit.event_id());
-        let history = created.reducer().message_history(&channel_id);
-        let projected = &history.messages()[0];
-        assert_eq!(projected.event_id, *original.event_id());
-        assert_eq!(projected.versions().len(), 2);
-        assert_eq!(projected.current_version().content.as_ref(), "edited");
-
-        let stored = client
-            .store
-            .load_event(edit.event_id())
-            .expect("read committed edit")
-            .expect("edit event persisted");
-        let event = VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)
-            .expect("verify signed edit");
-        assert_eq!(event.kind(), EventKind::Edit);
-        assert!(
-            event
-                .parents()
-                .iter()
-                .any(|parent| parent.as_bytes() == original.event_id())
-        );
-        let outbox = client
-            .store
-            .list_outbox_page(None, 10)
-            .expect("read local outbox");
-        assert_eq!(outbox.len(), 2);
-        assert!(
-            outbox
-                .iter()
-                .any(|entry| entry.event_id == *edit.event_id())
-        );
+        assert_local_edit_projection_and_outbox(&client, &created, &original, &edit, channel_id);
 
         drop(created);
         drop(credential);
@@ -5307,11 +6148,73 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].event_id, *original.event_id());
         assert_eq!(history[0].content, "edited after restart");
+        let deletion = reopened
+            .queue_text_message_tombstone(
+                &mut restored,
+                &credential,
+                channel_id,
+                *original.event_id(),
+            )
+            .expect("queue authorized tombstone against authenticated local history");
+        assert_ne!(deletion.event_id(), original.event_id());
+        assert!(
+            reopened
+                .local_text_message_history(&space_id, &group_reference, &channel_id)
+                .expect("read local history after tombstone")
+                .is_empty()
+        );
+        let message_history = restored.reducer().message_history(&channel_id);
+        let projected = message_history
+            .messages()
+            .iter()
+            .find(|message| message.event_id == *original.event_id())
+            .expect("retain the immutable message projection");
+        assert!(projected.is_deleted());
         let outbox = reopened
             .store
             .list_outbox_page(None, 10)
             .expect("read outbox after restart edit");
-        assert_eq!(outbox.len(), 3);
+        assert_eq!(outbox.len(), 4);
+    }
+
+    fn assert_local_edit_projection_and_outbox(
+        client: &Client,
+        created: &CreatedSpace,
+        original: &QueuedMessage,
+        edit: &QueuedMessage,
+        channel_id: super::space::EntityId,
+    ) {
+        assert_ne!(original.event_id(), edit.event_id());
+        let history = created.reducer().message_history(&channel_id);
+        let projected = &history.messages()[0];
+        assert_eq!(projected.event_id, *original.event_id());
+        assert_eq!(projected.versions().len(), 2);
+        assert_eq!(projected.current_version().content.as_ref(), "edited");
+
+        let stored = client
+            .store
+            .load_event(edit.event_id())
+            .expect("read committed edit")
+            .expect("edit event persisted");
+        let event = VerifiedSignatureOnlyEvent::decode_verify(&stored.canonical_bytes)
+            .expect("verify signed edit");
+        assert_eq!(event.kind(), EventKind::Edit);
+        assert!(
+            event
+                .parents()
+                .iter()
+                .any(|parent| parent.as_bytes() == original.event_id())
+        );
+        let outbox = client
+            .store
+            .list_outbox_page(None, 10)
+            .expect("read local outbox");
+        assert_eq!(outbox.len(), 2);
+        assert!(
+            outbox
+                .iter()
+                .any(|entry| entry.event_id == *edit.event_id())
+        );
     }
     #[test]
     fn tampered_local_message_history_fails_authentication() {
@@ -5511,10 +6414,9 @@ mod tests {
         assert!(matches!(aborted, Err(CoreError::Mls(_))));
         let rolled_back_group_id = rolled_back_group_id.expect("created group before abort");
         let missing_group: Result<(), CoreError> = client.with_mls_transaction(|_, provider, _| {
-            match GroupState::load(provider, &rolled_back_group_id) {
-                Ok(_) => Ok(()),
-                Err(error) => Err(CoreError::Mls(error)),
-            }
+            GroupState::load(provider, &rolled_back_group_id)
+                .map(|_| ())
+                .map_err(CoreError::Mls)
         });
         assert!(matches!(
             missing_group,
@@ -6799,6 +7701,189 @@ mod tests {
                 .iter()
                 .all(|message| message.content != "message after verified membership transition")
         );
+        let reply = alice
+            .queue_text_message_reply(
+                &mut created,
+                &alice_credential,
+                channel_id,
+                *post_checkpoint_message.event_id(),
+                "reply after joining",
+            )
+            .expect("queue thread reply");
+        let reply_record = alice
+            .store
+            .load_event(reply.event_id())
+            .expect("load thread reply")
+            .expect("thread reply is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(&mut second_joined, &reply_record.canonical_bytes)
+                .expect("accept remote thread reply"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let projection = second_joined.reducer().message_history(&channel_id);
+        assert!(projection.messages().iter().any(|message| {
+            message.event_id == *reply.event_id()
+                && message.thread_root == Some(*post_checkpoint_message.event_id())
+        }));
+        let reaction_add = alice
+            .queue_text_message_reaction(
+                &mut created,
+                &alice_credential,
+                &super::TextMessageReaction {
+                    channel_id,
+                    target: *post_checkpoint_message.event_id(),
+                    token: "👍".to_owned(),
+                    add: true,
+                    tag: None,
+                },
+            )
+            .expect("queue observed-add reaction");
+        let reaction_add_record = alice
+            .store
+            .load_event(reaction_add.event_id())
+            .expect("load reaction add")
+            .expect("reaction add is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(
+                    &mut second_joined,
+                    &reaction_add_record.canonical_bytes
+                )
+                .expect("accept remote reaction add"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let projection = second_joined.reducer().message_history(&channel_id);
+        assert!(projection.messages().iter().any(|message| {
+            message.event_id == *post_checkpoint_message.event_id()
+                && message.reactions.iter().any(|reaction| {
+                    reaction.token == "👍" && reaction.active_tags == vec![*reaction_add.event_id()]
+                })
+        }));
+        let reaction_remove = alice
+            .queue_text_message_reaction(
+                &mut created,
+                &alice_credential,
+                &super::TextMessageReaction {
+                    channel_id,
+                    target: *post_checkpoint_message.event_id(),
+                    token: "👍".to_owned(),
+                    add: false,
+                    tag: Some(*reaction_add.event_id()),
+                },
+            )
+            .expect("queue observed-tag reaction removal");
+        let reaction_remove_record = alice
+            .store
+            .load_event(reaction_remove.event_id())
+            .expect("load reaction removal")
+            .expect("reaction removal is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(
+                    &mut second_joined,
+                    &reaction_remove_record.canonical_bytes
+                )
+                .expect("accept remote reaction removal"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let pin_add = alice
+            .queue_text_message_pin(
+                &mut created,
+                &alice_credential,
+                super::TextMessagePin {
+                    channel_id,
+                    target: *post_checkpoint_message.event_id(),
+                    add: true,
+                    tag: None,
+                },
+            )
+            .expect("queue pin add");
+        let pin_add_record = alice
+            .store
+            .load_event(pin_add.event_id())
+            .expect("load pin add")
+            .expect("pin add is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(
+                    &mut second_joined,
+                    &pin_add_record.canonical_bytes
+                )
+                .expect("accept remote pin add"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let pin_remove = alice
+            .queue_text_message_pin(
+                &mut created,
+                &alice_credential,
+                super::TextMessagePin {
+                    channel_id,
+                    target: *post_checkpoint_message.event_id(),
+                    add: false,
+                    tag: Some(*pin_add.event_id()),
+                },
+            )
+            .expect("queue observed-tag pin removal");
+        let pin_remove_record = alice
+            .store
+            .load_event(pin_remove.event_id())
+            .expect("load pin removal")
+            .expect("pin removal is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(
+                    &mut second_joined,
+                    &pin_remove_record.canonical_bytes
+                )
+                .expect("accept remote pin removal"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let projection = second_joined.reducer().message_history(&channel_id);
+        assert!(projection.messages().iter().any(|message| {
+            message.event_id == *post_checkpoint_message.event_id()
+                && message.reactions.is_empty()
+                && !message.is_pinned()
+        }));
+        let tombstone = alice
+            .queue_text_message_tombstone(
+                &mut created,
+                &alice_credential,
+                channel_id,
+                *post_checkpoint_message.event_id(),
+            )
+            .expect("queue local author tombstone for cross-client sync");
+        let tombstone_record = alice
+            .store
+            .load_event(tombstone.event_id())
+            .expect("load synchronized tombstone")
+            .expect("tombstone is durable");
+        assert!(matches!(
+            charlie
+                .accept_synced_application_event(
+                    &mut second_joined,
+                    &tombstone_record.canonical_bytes
+                )
+                .expect("authorize remote tombstone"),
+            super::SyncedApplicationOutcome::Accepted { .. }
+        ));
+        let history_after_delete = charlie
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("read history after remote tombstone");
+        assert!(
+            history_after_delete
+                .iter()
+                .all(|message| message.event_id != *post_checkpoint_message.event_id())
+        );
+        assert!(
+            history_after_delete
+                .iter()
+                .any(|message| message.event_id == *reply.event_id())
+        );
+        let projection = second_joined.reducer().message_history(&channel_id);
+        assert!(projection.messages().iter().any(|message| message.event_id
+            == *post_checkpoint_message.event_id()
+            && message.is_deleted()));
     }
 
     #[allow(clippy::too_many_lines)] // Covers the accepted join and durable history replay path.
@@ -7552,6 +8637,283 @@ mod tests {
                 .filter(|entry| entry.event_id == leave_event_id)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn direct_message_packets_cross_profiles_and_survive_restart() {
+        let alice_database = TestDatabase::new();
+        let bob_database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut alice =
+            Client::open_or_create(&alice_database.0, &protector).expect("initialize Alice");
+        let mut bob = Client::open_or_create(&bob_database.0, &protector).expect("initialize Bob");
+        let alice_credential = test_credential(&alice.identity);
+        let bob_credential = test_credential(&bob.identity);
+        let alice_fingerprint = alice.identity.fingerprint();
+        let bob_fingerprint = bob.identity.fingerprint();
+        let bob_key_package = bob
+            .publish_key_package(&bob_credential, 0)
+            .expect("publish Bob KeyPackage");
+
+        let created = alice
+            .create_direct_message(&alice_credential, bob_fingerprint, &bob_key_package, 0)
+            .expect("create durable direct-message pair");
+        let group_reference = created.group_reference;
+        assert_eq!(created.peer_identity, bob_fingerprint);
+        let mut bob = accept_pending_dm_invitation(
+            bob,
+            &bob_database,
+            &protector,
+            &bob_credential,
+            alice_fingerprint,
+            &created,
+        );
+
+        let queued = alice
+            .queue_direct_message_text(
+                &alice_credential,
+                group_reference,
+                "hello over the pinned MLS pair",
+                1,
+            )
+            .expect("commit encrypted direct-message outbox packet");
+        alice
+            .mark_direct_message_attempt(queued.packet_id, 2)
+            .expect("persist transport attempt");
+        assert!(matches!(
+            bob.ingest_direct_message_packet(alice_fingerprint, &queued.envelope_bytes)
+                .expect("authenticate cross-profile packet"),
+            DirectMessageIngressOutcome::Accepted { content, .. }
+                if content == "hello over the pinned MLS pair"
+        ));
+        assert!(matches!(
+            bob.ingest_direct_message_packet(alice_fingerprint, &queued.envelope_bytes)
+                .expect("deduplicate transport retry"),
+            DirectMessageIngressOutcome::Duplicate { .. }
+        ));
+        alice
+            .record_direct_message_peer_ingress_accepted(queued.packet_id)
+            .expect("record peer-ingress receipt");
+
+        let history = bob
+            .direct_message_history(group_reference, 10)
+            .expect("read decrypted local DM history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].author_identity, alice_fingerprint);
+        assert_eq!(history[0].content, "hello over the pinned MLS pair");
+        assert!(
+            bob.direct_message_outbox_page(None, 10)
+                .expect("read empty recipient outbox")
+                .is_empty()
+        );
+        let alice_outbox = alice
+            .direct_message_outbox_page(None, 10)
+            .expect("read durable sender outbox");
+        assert_eq!(alice_outbox.len(), 2);
+        assert!(alice_outbox.iter().any(|entry| {
+            entry.packet_id == queued.packet_id && entry.state == OutboxState::PeerIngressAccepted
+        }));
+
+        drop(alice);
+        drop(bob);
+        let mut reopened =
+            Client::open_existing(&bob_database.0, &protector).expect("reopen Bob profile");
+        let restored_history = reopened
+            .direct_message_history(group_reference, 10)
+            .expect("restore protected direct-message history");
+        assert_eq!(restored_history, history);
+        assert!(matches!(
+            reopened.ingest_direct_message_packet([0x99; 32], &queued.envelope_bytes),
+            Err(CoreError::DirectMessagePeerMismatch)
+        ));
+    }
+
+    fn accept_pending_dm_invitation(
+        mut bob: Client,
+        database: &TestDatabase,
+        protector: &TestProtector,
+        credential: &DeviceCredentialInput,
+        sender: [u8; 32],
+        created: &super::CreatedDirectMessage,
+    ) -> Client {
+        let group_reference = created.group_reference;
+        assert!(matches!(
+            bob.ingest_direct_message_packet(sender, &created.invitation.envelope_bytes)
+                .expect("retain invitation from authenticated peer"),
+            DirectMessageIngressOutcome::InvitationPending {
+                packet_id,
+                group_reference: pending_group,
+                peer_identity,
+            } if packet_id == created.invitation.packet_id
+                && pending_group == group_reference
+                && peer_identity == sender
+        ));
+        assert!(matches!(
+            bob.ingest_direct_message_packet(sender, &created.invitation.envelope_bytes)
+                .expect("deduplicate pending invitation retry"),
+            DirectMessageIngressOutcome::Duplicate { packet_id }
+                if packet_id == created.invitation.packet_id
+        ));
+        assert_eq!(
+            bob.pending_direct_message_invitations(10)
+                .expect("list pending invitation")
+                .len(),
+            1
+        );
+        drop(bob);
+        let mut bob =
+            Client::open_existing(&database.0, protector).expect("reopen Bob pending profile");
+        assert!(matches!(
+            bob.accept_pending_direct_message_invitation(
+                credential,
+                sender,
+                created.invitation.packet_id,
+                false,
+            ),
+            Err(CoreError::DirectMessagePacketInvalid)
+        ));
+        assert_eq!(
+            bob.accept_pending_direct_message_invitation(
+                credential,
+                sender,
+                created.invitation.packet_id,
+                true,
+            )
+            .expect("accept persisted invitation after restart"),
+            group_reference
+        );
+        bob
+    }
+    #[allow(clippy::too_many_lines)] // Keep membership, protection, ingress, and restart assertions together.
+    #[test]
+    fn relay_mailbox_control_requires_admission_and_restores_only_exact_generation() {
+        let alice_database = TestDatabase::new();
+        let bob_database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut alice =
+            Client::open_or_create(&alice_database.0, &protector).expect("initialize inviter");
+        let mut bob =
+            Client::open_or_create(&bob_database.0, &protector).expect("initialize invitee");
+        let alice_credential = test_credential(&alice.identity);
+        let bob_credential = test_credential(&bob.identity);
+        let alice_fingerprint = alice.identity.fingerprint();
+        let mut created = alice
+            .create_space(
+                &alice_credential,
+                vec![InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create inviter Space");
+        let space_id = *created.space_id();
+        let old_group_reference = *created.group_reference();
+        assert!(matches!(
+            alice.publish_space_relay_mailbox_control(&created, &alice_credential, 1_000_000),
+            Err(CoreError::SpaceRelayMailboxRequiresAdmission)
+        ));
+        assert_eq!(
+            alice
+                .space_relay_mailbox(&space_id, &old_group_reference)
+                .expect("read absent mailbox"),
+            None
+        );
+
+        let key_package = bob
+            .publish_key_package(&bob_credential, 100)
+            .expect("publish invitee KeyPackage");
+        let invitation = alice
+            .create_space_invite(
+                &mut created,
+                &alice_credential,
+                &key_package,
+                None,
+                2_000,
+                Some(1),
+            )
+            .expect("admit invitee");
+        bob.pin_identity(
+            &alice.identity.public_bundle().to_bytes(),
+            alice_fingerprint,
+        )
+        .expect("pin inviter");
+        let mut joined = bob
+            .join_space_from_welcome_bootstrap(
+                invitation.welcome_bootstrap(),
+                alice_fingerprint,
+                &bob_credential,
+            )
+            .expect("import admitted MLS generation");
+
+        let published = alice
+            .publish_space_relay_mailbox_control(&created, &alice_credential, 3_000_000)
+            .expect("queue protected mailbox control after admission");
+        let mailbox = published.mailbox();
+        let local_ciphertext = alice
+            .store
+            .load_space_relay_mailbox(&space_id, &old_group_reference)
+            .expect("read protected mailbox record")
+            .expect("mailbox is persisted locally");
+        assert_ne!(local_ciphertext.as_slice(), mailbox.as_bytes().as_slice());
+        assert_eq!(
+            alice
+                .space_relay_mailbox(&space_id, &old_group_reference)
+                .expect("decrypt local mailbox"),
+            Some(mailbox)
+        );
+        let control_record = alice
+            .store
+            .load_event(published.event_id())
+            .expect("load queued mailbox control")
+            .expect("control event is durable");
+        let control = VerifiedSignatureOnlyEvent::decode_verify(&control_record.canonical_bytes)
+            .expect("verify signed mailbox control");
+        assert_eq!(control.kind(), EventKind::RelayMailboxControl);
+        assert_ne!(control.protected_body(), mailbox.as_bytes().as_slice());
+        assert!(matches!(
+            bob.accept_synced_application_event(&mut joined, &control_record.canonical_bytes)
+                .expect("accept MLS-protected mailbox control"),
+            super::SyncedApplicationOutcome::Accepted { event_id }
+                if event_id == *published.event_id()
+        ));
+        assert_eq!(
+            bob.space_relay_mailbox(&space_id, &old_group_reference)
+                .expect("read received mailbox"),
+            Some(mailbox)
+        );
+        assert!(matches!(
+            bob.publish_space_relay_mailbox_control(&joined, &bob_credential, 3_100_000),
+            Err(CoreError::SpaceControlRejected(
+                super::space::RejectReason::Unauthorized
+            ))
+        ));
+
+        drop(bob);
+        let mut reopened_bob =
+            Client::open_existing(&bob_database.0, &protector).expect("reopen invitee profile");
+        reopened_bob
+            .restore_space(&space_id, &old_group_reference)
+            .expect("restore admitted generation");
+        assert_eq!(
+            reopened_bob
+                .space_relay_mailbox(&space_id, &old_group_reference)
+                .expect("restore protected mailbox token"),
+            Some(mailbox)
+        );
+
+        let recovered = alice
+            .create_space_recovery_generation(&created, &alice_credential)
+            .expect("create new recovery generation");
+        assert_ne!(recovered.group_reference(), &old_group_reference);
+        assert_eq!(
+            alice
+                .space_relay_mailbox(&space_id, recovered.group_reference())
+                .expect("new generation has no inherited mailbox"),
+            None
         );
     }
 }

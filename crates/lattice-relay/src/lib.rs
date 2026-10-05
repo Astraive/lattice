@@ -8,6 +8,7 @@
 
 pub mod settings;
 
+#[cfg(feature = "network")]
 pub mod network;
 pub mod nip01;
 pub mod nip11;

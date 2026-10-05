@@ -6,19 +6,25 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = ["network"]
+network = ["dep:futures-util", "dep:reqwest", "dep:tokio", "dep:tokio-tungstenite", "dep:tokio-util"]
+
 [dependencies]
 base64 = "=0.23.1"
-futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"], optional = true }
 k256 = { version = "=0.13.4", features = ["schnorr"] }
 lattice-events = { path = "../lattice-events", version = "=0.1.0" }
 lattice-protocol = { path = "../lattice-protocol", version = "=0.1.0" }
-reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"], optional = true }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["raw_value"] }
 sha2 = "=0.10.9"
-tokio = { version = "=1.53.1", features = ["macros", "rt", "time"] }
-tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"] }
-tokio-util = { version = "=0.7.19", features = ["rt"] }
+tokio = { version = "=1.53.1", features = ["macros", "rt", "time"], optional = true }
+tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"], optional = true }
+tokio-util = { version = "=0.7.19", features = ["rt"], optional = true }
+getrandom = "=0.4.3"
+zeroize = "=1.9.0"
 url = "=2.5.8"
 
 

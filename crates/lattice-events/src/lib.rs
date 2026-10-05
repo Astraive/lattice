@@ -78,6 +78,8 @@ pub enum EventKind {
     VoiceSignal = 9,
     /// Encrypted, non-persistent presence or typing state.
     Ephemeral = 10,
+    /// MLS-protected control for a Space-generation relay mailbox.
+    RelayMailboxControl = 11,
 }
 
 impl TryFrom<u64> for EventKind {
@@ -95,6 +97,7 @@ impl TryFrom<u64> for EventKind {
             8 => Ok(Self::FileManifest),
             9 => Ok(Self::VoiceSignal),
             10 => Ok(Self::Ephemeral),
+            11 => Ok(Self::RelayMailboxControl),
             unknown => Err(EventError::UnknownMandatoryEventKind(unknown)),
         }
     }
@@ -721,11 +724,12 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_event_kind_is_recognized_as_mandatory() {
+    fn ephemeral_and_relay_mailbox_event_kinds_are_recognized_as_mandatory() {
         assert_eq!(EventKind::try_from(10), Ok(EventKind::Ephemeral));
+        assert_eq!(EventKind::try_from(11), Ok(EventKind::RelayMailboxControl));
         assert_eq!(
-            EventKind::try_from(11),
-            Err(EventError::UnknownMandatoryEventKind(11))
+            EventKind::try_from(12),
+            Err(EventError::UnknownMandatoryEventKind(12))
         );
     }
 

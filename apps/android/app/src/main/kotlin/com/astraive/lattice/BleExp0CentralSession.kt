@@ -25,6 +25,7 @@ internal class BleExp0CentralSession(
     private val retryAt: (attemptCount: UInt, nowUnixMillis: Long) -> Long,
     private val onPeerVerificationRequired: (MobileBlePeerInfo, (Boolean) -> Unit) -> Unit,
     private val onAuthenticated: (BleExp0OutboxPump, (Boolean) -> Unit) -> Unit,
+    private val onCoreIngressResult: (uniffi.lattice_uniffi.MobileSyncEventResult) -> Unit,
     private val onFailure: (String) -> Unit,
 ) : BleGattCentralListener, AutoCloseable {
     private val decisionExecutor: ExecutorService = Executors.newSingleThreadExecutor { task ->
@@ -212,6 +213,7 @@ internal class BleExp0CentralSession(
                 onPeerVerificationRequired = onPeerVerificationRequired,
                 decisionExecutor = decisionExecutor,
                 onAuthenticated = onAuthenticated,
+                onCoreIngressResult = onCoreIngressResult,
                 onFailure = onFailure,
             )
         } catch (error: Exception) {

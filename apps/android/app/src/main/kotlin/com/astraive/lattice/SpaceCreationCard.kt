@@ -1,5 +1,6 @@
 package com.astraive.lattice
 
+import android.util.Base64
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,11 +9,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Button
+import com.astraive.lattice.ui.LatticeActionButton as Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.astraive.lattice.ui.LatticeFormField as OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
+import com.astraive.lattice.ui.LatticeSurface as Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -25,6 +26,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileCreatedSpace
 import uniffi.lattice_uniffi.MobileSpaceSummary
+import com.astraive.lattice.ui.LatticeSurface
+import com.astraive.lattice.ui.LatticeActionButton
+import com.astraive.lattice.ui.LatticeStatusNotice
+import com.astraive.lattice.ui.LatticeNoticeKind
+import com.astraive.lattice.ui.LatticeFormField
 
 
 internal data class LocalSpaceRecoveryUiState(
@@ -122,7 +128,7 @@ internal fun LocalSpaceRecoveryCard(
                     Text(if (state.recovering) "Recovering locally…" else "Create local recovery generation")
                 }
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.status)
             state.recovered?.let { recovered ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -242,7 +248,7 @@ internal fun SpaceWelcomeJoinCard(
             ) {
                 Text(if (state.joining) "Validating and joining…" else "Import verified Welcome")
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.status)
             state.joined?.let { joined ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -274,6 +280,99 @@ internal fun SpaceCreationCard(
 ) {
     val credentialIsValid = isCredentialVectorHex(state.credentialVectorHex)
     val channelNameIsValid = isValidInitialChannelName(state.channelName)
+    LatticeSurface {
+        Text(
+            "Create a local Space",
+            modifier = Modifier.semantics { heading() },
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            "Paste the exact leaf-first RFC 9420 TLS X.509 credential vector as hexadecimal. The OS trust chain and local signing identity are checked before local MLS state is committed. This does not join another member or contact a network.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+            LatticeFormField(
+                value = state.credentialVectorHex,
+                onValueChange = onCredentialVectorHexChanged,
+                label = "Trusted X.509 credential vector (hex)",
+                supportingText = "Up to 16 KiB decoded. Do not paste a PEM-encoded certificate.",
+                enabled = profileReady && !state.creating,
+                error = if (state.credentialVectorHex.isNotEmpty() && !credentialIsValid) "Enter a valid credential vector within the 16 KiB decoded limit." else null,
+                singleLine = false,
+                minLines = 4,
+                maxLines = 8,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.None,
+                    autoCorrectEnabled = false,
+                    keyboardType = KeyboardType.Ascii,
+                ),
+            )
+            LatticeFormField(
+                value = state.channelName,
+                onValueChange = onChannelNameChanged,
+                label = "Initial text channel name",
+                supportingText = "Nonblank, up to 128 UTF-8 bytes; NUL is not allowed.",
+                enabled = profileReady && !state.creating,
+                error = if (!channelNameIsValid) "Enter a nonblank channel name within the UTF-8 byte limit; NUL is not allowed." else null,
+            )
+            LatticeActionButton(
+                if (state.creating) "Creating local Space" else "Create local Space",
+                onCreateLocalSpace,
+                enabled = profileReady && !state.creating && credentialIsValid && channelNameIsValid,
+                busy = state.creating,
+                tone = com.astraive.lattice.ui.LatticeActionTone.PRIMARY,
+            )
+            LatticeStatusNotice(com.astraive.lattice.ui.LatticeNoticeKind.INFO, message = state.status)
+            state.created?.let { created ->
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Local Genesis event committed. Remote membership is not established.")
+                        Text("Space ID: ${created.spaceId.toLowerHex()}")
+                        Text("MLS group reference: ${created.groupReference.toLowerHex()}")
+                        Text("Genesis event ID: ${created.genesisEventId.toLowerHex()}")
+                    }
+                }
+            }
+    }
+}
+
+internal const val MAX_SPACE_KEY_PACKAGE_BYTES = 256 * 1024
+internal const val MAX_SPACE_KEY_PACKAGE_BASE64_CHARS = ((MAX_SPACE_KEY_PACKAGE_BYTES + 2) / 3) * 4
+
+internal data class SpaceMembershipUiState(
+    val keyPackageCredentialHex: String = "",
+    val publishedKeyPackageBase64: String? = null,
+    val publishingKeyPackage: Boolean = false,
+    val keyPackageStatus: String = "Publish a one-time KeyPackage for this device before joining an invitation.",
+    val invitationKeyPackageBase64: String = "",
+    val invitationCredentialHex: String = "",
+    val expiryHours: String = "24",
+    val maxUses: String = "1",
+    val creatingInvitation: Boolean = false,
+    val invitationStatus: String = "Select a local Space and provide the target device's KeyPackage.",
+    val invitation: uniffi.lattice_uniffi.MobileSpaceInvitation? = null,
+)
+
+@Composable
+internal fun SpaceMembershipCard(
+    state: SpaceMembershipUiState,
+    selectedSpace: MobileSpaceSummary?,
+    profileReady: Boolean,
+    onKeyPackageCredentialChanged: (String) -> Unit,
+    onPublishKeyPackage: () -> Unit,
+    onInvitationKeyPackageChanged: (String) -> Unit,
+    onInvitationCredentialChanged: (String) -> Unit,
+    onExpiryHoursChanged: (String) -> Unit,
+    onMaxUsesChanged: (String) -> Unit,
+    onCreateInvitation: () -> Unit,
+    onCopyValue: (String, String) -> Unit,
+) {
+    val keyPackageCredentialValid = isCredentialVectorHex(state.keyPackageCredentialHex)
+    val invitationCredentialValid = isCredentialVectorHex(state.invitationCredentialHex)
+    val keyPackageBounded = state.invitationKeyPackageBase64.isNotEmpty() &&
+        state.invitationKeyPackageBase64.length <= MAX_SPACE_KEY_PACKAGE_BASE64_CHARS
+    val expiryHours = state.expiryHours.toLongOrNull()
+    val maxUses = state.maxUses.toUIntOrNull()
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -284,58 +383,117 @@ internal fun SpaceCreationCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Create a local Space",
+                "Invite a device",
                 modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                "Paste the exact leaf-first RFC 9420 TLS X.509 credential vector as hexadecimal. The OS trust chain and local signing identity are checked before local MLS state is committed. This does not join another member or contact a network.",
+                "The target device first publishes a KeyPackage using its own protected identity. Transfer that package here out of band. Core validates the target and commits the signed membership transition, invite token, and Welcome checkpoint locally.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
-                value = state.credentialVectorHex,
-                onValueChange = onCredentialVectorHexChanged,
-                label = { Text("Trusted X.509 credential vector (hex)") },
-                supportingText = { Text("Up to 16 KiB decoded. Do not paste a PEM-encoded certificate.") },
-                enabled = profileReady && !state.creating,
-                isError = state.credentialVectorHex.isNotEmpty() && !credentialIsValid,
-                minLines = 4,
-                maxLines = 8,
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.None,
-                    autoCorrectEnabled = false,
-                    keyboardType = KeyboardType.Ascii,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = state.channelName,
-                onValueChange = onChannelNameChanged,
-                label = { Text("Initial text channel name") },
-                supportingText = { Text("Nonblank, up to 128 UTF-8 bytes; NUL is not allowed.") },
-                enabled = profileReady && !state.creating,
-                isError = !channelNameIsValid,
-                singleLine = true,
+                value = state.keyPackageCredentialHex,
+                onValueChange = onKeyPackageCredentialChanged,
+                label = { Text("Target device X.509 credential (hex)") },
+                enabled = profileReady && !state.publishingKeyPackage,
+                isError = state.keyPackageCredentialHex.isNotEmpty() && !keyPackageCredentialValid,
+                minLines = 3,
+                maxLines = 6,
                 modifier = Modifier.fillMaxWidth(),
             )
             Button(
-                onClick = onCreateLocalSpace,
-                enabled = profileReady && !state.creating && credentialIsValid && channelNameIsValid,
+                onClick = onPublishKeyPackage,
+                enabled = profileReady && !state.publishingKeyPackage && keyPackageCredentialValid,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (state.creating) "Creating local Space…" else "Create local Space")
+                Text(if (state.publishingKeyPackage) "Publishing locally…" else "Publish this device's KeyPackage")
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
-            state.created?.let { created ->
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.keyPackageStatus)
+            state.publishedKeyPackageBase64?.let { keyPackage ->
+                Text("Share this one-time public KeyPackage with the inviter:", style = MaterialTheme.typography.bodySmall)
+                SelectionContainer { Text(keyPackage, style = MaterialTheme.typography.bodySmall) }
+                Button(
+                    onClick = { onCopyValue("one-time KeyPackage", keyPackage) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Copy KeyPackage") }
+            }
+            Text(
+                selectedSpace?.let { "Selected local Space: ${it.spaceId.toLowerHex()}" }
+                    ?: "Open a local Space above to create an invitation.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedTextField(
+                value = state.invitationKeyPackageBase64,
+                onValueChange = onInvitationKeyPackageChanged,
+                label = { Text("Target device KeyPackage (Base64)") },
+                supportingText = { Text("Maximum 256 KiB decoded. Transfer only through a channel you trust.") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = state.invitationKeyPackageBase64.isNotEmpty() && !keyPackageBounded,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.invitationCredentialHex,
+                onValueChange = onInvitationCredentialChanged,
+                label = { Text("Inviter device X.509 credential (hex)") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = state.invitationCredentialHex.isNotEmpty() && !invitationCredentialValid,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.expiryHours,
+                onValueChange = onExpiryHoursChanged,
+                label = { Text("Invite expiry (hours)") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = expiryHours == null || expiryHours !in 1..720,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.maxUses,
+                onValueChange = onMaxUsesChanged,
+                label = { Text("Maximum uses (1–65,535)") },
+                enabled = profileReady && !state.creatingInvitation,
+                isError = maxUses == null || maxUses !in 1u..65_535u,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = onCreateInvitation,
+                enabled = profileReady && selectedSpace != null && !state.creatingInvitation &&
+                    keyPackageBounded && invitationCredentialValid &&
+                    expiryHours != null && expiryHours in 1..720 &&
+                    maxUses != null && maxUses in 1u..65_535u,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.creatingInvitation) "Committing invitation…" else "Create signed invitation")
+            }
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.invitationStatus)
+            state.invitation?.let { invitation ->
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Local Genesis event committed. Remote membership is not established.")
-                        Text("Space ID: ${created.spaceId.toLowerHex()}")
-                        Text("MLS group reference: ${created.groupReference.toLowerHex()}")
-                        Text("Genesis event ID: ${created.genesisEventId.toLowerHex()}")
+                        Text("The signed membership transition and Welcome checkpoint were committed locally.")
+                        Text("Target fingerprint: ${invitation.targetFingerprint.toLowerHex()}")
+                        Text("Invite event ID: ${invitation.inviteEventId.toLowerHex()}")
+                        Text("Welcome bootstrap (Base64):")
+                        Text(Base64.encodeToString(invitation.welcomeBootstrap, Base64.NO_WRAP))
                     }
                 }
+                Button(
+                    onClick = {
+                        onCopyValue(
+                            "Welcome bootstrap",
+                            Base64.encodeToString(invitation.welcomeBootstrap, Base64.NO_WRAP),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Copy Welcome bootstrap") }
             }
         }
     }

@@ -12,6 +12,7 @@ android {
         minSdk = 26
         targetSdk = 37
         versionCode = 1
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -37,10 +38,16 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.14.0-alpha02")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("androidx.compose.material3:material3")
+    implementation(project(":ui-android"))
 
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 val rustWorkspace = rootProject.projectDir.resolve("../..").canonicalFile

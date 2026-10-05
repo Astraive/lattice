@@ -120,7 +120,7 @@ The worker opens SQLite through the OPFS Sync Access Handle Pool VFS and uses a 
 
 The Web carrier includes same-origin `BroadcastChannel` and manually signaled WebRTC between browser profiles, plus a one-session Web-to-CLI loopback WebSocket bridge. All carry canonical signed event bytes; both receiver Cores validate identity, Space generation, MLS state and authorization before projection. The browser outbox reconciliation is bounded to 256 KiB frames and 16 MiB per session; event identity makes replay idempotent. WebRTC has no default signaling or STUN/TURN service; ICE servers are optional and explicitly entered. The CLI bridge pairs with a one-time token and exact HTTP Origin, accepts only loopback peers, and binds one selected Space generation. It uses plaintext `ws://` and is unavailable to HTTPS-hosted pages. Welcome and identity artifacts still move manually and require out-of-band fingerprint verification.
 
-Managed Chromium verified both directions of the browser↔CLI loopback bridge through normal Core paths, in addition to browser-local BroadcastChannel and WebRTC smoke. This does not establish a general browser-to-native transport: there is no Desktop or Android adapter, secure WebSocket relay, HTTPS-compatible bridge, Internet NAT traversal, other browser engine, OPFS crash/quota/rollback behavior, accessibility, or release readiness. These remain required before Web can be called supported.
+Managed Chromium verified both directions of the browser↔CLI loopback bridge through normal Core paths, in addition to browser-local BroadcastChannel and WebRTC smoke. A manually signaled Desktop/WebRTC adapter exchanges signed message events through Desktop Core; one isolated Tauri Desktop and managed Chromium Web pair joined the same signed Space and exchanged one event each, accepted by both Cores. The Desktop UI/history reload retained both messages; exact event IDs are in [`INTEROP_MATRIX.md`](verification/INTEROP_MATRIX.md). This is bounded event-path evidence only: peer fingerprints and MLS epoch were not recorded, WebRTC does not authenticate transport identity, and membership transitions, repair/reconnect, duplicate-count behavior and broader convergence remain unverified. Android still has no browser carrier; there is no secure WebSocket relay, HTTPS-compatible bridge, Internet NAT traversal, other-browser engine, OPFS crash/quota/rollback, accessibility, or release evidence. These remain required before Web can be called a supported or release-ready client.
 
 ## 4. Repository architecture
 
@@ -156,7 +156,7 @@ lattice/
 │   └── lattice-testkit/        # fake clock, paths, fixtures
 ├── transports/                 # platform BLE, Wi-Fi, LAN, WebRTC, relay implementations
 ├── protocol/{specs,schemas,vectors}/
-├── packages/{desktop-ui,theme,protocol-inspector,config}/
+├── packages/{ui/{shared,desktop,web,android},theme,protocol-inspector,config}/
 ├── design/{tokens,icons,assets,scripts}/
 ├── tooling/{mesh-simulator,packet-inspector,network-chaos,benchmarks,fuzz}/
 ├── tests/{protocol,interop,security,mesh,sync,routing,mobile,e2e}/
@@ -170,6 +170,10 @@ lattice/
 ```
 
 `architecture.md` lives at the repository root as an entry point. `protocol/specs/` defines exact interoperable bytes; `docs/decisions/` records reasons and supersession rather than rewriting decision history, consistent with [ADR guidance](https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/best-practices.html). Generated UniFFI code, token outputs, and vector tables must be reproducible from committed sources. The repository has no mandatory backend service directory. Optional relay/TURN development fixtures and volunteer-node deployment recipes are clearly marked optional.
+
+`@lattice/theme` supplies React presentation tokens and serialized CSS; `@lattice/ui-shared`, `@lattice/ui-desktop`, and `@lattice/ui-web` own reusable presentation primitives and platform-specific navigation shells. Android's `:ui-android` module mirrors the palette and provides Compose surfaces, controls, notices, and adaptive navigation. These packages own layout and styling only: profile, identity, protocol, persistence, permission, transport, and delivery state remain in the application or Rust core. Web gates workspace destinations on its existing opened-profile lifecycle, Desktop keeps destination pages mounted while switching visibility, and Android preserves destination-local saveable state. Navigation does not imply network connectivity, shared membership, or message delivery.
+
+`assets/logo/lattice-mark.svg` and `assets/logo/lattice-logo.svg` are the source marks. `bun run assets:icons` bakes Desktop, browser-favicon, and Android launcher sizes into `assets/logo/generated`; Android launcher resources are copied into the app module, and Vite serves the shared logo directory to both React apps. `design/references/` contains supplied, non-runtime product screenshots.
 
 ## 5. Data, identity, and wire boundaries
 

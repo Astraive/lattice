@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, path::Path, time::Duration};
 
-use lattice_core::{Client, CreatedSpace, SyncedApplicationOutcome};
+use lattice_core::{
+    Client, CreatedSpace, MAX_OUTBOX_PAGE_SIZE, SyncedApplicationOutcome,
+    space::MAX_SPACE_PAYLOAD_BYTES,
+};
 use lattice_events::{EventKind, VerifiedSignatureOnlyEvent};
 use lattice_node::sync::{
     StoreSyncEventSource, StoreSyncSummarySource, SyncSummarySource, ValidatedSyncEvent,
@@ -18,6 +21,116 @@ use tokio_util::sync::CancellationToken;
 use crate::{encoding, profile};
 
 const SYNC_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
+const WEBRTC_EVENT_PAGE_SIZE: usize = 64;
+const WEBRTC_SYNC_BYTES_LIMIT: usize = 16 * 1024 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopWebEventPage {
+    events: Vec<Vec<u8>>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopWebIngressResult {
+    state: &'static str,
+    event_id: String,
+    missing_dependencies: Vec<String>,
+}
+
+// Tauri decodes command payloads into owned arguments.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn list_local_web_event_page(
+    space_id_hex: String,
+    group_reference_hex: String,
+    after_event_id_hex: Option<String>,
+) -> Result<DesktopWebEventPage, String> {
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference = encoding::parse_fixed_hex::<32>(&group_reference_hex, "group reference")?;
+    let after_event_id = after_event_id_hex
+        .map(|value| encoding::parse_fixed_hex::<32>(&value, "outbox cursor"))
+        .transpose()?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| format!("open Desktop profile: {error}"))?;
+    client
+        .restore_space(&space_id, &group_reference)
+        .map_err(|error| format!("restore selected Space generation: {error}"))?;
+    let page = client
+        .outbox_application_event_page(
+            &space_id,
+            &group_reference,
+            after_event_id,
+            WEBRTC_EVENT_PAGE_SIZE.min(MAX_OUTBOX_PAGE_SIZE),
+        )
+        .map_err(|error| format!("read Desktop event outbox: {error}"))?;
+    let page_bytes = page
+        .events()
+        .iter()
+        .try_fold(0usize, |sum, event| sum.checked_add(event.len()))
+        .ok_or_else(|| "Desktop outbox page size overflowed".to_owned())?;
+    if page
+        .events()
+        .iter()
+        .any(|event| event.is_empty() || event.len() > MAX_SPACE_PAYLOAD_BYTES)
+        || page_bytes > WEBRTC_SYNC_BYTES_LIMIT
+    {
+        return Err("Desktop outbox page exceeded WebRTC transfer bounds".to_owned());
+    }
+    Ok(DesktopWebEventPage {
+        events: page.events().to_vec(),
+        next_cursor: page.next_cursor().map(|cursor| encoding::hex(&cursor)),
+    })
+}
+
+// Tauri decodes command payloads into owned arguments.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn accept_local_web_event(
+    space_id_hex: String,
+    group_reference_hex: String,
+    canonical_event: Vec<u8>,
+) -> Result<DesktopWebIngressResult, String> {
+    if canonical_event.is_empty() || canonical_event.len() > MAX_SPACE_PAYLOAD_BYTES {
+        return Err("incoming event is empty or exceeds the 256 KiB limit".to_owned());
+    }
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference = encoding::parse_fixed_hex::<32>(&group_reference_hex, "group reference")?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)
+        .map_err(|error| format!("open Desktop profile: {error}"))?;
+    let mut created = client
+        .restore_space(&space_id, &group_reference)
+        .map_err(|error| format!("restore selected Space generation: {error}"))?;
+    let outcome = client
+        .accept_synced_application_event(&mut created, &canonical_event)
+        .map_err(|error| format!("Core rejected synchronized event: {error}"))?;
+    let (state, event_id, missing_dependencies) = match outcome {
+        SyncedApplicationOutcome::Accepted { event_id } => ("accepted", event_id, Vec::new()),
+        SyncedApplicationOutcome::Duplicate { event_id } => ("duplicate", event_id, Vec::new()),
+        SyncedApplicationOutcome::CheckpointExcluded { event_id } => {
+            ("checkpoint_excluded", event_id, Vec::new())
+        }
+        SyncedApplicationOutcome::Pending {
+            event_id,
+            missing_dependencies,
+        } => (
+            "pending",
+            event_id,
+            missing_dependencies
+                .into_iter()
+                .map(|dependency| encoding::hex(&dependency))
+                .collect(),
+        ),
+    };
+    Ok(DesktopWebIngressResult {
+        state,
+        event_id: encoding::hex(&event_id),
+        missing_dependencies,
+    })
+}
 
 #[derive(Clone, Copy)]
 struct SyncTarget {
@@ -194,7 +307,7 @@ fn open_sync_profile(
     protector: &OsKeyringProtector,
     target: SyncTarget,
 ) -> Result<(Client, CreatedSpace), String> {
-    let mut client = Client::open_existing(database_path, protector)
+    let mut client = profile::open_existing_client(database_path, protector)
         .map_err(|error| format!("open Desktop profile: {error}"))?;
     let created = client
         .restore_space(&target.space_id, &target.group_reference)
@@ -349,7 +462,9 @@ fn apply_synced_events(
                     counts.2 += bundle_size;
                 }
             }
-            EventKind::Membership | EventKind::Ephemeral => counts.1 += 1,
+            EventKind::Membership | EventKind::Ephemeral | EventKind::RelayMailboxControl => {
+                counts.1 += 1;
+            }
             EventKind::Message
             | EventKind::Edit
             | EventKind::Tombstone

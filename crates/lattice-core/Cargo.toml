@@ -13,9 +13,11 @@ lattice-events = { path = "../lattice-events" }
 lattice-files = { path = "../lattice-files" }
 lattice-identity = { path = "../lattice-identity" }
 lattice-mls = { path = "../lattice-mls" }
+lattice-relay = { path = "../lattice-relay", default-features = false }
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-storage = { path = "../lattice-storage" }
 thiserror = "2"
+sha2 = "=0.10.9"
 getrandom = "=0.4.3"
 rusqlite = { version = "=0.39.0", features = ["bundled"] }
 openmls = "=0.9.0"

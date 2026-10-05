@@ -2,7 +2,7 @@
   "schema_version": 1,
   "evidence_policy": "A capability is verified only for its named runtime path. Historical source mapping and unit tests are not cross-client proof.",
   "history_inventory": {
-    "audited_commit_count": 214,
+    "audited_commit_count": 225,
     "source_ledger": "docs/quality/FEATURE_LEDGER.md",
     "scope_complete": false,
     "capability_classification_complete": true
@@ -66,7 +66,7 @@
       "id": "message-mutations",
       "capability": "Tombstones, reactions, pins, mentions, dependencies and ephemeral state",
       "status": "FAILED",
-      "acceptance_boundary": "Core projection and expiry tests exist; cross-client mutation authoring and acceptance are incomplete."
+      "acceptance_boundary": "Core authoring and joined-profile acceptance now cover replies, tagged reaction/pin add-remove pairs and author tombstones. Desktop/Mobile controls and actual transport-driven mutation convergence remain unverified."
     },
     {
       "id": "device-dm",
@@ -84,7 +84,7 @@
       "id": "attachments",
       "capability": "Attachment manifests, receivers, staging quotas and verified chunks",
       "status": "FAILED",
-      "acceptance_boundary": "Local transfer mechanisms pass; interrupted cross-client transfer and process-restart resume remain unmet."
+      "acceptance_boundary": "Android exposes a manual SAF-to-pinned-TCP/Noise attachment workflow with Core-authorized manifests, receiver consent, bounded resumable staging and hash-checked SAF export; cross-client/process-restart and device transfer acceptance remain unmet."
     },
     {
       "id": "routing",
@@ -108,7 +108,7 @@
       "id": "desktop-client",
       "capability": "Desktop identity, Space/message UI, local paths and bounded sync",
       "status": "FAILED",
-      "acceptance_boundary": "Desktop↔CLI and Desktop↔Desktop each have a bounded real-process event exchange with authenticated, independently persisted profiles. Desktop identity, broader membership lifecycle/rekey, convergence, Android interoperability and release acceptance remain incomplete."
+      "acceptance_boundary": "Desktop↔CLI and Desktop↔Desktop each have a bounded real-process event exchange with authenticated, independently persisted profiles. One manually signaled Desktop↔Web signed-event exchange also passed through both Cores, but WebRTC does not authenticate transport peer identity. Desktop identity, broader membership lifecycle/rekey, convergence, Android interoperability and release acceptance remain incomplete."
     },
     {
       "id": "desktop-theme",
@@ -126,13 +126,13 @@
       "id": "relay",
       "capability": "NIP-01/NIP-11/NIP-40 relay codec and client",
       "status": "FAILED",
-      "acceptance_boundary": "Codec/parser paths pass; no product relay publish/retrieve callsite or independent-service interoperability exists."
+      "acceptance_boundary": "Core/Node/CLI publish and retrieval callsites plus offline mailbox admission, wrapping, deduplication and result-accounting tests exist; no independent live relay-service interoperability or end-client exchange is evidenced."
     },
     {
       "id": "android-compose",
       "capability": "Android Compose identity, Space, messages, diagnostics, permissions and accessibility",
       "status": "BLOCKED-EXTERNAL",
-      "acceptance_boundary": "Notification selection is source-tested; JVM/device execution unavailable without Java, Android hardware and adb."
+      "acceptance_boundary": "Current UniFFI generation and focused Gradle/JVM compilation pass, including attachment UI; physical Android execution, app-process transfer, accessibility, lifecycle and device-key acceptance still require Android hardware/adb."
     },
     {
       "id": "android-ble",
@@ -208,7 +208,7 @@
         "crates/lattice-core/src/lib.rs"
       ],
       "status": "VERIFIED",
-      "scope_note": "Verifies the recorded two-Desktop checkpoint-aware exchange only; not broad convergence, member removal/rekey, Android/Web interoperability, courier delivery or release readiness."
+      "scope_note": "Verifies the recorded two-Desktop checkpoint-aware exchange only; not broad convergence, member removal/rekey, the separate bounded Desktop↔Web event path, Android interoperability, courier delivery or release readiness."
     },
     {
       "id": "interop-desktop-cli",
@@ -222,6 +222,30 @@
       "evidence": ["docs/verification/INTEROP_MATRIX.md", "docs/verification/EVIDENCE_INDEX.md"],
       "status": "VERIFIED",
       "scope_note": "Verifies exactly one authenticated reciprocal application-event round. Does not prove convergence, retries, delivery receipts, restart, Android, Web, or Desktop↔Desktop."
+    },
+    {
+      "id": "interop-desktop-web",
+      "feature": "Desktop-to-Web communication",
+      "requirements": ["desktop", "WEB-007", "sync"],
+      "implementation_files": [
+        "apps/desktop/src/features/spaces/DesktopWebRtcEventPanel.tsx",
+        "apps/desktop/src-tauri/src/sync.rs",
+        "apps/web/src/webrtc-event-link.ts"
+      ],
+      "clients": ["Desktop", "Web"],
+      "tested_path": "Isolated Desktop and Web profiles joined the same signed Space and exchanged one signed application event each over manually signaled WebRTC; both events passed normal Core acceptance and appeared in both clients.",
+      "command_or_scenario": "Space `cbdf6ebc535ac51621c9a31daf157093`, MLS group `aabab6da4d710eb7e368979a62ce548d151d2c5ca3a7e6280c1ca924d039f746`. Desktop event `eac2fe5266eb0cc968fde194a343b1b80bf61dbe97c733e00e107bdb3eed2f9f`; Web event `e8c088beab09ed8d9484b31dfd69a37851c0be180d3dbaab8f6400b728f9b7c6`. Desktop UI restart/history reload retained both messages.",
+      "result": "Both signed events were Core-accepted and displayed by both clients; this is one bounded reciprocal message-event path.",
+      "evidence": [
+        "docs/verification/INTEROP_MATRIX.md",
+        "docs/verification/EVIDENCE_INDEX.md",
+        "docs/verification/KNOWN_BLOCKERS.md",
+        "docs/verification/TRANSPORT_MATRIX.md",
+        "apps/desktop/src/features/spaces/DesktopWebRtcEventPanel.tsx",
+        "apps/web/src/webrtc-event-link.ts"
+      ],
+      "status": "VERIFIED",
+      "scope_note": "Status covers only the single successful path above; a fresh-profile retest failed to reproduce it: Web local message creation returned `unreachable`, then Web Core reported `recursive use of an object detected which would lead to unsafe aliasing in rust` on Desktop ingress and displayed no event (see `docs/verification/EVIDENCE_INDEX.md`). Transport peer identity is not authenticated and the path carries no membership transitions. Peer fingerprints, MLS epoch, runtime revision and browser/Tauri versions were not recorded; remote epoch repair and duplicate transport were not verified. This does not prove broad convergence, delivery receipts, WAN/NAT/TURN, Android, other-browser support, or release readiness."
     },
     {
       "id": "core-openmls-transaction",
@@ -290,13 +314,13 @@
       "clients": ["Web", "CLI"],
       "tested_path": "Pinned-issuer browser enrollment, per-profile OPFS, offline signed Welcome import after explicit inviter-fingerprint pinning, same-origin bidirectional signed MLS exchange and page-reload persistence; manually signaled WebRTC with BroadcastChannel disabled; and exact-Origin/token-paired one-session Web↔CLI loopback exchange through both normal Cores.",
       "command_or_scenario": "Managed Chromium and temporary Windows CLI profile. CLI-created Space joined by browser via KeyPackage/Welcome. CLI→Web event 624d899b127f2bec1d5bfee7469140e5a8ebd270674a86b5a50a3bd1cf56d5d5; Web→CLI event ae4683759251019b58ccfbb542d14063e78bcbb6e7d7cee6e1b9bb77582704a5. The browser received the CLI event through `sync web-serve-once`; CLI `space history` contained the accepted browser event.",
-      "result": "Same-origin, WebRTC and loopback Web↔CLI event paths passed for the described profiles. Loopback proof is HTTP Origin/token-bound and not TLS/WSS, HTTPS-page, WAN/NAT, other-browser, Desktop/Android, recipient-delivery, or release evidence.",
+      "result": "Same-origin, WebRTC, loopback Web↔CLI and bounded Desktop↔Web signed-event paths passed for the described profiles. Loopback proof is HTTP Origin/token-bound and not TLS/WSS, HTTPS-page, WAN/NAT, other-browser, Android, recipient-delivery, or release evidence; the Desktop-WebRTC path is manually signaled and does not authenticate transport peer identity.",
       "evidence": [
         "docs/features/web.md",
         "docs/verification/INTEROP_MATRIX.md",
         "docs/verification/RESTART_MATRIX.md"
       ],
-      "blocker": "No HTTPS-compatible or secure remote browser/native transport, supported-browser or WAN/NAT/TURN matrix, Desktop/Android adapter, accessibility/security review, or full OPFS crash/quota acceptance."
+      "blocker": "No HTTPS-compatible or secure remote browser/native transport, supported-browser or WAN/NAT/TURN matrix, Android adapter, accessibility/security review, or full OPFS crash/quota acceptance."
     },
     {
       "id": "android-physical-ble",

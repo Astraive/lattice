@@ -1,0 +1,336 @@
+@import "./application.css";
+
+.lattice-workspace--web {
+  background: var(--lattice-color-background);
+  color: var(--lattice-color-foreground);
+  display: grid;
+  grid-template-columns: 72px 240px minmax(0, 1fr);
+  grid-template-rows: 56px minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.lattice-web-topbar {
+  align-items: center;
+  border-bottom: 1px solid var(--lattice-color-line);
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  padding: 0 1rem;
+}
+.lattice-web-topbar .lattice-workspace__brand {
+  align-items: center;
+  background: var(--lattice-color-surface-raised);
+  border: 1px solid var(--lattice-color-line);
+  border-radius: var(--lattice-radius-sm);
+  color: var(--lattice-color-accent);
+  display: flex;
+  font-weight: 700;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+.lattice-web-lock,
+.lattice-web-menu {
+  background: transparent;
+  border: 1px solid var(--lattice-color-line);
+  border-radius: var(--lattice-radius-sm);
+  color: var(--lattice-color-foreground);
+  cursor: pointer;
+  flex-shrink: 0;
+  font: inherit;
+  min-height: 36px;
+  padding: 0.4rem 0.7rem;
+  white-space: nowrap;
+}
+.lattice-web-menu {
+  display: none;
+}
+.lattice-web-destinations {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  grid-column: 1;
+  grid-row: 2;
+  padding: 0.75rem;
+}
+.lattice-web-destinations button,
+.lattice-web-bottom-nav button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--lattice-radius-sm);
+  color: var(--lattice-color-muted);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 0.55rem;
+  min-height: 40px;
+  padding: 0.55rem;
+  text-align: left;
+}
+.lattice-web-destinations button {
+  flex-direction: column;
+  font-size: 0.68rem;
+  gap: 0.2rem;
+  justify-content: center;
+  min-width: 0;
+  padding: 0.45rem 0.2rem;
+  text-align: center;
+  width: 100%;
+}
+.lattice-web-destinations button[aria-current="page"],
+.lattice-web-bottom-nav button[aria-current="page"] {
+  background: color-mix(in srgb, var(--lattice-color-accent) 12%, transparent);
+  color: var(--lattice-color-accent);
+}
+.lattice-web-sidebar {
+  background: var(--lattice-color-surface);
+  border-right: 1px solid var(--lattice-color-line);
+  grid-column: 2;
+  grid-row: 2;
+  overflow: auto;
+  padding: 0.25rem 0.75rem 1rem;
+}
+.lattice-workspace__spaces,
+.lattice-workspace__channels {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.45rem;
+}
+.lattice-workspace__spaces button,
+.lattice-workspace__channels button {
+  background: none;
+  border: 0;
+  border-radius: var(--lattice-radius-sm);
+  color: var(--lattice-color-muted);
+  cursor: pointer;
+  font: inherit;
+  min-height: 36px;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+}
+.lattice-workspace__spaces button[aria-current="page"],
+.lattice-workspace__channels button[aria-current="page"] {
+  background: color-mix(in srgb, var(--lattice-color-accent) 12%, transparent);
+  color: var(--lattice-color-foreground);
+}
+.lattice-workspace__channels h2 {
+  color: var(--lattice-color-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0.7rem 0.3rem 0.2rem;
+}
+.lattice-workspace__channels button {
+  display: flex;
+  gap: 0.55rem;
+}
+.lattice-workspace--web .lattice-workspace__content {
+  grid-column: 3;
+  grid-row: 2;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(1rem, 2.2vw, 2rem);
+}
+.lattice-web-bottom-nav {
+  display: none;
+}
+.lattice-workspace--web :focus-visible {
+  outline: 2px solid var(--lattice-color-accent);
+  outline-offset: 2px;
+}
+@media (max-width: 700px) {
+  .lattice-workspace--web {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 52px minmax(0, 1fr) 60px;
+  }
+  .lattice-web-topbar {
+    grid-row: 1;
+  }
+  .lattice-web-menu {
+    display: inline-flex;
+  }
+  .lattice-web-destinations {
+    display: none;
+  }
+  .lattice-web-sidebar {
+    border: 1px solid var(--lattice-color-line);
+    border-radius: var(--lattice-radius-sm);
+    box-shadow: 0 16px 36px rgb(0 0 0 / 42%);
+    display: none;
+    grid-column: 1;
+    grid-row: 2;
+    max-height: 70dvh;
+    position: absolute;
+    top: 52px;
+    width: min(300px, 82vw);
+    z-index: 3;
+  }
+  .lattice-web-sidebar.is-open {
+    display: block;
+  }
+  .lattice-workspace--web .lattice-workspace__content {
+    grid-column: 1;
+    grid-row: 2;
+    padding: 1rem;
+  }
+  .lattice-web-bottom-nav {
+    background: var(--lattice-color-surface);
+    border-top: 1px solid var(--lattice-color-line);
+    display: flex;
+    grid-column: 1;
+    grid-row: 3;
+    justify-content: space-around;
+    padding: 0.35rem;
+  }
+  .lattice-web-bottom-nav button {
+    flex-direction: column;
+    font-size: 0.65rem;
+    gap: 0.1rem;
+    justify-content: center;
+    min-width: 0;
+    padding: 0.2rem;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lattice-workspace--web *,
+  .lattice-workspace--web *::before,
+  .lattice-workspace--web *::after {
+    scroll-behavior: auto;
+    transition-duration: 0ms;
+  }
+}
+
+/* Page-level presentation and application-owned data surfaces. */
+.lattice-web-setup .wordmark .lattice-logo {
+  height: 34px;
+  object-fit: contain;
+  width: 132px;
+}
+.lattice-workspace--web .lattice-web-topbar .lattice-workspace__brand {
+  background: transparent;
+  border: 0;
+  height: 32px;
+  object-fit: contain;
+  width: 112px;
+}
+
+.lattice-workspace--web .lattice-web-topbar .lattice-workspace__brand .lattice-logo {
+  height: 28px;
+  object-fit: contain;
+  width: 112px;
+}
+
+.lattice-workspace--web,
+.lattice-workspace--web * {
+  scrollbar-color: var(--lattice-color-line) transparent;
+}
+.lattice-workspace--web .lattice-web-page {
+  margin: 0 auto;
+  max-width: 960px;
+  min-width: 0;
+  width: 100%;
+}
+
+.lattice-workspace--web .lattice-web-page > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.lattice-workspace--web .lattice-web-page .lattice-page-heading {
+  margin: 0 0 1.4rem;
+}
+
+.lattice-workspace--web .lattice-web-page .lattice-page-heading h1 {
+  font-size: clamp(1.75rem, 3.4vw, 2.5rem);
+  letter-spacing: -0.045em;
+  line-height: 1.1;
+}
+
+.lattice-workspace--web .lattice-web-page .web-controls,
+.lattice-workspace--web .lattice-web-page .message-workspace,
+.lattice-workspace--web .lattice-web-page .lattice-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.lattice-workspace--web .lattice-web-page input,
+.lattice-workspace--web .lattice-web-page textarea {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.lattice-workspace--web .lattice-web-page textarea,
+.lattice-workspace--web .identity-row .fingerprint,
+.lattice-workspace--web .identity-row dd {
+  overflow-wrap: anywhere;
+}
+
+.lattice-workspace--web .lattice-web-page .message-list,
+.lattice-workspace--web .lattice-web-page .message-list li,
+.lattice-workspace--web .lattice-web-page .button-row {
+  min-width: 0;
+}
+
+.lattice-web-bottom-nav {
+  padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+}
+
+.lattice-web-setup {
+  min-height: 100dvh;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+@media (max-width: 700px) {
+  .lattice-workspace--web .lattice-workspace__content {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .lattice-workspace--web .lattice-web-sidebar {
+    max-width: calc(100vw - 1rem);
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .lattice-workspace--web .lattice-web-page .button-row {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .lattice-workspace--web .lattice-web-page .button-row > * {
+    max-width: 100%;
+  }
+}
+
+.lattice-web-setup .masthead,
+.lattice-web-setup .intro,
+.lattice-web-setup .setup-grid,
+.lattice-web-setup .page-footer {
+  margin-left: auto;
+  margin-right: auto;
+  width: min(1180px, calc(100% - 64px));
+}
+
+.lattice-web-setup .wordmark {
+  align-items: center;
+}
+
+@media (max-width: 760px) {
+  .lattice-web-setup .masthead,
+  .lattice-web-setup .intro,
+  .lattice-web-setup .setup-grid,
+  .lattice-web-setup .page-footer {
+    width: calc(100% - 36px);
+  }
+}
+
+.lattice-workspace--web :is(button, input, textarea, select, .web-controls, .message-workspace),
+.lattice-web-setup :is(button, input, textarea, select, .boundary-note, .pin-details) {
+  border-radius: 0;
+}
+
+.lattice-workspace--web .profile-panel,
+.lattice-workspace--web .workspace-page {
+  max-width: 100%;
+  min-width: 0;
+}

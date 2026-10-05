@@ -7,7 +7,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use lattice_core::Client;
 use lattice_node::courier::{CourierSendResult, receive_courier_once, send_courier_once};
 use lattice_platform::{MAX_ENVELOPE_BYTES, OsKeyringProtector};
 use lattice_storage::{DEFAULT_COURIER_LIMITS, MAX_COURIER_QUEUE_PAGE_SIZE, Store};
@@ -473,7 +472,7 @@ async fn run_listener(
     shared: Arc<PeerModeShared>,
     startup: &mut Option<oneshot::Sender<Result<String, String>>>,
 ) -> Result<(), String> {
-    let client = Client::open_existing(&database_path, &protector)
+    let client = profile::open_existing_client(&database_path, &protector)
         .map_err(|error| format!("open profile for persistent peer mode: {error}"))?;
     if client
         .pinned_identity(&config.peer_fingerprint)
@@ -604,7 +603,7 @@ pub(crate) async fn forward_queued_courier_item(
 
 fn forward_courier_item(target: CourierForwardTarget) -> Result<CourierForwardResult, String> {
     let (database_path, protector) = profile::open_profile()?;
-    let client = Client::open_existing(&database_path, &protector)
+    let client = profile::open_existing_client(&database_path, &protector)
         .map_err(|error| format!("open profile for courier forwarding: {error}"))?;
     if client
         .pinned_identity(&target.peer_fingerprint)
