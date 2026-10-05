@@ -1,78 +1,77 @@
 # Development-only X.509 PKI
 
-This tooling exists only to exercise the production RFC 9420 credential validation path during local development. Its CA is self-signed and must never be installed on production systems or used to issue production credentials. The development CA signing key is high impact: keep it in a private development workspace and delete it when no longer needed. Device signing keys remain inside each Lattice client; the issuer receives only a CSR.
+This tooling exercises the production RFC 9420 credential validator with local test material. The generated CA is not a production trust anchor. Do not install or use it on production systems. Each client creates and retains its own Ed25519 identity; the issuer receives only the CSR. The CA private key is generated per run and must remain local and be deleted after testing.
 
-The production path still requires a valid X.509 chain in the operating-system trust store, an Ed25519 leaf SPKI matching the local signing key, a valid certificate period, and exactly one canonical `urn:lattice:identity:v1:<fingerprint>` URI SAN matching the full Lattice identity. No validation switch or caller-supplied trust root is added. See [the security model](security/SECURITY_MODEL.md#cryptographic-layers).
+Production validation remains unchanged: certificate chain trust, validity period, Ed25519 public-key binding, and exactly one canonical `urn:lattice:identity:v1:<64 lowercase hex>` URI SAN matching the complete identity. Production CLI/Desktop trust remains native-system-only. Only explicitly pinned debug profiles can use this generated root. See [the security model](security/SECURITY_MODEL.md#cryptographic-layers).
 
-## Requirements
+## Prerequisites
 
-- PowerShell 7 or Windows PowerShell 5.1.
-- OpenSSL 3.x on `PATH`.
-- A built `lattice` CLI (build from the repository with `cargo build -p lattice-cli`).
+- A clean checkout with the committed `Cargo.lock` and the repository's Rust toolchain (`rustc` 1.95 or newer).
+- PowerShell for the command examples below.
+- The relevant client identity/CSR API and a separate profile for every fixture identity.
 
-## Issue a credential for a client identity
-
-Use one isolated CLI data directory per client. The CSR is signed by that profile's actual Lattice Ed25519 identity, and the corresponding private key stays in the client's protected profile.
+The issuer is `lattice-dev-pki`, implemented in Rust with pinned `rcgen = 0.14.10`; OpenSSL is not required. Build and run from the repository root:
 
 ```powershell
-$root = Join-Path $PWD 'local-dev-pki'
-$cli = (Resolve-Path '.\target\debug\lattice.exe').Path
-
-# Create a new, test-only root. The script refuses to reuse an output directory.
-.\tooling\dev-pki\New-DevelopmentCa.ps1 -OutputDirectory "$root\ca"
-
-# Repeat with a distinct directory for each independently initialized device/client.
-$profile = "$root\profiles\cli-a"
-New-Item -ItemType Directory -Path $profile | Out-Null
-& $cli --data-dir "$profile\data" identity init
-& $cli --data-dir "$profile\data" identity csr --output "$profile\cli-a.csr.pem"
-if ($LASTEXITCODE -ne 0) { throw 'Could not create the Lattice identity CSR.' }
-
-.\tooling\dev-pki\Issue-DeviceCertificate.ps1 `
-  -CaKey "$root\ca\lattice-development-only-ca.key.pem" `
-  -CaCertificate "$root\ca\lattice-development-only-ca.cert.pem" `
-  -Csr "$profile\cli-a.csr.pem" `
-  -OutputDirectory "$profile\issued" `
-  -DeviceName 'cli-a'
+$root = Join-Path $env:TEMP 'lattice-dev-pki-acceptance'
+cargo run --locked -p lattice-dev-pki -- ca create --output-dir "$root/ca"
 ```
 
-Repeat the profile and issuance steps for client identities whose normal APIs produce CSRs. Android, Desktop, CLI, and Web have normal identity CSR paths; each still needs client-specific acceptance. For Web, create a fresh browser profile with the issuer DER and confirmed SHA-256 fingerprint pinned at creation, create its CSR in the profile UI, issue the leaf through this script, and paste only the leaf DER into that same profile. The issuer creates a short-lived leaf certificate and a binary RFC 9420 certificate vector containing the leaf certificate. Production Desktop and CLI use native roots; an isolated Desktop debug profile may instead pin this root by exact DER and SHA-256 fingerprint without changing the host trust store.
+`ca create` requires a new output directory and writes:
 
-## Native trust-store option
+- `lattice-development-only-ca.cert.pem`
+- `lattice-development-only-ca.cert.der`
+- `lattice-development-only-ca.key.pem` (private test material; never print or check in)
 
-Use this only for a client workflow that explicitly exercises native root loading, such as CLI acceptance. It is not required for the debug-pinned Desktop workflow below. The Windows helper changes only the current user's `ROOT` store:
+## Issue a client certificate
+
+Every fixture client initializes its own identity using its ordinary client API, then exports only a CSR. It never exports its signing key. For the CLI fixture:
 
 ```powershell
-.\tooling\dev-pki\Set-DevelopmentCaTrust.ps1 `
-  -CaCertificate "$root\ca\lattice-development-only-ca.cert.pem" -Action Install
-# After the test:
-.\tooling\dev-pki\Set-DevelopmentCaTrust.ps1 `
-  -CaCertificate "$root\ca\lattice-development-only-ca.cert.pem" -Action Remove
+cargo run --locked -p lattice-cli -- --data-dir "$root/cli/data" identity init
+cargo run --locked -p lattice-cli -- --data-dir "$root/cli/data" identity csr --output "$root/cli/client.csr.pem"
+cargo run --locked -p lattice-dev-pki -- issue `
+  --ca-cert "$root/ca/lattice-development-only-ca.cert.pem" `
+  --ca-key "$root/ca/lattice-development-only-ca.key.pem" `
+  --csr "$root/cli/client.csr.pem" `
+  --output-dir "$root/cli/issued" `
+  --device-name cli
 ```
 
-On Linux, native-root tests can use the distribution's local CA mechanism (for Debian/Ubuntu, copy the PEM to `/usr/local/share/ca-certificates/lattice-development-only-ca.crt`, run `sudo update-ca-certificates`, and remove it and refresh again after testing). On macOS, add the PEM to the System or login keychain using `security add-trusted-cert` and remove that exact certificate with Keychain Access after testing. These actions change host trust; do not automate them in CI or install this root globally on shared machines. Restart a client after changing the trust store so native-root loading sees the updated roots.
+The issuer verifies the PKCS#10 signature, accepts only an Ed25519 public key and one canonical identity URI SAN, and issues a 90-day non-CA leaf with digital-signature usage only. It refuses unsupported or malformed CSR extensions, invalid CA/key pairs, invalid names, existing output directories, and vectors larger than 16 KiB. The leaf public key and identity SAN are retained. Issued files are `<name>.test-only.cert.pem`, `<name>.test-only.cert.der`, and `<name>.test-only.credential-vector.bin`; the last contains the leaf DER as an RFC 9420 TLS certificate vector. Keys and certificate times are intentionally random/per-run, so reproducibility means the same clean-checkout commands and output layout.
 
-## Client trust-store constraints
+## Five-identity fixture matrix
 
-Desktop and CLI use the host's native certificate roots through `rustls-native-certs` by default; production behavior remains native-root-only. A debug Desktop process can use `LATTICE_DESKTOP_PROFILE_DIR`, `LATTICE_DESKTOP_DEBUG_TRUST_ROOT_DER`, and `LATTICE_DESKTOP_DEBUG_TRUST_ROOT_SHA256` together to open an isolated profile with one exact pinned root. The root path must be absolute, the SHA-256 value must match the DER bytes, and the profile override is ignored in release builds. The pin is scoped to that profile and does not add a host trust anchor. Never set these variables for a shared profile or use them as a production trust path.
+Use the same CA for five independently generated identities, separate profiles, separate CSRs, and separately named issued artifacts:
 
-Android does not use the host loader. `lattice-mls` reads the Conscrypt APEX CA directory when it contains any certificate-named files, otherwise it reads `/system/etc/security/cacerts`. Ordinary user-installed Android certificates, APK network-security configuration, and Windows trust changes do not affect this custom validator. For a test-only system image, provision the development CA as a PEM or DER file with a numeric suffix (for example, `lattice-development-only-ca.0`) in the exact CA directory the loader selects, then restart the app. The loader chooses APEX whenever it contains a numeric-suffix entry; the legacy directory is only a fallback when APEX has none. This repository does not build or modify Android system images. Use a disposable emulator or test image only.
+| Device name | Client-created CSR/profile | Trust behavior | Acceptance status |
+| --- | --- | --- | --- |
+| `android-a` | Android profile A, Android identity API | Android's actual system-root loader | `BLOCKED-EXTERNAL` until tested on a disposable system image containing the test CA in the exact selected system CA directory |
+| `android-b` | Android profile B, different identity and profile | Android's actual system-root loader | `BLOCKED-EXTERNAL` under the same system-image prerequisite |
+| `desktop` | Isolated Tauri/Desktop profile | Exact-pinned debug profile described below | CSR generation and Rust issuance exercised; local Space acceptance remains unverified |
+| `cli` | The command sequence above | Exact-pinned debug CLI profile described below | Accepted: matching profile created a local Space; wrong-key and untrusted-root inputs failed before creation |
+| `web` | Fresh browser profile and Web identity API | Exact root DER/SHA-256 pinned when the profile is created | Accepted: Web-created CSR was issued by Rust tool; exact-pinned profile created a local Space |
 
-Web validates credentials against the root DER and SHA-256 fingerprint confirmed when its profile was created; it does not inherit Windows, Linux, or macOS trust-store changes. Browser key and root-pin scope is origin/profile-local. A Web credential therefore requires its CSR to be signed by that exact pinned issuer; a native CLI peer separately requires the same issuer in its OS trust store.
+Do not use a Core profile, test-only credential constructor, or reused identity as evidence of cross-client or physical-device acceptance. A local Space creation proves only that one profile accepted its own matching certificate.
 
-## Verify using the real production validator
+## Pinned debug CLI profile
 
-Use the generated certificate vector with the existing production CLI command in a fresh profile. `space create` constructs an MLS credential through `DeviceCredentialInput::from_x509_credential`; success therefore exercises chain trust, certificate structure/period, key binding, and fingerprint SAN validation, not a test-only credential helper.
+The CLI accepts a pinned root only in debug builds and only with an explicit absolute `--data-dir`; this keeps the trust policy bound to a dedicated profile. Compute and set the exact DER pin before invoking the CLI:
 
 ```powershell
-& $cli --data-dir "$profile\data" space create `
-  --credential "$profile\issued\cli-a.test-only.credential-vector.bin" `
-  --channel 'general'
-if ($LASTEXITCODE -ne 0) { throw 'Production credential validation or Space creation failed.' }
+$env:LATTICE_CLI_DEBUG_TRUST_ROOT_DER = (Resolve-Path "$root/ca/lattice-development-only-ca.cert.der").Path
+$env:LATTICE_CLI_DEBUG_TRUST_ROOT_SHA256 = (Get-FileHash "$root/ca/lattice-development-only-ca.cert.der" -Algorithm SHA256).Hash.ToLowerInvariant()
+cargo run --locked -p lattice-cli -- --data-dir "$root/cli/data" space create `
+  --credential "$root/cli/issued/cli.test-only.credential-vector.bin" `
+  --channel general
 ```
 
-Use a fresh profile per identity and issue a certificate for each CSR. A wrong-key certificate, an altered fingerprint SAN, an expired certificate, or an untrusted root must be rejected by the normal validator. Do not infer peer membership or network interoperability from local Space creation; use the cross-client acceptance procedures for those claims.
+The expected success is one local Space for the matching `cli` profile. Wrong-key, altered-SAN, expired-leaf, and untrusted-root inputs must fail before a Space is created. Any partial, malformed, relative, mismatched, or non-isolated pin setting fails closed. Release builds reject either debug trust variable and remain native-system-only.
 
-## Cleanup and containment
+Desktop uses its existing isolated exact-pinned debug profile via `LATTICE_DESKTOP_PROFILE_DIR`, `LATTICE_DESKTOP_DEBUG_TRUST_ROOT_DER`, and `LATTICE_DESKTOP_DEBUG_TRUST_ROOT_SHA256`. Web pins the same root DER and SHA-256 during profile creation. Android does not use these pins: `lattice-mls` loads the system CA directory selected from Conscrypt APEX or `/system/etc/security/cacerts`; a disposable test system image must install the CA in that selected directory. Ordinary user-installed Android roots, APK network security configuration, and host trust changes do not alter this loader.
 
-The CLI data directories, CSR files, issued leaf certificates, vectors, CA private key, and serial file are local test material. Keep them out of version control and diagnostics. Remove the test root from the platform trust store, then delete the development PKI and profiles when finished. The checked-in tooling does not create identities by exporting or copying private keys.
+For a deliberate Windows native-root test only, `Set-DevelopmentCaTrust.ps1` may add/remove the CA in the current user's `ROOT` store. This is not required for CLI/Desktop pinned debug fixtures. Never install it on shared or production systems.
+
+## Containment
+
+Keep every profile, CSR, CA key/certificate, leaf, and vector under the temporary `$root`; none is a repository fixture. Check that no generated key, certificate, or vector is tracked. Remove the temporary tree and any native trust-store entry after acceptance. Do not infer cross-client, independent-implementation, or physical-device behavior from unit tests or a matching local Space.

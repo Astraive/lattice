@@ -7,7 +7,6 @@ use std::{
 };
 
 use clap::Subcommand;
-use lattice_core::Client;
 use lattice_mesh::EnvelopeId;
 use lattice_node::courier::{CourierSendResult, receive_courier_once, send_courier_once};
 use lattice_platform::{MAX_ENVELOPE_BYTES, OsKeyringProtector};
@@ -182,7 +181,7 @@ fn run_listener(
 ) -> Result<(), Box<dyn Error>> {
     let peer_fingerprint = super::parse_fixed_hex::<32>(peer_fingerprint, "peer fingerprint")
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let client = Client::open_existing(database_path, protector)?;
+    let client = crate::profile::open_existing_client(database_path, protector)?;
     if client.pinned_identity(&peer_fingerprint)?.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -282,7 +281,7 @@ fn forward_once(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let local_envelope_id = super::parse_fixed_hex::<16>(local_envelope_id, "local envelope ID")
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let client = Client::open_existing(database_path, protector)?;
+    let client = crate::profile::open_existing_client(database_path, protector)?;
     if client.pinned_identity(&peer_fingerprint)?.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

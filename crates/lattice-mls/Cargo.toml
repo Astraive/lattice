@@ -45,3 +45,5 @@ test-utils = []
 openmls = { version = "=0.9.0", features = ["test-utils"] }
 openmls_basic_credential = "=0.6.0"
 serde = { version = "1", features = ["derive"] }
+lattice-dev-pki = { path = "../lattice-dev-pki", features = ["test-utils"] }
+pem = "=4.0.0"

@@ -220,10 +220,12 @@ fn publish_mailbox(
             "credential vector was not loaded",
         )
     })?;
-    let mut client = Client::open_existing(database_path, protector)?;
+    let mut client = crate::profile::open_existing_client(database_path, protector)?;
     let credential = Credential::new(CredentialType::X509, credential_bytes);
+    let trust_policy = client.credential_trust_policy().clone();
     let credential = client.with_mls_transaction(|identity, _, _| {
-        DeviceCredentialInput::from_x509_credential(identity, credential).map_err(CoreError::Mls)
+        DeviceCredentialInput::from_x509_credential_with_policy(identity, credential, &trust_policy)
+            .map_err(CoreError::Mls)
     })?;
     let created = client.restore_space(&space_id, &group_reference)?;
     let published =
@@ -277,7 +279,7 @@ fn relay_round(
         .into());
     }
     let relay_urls = [relays[0].as_str(), relays[1].as_str()];
-    let mut client = Client::open_existing(database_path, protector)?;
+    let mut client = crate::profile::open_existing_client(database_path, protector)?;
     let mut created = client.restore_space(&space_id, &group_reference)?;
     let mailbox = client
         .space_relay_mailbox(&space_id, &group_reference)?

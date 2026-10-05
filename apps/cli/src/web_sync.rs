@@ -57,7 +57,7 @@ pub(super) fn run(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let token = super::hex(&DeviceIdentity::generate()?.public_bundle().fingerprint());
 
-    let mut client = Client::open_existing(database_path, protector)?;
+    let mut client = crate::profile::open_existing_client(database_path, protector)?;
     let mut created = client.restore_space(&space_id, &group_reference)?;
     let store = Store::open(database_path)?;
     let runtime = tokio::runtime::Builder::new_current_thread()

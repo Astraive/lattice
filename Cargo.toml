@@ -4,6 +4,7 @@ members = [
     "apps/desktop/src-tauri",
     "crates/lattice-core",
     "crates/lattice-crypto",
+    "crates/lattice-dev-pki",
     "crates/lattice-events",
     "crates/lattice-files",
     "crates/lattice-identity",
