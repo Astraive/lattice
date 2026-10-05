@@ -1,3 +1,4 @@
+import { ActionButton, FormField, StatusNotice } from "@lattice/ui-shared";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 
@@ -328,35 +329,52 @@ export function DesktopWebRtcEventPanel({ spaceId, groupReference, onEventAccept
   return (
     <section className="local-network-settings" aria-label="Desktop to WebRTC event exchange">
       <h4>Browser peer event exchange</h4>
-      <p role="status">{status}</p>
+      <StatusNotice kind={error ? "error" : "info"}>{error ?? status}</StatusNotice>
       <p>
         Manually transfer the offer and answer. This carries bounded signed message events only; it
         does not carry membership transitions or authenticate the remote device identity.
       </p>
-      <label>
-        Optional ICE servers · JSON
+      <FormField label="Optional ICE servers · JSON" htmlFor="desktop-webrtc-ice-servers">
         <textarea
+          id="desktop-webrtc-ice-servers"
           value={iceServersText}
           onChange={(event) => setIceServersText(event.target.value)}
           maxLength={4_096}
           spellCheck={false}
         />
-      </label>
+      </FormField>
       <div>
-        <button type="button" onClick={() => void createOffer().catch(reportError)}>
-          Create offer
-        </button>
-        <button type="button" onClick={() => void acceptOffer().catch(reportError)}>
-          Accept offer
-        </button>
-        <button type="button" onClick={() => void acceptAnswer().catch(reportError)}>
-          Accept answer
-        </button>
-        <button type="button" onClick={() => void sendPending().catch(reportError)}>
-          Send pending now
-        </button>
-        <button
+        <ActionButton
           type="button"
+          tone="primary"
+          onClick={() => void createOffer().catch(reportError)}
+        >
+          Create offer
+        </ActionButton>
+        <ActionButton
+          type="button"
+          tone="primary"
+          onClick={() => void acceptOffer().catch(reportError)}
+        >
+          Accept offer
+        </ActionButton>
+        <ActionButton
+          type="button"
+          tone="primary"
+          onClick={() => void acceptAnswer().catch(reportError)}
+        >
+          Accept answer
+        </ActionButton>
+        <ActionButton
+          type="button"
+          tone="primary"
+          onClick={() => void sendPending().catch(reportError)}
+        >
+          Send pending now
+        </ActionButton>
+        <ActionButton
+          type="button"
+          tone="danger"
           onClick={() => {
             channel.current?.close();
             peer.current?.close();
@@ -366,17 +384,20 @@ export function DesktopWebRtcEventPanel({ spaceId, groupReference, onEventAccept
           }}
         >
           Disconnect
-        </button>
+        </ActionButton>
       </div>
-      <label>
-        WebRTC offer or answer · transfer out of band
+      <FormField
+        label="WebRTC offer or answer · transfer out of band"
+        htmlFor="desktop-webrtc-signal"
+      >
         <textarea
+          id="desktop-webrtc-signal"
           value={signal}
           onChange={(event) => setSignal(event.target.value)}
           spellCheck={false}
         />
-      </label>
-      {error && <p role="alert">{error}</p>}
+      </FormField>
+      {error && <StatusNotice kind="error">{error}</StatusNotice>}
     </section>
   );
 }
