@@ -7,20 +7,42 @@ import uniffi.lattice_uniffi.MobileOutboxState
 internal class BleExp0OutboxPump(
     private val profile: AndroidMobileProfile,
     private val transport: BleExp0EnvelopeTransport,
-    /** Router authorization for this peer; event envelope bytes remain opaque here. */
+    /** Router authorization for signed-event envelopes. */
     private val isRoutedToPeer: (eventId: ByteArray) -> Boolean,
 ) {
-    /** Starts the first due nonterminal entry in event-ID order, if one exists. */
+    /** Starts one due event or DM packet addressed to this authenticated peer. */
     fun startNextDue(
         nowUnixMillis: Long,
         nowElapsedMillis: Long,
         retryAt: (attemptCount: UInt, nowUnixMillis: Long) -> Long,
     ): Boolean {
-        val pageSize = OUTBOX_PAGE_SIZE
-        var cursor: ByteArray? = null
-        while (true) {
-            val page = profile.outboxPage(cursor, pageSize)
-            val due = page.firstOrNull { it.isDueAt(nowUnixMillis) && isRoutedToPeer(it.eventId.copyOf()) }
+        val peerIdentity = transport.authenticatedPeerIdentityFingerprint()
+        var eventCursor: ByteArray? = null
+        var directMessageCursor: ByteArray? = null
+        var eventsExhausted = false
+        var directMessagesExhausted = false
+        while (!eventsExhausted || !directMessagesExhausted) {
+            val eventPage = if (eventsExhausted) {
+                emptyList()
+            } else {
+                profile.outboxPage(eventCursor, OUTBOX_PAGE_SIZE)
+            }
+            val directMessagePage = if (directMessagesExhausted) {
+                emptyList()
+            } else {
+                profile.directMessageOutboxPage(directMessageCursor, OUTBOX_PAGE_SIZE.toUInt())
+            }
+            val event = eventPage.firstOrNull {
+                it.isDueAt(nowUnixMillis) && isRoutedToPeer(it.eventId.copyOf())
+            }
+            val directMessage = directMessagePage.firstOrNull {
+                it.isDueAt(nowUnixMillis) &&
+                    profile.isDirectMessageRoutedToPeer(it.groupReference, peerIdentity)
+            }
+            val candidates = listOfNotNull(event, directMessage?.asTransportEntry())
+            val due = candidates.minWithOrNull { left, right ->
+                comparePacketIds(left.eventId, right.eventId)
+            }
             if (due != null) {
                 transport.sendEnvelope(
                     due,
@@ -30,9 +52,18 @@ internal class BleExp0OutboxPump(
                 )
                 return true
             }
-            if (page.size < pageSize) return false
-            cursor = page.last().eventId
+            if (!eventsExhausted) {
+                eventsExhausted = eventPage.size < OUTBOX_PAGE_SIZE
+                if (!eventsExhausted) eventCursor = eventPage.last().eventId
+            }
+            if (!directMessagesExhausted) {
+                directMessagesExhausted = directMessagePage.size < OUTBOX_PAGE_SIZE
+                if (!directMessagesExhausted) {
+                    directMessageCursor = directMessagePage.last().packetId
+                }
+            }
         }
+        return false
     }
 
     /** Continues the durable queue after an authenticated LBFA ingress acknowledgement. */
@@ -53,6 +84,31 @@ internal class BleExp0OutboxPump(
             state == MobileOutboxState.FORWARDED ||
             state == MobileOutboxState.PEER_INGRESS_ACCEPTED) &&
             nextAttemptMs <= nowUnixMillis
+
+    private fun uniffi.lattice_uniffi.MobileDirectMessageOutboxEntry.isDueAt(
+        nowUnixMillis: Long,
+    ): Boolean = (state == MobileOutboxState.QUEUED ||
+        state == MobileOutboxState.FORWARDING ||
+        state == MobileOutboxState.FORWARDED ||
+        state == MobileOutboxState.PEER_INGRESS_ACCEPTED) &&
+        nextAttemptMs <= nowUnixMillis
+
+    private fun uniffi.lattice_uniffi.MobileDirectMessageOutboxEntry.asTransportEntry() =
+        MobileOutboxEntry(
+            eventId = packetId,
+            envelopeBytes = envelopeBytes,
+            nextAttemptMs = nextAttemptMs,
+            attemptCount = attemptCount,
+            state = state,
+        )
+
+    private fun comparePacketIds(left: ByteArray, right: ByteArray): Int {
+        for (index in 0 until minOf(left.size, right.size)) {
+            val comparison = (left[index].toInt() and 0xff).compareTo(right[index].toInt() and 0xff)
+            if (comparison != 0) return comparison
+        }
+        return left.size.compareTo(right.size)
+    }
 
     private companion object {
         const val OUTBOX_PAGE_SIZE = 64
