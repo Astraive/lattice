@@ -27,27 +27,33 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.PrimaryTabRow
+import com.astraive.lattice.ui.LatticeConsentDialog
+import com.astraive.lattice.ui.LatticeDestinationItem
+import com.astraive.lattice.ui.LatticeIdentityPage
+import com.astraive.lattice.ui.LatticeIdentityPageState
+import com.astraive.lattice.ui.LatticeNearbyPage
+import com.astraive.lattice.ui.LatticeNearbyPageState
+import com.astraive.lattice.ui.LatticeSpacesPage
+import com.astraive.lattice.ui.LatticeWorkspaceScaffold
+import com.astraive.lattice.ui.LatticeSpaceItem
+import com.astraive.lattice.ui.LatticeDestinationIcon
+import com.astraive.lattice.ui.LatticeDirectMessagesPage
+import com.astraive.lattice.ui.LatticeTheme
 import androidx.compose.material3.Text
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -78,14 +84,16 @@ internal enum class BluetoothReadiness {
     ADVERTISER_UNAVAILABLE,
     ACCESS_UNAVAILABLE,
 }
-internal enum class NearbyDestination {
+internal enum class AndroidDestination {
     IDENTITY,
     SPACES,
-    DIAGNOSTICS,
+    DIRECT_MESSAGES,
+    NEARBY,
 }
 
+
 internal data class NearbyScreenState(
-    val destination: NearbyDestination = NearbyDestination.IDENTITY,
+    val destination: AndroidDestination = AndroidDestination.IDENTITY,
     val selectedSpaceKey: String? = null,
     val permission: DiscoveryPermissionState = DiscoveryPermissionState.NOT_REQUESTED,
     val bluetooth: BluetoothReadiness = BluetoothReadiness.PERMISSION_REQUIRED,
@@ -119,6 +127,7 @@ internal data class NearbyScreenState(
     val spaceMembership: SpaceMembershipUiState = SpaceMembershipUiState(),
     val spaceRecovery: LocalSpaceRecoveryUiState = LocalSpaceRecoveryUiState(),
     val identityClipboardStatus: String? = null,
+    val directMessageRefreshVersion: Int = 0,
     val messageComposers: Map<String, LocalMessageComposerState> = emptyMap(),
 )
 
@@ -254,9 +263,11 @@ class MainActivity : ComponentActivity() {
         )
         refreshReadiness()
         setContent {
-            MaterialTheme {
+            LatticeTheme {
                 NearbyReadinessScreen(
                     state = screenState,
+                    profile = mobileProfile,
+                    directMessageRefreshVersion = screenState.directMessageRefreshVersion,
                     permissionRationale = permissionRationaleText(),
                     destination = screenState.destination,
                     selectedSpaceKey = screenState.selectedSpaceKey,
@@ -404,14 +415,19 @@ class MainActivity : ComponentActivity() {
                 if (activityStarted && !isFinishing && !isDestroyed && mobileProfile === profile) {
                     when (change) {
                         CoreProjectionChange.SPACES -> refreshLocalSpaces()
-                        CoreProjectionChange.MESSAGES -> refreshLoadedMessageHistories()
+                        CoreProjectionChange.MESSAGES -> {
+                            refreshLoadedMessageHistories()
+                            signalDirectMessageRefresh()
+                        }
                         CoreProjectionChange.ALL -> {
                             refreshLocalSpaces()
                             refreshLoadedMessageHistories()
+                            signalDirectMessageRefresh()
                         }
                         CoreProjectionChange.SYNCED_EVENTS -> {
                             refreshLocalSpaces()
                             refreshLoadedMessageHistories(notifyIncomingMessages = true)
+                            signalDirectMessageRefresh()
                         }
                     }
                 }
@@ -424,6 +440,12 @@ class MainActivity : ComponentActivity() {
         }
         refreshLocalSpaces()
         refreshLoadedMessageHistories()
+    }
+
+    private fun signalDirectMessageRefresh() {
+        screenState = screenState.copy(
+            directMessageRefreshVersion = screenState.directMessageRefreshVersion + 1,
+        )
     }
 
     private fun refreshLoadedMessageHistories(notifyIncomingMessages: Boolean = false) {
@@ -1985,6 +2007,8 @@ class MainActivity : ComponentActivity() {
         is MobileException.MessageQueueFailed -> "The local message could not be durably queued."
         is MobileException.MessageHistoryUnavailable -> "The locally retained message history is unavailable or failed authentication."
         is MobileException.InvalidMessageSearch -> "Enter a non-empty search phrase of at most 256 UTF-8 bytes."
+        is MobileException.DirectMessageFailed -> "The direct-message operation failed validation or could not be committed locally."
+        is MobileException.DirectMessageNotAccepted -> "A direct-message invitation requires explicit user acceptance."
         is MobileException.InvalidOutboxCursor -> "The durable outbox cursor is invalid."
         is MobileException.InvalidOutboxPage -> "The durable outbox page limit is invalid."
         is MobileException.OutboxUnavailable -> "The durable outbox could not be read."
@@ -2005,6 +2029,12 @@ class MainActivity : ComponentActivity() {
         is MobileException.BlePeerNotPinned -> "Verify the BLE safety number and pin the full peer fingerprint first."
         is MobileException.BlePeerIdentityMismatch -> "The BLE peer differs from the saved identity pin; the pin was not replaced."
         is MobileException.BlePeerNotAuthenticated -> "BLE application data is blocked until identity confirmation completes."
+        is MobileException.AttachmentConsentRequired -> "Accept this file in the receiving screen before private staging begins."
+        is MobileException.AttachmentManifestSourceChanged -> "The private source changed after preview; choose it again before queueing."
+        is MobileException.AttachmentNotAuthorized -> "The selected Space event has no authorized attachment manifest."
+        is MobileException.AttachmentOperationFailed -> "The attachment operation failed validation or private storage integrity checks."
+        is MobileException.AttachmentPeerNotAuthorized -> "The pinned peer is not an active member of this Space."
+        is MobileException.AttachmentPeerNotPinned -> "Pin the exact peer identity before transferring attachment bytes."
     }
 
     private fun pinPeerIdentity() {
@@ -2731,9 +2761,11 @@ internal fun ByteArray.toLowerHex(): String {
 private fun NearbyReadinessScreen(
     state: NearbyScreenState,
     permissionRationale: String,
-    destination: NearbyDestination,
+    profile: AndroidMobileProfile?,
+    directMessageRefreshVersion: Int,
+    destination: AndroidDestination,
     selectedSpaceKey: String?,
-    onDestinationSelected: (NearbyDestination) -> Unit,
+    onDestinationSelected: (AndroidDestination) -> Unit,
     onOpenLocalSpace: (String?) -> Unit,
     onPrimaryAction: () -> Unit,
     onConnectCandidate: (Int) -> Unit,
@@ -2786,388 +2818,168 @@ private fun NearbyReadinessScreen(
     onQueueMessageMutation: (String, MobileLocalTextMessage, LocalTextMessageMutation, Boolean) -> Unit,
     onCancelMessageEdit: (String) -> Unit,
 ) {
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
-            PrimaryTabRow(selectedTabIndex = destination.ordinal) {
-                NearbyDestination.entries.forEach { page ->
-                    Tab(
-                        selected = destination == page,
-                        onClick = { onDestinationSelected(page) },
-                        text = { Text(page.label()) },
-                    )
+    val pageState = rememberSaveableStateHolder()
+    LatticeWorkspaceScaffold(
+        items = AndroidDestination.entries.map { page ->
+            LatticeDestinationItem(page.name, page.label()) { LatticeDestinationIcon(page.name) }
+        },
+        selectedId = destination.name,
+        onSelect = { id -> AndroidDestination.entries.firstOrNull { it.name == id }?.let(onDestinationSelected) },
+    ) { contentPadding ->
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            pageState.SaveableStateProvider(destination.name) {
+                Column(Modifier.fillMaxSize().padding(contentPadding)) {
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.Top,
+                    ) {
+            if (destination == AndroidDestination.DIRECT_MESSAGES) {
+                LatticeDirectMessagesPage {
+                    DirectMessageCard(profile, directMessageRefreshVersion)
                 }
             }
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 32.dp),
-                verticalArrangement = Arrangement.Top,
-            ) {
-            Text("Lattice", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                destination.label(),
-                modifier = Modifier.semantics { heading() },
-                style = MaterialTheme.typography.headlineLarge,
-            )
-            Spacer(Modifier.height(20.dp))
-            if (destination == NearbyDestination.IDENTITY) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-                tonalElevation = 2.dp,
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Device identity",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(state.profileStatus, style = MaterialTheme.typography.bodyMedium)
-                    state.identityFingerprint?.let { fingerprint ->
-                        SelectionContainer {
-                            Text(
-                                "Fingerprint: $fingerprint",
-                                style = MaterialTheme.typography.bodySmall,
+            if (destination == AndroidDestination.IDENTITY) {
+                LatticeIdentityPage(
+                    state = LatticeIdentityPageState(
+                        profileStatus = state.profileStatus,
+                        fingerprint = state.identityFingerprint,
+                        publicBundle = state.identityBundleHex,
+                        clipboardStatus = state.identityClipboardStatus,
+                        certificateRequestStatus = state.certificateRequestStatus,
+                        certificateRequestPem = state.certificateRequestPem,
+                        generatingCertificateRequest = state.generatingCertificateRequest,
+                        canUseIdentity = state.profileStatus == "Protected local identity is available on this device.",
+                    ),
+                    onCopyIdentityBundle = onCopyIdentityBundle,
+                    onCopyIdentityFingerprint = onCopyIdentityFingerprint,
+                    onGenerateCertificateRequest = onGenerateCertificateRequest,
+                    onCopyCertificateRequest = onCopyCertificateRequest,
+                    identityPin = {
+                        IdentityPinCard(
+                            state = state.identityPin,
+                            profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                            onPeerBundleHexChanged = onPeerBundleHexChanged,
+                            onPeerFingerprintHexChanged = onPeerFingerprintHexChanged,
+                            onPinPeerIdentity = onPinPeerIdentity,
+                            onLookupPinnedIdentity = onLookupPinnedIdentity,
+                            onUnpinPeerIdentity = onUnpinPeerIdentity,
+                            onCopyPinnedBundle = onCopyPinnedBundle,
+                        )
+                    },
+                )
+            }
+            if (destination == AndroidDestination.NEARBY) {
+                LatticeNearbyPage(
+                    state = LatticeNearbyPageState(
+                        keystoreStatus = state.keystoreProtectionLevel?.diagnosticLabel ?: "not checked",
+                        permissionStatus = state.permission.label(),
+                        bluetoothStatus = state.bluetooth.label(),
+                        wifiAwareStatus = state.wifiCapabilities.aware.label(),
+                        wifiDirectStatus = state.wifiCapabilities.direct.label(),
+                        lanStatus = state.wifiCapabilities.lan.label(),
+                        message = state.message,
+                        scanning = state.scanning,
+                        sightings = state.sightings,
+                        bleConnectionStatus = state.bleConnectionStatus,
+                        lastCoreIngressResult = state.lastCoreIngressResult,
+                        candidateIds = state.nearbyCandidates.map { it.selectionId },
+                        profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                        persistentStatus = state.persistentNearbyStatus,
+                        persistentEnabled = state.persistentNearbyEnabled,
+                        primaryActionLabel = primaryLabel(state),
+                    ),
+                    onConnectCandidate = onConnectCandidate,
+                    onPrimaryAction = onPrimaryAction,
+                    onPersistentNearbyAction = onPersistentNearbyAction,
+                )
+            }
+            if (destination == AndroidDestination.SPACES) {
+                LatticeSpacesPage(
+                    items = state.localSpaces.map { space ->
+                        LatticeSpaceItem(localSpaceKey(space), space.spaceId.toLowerHex(), space.groupReference.toLowerHex())
+                    },
+                    selectedKey = selectedSpaceKey,
+                    status = state.localSpacesStatus,
+                    profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                    loading = state.loadingSpacePage,
+                    hasMore = state.nextSpaceCursor != null,
+                    onRefresh = onRefreshLocalSpaces,
+                    onLoadMore = { state.nextSpaceCursor?.let(onLoadMoreSpaces) },
+                    onOpenSpace = onOpenLocalSpace,
+                    createSpace = {
+                        SpaceCreationCard(
+                            state = state.spaceCreation,
+                            profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                            onCredentialVectorHexChanged = onCredentialVectorHexChanged,
+                            onChannelNameChanged = onSpaceChannelNameChanged,
+                            onCreateLocalSpace = onCreateLocalSpace,
+                        )
+                    },
+                    attachments = { AttachmentTransferCard(profile, state.localSpaces) },
+                    welcome = {
+                        SpaceWelcomeJoinCard(
+                            state = state.spaceWelcomeJoin,
+                            profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                            onBootstrapPackageChanged = onWelcomeBootstrapBase64Changed,
+                            onInviterFingerprintChanged = onWelcomeInviterFingerprintChanged,
+                            onCredentialVectorChanged = onWelcomeCredentialVectorChanged,
+                            onJoin = onJoinSpaceFromWelcome,
+                        )
+                    },
+                    selectedSpaceContent = { selectedUi ->
+                        val selectedSpace = selectedUi?.key?.let { key ->
+                            state.localSpaces.firstOrNull { localSpaceKey(it) == key }
+                        }
+                        if (selectedSpace != null) {
+                            val spaceKey = localSpaceKey(selectedSpace)
+                            SpaceMessageComposer(
+                                channels = selectedSpace.channels,
+                                state = state.messageComposers[spaceKey] ?: LocalMessageComposerState(),
+                                profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                                onCredentialVectorHexChanged = { onMessageCredentialHexChanged(spaceKey, it) },
+                                onContentChanged = { onMessageContentChanged(spaceKey, it) },
+                                onReactionTokenChanged = { onMessageReactionTokenChanged(spaceKey, it) },
+                                onMutationTagHexChanged = { onMessageMutationTagHexChanged(spaceKey, it) },
+                                onChannelSelected = { onMessageChannelSelected(spaceKey, it) },
+                                onQueue = { onQueueLocalMessage(spaceKey) },
+                                onLoadHistory = { onLoadMessageHistory(spaceKey) },
+                                onEditMessage = { message -> onEditLocalMessage(spaceKey, message) },
+                                onReplyMessage = { message -> onReplyLocalMessage(spaceKey, message) },
+                                onQueueMutation = { message, mutation, add -> onQueueMessageMutation(spaceKey, message, mutation, add) },
+                                onCancelEdit = { onCancelMessageEdit(spaceKey) },
+                                profileIdentityHex = state.identityFingerprint.orEmpty(),
                             )
                         }
-                    }
-                    state.identityBundleHex?.let { publicBundle ->
-                        Text("Public bundle (share with a peer)", style = MaterialTheme.typography.bodySmall)
-                        SelectionContainer {
-                            Text(publicBundle, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Button(onClick = onCopyIdentityBundle, modifier = Modifier.fillMaxWidth()) {
-                            Text("Copy device public bundle")
-                        }
-                    }
-                    state.identityFingerprint?.let {
-                        Button(onClick = onCopyIdentityFingerprint, modifier = Modifier.fillMaxWidth()) {
-                            Text("Copy full device fingerprint")
-                        }
-                    }
-                    state.identityClipboardStatus?.let { status ->
-                        Text(status, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-            IdentityPinCard(
-                state = state.identityPin,
-                profileReady = state.profileStatus == "Protected local identity is available on this device.",
-                onPeerBundleHexChanged = onPeerBundleHexChanged,
-                onPeerFingerprintHexChanged = onPeerFingerprintHexChanged,
-                onPinPeerIdentity = onPinPeerIdentity,
-                onLookupPinnedIdentity = onLookupPinnedIdentity,
-                onUnpinPeerIdentity = onUnpinPeerIdentity,
-                onCopyPinnedBundle = onCopyPinnedBundle,
-            )
-            Spacer(Modifier.height(20.dp))
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-                tonalElevation = 2.dp,
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Certificate request",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        "Create a PKCS#10 request for certificate issuance. A certificate authority must return a trusted chain before local Space creation.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = onGenerateCertificateRequest,
-                        enabled = state.profileStatus == "Protected local identity is available on this device." &&
-                            !state.generatingCertificateRequest,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (state.generatingCertificateRequest) "Generating…" else "Generate certificate request")
-                    }
-                    state.certificateRequestStatus?.let { status ->
-                        Text(status, style = MaterialTheme.typography.bodyMedium)
-                    }
-                    state.certificateRequestPem?.let { pem ->
-                        SelectionContainer {
-                            Text(pem, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Button(onClick = onCopyCertificateRequest, modifier = Modifier.fillMaxWidth()) {
-                            Text("Copy certificate request")
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-            }
-            if (destination == NearbyDestination.SPACES) {
-            SpaceCreationCard(
-                state = state.spaceCreation,
-                profileReady = state.profileStatus == "Protected local identity is available on this device.",
-                onCredentialVectorHexChanged = onCredentialVectorHexChanged,
-                onChannelNameChanged = onSpaceChannelNameChanged,
-                onCreateLocalSpace = onCreateLocalSpace,
-            )
-            Spacer(Modifier.height(20.dp))
-            SpaceWelcomeJoinCard(
-                state = state.spaceWelcomeJoin,
-                profileReady = state.profileStatus == "Protected local identity is available on this device.",
-                onBootstrapPackageChanged = onWelcomeBootstrapBase64Changed,
-                onInviterFingerprintChanged = onWelcomeInviterFingerprintChanged,
-                onCredentialVectorChanged = onWelcomeCredentialVectorChanged,
-                onJoin = onJoinSpaceFromWelcome,
-            )
-            Spacer(Modifier.height(20.dp))
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-                tonalElevation = 2.dp,
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Local Spaces",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Button(
-                        onClick = onRefreshLocalSpaces,
-                        enabled = state.profileStatus == "Protected local identity is available on this device." &&
-                            !state.loadingSpacePage,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (state.loadingSpacePage) "Restoring local snapshots…" else "Restore local snapshot list")
-                    }
-                    Text(
-                        "Locally restored snapshots include generations imported from signed Welcome checkpoints. They retain the accepted policy view and local transition history; they are not independent historical MLS replay proofs. Relay publishing and synchronization remain separate.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(state.localSpacesStatus, style = MaterialTheme.typography.bodyMedium)
-                    val selectedSpace = selectedSpaceKey?.let { key ->
-                        state.localSpaces.firstOrNull { localSpaceKey(it) == key }
-                    }
-                    if (selectedSpaceKey != null && selectedSpace == null) {
-                        Text("The selected Space is not in the current local page.")
-                        Button(onClick = { onOpenLocalSpace(null) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Back to local Spaces")
-                        }
-                    } else if (selectedSpace == null) {
-                        state.localSpaces.forEachIndexed { index, space ->
-                            Text("Local Genesis snapshot ${index + 1}", style = MaterialTheme.typography.titleSmall)
-                            SelectionContainer {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("Space ID: ${space.spaceId.toLowerHex()}", style = MaterialTheme.typography.bodySmall)
-                                    Text(
-                                        "Generation group reference: ${space.groupReference.toLowerHex()}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                            Button(
-                                onClick = { onOpenLocalSpace(localSpaceKey(space)) },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("Open channels for local Space ${index + 1}")
-                            }
-                        }
-                    } else {
-                        val spaceKey = localSpaceKey(selectedSpace)
-                        Button(onClick = { onOpenLocalSpace(null) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Back to local Spaces")
-                        }
-                        Text(
-                            "Local Space channels",
-                            modifier = Modifier.semantics { heading() },
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Space ID: ${selectedSpace.spaceId.toLowerHex()}", style = MaterialTheme.typography.bodySmall)
-                                Text(
-                                    "Generation group reference: ${selectedSpace.groupReference.toLowerHex()}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                        SpaceMessageComposer(
-                            channels = selectedSpace.channels,
-                            state = state.messageComposers[spaceKey] ?: LocalMessageComposerState(),
+                        SpaceMembershipCard(
+                            state = state.spaceMembership,
+                            selectedSpace = selectedSpace,
                             profileReady = state.profileStatus == "Protected local identity is available on this device.",
-                            onCredentialVectorHexChanged = { onMessageCredentialHexChanged(spaceKey, it) },
-                            onContentChanged = { onMessageContentChanged(spaceKey, it) },
-                            onReactionTokenChanged = { onMessageReactionTokenChanged(spaceKey, it) },
-                            onMutationTagHexChanged = { onMessageMutationTagHexChanged(spaceKey, it) },
-                            onChannelSelected = { onMessageChannelSelected(spaceKey, it) },
-                            onQueue = { onQueueLocalMessage(spaceKey) },
-                            onLoadHistory = { onLoadMessageHistory(spaceKey) },
-                            onEditMessage = { message -> onEditLocalMessage(spaceKey, message) },
-                            onReplyMessage = { message -> onReplyLocalMessage(spaceKey, message) },
-                            onQueueMutation = { message, mutation, add ->
-                                onQueueMessageMutation(spaceKey, message, mutation, add)
-                            },
-                            onCancelEdit = { onCancelMessageEdit(spaceKey) },
-                            profileIdentityHex = state.identityFingerprint.orEmpty(),
+                            onKeyPackageCredentialChanged = onKeyPackageCredentialChanged,
+                            onPublishKeyPackage = onPublishSpaceKeyPackage,
+                            onInvitationKeyPackageChanged = onInvitationKeyPackageChanged,
+                            onInvitationCredentialChanged = onInvitationCredentialChanged,
+                            onExpiryHoursChanged = onInvitationExpiryHoursChanged,
+                            onMaxUsesChanged = onInvitationMaxUsesChanged,
+                            onCreateInvitation = onCreateSpaceInvitation,
+                            onCopyValue = onCopyMembershipValue,
                         )
-                    }
-                    SpaceMembershipCard(
-                        state = state.spaceMembership,
-                        selectedSpace = selectedSpace,
-                        profileReady = state.profileStatus == "Protected local identity is available on this device.",
-                        onKeyPackageCredentialChanged = onKeyPackageCredentialChanged,
-                        onPublishKeyPackage = onPublishSpaceKeyPackage,
-                        onInvitationKeyPackageChanged = onInvitationKeyPackageChanged,
-                        onInvitationCredentialChanged = onInvitationCredentialChanged,
-                        onExpiryHoursChanged = onInvitationExpiryHoursChanged,
-                        onMaxUsesChanged = onInvitationMaxUsesChanged,
-                        onCreateInvitation = onCreateSpaceInvitation,
-                        onCopyValue = onCopyMembershipValue,
-                    )
-                    Spacer(Modifier.height(20.dp))
-                    state.nextSpaceCursor?.let { cursor ->
-                        Button(
-                            onClick = { onLoadMoreSpaces(cursor) },
-                            enabled = !state.loadingSpacePage,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (state.loadingSpacePage) "Loading Spaces…" else "Load more Spaces")
-                        }
-                    }
-                }
-            }
-            LocalSpaceRecoveryCard(
-                spaces = state.localSpaces,
-                state = state.spaceRecovery,
-                profileReady = state.profileStatus == "Protected local identity is available on this device.",
-                onSpaceSelected = onRecoverySpaceSelected,
-                onCredentialVectorHexChanged = onRecoveryCredentialChanged,
-                onRecover = onRecoverLocalSpace,
-            )
-            Spacer(Modifier.height(20.dp))
+                    },
+                    recovery = {
+                        LocalSpaceRecoveryCard(
+                            spaces = state.localSpaces,
+                            state = state.spaceRecovery,
+                            profileReady = state.profileStatus == "Protected local identity is available on this device.",
+                            onSpaceSelected = onRecoverySpaceSelected,
+                            onCredentialVectorHexChanged = onRecoveryCredentialChanged,
+                            onRecover = onRecoverLocalSpace,
+                        )
+                    },
+                )
             }
 
-            if (destination == NearbyDestination.DIAGNOSTICS) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-                tonalElevation = 2.dp,
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(
-                        "Readiness",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        "Android Keystore wrapping key: ${state.keystoreProtectionLevel?.diagnosticLabel ?: "not checked"}",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        "Hardware backing describes the wrapping key only; this status does not identify StrongBox or claim the identity signing keys are hardware-resident.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text("Bluetooth permission: ${state.permission.label()}", style = MaterialTheme.typography.bodyMedium)
-                    Text("Bluetooth: ${state.bluetooth.label()}", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "Wi-Fi upgrade capability (local device only)",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text("Wi-Fi Aware: ${state.wifiCapabilities.aware.label()}", style = MaterialTheme.typography.bodyMedium)
-                    Text("Wi-Fi Direct: ${state.wifiCapabilities.direct.label()}", style = MaterialTheme.typography.bodyMedium)
-                    Text("LAN interface: ${state.wifiCapabilities.lan.label()}", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "A local capability is not a reachable or authenticated peer path. No Wi-Fi data path is active; Bluetooth discovery remains the baseline only.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(state.message, style = MaterialTheme.typography.bodyLarge)
-                    if (state.scanning) {
-                        Text(
-                            if (state.sightings >= 1024) "Unverified token sightings: 1,024+"
-                            else "Unverified token sightings: ${state.sightings}",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                    Text(
-                        state.bleConnectionStatus,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    state.lastCoreIngressResult?.let { result ->
-                        Text(
-                            "Last Core ingress: $result",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    state.nearbyCandidates.forEach { candidate ->
-                        Text(
-                            "Nearby peer ${candidate.selectionId}: rotating token match only; identity remains unverified.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Button(
-                            onClick = { onConnectCandidate(candidate.selectionId) },
-                            enabled = state.profileStatus == "Protected local identity is available on this device.",
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Connect and verify peer ${candidate.selectionId}")
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Button(onClick = onPrimaryAction, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (state.scanning) "Stop nearby scan" else primaryLabel(state))
-                    }
-                    Text(
-                        "Persistent nearby mode",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        state.persistentNearbyStatus,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        "This opt-in foreground service scans and advertises experimental rotating BLE discovery tokens while the app is backgrounded. Signals remain unverified; there is no GATT connection or message exchange.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = onPersistentNearbyAction,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (state.persistentNearbyEnabled) {
-                                "Stop persistent nearby mode"
-                            } else {
-                                "Start persistent nearby mode"
-                            },
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-            Text(
-                "A selected peer is not trusted until its Noise identity proof is verified and pinned. Encrypted outbox forwarding requires separate consent. LBFA records authenticated peer acceptance of a complete envelope into bounded ingress, not destination delivery.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            }
         }
+    }
+    }
     }
     }
 
@@ -3186,10 +2998,14 @@ private fun NearbyReadinessScreen(
         )
     }
     state.pendingIdentitySafetyNumber?.let { safetyNumber ->
-        AlertDialog(
-            onDismissRequest = onRejectBleIdentity,
-            title = { Text("Verify first-contact BLE peer") },
-            text = {
+        LatticeConsentDialog(
+            title = "Verify first-contact BLE peer",
+            message = "Compare this safety number with the peer through a separate trusted channel before approving the identity.",
+            confirmLabel = "I verified this identity",
+            rejectLabel = "Reject",
+            onConfirm = onApproveBleIdentity,
+            onReject = onRejectBleIdentity,
+            content = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Compare this safety number with the peer through a separate trusted channel before approving the identity.")
                     SelectionContainer {
@@ -3201,37 +3017,25 @@ private fun NearbyReadinessScreen(
                     Text("Approval pins this exact Lattice identity. It does not authorize forwarding messages.")
                 }
             },
-            confirmButton = {
-                TextButton(onClick = onApproveBleIdentity) { Text("I verified this identity") }
-            },
-            dismissButton = {
-                TextButton(onClick = onRejectBleIdentity) { Text("Reject") }
-            },
         )
     }
     if (state.pendingRouteConsent) {
-        AlertDialog(
-            onDismissRequest = onRejectRoute,
-            title = { Text("Allow encrypted event forwarding?") },
-            text = {
-                Text(
-                    "This authenticated peer may carry opaque encrypted outbox envelopes over this BLE session. It does not prove shared Space membership or recipient delivery; the receiving Core must still validate each event.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = onApproveRoute) { Text("Allow forwarding") }
-            },
-            dismissButton = {
-                TextButton(onClick = onRejectRoute) { Text("Keep forwarding off") }
-            },
+        LatticeConsentDialog(
+            title = "Allow encrypted event forwarding?",
+            message = "This authenticated peer may carry opaque encrypted outbox envelopes over this BLE session. It does not prove shared Space membership or recipient delivery; the receiving Core must still validate each event.",
+            confirmLabel = "Allow forwarding",
+            rejectLabel = "Keep forwarding off",
+            onConfirm = onApproveRoute,
+            onReject = onRejectRoute,
         )
     }
 }
 
-private fun NearbyDestination.label(): String = when (this) {
-    NearbyDestination.IDENTITY -> "Identity"
-    NearbyDestination.SPACES -> "Spaces"
-    NearbyDestination.DIAGNOSTICS -> "Diagnostics"
+private fun AndroidDestination.label(): String = when (this) {
+    AndroidDestination.IDENTITY -> "Identity"
+    AndroidDestination.SPACES -> "Spaces"
+    AndroidDestination.DIRECT_MESSAGES -> "Direct messages"
+    AndroidDestination.NEARBY -> "Nearby"
 }
 
 private fun DiscoveryPermissionState.label(): String = when (this) {
