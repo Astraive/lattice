@@ -35,4 +35,18 @@ Development-only issuer commands, five distinct client-created CSR fixtures, exa
 | Independent protocol and sync scenario suite | `cargo test -p lattice-scenario-tests --locked`; `tests/protocol/protocol_vectors.rs`; `tests/sync/replica_convergence.rs` | Four integration tests pass across two targets: published canonical/signed-event vectors, malformed bytes and unknown mandatory-kind rejection, plus signed-replica convergence under seeded drop/duplicate/delay/reordering. | The scenario package is independent of crate-local unit tests; replica storage and sync planning are a test-local model, not proof of production client interoperability. |
 | Ledger generator, checker, and source capability classifications | `python -m unittest discover -s tooling/quality -p "test_*.py"`; `python tooling/quality/history_ledger.py --check --head HEAD^ --ref origin/main --ref origin/beta`; `docs/verification/FEATURE_LEDGER.json` | Five generator tests passed; checker reconciled 391 commits in both indexes; schema-v2 records 28 capability groups, 225 reviewed and 166 heuristic maps, 11 `.gitkeep` paths, and two reviewed unreachable-branch candidates. | Inventory is complete for its declared Git refs; heuristic assignments and unverified capability groups remain explicit. No runtime capability is promoted by indexing. |
 
+## Issue #20 — CLI peer acceptance status
+
+The [CLI feature contract](../features/cli.md) describes implemented commands and JSON boundaries. The runtime records below satisfy only bounded portions of the first-class peer requirement.
+
+| Acceptance area | Recorded evidence | Remaining gate |
+| --- | --- | --- |
+| Identity, pins, Space lifecycle, messaging, search, edits, and JSON | Production CLI PKI positive/negative runs and CLI component tests are recorded above; command and output contracts are in the CLI feature document. | No one process-level acceptance run covers the complete command lifecycle, pin/unpin restart, mutation exchange, and truthful JSON states together. |
+| Authenticated direct sync and reconciliation | CLI↔CLI and reciprocal Desktop↔CLI event runs are recorded above and in the [interop matrix](INTEROP_MATRIX.md). | Verified rounds are bounded; no full cross-client convergence/restart matrix is claimed. |
+| Durable outbox and process restart | The local outbox is implemented and component-tested. The [restart matrix](RESTART_MATRIX.md) marks process-kill/retry persistence unverified. | Terminate after local commit and before transport; reopen the same profile and prove event-ID-preserving retry and deduplication. |
+| Relay, local path, and courier workflows | Local relay configuration, privacy-bounded path reporting, and one-hop courier behavior are documented/tested. | Independent live relays are unavailable; multi-hop courier and end-to-end profile restart acceptance remain unmet. |
+| Android as a receiving peer | The [interop matrix](INTEROP_MATRIX.md) marks CLI↔Android BLOCKED-EXTERNAL. | No physical Android device or `adb`; run a real authenticated exchange and record unchanged event IDs on both clients. |
+
+Keep issue #20 open until the missing end-to-end evidence exists; local command documentation and component tests are not cross-client acceptance.
+
 Revisions and commands must be refreshed as changes land. Any logs added later must redact credentials, private keys, device rendezvous secrets, and unrelated user data.
