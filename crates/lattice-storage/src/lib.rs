@@ -49,7 +49,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -82,6 +82,15 @@ pub struct EventRecord {
     pub author_seq: u64,
     pub canonical_bytes: Vec<u8>,
     pub parents: Vec<[u8; ID_BYTES]>,
+}
+
+/// An accepted signed event pending peer-specific authenticated forwarding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForwardableEventEntry {
+    pub event_id: [u8; ID_BYTES],
+    pub canonical_bytes: Vec<u8>,
+    pub next_attempt_ms: i64,
+    pub attempt_count: u32,
 }
 
 /// An event staged until its missing dependencies become available.
@@ -851,6 +860,33 @@ impl Store {
                             AND length(ciphertext) BETWEEN 1 AND 4096)
                 );
                 PRAGMA user_version = 18;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 19 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE relay_eligible_events (
+                    event_id BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32)
+                );
+                CREATE TABLE relay_peer_event_status (
+                    peer_identity BLOB NOT NULL
+                        CHECK(typeof(peer_identity) = 'blob' AND length(peer_identity) = 32),
+                    event_id BLOB NOT NULL
+                        CHECK(typeof(event_id) = 'blob' AND length(event_id) = 32),
+                    next_attempt_ms INTEGER NOT NULL CHECK(next_attempt_ms >= 0),
+                    attempt_count INTEGER NOT NULL
+                        CHECK(attempt_count BETWEEN 0 AND 4294967295),
+                    accepted INTEGER NOT NULL CHECK(accepted IN (0, 1)),
+                    PRIMARY KEY(peer_identity, event_id),
+                    FOREIGN KEY(event_id) REFERENCES relay_eligible_events(event_id)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX relay_peer_events_due
+                    ON relay_peer_event_status(peer_identity, accepted, next_attempt_ms, event_id);
+                PRAGMA user_version = 19;",
             )?;
             transaction.commit()?;
         }
@@ -2931,6 +2967,162 @@ impl Store {
         .collect()
     }
 
+    /// Records a committed authorized event as eligible for voluntary onward forwarding.
+    ///
+    /// Call inside the same transaction that commits the received event.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the row cannot be inserted.
+    pub fn mark_relay_eligible_in_transaction(
+        transaction: &Transaction<'_>,
+        event_id: [u8; ID_BYTES],
+    ) -> Result<()> {
+        transaction.execute(
+            "INSERT OR IGNORE INTO relay_eligible_events(event_id) VALUES (?1)",
+            params![&event_id[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Returns a bounded page of authorized events not yet accepted by `peer_identity`.
+    ///
+    /// Rows without a peer status are immediately due. Interrupted attempts become
+    /// eligible again at their persisted retry time; accepted rows are never resent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid page limit, timestamp, malformed stored data,
+    /// or database failure.
+    pub fn list_forwardable_event_page(
+        &self,
+        peer_identity: &[u8; ID_BYTES],
+        after_event_id: Option<[u8; ID_BYTES]>,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<ForwardableEventEntry>> {
+        if now_ms < 0 {
+            return Err(StoreError::InvalidOutboxSchedule);
+        }
+        if limit == 0 || limit > MAX_OUTBOX_PAGE_SIZE {
+            return Err(StoreError::OutboxPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT eligible.event_id, events.canonical_bytes,
+                    COALESCE(status.next_attempt_ms, 0),
+                    COALESCE(status.attempt_count, 0)
+             FROM relay_eligible_events AS eligible
+             JOIN events ON events.event_id = eligible.event_id
+             LEFT JOIN relay_peer_event_status AS status
+               ON status.event_id = eligible.event_id
+              AND status.peer_identity = ?1
+             WHERE (?2 IS NULL OR eligible.event_id > ?2)
+               AND COALESCE(status.accepted, 0) = 0
+               AND COALESCE(status.next_attempt_ms, 0) <= ?3
+             ORDER BY eligible.event_id LIMIT ?4",
+        )?;
+        let after = after_event_id.map(|id| id.to_vec());
+        let rows = statement.query_map(
+            params![
+                &peer_identity[..],
+                after,
+                now_ms,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )?;
+        rows.map(|row| {
+            let (event_id, canonical_bytes, next_attempt_ms, attempt_count) = row?;
+            Ok(ForwardableEventEntry {
+                event_id: decode_id(event_id)?,
+                canonical_bytes,
+                next_attempt_ms,
+                attempt_count: u32::try_from(attempt_count)
+                    .map_err(|_| StoreError::CorruptData("invalid relay attempt count"))?,
+            })
+        })
+        .collect()
+    }
+
+    /// Persists a forwarding attempt for one peer before transport transmission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid timestamp, unknown relay event, exhausted
+    /// attempts, or a database failure.
+    pub fn mark_relay_event_attempt(
+        &mut self,
+        peer_identity: &[u8; ID_BYTES],
+        event_id: [u8; ID_BYTES],
+        next_attempt_ms: i64,
+    ) -> Result<()> {
+        if next_attempt_ms < 0 {
+            return Err(StoreError::InvalidOutboxSchedule);
+        }
+        let changed = self.connection.execute(
+            "INSERT INTO relay_peer_event_status
+                (peer_identity, event_id, next_attempt_ms, attempt_count, accepted)
+             SELECT ?1, ?2, ?3, 1, 0
+             WHERE EXISTS (
+                 SELECT 1 FROM relay_eligible_events WHERE event_id = ?2
+             )
+             ON CONFLICT(peer_identity, event_id) DO UPDATE SET
+                next_attempt_ms = excluded.next_attempt_ms,
+                attempt_count = relay_peer_event_status.attempt_count + 1
+             WHERE relay_peer_event_status.accepted = 0
+               AND relay_peer_event_status.attempt_count < 4294967295",
+            params![&peer_identity[..], &event_id[..], next_attempt_ms],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOutboxTransition)
+        }
+    }
+
+    /// Records that an authenticated peer already retains this accepted event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peer identity is malformed at the database boundary
+    /// or the database operation fails.
+    pub fn record_relay_event_peer_acceptance(
+        &mut self,
+        peer_identity: &[u8; ID_BYTES],
+        event_id: [u8; ID_BYTES],
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "INSERT INTO relay_peer_event_status
+                (peer_identity, event_id, next_attempt_ms, attempt_count, accepted)
+             SELECT ?1, ?2, 0, 0, 1
+             WHERE EXISTS (
+                 SELECT 1 FROM relay_eligible_events WHERE event_id = ?2
+             )
+             ON CONFLICT(peer_identity, event_id) DO UPDATE SET accepted = 1",
+            params![&peer_identity[..], &event_id[..]],
+        )?;
+        if changed == 1 {
+            return Ok(());
+        }
+        let eligible: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM relay_eligible_events WHERE event_id = ?1)",
+            params![&event_id[..]],
+            |row| row.get(0),
+        )?;
+        if eligible {
+            Err(StoreError::InvalidOutboxTransition)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Records a durable attempt before placing an envelope on transport.
     ///
     /// The attempt keeps the original event/envelope identity and remains
@@ -3767,6 +3959,8 @@ mod tests {
                      DROP TABLE trusted_identities;
                      DROP INDEX outbox_queued_schedule;
                      DROP TABLE outbox;
+                     DROP TABLE relay_peer_event_status;
+                     DROP TABLE relay_eligible_events;
                      PRAGMA user_version = 1;",
                 )
                 .expect("restore v1 schema fixture");
@@ -3835,6 +4029,8 @@ mod tests {
                      DROP TABLE key_package_lifecycle;
                      DROP TABLE space_genesis_snapshots;
                      DROP TABLE trusted_identities;
+                     DROP TABLE relay_peer_event_status;
+                     DROP TABLE relay_eligible_events;
                      PRAGMA user_version = 4;",
                 )
                 .expect("restore v4 schema fixture");
@@ -3893,6 +4089,8 @@ mod tests {
                      DROP TABLE cached_space_messages;
                      DROP TABLE key_package_lifecycle;
                      DROP TABLE trusted_identities;
+                     DROP TABLE relay_peer_event_status;
+                     DROP TABLE relay_eligible_events;
                      PRAGMA user_version = 5;",
                 )
                 .expect("restore v5 schema fixture");
@@ -3984,6 +4182,8 @@ mod tests {
                      DROP TABLE outbox_new;
                      CREATE INDEX outbox_queued_schedule
                         ON outbox(state, next_attempt_ms, event_id);
+                     DROP TABLE relay_peer_event_status;
+                     DROP TABLE relay_eligible_events;
                      PRAGMA user_version = 13;",
                 )
                 .expect("restore v13 outbox schema");
@@ -5119,5 +5319,118 @@ mod tests {
             store.store_pending(excess_id, &[0x04], &[]),
             Err(StoreError::PendingEventLimit)
         ));
+    }
+    #[test]
+    fn relay_forwarding_is_per_peer_durable_and_preserves_canonical_event_bytes() {
+        let database = TempDatabase::new();
+        let mut store = Store::open(database.path()).expect("open database");
+        let peer_one = id(101);
+        let peer_two = id(102);
+        let event_one = id(103);
+        let event_two = id(104);
+        let bytes_one = [0xA1, 0x01, 0x02];
+        let bytes_two = [0xA1, 0x03, 0x04];
+        store
+            .commit_received(id(105), event_one, 1, &bytes_one, &[])
+            .expect("commit first received event");
+        store
+            .commit_received(id(106), event_two, 1, &bytes_two, &[])
+            .expect("commit second received event");
+        store
+            .with_transaction(|transaction| {
+                Store::mark_relay_eligible_in_transaction(transaction, event_one)?;
+                Store::mark_relay_eligible_in_transaction(transaction, event_two)?;
+                Ok::<_, StoreError>(())
+            })
+            .expect("mark authorized events relayable");
+
+        assert_eq!(store.schema_version().expect("schema version"), 19);
+        let initial = store
+            .list_forwardable_event_page(&peer_one, None, 0, 10)
+            .expect("list relay entries");
+        assert_eq!(initial.len(), 2);
+        let first = initial
+            .iter()
+            .find(|entry| entry.event_id == event_one)
+            .expect("first event relay row");
+        assert_eq!(first.canonical_bytes, bytes_one);
+        store
+            .mark_relay_event_attempt(&peer_one, event_one, 100)
+            .expect("record retry schedule");
+        drop(store);
+        let mut store = Store::open(database.path()).expect("reopen relay state");
+        assert!(
+            store
+                .list_forwardable_event_page(&peer_one, None, 99, 10)
+                .expect("exclude not-yet-due relay row")
+                .iter()
+                .all(|entry| entry.event_id != event_one)
+        );
+        let retried = store
+            .list_forwardable_event_page(&peer_one, None, 100, 10)
+            .expect("list due retry");
+        assert_eq!(
+            retried
+                .iter()
+                .find(|entry| entry.event_id == event_one)
+                .expect("retried event")
+                .attempt_count,
+            1
+        );
+        store
+            .record_relay_event_peer_acceptance(&peer_one, event_one)
+            .expect("record authenticated peer acceptance");
+        drop(store);
+        let mut store = Store::open(database.path()).expect("reopen accepted relay state");
+        assert!(
+            store
+                .list_forwardable_event_page(&peer_one, None, 100, 10)
+                .expect("exclude accepted peer event")
+                .iter()
+                .all(|entry| entry.event_id != event_one)
+        );
+        assert!(
+            store
+                .list_forwardable_event_page(&peer_two, None, 0, 10)
+                .expect("another peer still needs event")
+                .iter()
+                .any(|entry| entry.event_id == event_one)
+        );
+        assert!(matches!(
+            store.mark_relay_event_attempt(&peer_one, id(107), 100),
+            Err(StoreError::InvalidOutboxTransition)
+        ));
+        store
+            .record_relay_event_peer_acceptance(&peer_one, id(107))
+            .expect("non-relayable event acceptance is ignored");
+    }
+    #[test]
+    fn v18_schema_upgrade_adds_durable_relay_tables() {
+        let database = TempDatabase::new();
+        {
+            let store = Store::open(database.path()).expect("open current schema");
+            store
+                .connection
+                .execute_batch(
+                    "DROP TABLE relay_peer_event_status;
+                     DROP TABLE relay_eligible_events;
+                     PRAGMA user_version = 18;",
+                )
+                .expect("restore version 18 schema");
+        }
+        let store = Store::open(database.path()).expect("upgrade version 18 schema");
+        assert_eq!(store.schema_version().expect("read schema version"), 19);
+        let relay_tables: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN (
+                    'relay_eligible_events', 'relay_peer_event_status'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("confirm migrated relay tables");
+        assert_eq!(relay_tables, 2);
     }
 }

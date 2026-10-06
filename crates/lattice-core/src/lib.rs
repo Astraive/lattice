@@ -38,9 +38,9 @@ use lattice_storage::{
     SpaceMembershipTransitionSnapshot, Store, StoreError,
 };
 pub use lattice_storage::{
-    DirectMessageConversation, DirectMessageOutboxEntry, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
-    MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState, PendingDirectMessageInvitation,
-    SpaceGenesisCursor,
+    DirectMessageConversation, DirectMessageOutboxEntry, ForwardableEventEntry,
+    MAX_DIRECT_MESSAGE_PENDING_INVITATIONS, MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState,
+    PendingDirectMessageInvitation, SpaceGenesisCursor,
 };
 use openmls::credentials::Credential;
 use openmls::prelude::CredentialType;
@@ -448,6 +448,7 @@ pub fn authorize_and_store_application_event(
         {
             return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
         }
+        Store::mark_relay_eligible_in_transaction(transaction, event_id)?;
     }
     Ok((staged_reducer, authorization))
 }
@@ -4480,6 +4481,61 @@ impl Client {
             next_cursor,
         })
     }
+    /// Returns a bounded page of accepted events not yet retained by one authenticated peer.
+    ///
+    /// The exact signed bytes are reused; the event ID and author signature do
+    /// not change. Pending, checkpoint-excluded, and unauthorized events are
+    /// not eligible for onward forwarding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the peer ID, cursor, timestamp, page size, or
+    /// persisted event bytes are invalid.
+    pub fn forwardable_event_page(
+        &self,
+        peer_identity: &[u8; 32],
+        after_event_id: Option<[u8; 32]>,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<ForwardableEventEntry>, CoreError> {
+        Ok(self
+            .store
+            .list_forwardable_event_page(peer_identity, after_event_id, now_ms, limit)?)
+    }
+
+    /// Persists a retryable forwarding attempt for an accepted event and peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the timestamp is invalid, the event is not relayable,
+    /// attempts are exhausted, or storage fails.
+    pub fn mark_relay_event_attempt(
+        &mut self,
+        peer_identity: &[u8; 32],
+        event_id: [u8; 32],
+        next_attempt_ms: i64,
+    ) -> Result<(), CoreError> {
+        self.store
+            .mark_relay_event_attempt(peer_identity, event_id, next_attempt_ms)?;
+        Ok(())
+    }
+
+    /// Records authenticated peer ingress acceptance for an accepted event.
+    ///
+    /// This is a hop-level retention acknowledgement, not destination delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if a relay-eligible row cannot be updated or storage fails.
+    pub fn record_relay_event_peer_acceptance(
+        &mut self,
+        peer_identity: &[u8; 32],
+        event_id: [u8; 32],
+    ) -> Result<(), CoreError> {
+        self.store
+            .record_relay_event_peer_acceptance(peer_identity, event_id)?;
+        Ok(())
+    }
     /// Records one persisted forwarding attempt for a durable outbox row.
     ///
     /// # Errors
@@ -8217,6 +8273,15 @@ mod tests {
                 event_id: message_id
             }
         );
+        let relay_peer = [0xA5; 32];
+        let relay_page = bob
+            .forwardable_event_page(&relay_peer, None, 0, 16)
+            .expect("list relayable events after Core authorization");
+        let relay_entry = relay_page
+            .iter()
+            .find(|entry| entry.event_id == message_id)
+            .expect("accepted application event is relayable");
+        assert_eq!(relay_entry.canonical_bytes, message_event.encoded_bytes());
         assert_eq!(
             bob.accept_synced_application_event_for_local_generation(message_event.encoded_bytes())
                 .expect("restore and recognize exact duplicate"),
@@ -8249,6 +8314,12 @@ mod tests {
                 event_id: pending_id,
                 missing_dependencies: vec![missing_parent],
             }
+        );
+        assert!(
+            bob.forwardable_event_page(&relay_peer, None, 0, 16)
+                .expect("list relayable events after pending ingress")
+                .iter()
+                .all(|entry| entry.event_id != pending_id)
         );
         assert!(
             bob.store

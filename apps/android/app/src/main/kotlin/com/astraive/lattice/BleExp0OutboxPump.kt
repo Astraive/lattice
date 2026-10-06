@@ -1,11 +1,21 @@
 package com.astraive.lattice
 
+import uniffi.lattice_uniffi.MobileDirectMessageOutboxEntry
+import uniffi.lattice_uniffi.MobileForwardableEventEntry
 import uniffi.lattice_uniffi.MobileOutboxEntry
 import uniffi.lattice_uniffi.MobileOutboxState
 
+internal interface BleExp0OutboxProfile : BleExp0IngressProfile {
+    fun outboxPage(afterEventId: ByteArray? = null, limit: Int = 64): List<MobileOutboxEntry>
+    fun directMessageOutboxPage(
+        afterPacketId: ByteArray? = null,
+        limit: UInt = 64u,
+    ): List<MobileDirectMessageOutboxEntry>
+}
+
 /** Selects due durable rows and advances one authenticated BLE transfer at a time. */
 internal class BleExp0OutboxPump(
-    private val profile: AndroidMobileProfile,
+    private val profile: BleExp0OutboxProfile,
     private val transport: BleExp0EnvelopeTransport,
     /** Router authorization for signed-event envelopes. */
     private val isRoutedToPeer: (eventId: ByteArray) -> Boolean,
@@ -18,14 +28,26 @@ internal class BleExp0OutboxPump(
     ): Boolean {
         val peerIdentity = transport.authenticatedPeerIdentityFingerprint()
         var eventCursor: ByteArray? = null
+        var forwardedCursor: ByteArray? = null
         var directMessageCursor: ByteArray? = null
         var eventsExhausted = false
+        var forwardedEventsExhausted = false
         var directMessagesExhausted = false
-        while (!eventsExhausted || !directMessagesExhausted) {
+        while (!eventsExhausted || !forwardedEventsExhausted || !directMessagesExhausted) {
             val eventPage = if (eventsExhausted) {
                 emptyList()
             } else {
                 profile.outboxPage(eventCursor, OUTBOX_PAGE_SIZE)
+            }
+            val forwardedPage = if (forwardedEventsExhausted) {
+                emptyList()
+            } else {
+                profile.forwardableEventPage(
+                    peerIdentity,
+                    forwardedCursor,
+                    nowUnixMillis,
+                    OUTBOX_PAGE_SIZE,
+                )
             }
             val directMessagePage = if (directMessagesExhausted) {
                 emptyList()
@@ -35,26 +57,40 @@ internal class BleExp0OutboxPump(
             val event = eventPage.firstOrNull {
                 it.isDueAt(nowUnixMillis) && isRoutedToPeer(it.eventId.copyOf())
             }
+            val forwardedEvent = forwardedPage.firstOrNull {
+                isRoutedToPeer(it.eventId.copyOf())
+            }
             val directMessage = directMessagePage.firstOrNull {
                 it.isDueAt(nowUnixMillis) &&
                     profile.isDirectMessageRoutedToPeer(it.groupReference, peerIdentity)
             }
-            val candidates = listOfNotNull(event, directMessage?.asTransportEntry())
+            val candidates = listOfNotNull(
+                event?.let { it to null },
+                forwardedEvent?.let { it.asTransportEntry() to peerIdentity },
+                directMessage?.asTransportEntry()?.let { it to null },
+            )
             val due = candidates.minWithOrNull { left, right ->
-                comparePacketIds(left.eventId, right.eventId)
+                comparePacketIds(left.first.eventId, right.first.eventId)
             }
             if (due != null) {
                 transport.sendEnvelope(
-                    due,
-                    retryAt(due.attemptCount, nowUnixMillis),
+                    due.first,
+                    retryAt(due.first.attemptCount, nowUnixMillis),
                     nowUnixMillis,
                     nowElapsedMillis,
+                    relayPeerIdentity = due.second,
                 )
                 return true
             }
             if (!eventsExhausted) {
                 eventsExhausted = eventPage.size < OUTBOX_PAGE_SIZE
                 if (!eventsExhausted) eventCursor = eventPage.last().eventId
+            }
+            if (!forwardedEventsExhausted) {
+                forwardedEventsExhausted = forwardedPage.size < OUTBOX_PAGE_SIZE
+                if (!forwardedEventsExhausted) {
+                    forwardedCursor = forwardedPage.last().eventId
+                }
             }
             if (!directMessagesExhausted) {
                 directMessagesExhausted = directMessagePage.size < OUTBOX_PAGE_SIZE
@@ -101,6 +137,15 @@ internal class BleExp0OutboxPump(
             attemptCount = attemptCount,
             state = state,
         )
+    private fun MobileForwardableEventEntry.asTransportEntry() =
+        MobileOutboxEntry(
+            eventId = eventId,
+            envelopeBytes = canonicalBytes,
+            nextAttemptMs = nextAttemptMs,
+            attemptCount = attemptCount,
+            state = MobileOutboxState.QUEUED,
+        )
+
 
     private fun comparePacketIds(left: ByteArray, right: ByteArray): Int {
         for (index in 0 until minOf(left.size, right.size)) {

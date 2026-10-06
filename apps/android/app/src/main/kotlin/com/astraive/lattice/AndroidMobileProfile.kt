@@ -23,6 +23,7 @@ import uniffi.lattice_uniffi.MobileLocalTextMessage
 import uniffi.lattice_uniffi.MobileBleRole
 import uniffi.lattice_uniffi.MobileBleSession
 import uniffi.lattice_uniffi.MobileOutboxEntry
+import uniffi.lattice_uniffi.MobileForwardableEventEntry
 import uniffi.lattice_uniffi.MobileSyncEventResult
 
 import uniffi.lattice_uniffi.MobileSpaceInvitation
@@ -201,7 +202,7 @@ internal class AndroidMobileProfile private constructor(
     private val profileId: String,
     private val applicationContext: Context,
     private val attachmentRoot: File,
-): AutoCloseable, BleExp0IngressProfile {
+): AutoCloseable, BleExp0OutboxProfile {
     private val projectionSubscriptions = CoreProjectionSubscriptionRegistry()
     private val closed = AtomicBoolean(false)
 
@@ -515,8 +516,10 @@ internal class AndroidMobileProfile private constructor(
         }
     }
 
-    fun outboxPage(afterEventId: ByteArray? = null, limit: Int = 64): List<MobileOutboxEntry> =
-        client.outboxPage(afterEventId, limit)
+    override fun outboxPage(
+        afterEventId: ByteArray?,
+        limit: Int,
+    ): List<MobileOutboxEntry> = client.outboxPage(afterEventId, limit)
 
     override fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long) =
         client.markOutboxAttempt(eventId, nextAttemptMs)
@@ -524,14 +527,34 @@ internal class AndroidMobileProfile private constructor(
     override fun recordPeerIngressAccepted(eventId: ByteArray) =
         client.recordPeerIngressAccepted(eventId)
 
+    override fun forwardableEventPage(
+        peerIdentity: ByteArray,
+        afterEventId: ByteArray?,
+        nowUnixMillis: Long,
+        limit: Int,
+    ): List<MobileForwardableEventEntry> =
+        client.forwardableEventPage(peerIdentity, afterEventId, nowUnixMillis, limit)
+
+    override fun markRelayEventAttempt(
+        peerIdentity: ByteArray,
+        eventId: ByteArray,
+        nextAttemptMs: Long,
+    ) = client.markRelayEventAttempt(peerIdentity, eventId, nextAttemptMs)
+
+    override fun recordRelayEventPeerAcceptance(peerIdentity: ByteArray, eventId: ByteArray) =
+        client.recordRelayEventPeerAcceptance(peerIdentity, eventId)
+
     fun localTextMessages(
         spaceId: ByteArray,
         groupReference: ByteArray,
         channelId: ByteArray,
     ): List<MobileLocalTextMessage> = client.listLocalTextMessages(spaceId, groupReference, channelId)
 
-    override fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult =
-        client.ingestSyncedApplicationEvent(canonicalBytes)
+    override fun ingestSyncedApplicationEvent(
+        canonicalBytes: ByteArray,
+        authenticatedPeerIdentity: ByteArray,
+    ): MobileSyncEventResult =
+        client.ingestSyncedApplicationEvent(canonicalBytes, authenticatedPeerIdentity)
 
     fun queueLocalTextMessage(
         spaceId: ByteArray,
@@ -688,9 +711,9 @@ internal class AndroidMobileProfile private constructor(
     ): List<MobileDirectMessageHistoryEntry> =
         client.directMessageHistory(groupReference, limit)
 
-    fun directMessageOutboxPage(
-        afterPacketId: ByteArray? = null,
-        limit: UInt = 64u,
+    override fun directMessageOutboxPage(
+        afterPacketId: ByteArray?,
+        limit: UInt,
     ): List<MobileDirectMessageOutboxEntry> =
         client.directMessageOutboxPage(afterPacketId, limit)
 
