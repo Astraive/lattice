@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use lattice_testkit::{
     ContactPlan, ContactWindow, DirectedLink, LinkConfig, LinkError, PeerId, MAX_CONTACT_WINDOWS,
@@ -97,15 +97,15 @@ pub fn simulate(config: SimulationConfig) -> Result<SimulationReport, Simulation
     validate_config(config)?;
     let node_count = usize::from(config.nodes);
     let total_events = u64::from(config.nodes) * u64::from(config.events_per_node);
-    let mut replicas = vec![BTreeMap::<u64, ()>::new(); node_count];
+    let mut replicas = vec![BTreeSet::<u64>::new(); node_count];
     for (node, replica) in replicas.iter_mut().enumerate() {
         for sequence in 0..config.events_per_node {
             let event_id = event_id(node as u16, sequence, config.events_per_node);
-            replica.insert(event_id, ());
+            replica.insert(event_id);
         }
     }
 
-    let contacts = build_contact_windows(config)?;
+    let contacts = build_contact_windows(config);
     let contact_plan = ContactPlan::new(config.nodes, contacts)
         .map_err(|_| SimulationError::InvalidContactPlan)?;
     let mut links = Vec::with_capacity((node_count - 1) * 2);
@@ -150,12 +150,10 @@ pub fn simulate(config: SimulationConfig) -> Result<SimulationReport, Simulation
             if !contact_plan.is_active(PeerId::new(path.from), PeerId::new(path.to), tick) {
                 continue;
             }
-            let pending: Vec<u64> = replicas[usize::from(path.from)]
-                .keys()
-                .filter(|event_id| !replicas[usize::from(path.to)].contains_key(event_id))
-                .copied()
-                .collect();
-            for event_id in pending {
+            for &event_id in &replicas[usize::from(path.from)] {
+                if replicas[usize::from(path.to)].contains(&event_id) {
+                    continue;
+                }
                 packets_attempted += 1;
                 match path.link.send(
                     tick,
@@ -182,7 +180,7 @@ pub fn simulate(config: SimulationConfig) -> Result<SimulationReport, Simulation
                     delayed_copies += 1;
                 }
                 let receiver = &mut replicas[usize::from(path.to)];
-                if receiver.insert(frame.event_id, ()).is_some() {
+                if !receiver.insert(frame.event_id) {
                     duplicate_ingress_copies += 1;
                 } else {
                     unique_ingress_copies += 1;
@@ -275,7 +273,7 @@ fn validate_config(config: SimulationConfig) -> Result<(), SimulationError> {
     Ok(())
 }
 
-fn build_contact_windows(config: SimulationConfig) -> Result<Vec<ContactWindow>, SimulationError> {
+fn build_contact_windows(config: SimulationConfig) -> Vec<ContactWindow> {
     let node_count = usize::from(config.nodes);
     let period = 2 * (node_count - 1) as u64;
     let rounds = config.max_ticks.div_ceil(period);
@@ -303,7 +301,7 @@ fn build_contact_windows(config: SimulationConfig) -> Result<Vec<ContactWindow>,
             }
         }
     }
-    Ok(windows)
+    windows
 }
 
 fn event_id(author: u16, sequence: u32, events_per_node: u32) -> u64 {
