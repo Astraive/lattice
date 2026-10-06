@@ -400,3 +400,5 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 399,2d43ef9,Build and CI; Desktop client; Development tooling; Identity and trust; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 400,4dfd6d1,Android client; Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 401,920c745,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+402,7c62e2b,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+403,eac2fff,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic

@@ -1,4 +1,69 @@
 {
+  "cargo_licenses": [
+    {
+      "package": "fiat-crypto",
+      "version": "0.2.9",
+      "license": "BSD-1-Clause",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "fiat-crypto",
+      "version": "0.3.0",
+      "license": "BSD-1-Clause",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "r-efi",
+      "version": "5.3.0",
+      "license": "LGPL-2.1-or-later",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "r-efi",
+      "version": "6.0.0",
+      "license": "LGPL-2.1-or-later",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "webpki-root-certs",
+      "version": "1.0.9",
+      "license": "CDLA-Permissive-2.0",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "webpki-roots",
+      "version": "0.26.11",
+      "license": "CDLA-Permissive-2.0",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "webpki-roots",
+      "version": "1.0.9",
+      "license": "CDLA-Permissive-2.0",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    }
+  ],
   "bun": [
     {
       "package": "braces",

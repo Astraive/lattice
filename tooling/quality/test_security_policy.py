@@ -65,6 +65,66 @@ class BunSecurityPolicyTests(unittest.TestCase):
 class CargoLicensePolicyTests(unittest.TestCase):
     allowed = {"MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception"}
 
+    def exception(self, **updates):
+        return {
+            "package": "fiat-crypto",
+            "version": "0.2.9",
+            "license": "BSD-1-Clause",
+            "owner": "@security-owner",
+            "reason": "Maintainer-approved temporary exception.",
+            "expires": "2026-11-06",
+            "tracking_issue": 37,
+            **updates,
+        }
+
+    def package(self, **updates):
+        return {
+            "name": "fiat-crypto",
+            "version": "0.2.9",
+            "source": "registry+https://example",
+            "license": "BSD-1-Clause",
+            **updates,
+        }
+
+    def test_allows_current_exact_license_exception(self):
+        errors = validate_packages(
+            [self.package()],
+            self.allowed,
+            [self.exception()],
+            today=date(2026, 11, 5),
+        )
+        self.assertEqual(errors, [])
+
+    def test_exception_is_scoped_to_package_version_and_license(self):
+        errors = validate_packages(
+            [self.package(version="0.3.0")],
+            self.allowed,
+            [self.exception()],
+            today=date(2026, 11, 5),
+        )
+        self.assertTrue(any("unapproved license token" in error for error in errors))
+        self.assertTrue(any("stale Cargo license exception" in error for error in errors))
+
+    def test_expired_license_exception_fails_closed(self):
+        errors = validate_packages(
+            [self.package()],
+            self.allowed,
+            [self.exception()],
+            today=date(2026, 11, 6),
+        )
+        self.assertTrue(any("exception expired" in error for error in errors))
+        self.assertTrue(any("unapproved license token" in error for error in errors))
+
+    def test_unused_license_exception_is_stale(self):
+        errors = validate_packages(
+            [],
+            self.allowed,
+            [self.exception()],
+            today=date(2026, 11, 5),
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("stale Cargo license exception", errors[0])
+
     def test_allows_approved_license_expression_on_registry_packages(self):
         packages = [
             {"name": "dep", "version": "1.0.0", "source": "registry+https://example", "license": "MIT OR Apache-2.0"}
