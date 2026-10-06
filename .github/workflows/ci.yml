@@ -111,6 +111,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -124,6 +128,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -138,6 +146,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
