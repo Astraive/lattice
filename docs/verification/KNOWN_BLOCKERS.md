@@ -10,4 +10,18 @@ Ordered by dependency impact. These do not reduce product scope.
 | 4 | OPFS crash, quota and same-profile contention matrix incomplete | Web durable storage and restart | A managed Chromium smoke verified separate profile directories and persistence after page reload/reopen; browser process-kill, crash rollback, quota failure and same-profile tab exclusion were not exercised. | Run the failure/restart matrix on supported browsers and capture pre/post-commit state and lock behavior. |
 | 5 | Web compatibility, accessibility and privacy review incomplete | WEB-009 and Web release readiness | No supported-browser matrix, keyboard/screen-reader acceptance, CSP/network capture, or independent Web security review has been recorded. | Complete accessibility, privacy and dependency/security review before support claims. |
 
+## Issue #19 — Desktop cross-client acceptance
+
+The current run records in the [interoperability matrix](INTEROP_MATRIX.md) satisfy only bounded portions of the Desktop acceptance; they do not close DSK-001–DSK-007.
+
+| Acceptance item | Status | Evidence and remaining gate |
+| --- | --- | --- |
+| Authenticated Desktop↔CLI sync | PARTIAL | One reciprocal authenticated event exchange is recorded. Run repeated repair/reconciliation rounds and verify stable convergence. |
+| Authenticated Desktop↔Android exchange | BLOCKED-EXTERNAL | No physical Android device or `adb` is available. Emulators and unit tests are not substitutes for the paired-client run. |
+| Space membership, messages, mutations, and attachments survive restart | PARTIAL | Two Desktop profiles retained membership and one accepted event through the recorded restart path. Cross-client mutations, attachment transfer, and their post-restart state are not evidenced. |
+| Pinned-peer mismatch fails closed | PARTIAL | The authenticated node regression `mismatched_peer_pin_fails_before_scope_data_is_sent_or_loaded` covers the lower-level rejection; a Desktop process-level negative run remains unrecorded. |
+| Desktop is optional courier, never required authority | UNVERIFIED | Desktop documentation describes courier-only persistent peer mode. No end-to-end run proves opt-in/restart behavior or that Space authorization never depends on the courier. |
+
+Keep the issue open until the missing runtime evidence exists; implementation notes and lower-level tests do not satisfy these client acceptance gates.
+
 The historical feature inventory and further source-audit gaps are in [`docs/quality/FEATURE_LEDGER.md`](../quality/FEATURE_LEDGER.md). A blocker is not permission to remove or narrow acceptance criteria.
