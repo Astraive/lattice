@@ -812,4 +812,8 @@ mod noise_session_tests {
             Err(NoiseTransportError::SessionFailed)
         );
     }
+    #[test]
+    fn issue_38_required_check_probe_fails_deliberately() {
+        assert!(false, "temporary issue 38 ruleset verification");
+    }
 }
