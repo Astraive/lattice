@@ -1,0 +1,32 @@
+; Candidate v1 signed-event CBOR schema.
+; Semantic and canonical-encoding constraints are listed in README.md.
+
+uint16-bytes = bstr .size 16
+fingerprint = bstr .size 32
+parent-id = bstr .size 32
+protected-body = bstr .size (1..245760)
+identity-bundle = bstr .size 65
+signature = bstr .size 64
+
+; The exact encoded map below is retained byte-for-byte by the signed envelope.
+event-preimage = {
+  0: 1,
+  1: uint16-bytes,
+  2: null / uint16-bytes,
+  3: fingerprint,
+  4: uint .gt 0,
+  5: uint,
+  6: uint,
+  7: [0*64 parent-id],
+  8: 1..11,
+  9: protected-body,
+  10: fingerprint,
+  11: uint
+}
+
+signed-event = {
+  0: 1,
+  1: bstr .size (1..1048576),
+  2: identity-bundle,
+  3: signature
+}
