@@ -3448,6 +3448,18 @@ name = "lattice-router"
 version = "0.1.0"
 
 [[package]]
+name = "lattice-scenario-tests"
+version = "0.1.0"
+dependencies = [
+ "lattice-events",
+ "lattice-identity",
+ "lattice-protocol",
+ "lattice-sync",
+ "lattice-testkit",
+ "serde_json",
+]
+
+[[package]]
 name = "lattice-storage"
 version = "0.1.0"
 dependencies = [
