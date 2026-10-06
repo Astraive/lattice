@@ -158,31 +158,32 @@ async fn transfer_once(
     let (receiver_adapter, _) = listener.accept().await.expect("accept sender");
     let sender_cancel = CancellationToken::new();
     let receiver_cancel = CancellationToken::new();
-    let (sent, received) = tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::join!(
-            send_courier_once(
-                &sender_adapter,
-                sender,
-                sender_pin,
-                sender_store,
-                source_id,
-                &sender_cancel,
-            ),
-            receive_courier_once(
-                &receiver_adapter,
-                receiver,
-                receiver_pin,
-                receiver_store,
-                &receiver_cancel,
+    let (source_outcome, destination_outcome) =
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                send_courier_once(
+                    &sender_adapter,
+                    sender,
+                    sender_pin,
+                    sender_store,
+                    source_id,
+                    &sender_cancel,
+                ),
+                receive_courier_once(
+                    &receiver_adapter,
+                    receiver,
+                    receiver_pin,
+                    receiver_store,
+                    &receiver_cancel,
+                )
             )
-        )
-    })
-    .await
-    .expect("courier TCP session stays bounded");
+        })
+        .await
+        .expect("courier TCP session stays bounded");
     sender_adapter.stop().await.expect("close sender");
     (
-        sent.expect("sender receives retention ACK"),
-        received.expect("receiver retains envelope"),
+        source_outcome.expect("sender receives retention ACK"),
+        destination_outcome.expect("receiver retains envelope"),
     )
 }
 
