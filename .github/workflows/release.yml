@@ -74,7 +74,7 @@ jobs:
           printf '%s\n' "$evidence" > "$RUNNER_TEMP/release-verification.json"
           echo "Verified $tag at exact main SHA $sha, including CI required and all Deep verification jobs."
       - name: Retain exact-SHA verification record
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-verification
           path: ${{ runner.temp }}/release-verification.json
@@ -174,7 +174,7 @@ jobs:
             go version
           } > "release-artifacts/$RUNNER_OS/build-metadata.txt"
       - name: Upload Desktop and CLI release evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-desktop-cli-${{ runner.os }}
           path: release-artifacts/
@@ -268,7 +268,7 @@ jobs:
             cargo --version
           } > release-artifacts/android/build-metadata.txt
       - name: Upload signed Android release evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-android
           path: release-artifacts/android/
@@ -320,7 +320,7 @@ jobs:
           subject-path: release-assets/**
           show-summary: true
       - name: Retain final checksummed release package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-package
           path: release-assets/
