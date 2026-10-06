@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 lattice-events = { path = "../crates/lattice-events", version = "=0.1.0" }
 lattice-identity = { path = "../crates/lattice-identity", version = "=0.1.0" }
+lattice-mesh = { path = "../crates/lattice-mesh", version = "=0.1.0" }
 lattice-protocol = { path = "../crates/lattice-protocol", version = "=0.1.0" }
 lattice-router = { path = "../crates/lattice-router", version = "=0.1.0" }
 lattice-sync = { path = "../crates/lattice-sync", version = "=0.1.0" }
@@ -34,3 +35,7 @@ path = "security/negative_signed_event.rs"
 [[test]]
 name = "routing_policy"
 path = "routing/local_route_policy.rs"
+
+[[test]]
+name = "mesh_contact_carry"
+path = "mesh/three_peer_contact_carry.rs"
