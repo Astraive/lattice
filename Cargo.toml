@@ -18,7 +18,7 @@ members = [
     "crates/lattice-router",
     "crates/lattice-storage",
     "crates/lattice-sync",
-    "crates/lattice-testkit",
+    "tests",
     "crates/lattice-transport",
     "crates/lattice-uniffi",
     "crates/lattice-voice",
