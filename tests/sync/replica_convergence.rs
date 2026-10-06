@@ -263,6 +263,10 @@ fn signed_replicas_converge_under_seeded_loss_duplication_delay_and_reordering()
         total.delayed += effects.delayed;
         total.reordered += effects.reordered;
     }
+    eprintln!(
+        "seeded convergence network effects: dropped={}, duplicated={}, delayed={}, reordered={}",
+        total.dropped, total.duplicated, total.delayed, total.reordered
+    );
 
     assert!(total.dropped > 0, "corpus exercised packet loss");
     assert!(total.duplicated > 0, "corpus exercised duplicate delivery");

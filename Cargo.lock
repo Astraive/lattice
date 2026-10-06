@@ -3454,6 +3454,7 @@ dependencies = [
  "lattice-events",
  "lattice-identity",
  "lattice-protocol",
+ "lattice-router",
  "lattice-sync",
  "lattice-testkit",
  "serde_json",
