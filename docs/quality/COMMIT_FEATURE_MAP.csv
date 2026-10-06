@@ -396,3 +396,5 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 395,a972382,Development tooling; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 396,3171cbb,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 397,3ac7e0b,Development tooling,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+398,8edaf12,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+399,4948bc3,Protocol and vectors; Protocol specifications and vectors,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
