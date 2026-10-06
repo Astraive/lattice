@@ -13,59 +13,180 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  workspace:
-    name: Workspace
+  format:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust formatter
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Check Biome and Rust formatting
+        run: bun run format:check
+
+  markdown:
+    name: Markdown docs lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint Markdown
+        run: bunx markdownlint-cli2 "docs/**/*.md" "!docs/spec.md" "!docs/spec2.md" --config .github/markdownlint-ci.jsonc
+
+  js-lint:
+    name: JavaScript and TypeScript lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint workspace packages
+        run: bunx turbo run lint
+
+  js-check:
+    name: JavaScript and WebAssembly checks
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      AR: llvm-ar
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust and WebAssembly target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+      - name: Install WebAssembly C toolchain
+        run: sudo apt-get update && sudo apt-get install --yes clang llvm
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Check workspace TypeScript and WebAssembly
+        run: bunx turbo run check
+
+  js-test:
+    name: JavaScript tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Run workspace tests
+        run: bunx turbo run test
+
+  rust-check:
+    name: Rust workspace check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Check all workspace targets
+        run: cargo check --workspace --all-targets --locked
+
+  rust-clippy:
+    name: Rust Clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  rust-test:
+    name: Rust workspace tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Run all workspace tests
+        run: cargo test --workspace --locked
+
+  build:
+    name: Desktop and Web asset builds
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      AR: llvm-ar
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust and WebAssembly target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+      - name: Install WebAssembly C toolchain
+        run: sudo apt-get update && sudo apt-get install --yes clang llvm
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Build Desktop and Web assets
+        run: bun run build
+
+  ledger:
+    name: Quality ledger
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
       - name: Test and validate historical ledger
+        run: python3 -m unittest discover -s tooling/quality -p "test_*.py"
+      - name: Validate PR history ledger
         if: github.event_name == 'pull_request'
         env:
           LEDGER_HEAD: ${{ format('{0}^', github.event.pull_request.head.sha) }}
-        run: |
-          python3 -m unittest discover -s tooling/quality -p "test_*.py"
-          python3 tooling/quality/history_ledger.py --check --head "$LEDGER_HEAD" --ref refs/remotes/origin/main --ref refs/remotes/origin/beta
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.95.0
-          components: clippy,rustfmt
-          targets: wasm32-unknown-unknown
-
-      - name: Install wasm-bindgen CLI
-        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
-
-      - name: Install JavaScript dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Check formatting
-        run: bun run format:check
-
-      - name: Lint workspace
-        run: bun run lint
-
-      - name: Check types and native crates
-        run: bun run check
-
-      - name: Run tests
-        run: bun run test
-
-      - name: Build web assets
-        run: bun run build
+        run: python3 tooling/quality/history_ledger.py --check --head "$LEDGER_HEAD" --ref refs/remotes/origin/main --ref refs/remotes/origin/beta
 
   android:
     name: Android
@@ -76,41 +197,32 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-
       - name: Set up Java
         uses: actions/setup-java@v6
         with:
           distribution: microsoft
           java-version: "17"
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
-
       - name: Install Android SDK packages
         run: sdkmanager --channel=3 "platforms;android-37.2" "build-tools;37.0.0" "ndk;28.2.13676358"
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
           targets: aarch64-linux-android,x86_64-linux-android
-
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
-
       - name: Configure Android NDK
         run: |
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
-
       - name: Validate Android application
         run: ./gradlew lintDebug testDebugUnitTest assembleDebug
-
       - name: Upload Android validation reports
         uses: actions/upload-artifact@v7
         if: always()
@@ -120,7 +232,6 @@ jobs:
             apps/android/app/build/reports/
             apps/android/app/build/test-results/testDebugUnitTest/
           if-no-files-found: warn
-
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v7
         if: success()
@@ -129,3 +240,55 @@ jobs:
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+  required:
+    name: CI required
+    if: always()
+    needs:
+      - format
+      - markdown
+      - js-lint
+      - js-check
+      - js-test
+      - rust-check
+      - rust-clippy
+      - rust-test
+      - build
+      - ledger
+      - android
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every gate to succeed
+        env:
+          FORMAT_RESULT: ${{ needs.format.result }}
+          MARKDOWN_RESULT: ${{ needs.markdown.result }}
+          JS_LINT_RESULT: ${{ needs.js-lint.result }}
+          JS_CHECK_RESULT: ${{ needs.js-check.result }}
+          JS_TEST_RESULT: ${{ needs.js-test.result }}
+          RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
+          RUST_CLIPPY_RESULT: ${{ needs.rust-clippy.result }}
+          RUST_TEST_RESULT: ${{ needs.rust-test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          LEDGER_RESULT: ${{ needs.ledger.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+        run: |
+          failed=0
+          for gate in \
+            "format:$FORMAT_RESULT" \
+            "markdown:$MARKDOWN_RESULT" \
+            "js-lint:$JS_LINT_RESULT" \
+            "js-check:$JS_CHECK_RESULT" \
+            "js-test:$JS_TEST_RESULT" \
+            "rust-check:$RUST_CHECK_RESULT" \
+            "rust-clippy:$RUST_CLIPPY_RESULT" \
+            "rust-test:$RUST_TEST_RESULT" \
+            "build:$BUILD_RESULT" \
+            "ledger:$LEDGER_RESULT" \
+            "android:$ANDROID_RESULT"; do
+            name="${gate%%:*}"
+            result="${gate#*:}"
+            if [[ "$result" != success ]]; then
+              echo "::error::$name gate finished with '$result' (expected success)"
+              failed=1
+            fi
+          done
+          exit "$failed"
