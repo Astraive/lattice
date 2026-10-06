@@ -1,6 +1,7 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "stream",
+  "globalEnv": ["CC", "AR"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
