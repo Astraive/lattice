@@ -120,3 +120,26 @@ jobs:
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+
+  required:
+    name: CI required
+    if: always()
+    needs:
+      - workspace
+      - android
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every CI gate to succeed
+        env:
+          WORKSPACE_RESULT: ${{ needs.workspace.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+        run: |
+          set -euo pipefail
+          for gate in "workspace:$WORKSPACE_RESULT" "android:$ANDROID_RESULT"; do
+            name="${gate%%:*}"
+            result="${gate#*:}"
+            if [[ "$result" != success ]]; then
+              echo "::error::$name gate finished with '$result' (expected success)"
+              exit 1
+            fi
+          done
