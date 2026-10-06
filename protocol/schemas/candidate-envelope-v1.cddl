@@ -3,7 +3,7 @@
 
 envelope-id = bstr .size 32
 event-id = bstr .size 32
-signed-event-bytes = bstr .size (1..1048576)
+signed-event-bytes = bstr .size (1..262144)
 delivery-class = 0..3
 budget = 0..64
 

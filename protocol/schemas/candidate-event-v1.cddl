@@ -26,7 +26,7 @@ event-preimage = {
 
 signed-event = {
   0: 1,
-  1: bstr .size (1..1048576),
+  1: bstr .size (1..262144),
   2: identity-bundle,
   3: signature
 }
