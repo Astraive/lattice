@@ -420,6 +420,7 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           LEDGER_RESULT: ${{ needs.ledger.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          DESKTOP_CLI_PLATFORMS_RESULT: ${{ needs.desktop-cli-platforms.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
         run: |
           failed=0
