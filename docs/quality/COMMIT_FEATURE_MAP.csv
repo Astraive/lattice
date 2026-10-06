@@ -394,3 +394,6 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 393,10b01c5,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 394,c7b6a47,Android client; Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 395,e85f652,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+396,c2b7def,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+397,6939843,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+398,eb64808,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
