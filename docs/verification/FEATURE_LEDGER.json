@@ -5,10 +5,10 @@
     "source_refs": ["refs/remotes/origin/main", "refs/remotes/origin/beta", "checkout base"],
     "snapshot_base_policy": "Indexes the selected refs and prior checkout commit so the snapshot-writing commit is not self-referential; merge commits remain included when reachable.",
     "merge_commits_included": true,
-    "indexed_commit_count": 391,
-    "feature_mapped_commit_count": 391,
+    "indexed_commit_count": 393,
+    "feature_mapped_commit_count": 393,
     "reviewed_commit_count": 225,
-    "heuristic_assignment_count": 166,
+    "heuristic_assignment_count": 168,
     "history_index": "docs/quality/HISTORY_INDEX.csv",
     "commit_feature_map": "docs/quality/COMMIT_FEATURE_MAP.csv",
     "scope_complete": true,
@@ -340,7 +340,7 @@
       "result": "not run",
       "evidence": ["docs/quality/FEATURE_LEDGER.md"],
       "status": "BLOCKED-EXTERNAL",
-      "blocker": "No physical Android hardware or adb on workstation."
+      "blocker": "No named physical Android devices are attached; configured SDK ADB sees two emulators, which do not satisfy the physical acceptance requirement."
     }
   ],
   "structural_debt": {
