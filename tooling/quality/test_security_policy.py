@@ -1,6 +1,7 @@
 import unittest
 from datetime import date
 from cargo_license_policy import validate_packages
+from gitleaks_policy import validate_findings
 from security_policy import validate_bun_findings
 
 
@@ -91,6 +92,45 @@ class CargoLicensePolicyTests(unittest.TestCase):
         }
         self.assertEqual(validate_packages([package], self.allowed), [])
         self.assertTrue(validate_packages([package], {"Apache-2.0"}))
+
+class GitleaksPolicyTests(unittest.TestCase):
+    fingerprint = "commit:path:rule:1"
+
+    def exception(self, **updates):
+        return {
+            "fingerprint": self.fingerprint,
+            "owner": "@security-owner",
+            "reason": "Reviewed test fixture false positive.",
+            "expires": "2030-01-01",
+            "tracking_issue": 37,
+            **updates,
+        }
+
+    def test_exact_current_exception_is_allowed(self):
+        findings = [{"Fingerprint": self.fingerprint}]
+        self.assertEqual(
+            validate_findings(
+                findings, [self.exception()], today=date(2029, 12, 31)
+            ),
+            [],
+        )
+
+    def test_unapproved_and_stale_findings_fail(self):
+        findings = [{"Fingerprint": "new:finding"}]
+        errors = validate_findings(
+            findings, [self.exception()], today=date(2029, 12, 31)
+        )
+        self.assertTrue(any("unapproved Gitleaks finding" in error for error in errors))
+        self.assertTrue(any("stale Gitleaks exception" in error for error in errors))
+
+    def test_expired_exception_fails(self):
+        findings = [{"Fingerprint": self.fingerprint}]
+        errors = validate_findings(
+            findings,
+            [self.exception(expires="2029-12-31")],
+            today=date(2029, 12, 31),
+        )
+        self.assertTrue(any("future expiry" in error for error in errors))
 
 if __name__ == "__main__":
     unittest.main()

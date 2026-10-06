@@ -397,3 +397,4 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 396,c2b7def,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 397,6939843,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 398,eb64808,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+399,2d43ef9,Build and CI; Desktop client; Development tooling; Identity and trust; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic

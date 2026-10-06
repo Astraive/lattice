@@ -242,9 +242,7 @@ jobs:
             --lockfile=packages/ui/android/gradle.lockfile --format json \
             > "$RUNNER_TEMP/gradle-osv.json"
       - name: Scan committed history for secrets
-        run: |
-          gitleaks git --redact=100 --no-banner --report-format json \
-            --report-path "$RUNNER_TEMP/gitleaks.json" .
+        run: python3 tooling/quality/gitleaks_policy.py
       - name: Retain redacted security reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
