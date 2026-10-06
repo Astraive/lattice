@@ -1,0 +1,12 @@
+{
+  "bun": [
+    {
+      "package": "braces",
+      "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+      "owner": "@NeerajCodz",
+      "reason": "No patched braces release is published. This is a dev-only markdownlint glob dependency; the CI job has read-only permissions and the invocation uses fixed repository globs.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    }
+  ]
+}
