@@ -10,9 +10,32 @@ android {
     defaultConfig {
         applicationId = "com.astraive.lattice"
         minSdk = 26
-        targetSdk = 37
-        versionCode = 1
+        versionName = "0.1.0"
+        versionCode = 1000
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        val keystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+        val storePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
+        val keyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
+        val keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
+        if (listOf(keystorePath, storePassword, keyAlias, keyPassword).all { !it.isNullOrBlank() }) {
+            create("release") {
+                storeFile = file(keystorePath!!)
+                this.storePassword = storePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            if (signingConfigs.findByName("release") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     buildFeatures {
@@ -120,6 +143,7 @@ val buildRustMobile = tasks.register<Exec>("buildRustMobile") {
         "-p",
         "lattice-uniffi",
         "--release",
+        "--locked",
     )
 }
 buildRustMobile.configure {

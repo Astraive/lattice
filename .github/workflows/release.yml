@@ -1,0 +1,379 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing verified vMAJOR.MINOR.PATCH tag to build as a draft
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify protected release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      version_code: ${{ steps.release.outputs.version_code }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Resolve and check protected main source
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="$RELEASE_TAG_INPUT"
+          fi
+          git fetch --force origin main "refs/tags/$tag:refs/tags/$tag"
+          sha="$(git rev-parse "$tag^{commit}")"
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::tag ref does not resolve to the event SHA"
+            exit 1
+          fi
+          git fetch --force origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main || {
+            echo "::error::release tag is not reachable from protected main"
+            exit 1
+          }
+          git checkout --detach "$sha"
+          python3 -m unittest discover -s tooling/release -p "test_*.py"
+          version="${tag#v}"
+          evidence="$(python3 tooling/release/verify_release.py --tag "$tag" --sha "$sha")"
+          version_code="$(printf '%s\n' "$evidence" | jq -r '.versions.android_version_code')"
+          {
+            echo "tag=$tag"
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "version_code=$version_code"
+          } >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$evidence" > "$RUNNER_TEMP/release-verification.json"
+          echo "Verified $tag at exact main SHA $sha, including CI required and all Deep verification jobs."
+      - name: Retain exact-SHA verification record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        with:
+          name: release-verification
+          path: ${{ runner.temp }}/release-verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+
+  desktop-cli:
+    name: Build Desktop and CLI (${{ matrix.os }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    permissions:
+      contents: read
+    steps:
+      - name: Check out verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable toolchain action
+        with:
+          toolchain: 1.95.0
+      - name: Set up Go for SBOM generation
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
+      - name: Install Linux Desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install frozen JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Build release CLI
+        run: cargo build --release --locked -p lattice-cli
+      - name: Build Desktop bundles
+        run: bunx tauri build
+        working-directory: apps/desktop
+      - name: Reject dependency lock drift
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock bun.lock apps/android/app/gradle.lockfile packages/ui/android/gradle.lockfile
+
+      - name: Smoke-test CLI and collect platform bundles
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          cli=target/release/lattice
+          desktop=target/release/lattice-desktop
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cli="$cli.exe"
+            desktop="$desktop.exe"
+          fi
+          "$cli" --version | grep -F "$RELEASE_VERSION"
+          test -s "$desktop"
+          mkdir -p "release-artifacts/$RUNNER_OS/cli" "release-artifacts/$RUNNER_OS/desktop"
+          cp "$cli" "release-artifacts/$RUNNER_OS/cli/"
+          cp "$desktop" "release-artifacts/$RUNNER_OS/desktop/"
+          test -d target/release/bundle
+          find target/release/bundle -type f -size +0c -exec sh -c '
+            for source do
+              destination="release-artifacts/$RUNNER_OS/desktop/${source#target/release/bundle/}"
+              mkdir -p "$(dirname "$destination")"
+              cp "$source" "$destination"
+            done
+          ' sh {} +
+          find "release-artifacts/$RUNNER_OS/desktop" -type f -size +0c | grep -q .
+      - name: Generate CycloneDX dependency SBOM
+        shell: bash
+        run: |
+          go run github.com/anchore/syft/cmd/syft@v1.41.0 dir:. \
+            --exclude "**/target/**" --exclude "**/build/**" --exclude "**/node_modules/**" \
+            --source-name lattice --source-version "${{ needs.verify.outputs.sha }}" \
+            --output "cyclonedx-json=release-artifacts/${{ runner.os }}/lattice-${{ needs.verify.outputs.version }}.cdx.json"
+          python3 tooling/release/sanitize_sbom.py "release-artifacts/${{ runner.os }}/lattice-${{ needs.verify.outputs.version }}.cdx.json"
+
+      - name: Record toolchain metadata
+        shell: bash
+        run: |
+          {
+            echo "source_sha=${{ needs.verify.outputs.sha }}"
+            echo "tag=${{ needs.verify.outputs.tag }}"
+            rustc --version --verbose
+            cargo --version
+            bun --version
+            go version
+          } > "release-artifacts/$RUNNER_OS/build-metadata.txt"
+      - name: Upload Desktop and CLI release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        with:
+          name: release-desktop-cli-${{ runner.os }}
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Build and verify signed Android release
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Check out verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - name: Set up Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: microsoft
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: platform-tools
+      - name: Install Android SDK packages
+        run: sdkmanager --channel=3 "platforms;android-37.2" "build-tools;37.0.0" "ndk;28.2.13676358"
+      - name: Configure Android NDK
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Set up Rust Android targets
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable toolchain action
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Configure protected Android signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::protected release environment is missing $name"
+              exit 1
+            fi
+          done
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lattice-release.jks"
+          chmod 600 "$RUNNER_TEMP/lattice-release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/lattice-release.jks" >> "$GITHUB_ENV"
+      - name: Build signed APK and Android App Bundle
+        working-directory: apps/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:assembleRelease :app:bundleRelease
+      - name: Reject dependency lock drift
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock bun.lock apps/android/app/gradle.lockfile packages/ui/android/gradle.lockfile
+
+      - name: Verify installable APK, signed bundle, and metadata
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          RELEASE_VERSION_CODE: ${{ needs.verify.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          apk=apps/android/app/build/outputs/apk/release/app-release.apk
+          aab=apps/android/app/build/outputs/bundle/release/app-release.aab
+          test -s "$apk" && test -s "$aab"
+          "$ANDROID_SDK_ROOT/build-tools/37.0.0/apksigner" verify --verbose --print-certs "$apk"
+          jarsigner -verify -verbose "$aab"
+          "$ANDROID_SDK_ROOT/build-tools/37.0.0/aapt" dump badging "$apk" | grep -F "package: name='com.astraive.lattice' versionCode='$RELEASE_VERSION_CODE' versionName='$RELEASE_VERSION'"
+          mkdir -p release-artifacts/android
+          cp "$apk" "$aab" release-artifacts/android/
+          {
+            echo "source_sha=${{ needs.verify.outputs.sha }}"
+            echo "tag=${{ needs.verify.outputs.tag }}"
+            java -version 2>&1
+            rustc --version --verbose
+            cargo --version
+          } > release-artifacts/android/build-metadata.txt
+      - name: Upload signed Android release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        with:
+          name: release-android
+          path: release-artifacts/android/
+          if-no-files-found: error
+          retention-days: 30
+
+  attest:
+    name: Attest verified release artifacts
+    needs: [verify, desktop-cli, android]
+    runs-on: ubuntu-24.04
+    outputs:
+      attestation_url: ${{ steps.provenance.outputs.attestation-url }}
+
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download platform release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare checksummed package for attestation
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          SOURCE_SHA: ${{ needs.verify.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv release-assets/release-verification.json release-assets/verification.json
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "tag=$RELEASE_TAG"
+            echo "version=$RELEASE_VERSION"
+            echo "release_run_id=$GITHUB_RUN_ID"
+            echo "workflow=Release"
+          } > release-assets/RELEASE-EVIDENCE.txt
+          (cd release-assets && find . -type f ! -name SHA256SUMS -print | sort | while IFS= read -r file; do sha256sum "$file"; done) > release-assets/SHA256SUMS
+          (cd release-assets && sha256sum -c SHA256SUMS)
+      - name: Attest release assets, manifests, and checksums
+        id: provenance
+
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release-assets/**
+          show-summary: true
+      - name: Retain final checksummed release package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6c0a # v7
+        with:
+          name: release-package
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-draft:
+    name: Create verified draft prerelease
+    needs: [verify, desktop-cli, android, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-package
+          path: release-assets
+      - name: Verify checksums and prepare release notes
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          SOURCE_SHA: ${{ needs.verify.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          ATTESTATION_URL: ${{ needs.attest.outputs.attestation_url }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum -c SHA256SUMS)
+          deep_run_id="$(jq -r '.deep_verification.workflow_run_id' release-assets/verification.json)"
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          ## Draft prerelease — not production-stable
+
+          Source commit: \`$SOURCE_SHA\` (tag \`$RELEASE_TAG\`). This release remains a draft prerelease; no stable-production claim is made.
+
+          ### Supported build targets
+          - Android API 26+ signed APK and AAB.
+          - Linux x86_64, Windows x86_64, and macOS 15 Desktop bundles plus CLI binaries.
+
+          ### Known limitations
+          - Physical Android acceptance, full cross-client interoperability, restart/recovery, and external security review remain incomplete; see [release readiness](https://github.com/$GITHUB_REPOSITORY/blob/$SOURCE_SHA/docs/verification/RELEASE_READINESS.md).
+          - The product is not an end-to-end communication or interoperability release. Do not treat component tests or unsigned Desktop bundles as stable support.
+
+          ### Migration notes
+          - SQLite migration tests passed in [Deep verification](https://github.com/$GITHUB_REPOSITORY/actions/runs/$deep_run_id) for this exact source SHA. Back up local data before installing a different build; downgrade compatibility is not claimed.
+          - Protocol compatibility across released versions is not claimed until the interoperability matrix is complete.
+
+          ### Evidence
+          - Exact source SHA, required CI/Deep verification run IDs, and Android version metadata are in \`verification.json\`.
+          - CycloneDX SBOMs and SHA-256 checksums are included. GitHub build provenance: $ATTESTATION_URL
+          EOF
+          gh release create "$RELEASE_TAG" --draft --prerelease --title "Lattice $RELEASE_VERSION (draft)" --notes-file "$RUNNER_TEMP/release-notes.md"
+          find release-assets -type f -print0 | xargs -0 -r gh release upload "$RELEASE_TAG" --clobber
