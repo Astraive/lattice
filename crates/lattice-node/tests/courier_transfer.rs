@@ -7,7 +7,9 @@ use lattice_identity::{DeviceIdentity, PinnedIdentity};
 use lattice_mesh::{
     CourierMetadata, EnvelopeId as LocalEnvelopeId, EventId as LocalEventId, PeerId, TrafficClass,
 };
-use lattice_node::courier::{receive_courier_once, send_courier_once};
+use lattice_node::courier::{
+    CourierReceiveResult, CourierSendResult, receive_courier_once, send_courier_once,
+};
 use lattice_platform::{
     EnvelopeBytes, MAX_ENVELOPE_BYTES, PortFuture, TransportAdapter, TransportCapabilities,
     TransportError, TransportLifecycle, TransportReceipt,
@@ -78,6 +80,10 @@ impl TransportAdapter for DropAfterRetentionAck {
 }
 
 fn envelope(identity: &DeviceIdentity) -> EnvelopeV1 {
+    envelope_with_copy_budget(identity, 1)
+}
+
+fn envelope_with_copy_budget(identity: &DeviceIdentity, copy_budget: u64) -> EnvelopeV1 {
     let event = VerifiedSignatureOnlyEvent::create(
         identity,
         EventDraft {
@@ -101,7 +107,7 @@ fn envelope(identity: &DeviceIdentity) -> EnvelopeV1 {
         now_seconds,
         now_seconds + 600,
         3,
-        1,
+        copy_budget,
     )
     .expect("create delivery envelope")
 }
@@ -133,6 +139,155 @@ fn queue_envelope(store: &mut Store, envelope: &EnvelopeV1) -> LocalEnvelopeId {
     local_id
 }
 
+async fn transfer_once(
+    sender: &DeviceIdentity,
+    receiver: &DeviceIdentity,
+    sender_pin: PinnedIdentity,
+    receiver_pin: PinnedIdentity,
+    sender_store: &mut Store,
+    receiver_store: &mut Store,
+    source_id: LocalEnvelopeId,
+) -> (CourierSendResult, CourierReceiveResult) {
+    let listener = TcpPeerListener::bind("127.0.0.1:0", MAX_ENVELOPE_BYTES)
+        .await
+        .expect("bind listener");
+    let endpoint = listener.local_addr().expect("read listener address");
+    let sender_adapter = TcpPeerAdapter::connect(endpoint, MAX_ENVELOPE_BYTES)
+        .await
+        .expect("connect sender");
+    let (receiver_adapter, _) = listener.accept().await.expect("accept sender");
+    let sender_cancel = CancellationToken::new();
+    let receiver_cancel = CancellationToken::new();
+    let (sent, received) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            send_courier_once(
+                &sender_adapter,
+                sender,
+                sender_pin,
+                sender_store,
+                source_id,
+                &sender_cancel,
+            ),
+            receive_courier_once(
+                &receiver_adapter,
+                receiver,
+                receiver_pin,
+                receiver_store,
+                &receiver_cancel,
+            )
+        )
+    })
+    .await
+    .expect("courier TCP session stays bounded");
+    sender_adapter.stop().await.expect("close sender");
+    (
+        sent.expect("sender receives retention ACK"),
+        received.expect("receiver retains envelope"),
+    )
+}
+
+#[tokio::test]
+async fn original_event_survives_two_authenticated_courier_hops() {
+    let alice = DeviceIdentity::generate().expect("generate origin identity");
+    let bob = DeviceIdentity::generate().expect("generate courier identity");
+    let carol = DeviceIdentity::generate().expect("generate destination identity");
+    let alice_pins_bob =
+        PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+            .expect("pin first hop");
+    let bob_pins_alice =
+        PinnedIdentity::from_verified_fingerprint(alice.public_bundle(), alice.fingerprint())
+            .expect("pin origin");
+    let bob_pins_carol =
+        PinnedIdentity::from_verified_fingerprint(carol.public_bundle(), carol.fingerprint())
+            .expect("pin second hop");
+    let carol_pins_bob =
+        PinnedIdentity::from_verified_fingerprint(bob.public_bundle(), bob.fingerprint())
+            .expect("pin courier");
+    let alice_path = database_path("multi-hop-origin");
+    let bob_path = database_path("multi-hop-courier");
+    let carol_path = database_path("multi-hop-destination");
+    let mut alice_store = Store::open(&alice_path).expect("open origin store");
+    let mut bob_store = Store::open(&bob_path).expect("open courier store");
+    let mut carol_store = Store::open(&carol_path).expect("open destination store");
+    for store in [&mut alice_store, &mut bob_store, &mut carol_store] {
+        store
+            .configure_courier_queue(true, DEFAULT_COURIER_LIMITS)
+            .expect("enable bounded queue");
+    }
+
+    let original = envelope_with_copy_budget(&alice, 2);
+    let original_event_id = *original.event_id().as_bytes();
+    let source_id = queue_envelope(&mut alice_store, &original);
+    let (_, first_hop) = transfer_once(
+        &alice,
+        &bob,
+        alice_pins_bob,
+        bob_pins_alice,
+        &mut alice_store,
+        &mut bob_store,
+        source_id,
+    )
+    .await;
+    assert_eq!(
+        alice_store
+            .courier_queue_status()
+            .expect("origin status")
+            .usage
+            .items,
+        0
+    );
+    assert_eq!(
+        bob_store
+            .courier_queue_status()
+            .expect("courier status")
+            .usage
+            .items,
+        1
+    );
+
+    let second_source_id = LocalEnvelopeId::new(first_hop.local_envelope_id);
+    let (_, second_hop) = transfer_once(
+        &bob,
+        &carol,
+        bob_pins_carol,
+        carol_pins_bob,
+        &mut bob_store,
+        &mut carol_store,
+        second_source_id,
+    )
+    .await;
+    assert_eq!(
+        bob_store
+            .courier_queue_status()
+            .expect("courier status")
+            .usage
+            .items,
+        0
+    );
+    assert_eq!(
+        carol_store
+            .courier_queue_status()
+            .expect("destination status")
+            .usage
+            .items,
+        1
+    );
+    let received = carol_store
+        .read_courier_envelope(LocalEnvelopeId::new(second_hop.local_envelope_id))
+        .expect("read destination envelope");
+    let forwarded = EnvelopeV1::decode_at(&received.encrypted_opaque_bytes, unix_millis() / 1000)
+        .expect("decode opaque forwarded envelope");
+    assert_eq!(*forwarded.event_id().as_bytes(), original_event_id);
+    assert_eq!(forwarded.remaining_hop_budget(), 1);
+    assert_eq!(forwarded.remaining_copy_budget(), 0);
+
+    drop(alice_store);
+    drop(bob_store);
+    drop(carol_store);
+    let _ = std::fs::remove_file(alice_path);
+    let _ = std::fs::remove_file(bob_path);
+    let _ = std::fs::remove_file(carol_path);
+}
 #[tokio::test]
 async fn pinned_tcp_transfer_consumes_budget_and_persists_only_on_receiver() {
     let alice = DeviceIdentity::generate().expect("generate sender identity");
