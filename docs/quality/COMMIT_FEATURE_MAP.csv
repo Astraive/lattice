@@ -395,3 +395,5 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 394,94b1604,Android client; Build and CI; Development tooling,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 395,c017585,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 396,8e04663,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+397,8c319a2,Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+398,4b9caf4,Android client; Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
