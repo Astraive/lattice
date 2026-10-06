@@ -293,18 +293,28 @@ jobs:
         working-directory: apps/desktop
       - name: Hash release binaries
         if: runner.os != 'Windows'
-        run: sha256sum target/release/lattice-cli* target/release/lattice-desktop*
+        run: sha256sum target/release/lattice target/release/lattice-desktop
       - name: Hash release binaries on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Get-ChildItem target/release/lattice-cli*,target/release/lattice-desktop* | Get-FileHash -Algorithm SHA256
+        run: Get-ChildItem target/release/lattice.exe,target/release/lattice-desktop.exe | Get-FileHash -Algorithm SHA256
       - name: Upload unsigned CLI and Desktop binaries
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: unsigned-desktop-cli-${{ runner.os }}
           path: |
-            target/release/lattice-cli*
-            target/release/lattice-desktop*
+            target/release/lattice
+            target/release/lattice-desktop
+          if-no-files-found: error
+      - name: Upload unsigned CLI and Desktop binaries on Windows
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-desktop-cli-${{ runner.os }}
+          path: |
+            target/release/lattice.exe
+            target/release/lattice-desktop.exe
           if-no-files-found: error
 
 
