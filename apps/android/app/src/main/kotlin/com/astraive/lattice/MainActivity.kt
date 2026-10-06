@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.bluetooth.BluetoothManager
@@ -21,6 +22,8 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import android.provider.Settings
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -146,6 +149,12 @@ class MainActivity : ComponentActivity() {
     private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private var peripheralSession: BleExp0PeripheralSession? = null
     private var centralSession: BleExp0CentralSession? = null
+    private val bleReconnectHandler = Handler(Looper.getMainLooper())
+    private var pendingCentralReconnect: Runnable? = null
+    private var centralReconnectDevice: BluetoothDevice? = null
+    private var centralReconnectToken: ByteArray? = null
+    private var centralReconnectGeneration = 0
+    private var centralReconnectAttempts = 0
     private var pendingBleIdentityDecision: ((Boolean) -> Unit)? = null
     private var pendingBleRouteDecision: ((Boolean) -> Unit)? = null
     private var activityStarted = false
@@ -2379,44 +2388,126 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectNearbyCandidate(selectionId: Int) {
-        val profile = mobileProfile ?: run {
-            screenState = screenState.copy(bleConnectionStatus = "The protected identity profile is not ready.")
-            return
-        }
         val candidate = screenState.nearbyCandidates.firstOrNull { it.selectionId == selectionId } ?: run {
             screenState = screenState.copy(bleConnectionStatus = "This token sighting expired. Scan again before connecting.")
             return
         }
+        clearCentralReconnectState()
         centralSession?.close()
+        centralSession = null
+        pendingBleIdentityDecision?.invoke(false)
+        pendingBleIdentityDecision = null
         pendingBleRouteDecision?.invoke(false)
         pendingBleRouteDecision = null
-        val connection = BleExp0CentralSession(
-            context = applicationContext,
-            profile = profile,
-            device = candidate.device,
-            observedResponderToken = candidate.responderToken,
-            isRoutedToPeer = { true },
-            retryAt = ::bleRetryAt,
-            onPeerVerificationRequired = ::requestBlePeerApproval,
-            onAuthenticated = ::onBleAuthenticated,
-            onCoreIngressResult = ::onBleCoreIngressResult,
-            onFailure = { failure ->
-                runOnUiThread {
-                    screenState = screenState.copy(
-                        bleConnectionStatus = failure,
-                        pendingRouteConsent = false,
-                    )
-                }
-            },
-        )
+        centralReconnectDevice = candidate.device
+        centralReconnectToken = candidate.responderToken.copyOf()
         candidate.responderToken.fill(0)
-        centralSession = connection
         screenState.nearbyCandidates.forEach { it.responderToken.fill(0) }
         screenState = screenState.copy(
             nearbyCandidates = emptyList(),
             bleConnectionStatus = "Connecting to the selected exp0 peer; identity is not yet authenticated.",
         )
+        startCentralConnection(centralReconnectGeneration)
+    }
+
+    private fun startCentralConnection(generation: Int) {
+        if (generation != centralReconnectGeneration || !screenState.scanning) return
+        val profile = mobileProfile ?: run {
+            clearCentralReconnectState()
+            screenState = screenState.copy(bleConnectionStatus = "The protected identity profile is not ready.")
+            return
+        }
+        val device = centralReconnectDevice ?: return
+        val token = centralReconnectToken?.copyOf() ?: return
+        val connection = try {
+            BleExp0CentralSession(
+                context = applicationContext,
+                profile = profile,
+                device = device,
+                observedResponderToken = token,
+                isRoutedToPeer = { true },
+                retryAt = ::bleRetryAt,
+                onPeerVerificationRequired = ::requestBlePeerApproval,
+                onAuthenticated = ::onBleAuthenticated,
+                onCoreIngressResult = ::onBleCoreIngressResult,
+                onRetryableFailure = { failure ->
+                    runOnUiThread { scheduleCentralReconnect(generation, failure) }
+                },
+                onFailure = { failure ->
+                    runOnUiThread {
+                        if (generation != centralReconnectGeneration) return@runOnUiThread
+                        clearCentralReconnectState()
+                        centralSession = null
+                        pendingBleIdentityDecision?.invoke(false)
+                        pendingBleIdentityDecision = null
+                        pendingBleRouteDecision?.invoke(false)
+                        pendingBleRouteDecision = null
+                        screenState = screenState.copy(
+                            bleConnectionStatus = failure,
+                            pendingIdentitySafetyNumber = null,
+                            pendingIdentityFingerprint = null,
+                            pendingRouteConsent = false,
+                        )
+                    }
+                },
+            )
+        } catch (error: Exception) {
+            token.fill(0)
+            clearCentralReconnectState()
+            screenState = screenState.copy(
+                bleConnectionStatus = error.message ?: "GATT session could not be created.",
+            )
+            return
+        }
+        token.fill(0)
+        centralSession?.close()
+        centralSession = connection
         connection.connect()
+    }
+
+    private fun scheduleCentralReconnect(generation: Int, failure: String) {
+        if (generation != centralReconnectGeneration || !screenState.scanning) return
+        pendingBleIdentityDecision?.invoke(false)
+        pendingBleIdentityDecision = null
+        pendingBleRouteDecision?.invoke(false)
+        pendingBleRouteDecision = null
+        val delayMillis = BleExp0ReconnectBackoff.delayMillis(centralReconnectAttempts + 1)
+        if (delayMillis == null) {
+            clearCentralReconnectState()
+            centralSession = null
+            screenState = screenState.copy(
+                bleConnectionStatus = "$failure. Automatic reconnect stopped after bounded retries; select the peer again to retry.",
+                pendingIdentitySafetyNumber = null,
+                pendingIdentityFingerprint = null,
+                pendingRouteConsent = false,
+            )
+            return
+        }
+        centralReconnectAttempts += 1
+        screenState = screenState.copy(
+            bleConnectionStatus = "$failure. Reconnecting in ${delayMillis / 1_000}s (attempt $centralReconnectAttempts/${BleExp0ReconnectBackoff.MAX_ATTEMPTS}).",
+            pendingIdentitySafetyNumber = null,
+            pendingIdentityFingerprint = null,
+            pendingRouteConsent = false,
+        )
+        val retry = Runnable {
+            if (generation != centralReconnectGeneration || !screenState.scanning) return@Runnable
+            pendingCentralReconnect = null
+            startCentralConnection(generation)
+        }
+        pendingCentralReconnect?.let(bleReconnectHandler::removeCallbacks)
+        pendingCentralReconnect = retry
+        bleReconnectHandler.postDelayed(retry, delayMillis)
+    }
+
+    private fun clearCentralReconnectState() {
+        centralReconnectGeneration += 1
+        pendingCentralReconnect?.let(bleReconnectHandler::removeCallbacks)
+        pendingCentralReconnect = null
+        centralReconnectDevice = null
+        centralReconnectToken?.fill(0)
+        centralReconnectToken = null
+        centralReconnectAttempts = 0
     }
 
     private fun startPeripheralGattSession() {
@@ -2612,6 +2703,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopScanning(message: String) {
+        clearCentralReconnectState()
         if (::nearbyScanner.isInitialized) nearbyScanner.stop()
         if (::nearbyAdvertiser.isInitialized) nearbyAdvertiser.stop()
         centralSession?.close()

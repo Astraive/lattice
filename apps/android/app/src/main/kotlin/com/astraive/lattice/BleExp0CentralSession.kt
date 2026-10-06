@@ -26,11 +26,12 @@ internal class BleExp0CentralSession(
     private val onPeerVerificationRequired: (MobileBlePeerInfo, (Boolean) -> Unit) -> Unit,
     private val onAuthenticated: (BleExp0OutboxPump, (Boolean) -> Unit) -> Unit,
     private val onCoreIngressResult: (uniffi.lattice_uniffi.MobileSyncEventResult) -> Unit,
+    private val onRetryableFailure: (String) -> Unit,
     private val onFailure: (String) -> Unit,
-) : BleGattCentralListener, AutoCloseable {
     private val decisionExecutor: ExecutorService = Executors.newSingleThreadExecutor { task ->
         Thread(task, "lattice-ble-central").apply { isDaemon = true }
     }
+): BleGattCentralListener, AutoCloseable {
     private enum class State { CONNECTING, MTU, DISCOVERY, CAPABILITIES, CONTROL_CCCD, TX_CCCD, READY, CLOSED }
 
     private val token = observedResponderToken.copyOf()
@@ -47,7 +48,7 @@ internal class BleExp0CentralSession(
                 )
             }
             if (coordinator?.expire() == true) close()
-            else if (setupTimedOut) fail("GATT connection setup timed out")
+            else if (setupTimedOut) fail("GATT connection setup timed out", retryable = true)
             else if (active) timeoutHandler.postDelayed(this, TIMER_INTERVAL_MS)
         }
     }
@@ -64,14 +65,18 @@ internal class BleExp0CentralSession(
 
     fun connect(): BleGattStatus {
         val result = adapter.connect(device)
-        if (result != BleGattStatus.STARTED) fail("GATT connection could not start ($result)")
-        else timeoutHandler.postDelayed(timeoutTask, TIMER_INTERVAL_MS)
+        if (result != BleGattStatus.STARTED) {
+            fail("GATT connection could not start ($result)", retryable = result == BleGattStatus.FAILED)
+        }
         return result
     }
 
-    override fun onConnectionChanged(connected: Boolean) {
+    override fun onConnectionChanged(connected: Boolean, status: Int) {
         if (!connected) {
-            fail("GATT peer disconnected")
+            fail(
+                "GATT peer disconnected ($status)",
+                retryable = status != BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION,
+            )
             return
         }
         synchronized(lock) {
@@ -188,7 +193,10 @@ internal class BleExp0CentralSession(
         envelopeIo?.onCharacteristicWrite(characteristic, status)
     }
 
-    override fun onFailure(status: Int) = fail("Android GATT failed ($status)")
+    override fun onFailure(status: Int) = fail(
+        "Android GATT failed ($status)",
+        retryable = status != BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION,
+    )
 
     override fun close() {
         val current = synchronized(lock) {
@@ -256,10 +264,10 @@ internal class BleExp0CentralSession(
         return BleExp0GattCharacteristics(control, rx, tx, capabilities, upgrade)
     }
 
-    private fun fail(message: String) {
+    private fun fail(message: String, retryable: Boolean = false) {
         val shouldNotify = synchronized(lock) { state != State.CLOSED }
         if (!shouldNotify) return
-        onFailure(message)
+        if (retryable) onRetryableFailure(message) else onFailure(message)
         close()
     }
 
