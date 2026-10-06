@@ -32,7 +32,7 @@ jobs:
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf dbus-x11 gnome-keyring
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -62,7 +62,7 @@ jobs:
         run: bun run check
 
       - name: Run tests
-        run: bun run test
+        run: dbus-run-session -- bash -euo pipefail -c 'eval "$(printf "%s" "lattice-ci-keyring" | gnome-keyring-daemon --unlock --components=secrets)"; bun run test'
 
       - name: Build web assets
         run: bun run build

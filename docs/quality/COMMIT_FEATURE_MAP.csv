@@ -393,3 +393,4 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 392,fd6a73f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 393,10b01c5,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 394,bb14dcb,CLI and node; Identity and trust; Placeholder inventory and scaffold debt; Requirements and architecture; Verification and tests,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+395,630b04d,Requirements and architecture; Verification and tests,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
