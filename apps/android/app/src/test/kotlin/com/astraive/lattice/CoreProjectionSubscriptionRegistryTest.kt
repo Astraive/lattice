@@ -47,6 +47,23 @@ class CoreProjectionSubscriptionRegistryTest {
     }
 
     @Test
+    fun acceptedEventRefreshRemainsNotificationEligibleWhenCoalescedWithMessageChanges() {
+        val posted = mutableListOf<() -> Unit>()
+        val delivered = mutableListOf<CoreProjectionChange>()
+        val dispatcher = CoreProjectionChangeDispatcher(
+            post = { action -> posted += action },
+            observer = delivered::add,
+        )
+
+        dispatcher.offer(CoreProjectionChange.MESSAGES)
+        dispatcher.offer(CoreProjectionChange.SYNCED_EVENTS)
+
+        assertEquals(1, posted.size)
+        posted.removeAt(0).invoke()
+        assertEquals(listOf(CoreProjectionChange.SYNCED_EVENTS), delivered)
+    }
+
+    @Test
     fun dispatcherDropsQueuedAndFutureChangesAfterClose() {
         val posted = mutableListOf<() -> Unit>()
         val delivered = mutableListOf<CoreProjectionChange>()
