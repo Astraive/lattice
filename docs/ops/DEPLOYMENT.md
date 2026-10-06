@@ -57,3 +57,5 @@ Volunteer node can be a trusted Space member with content keys or an opaque cour
 ## Release and incident playbooks
 
 Before shipping: run clean install and migration, verify signed release package, confirm new protocol capability handshake, review dependency advisories, inspect BLE/relay captures, compare privacy copy with actual traffic, and publish supported device matrix. For compromised device/member: identify affected identity and epochs, publish valid member removal/rekey from an authorized state, revoke old invites where possible, warn recipients about prior plaintext and instruct affected installation to reset/rejoin. For corrupt local DB: preserve diagnostic evidence without keys in logs, avoid auto-accepting a relay’s replacement history, recover from verified peers or an approved snapshot profile.
+
+Main-branch required checks and the incident-only break-glass procedure are documented in [BRANCH_PROTECTION.md](BRANCH_PROTECTION.md).
