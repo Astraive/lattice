@@ -9,9 +9,7 @@
       "@lattice/ui-web",
       "@lattice/web"
     ],
-    "intentional_no_tests": [
-      "@lattice/config"
-    ]
+    "intentional_no_tests": ["@lattice/config"]
   },
   "rust": {
     "required": [
@@ -43,11 +41,7 @@
     "intentional_no_tests": []
   },
   "gradle": {
-    "required": [
-      ":app:testDebugUnitTest"
-    ],
-    "intentional_no_tests": [
-      ":ui-android:testDebugUnitTest"
-    ]
+    "required": [":app:testDebugUnitTest"],
+    "intentional_no_tests": [":ui-android:testDebugUnitTest"]
   }
 }
