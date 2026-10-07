@@ -22,6 +22,7 @@
       "lattice-files",
       "lattice-identity",
       "lattice-mesh",
+      "lattice-mesh-simulator",
       "lattice-mls",
       "lattice-node",
       "lattice-platform",
