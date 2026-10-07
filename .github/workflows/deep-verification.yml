@@ -52,6 +52,10 @@ jobs:
             cargo --version
             cargo fuzz --version
           } | tee "$RUNNER_TEMP/deep-verification-metadata.txt"
+      - name: Prepare corpus and artifact directories
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: mkdir -p "fuzz/corpus/$FUZZ_TARGET" "fuzz/artifacts/$FUZZ_TARGET"
       - name: Run bounded fuzz campaign
         env:
           FUZZ_TARGET: ${{ matrix.target }}
