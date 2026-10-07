@@ -11,6 +11,7 @@ Current gate: **NOT READY**. The product-owner completion contract requires real
 | Physical Android BLE | Not run | Requires physical devices; execute [`PHYSICAL_ANDROID_ACCEPTANCE.md`](PHYSICAL_ANDROID_ACCEPTANCE.md). |
 | Durable restart/recovery | Component-level tests exist; full matrix incomplete | See [`RESTART_MATRIX.md`](RESTART_MATRIX.md). |
 | Security negatives | Component tests and bounded fuzz evidence exist; end-to-end coverage incomplete | See [`SECURITY_NEGATIVE_MATRIX.md`](SECURITY_NEGATIVE_MATRIX.md). |
+| Scheduled deep verification | `.github/workflows/deep-verification.yml` runs bounded campaigns for all 13 maintained libFuzzer targets, clean-install SQLite migration/idempotence, workspace and fixed-seed protocol/convergence tests, and compares two clean release CLI builds. | No deep run is recorded yet; sanitizer coverage, mixed-version campaigns beyond existing vectors, and physical/external acceptance remain separate gates. |
 | Transport/courier/relay | Mixed component-level and limited CLI/Desktop acceptance | See [`TRANSPORT_MATRIX.md`](TRANSPORT_MATRIX.md); multi-hop, routing integration, and relay receive remain unverified. |
 | M8/migrations/external review | Not a final release gate yet; no independent review claimed | Complete software-fixable acceptance first; record exact reviewer/dependency when scheduled. |
 
