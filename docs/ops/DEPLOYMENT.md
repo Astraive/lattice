@@ -29,7 +29,9 @@ Pin protocol major and tested dependencies. Upgrades preserve canonical event by
 
 Configure the GitHub `release` environment to require an approval, disable administrator bypass, and allow only protected `main` plus `v*.*.*` tags. Keep these Android signing secrets in that environment only: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The workflow fails closed if a secret is missing. Do not expose signing secrets to pull-request workflows.
 
-The workflow builds signed Android APK/AAB artifacts and Linux x86_64, Windows x86_64, and macOS 15 CLI/Desktop artifacts; Desktop signing is not configured. It checks artifact metadata/signatures where supported, includes CycloneDX SBOMs and SHA-256 checksums, and attaches GitHub build provenance. Publication is always a GitHub **draft prerelease**, never a stable release. Keep it a draft until physical Android acceptance, repeatable cross-client interoperability, restart/recovery acceptance, and independent security review are complete; see [release readiness](../verification/RELEASE_READINESS.md).
+An active repository tag ruleset protects `refs/tags/v*` against updates and deletion with no bypass actors. The publish job re-resolves the tag immediately before release creation and rejects any SHA change.
+
+The workflow builds signed Android APK/AAB artifacts and Linux x86_64, Windows x86_64, and macOS 15 CLI/Desktop artifacts. Each desktop/CLI target is published as a uniquely named tar archive to preserve executable modes and bundle metadata. It checks artifact metadata/signatures where supported, includes CycloneDX SBOMs and SHA-256 checksums, and attaches GitHub build provenance. Publication is always a GitHub **draft prerelease**, never a stable release. Keep it a draft until physical Android acceptance, repeatable cross-client interoperability, restart/recovery acceptance, and independent security review are complete; see [release readiness](../verification/RELEASE_READINESS.md).
 
 ## Deployment checks
 

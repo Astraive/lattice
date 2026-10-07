@@ -173,11 +173,19 @@ jobs:
             bun --version
             go version
           } > "release-artifacts/$RUNNER_OS/build-metadata.txt"
+      - name: Archive platform outputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="release-artifacts/lattice-${RUNNER_OS}-${RELEASE_VERSION}.tar.gz"
+          tar -czf "$archive" -C "release-artifacts/$RUNNER_OS" .
       - name: Upload Desktop and CLI release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-desktop-cli-${{ runner.os }}
-          path: release-artifacts/
+          path: release-artifacts/lattice-${{ runner.os }}-${{ needs.verify.outputs.version }}.tar.gz
           if-no-files-found: error
           retention-days: 30
 
@@ -337,6 +345,11 @@ jobs:
       actions: read
       contents: write
     steps:
+      - name: Check out verified source for tag revalidation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          fetch-depth: 0
       - name: Download release artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -375,5 +388,11 @@ jobs:
           - Exact source SHA, required CI/Deep verification run IDs, and Android version metadata are in \`verification.json\`.
           - CycloneDX SBOMs and SHA-256 checksums are included. GitHub build provenance: $ATTESTATION_URL
           EOF
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          resolved_sha="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          if [[ "$resolved_sha" != "$SOURCE_SHA" ]]; then
+            echo "::error::release tag moved after source verification"
+            exit 1
+          fi
           gh release create "$RELEASE_TAG" --draft --prerelease --title "Lattice $RELEASE_VERSION (draft)" --notes-file "$RUNNER_TEMP/release-notes.md"
           find release-assets -type f -print0 | xargs -0 -r gh release upload "$RELEASE_TAG" --clobber

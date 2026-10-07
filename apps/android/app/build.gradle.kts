@@ -10,6 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.astraive.lattice"
         minSdk = 26
+        targetSdk = 37
         versionName = "0.1.0"
         versionCode = 1000
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

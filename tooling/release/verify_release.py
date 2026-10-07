@@ -135,7 +135,7 @@ def verify_ci_check(repository: str, sha: str) -> dict[str, Any]:
 
 def verify_deep_run(repository: str, sha: str) -> dict[str, Any]:
     response = gh_json(
-        f"repos/{repository}/actions/workflows/deep-verification.yml/runs?per_page=100"
+        f"repos/{repository}/actions/workflows/deep-verification.yml/runs?head_sha={sha}&event=workflow_dispatch&per_page=100"
     )
     runs = sorted(
         (
