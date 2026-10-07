@@ -333,13 +333,14 @@ fn print_forward_result(result: CourierSendResult, json: bool) {
                 "forwarded_envelope_id": super::hex(&result.forwarded_envelope_id),
                 "source_sequence": result.source_sequence,
                 "bytes_sent": result.bytes_sent,
-                "source_consumed_before_transfer": true,
+                "source_copy_consumed": true,
+                "retention_ack_received": true,
                 "recipient_delivery_claimed": false,
             })
         );
     } else {
         println!(
-            "Pinned peer accepted {} transferred byte(s); source sequence {} was consumed before send. This does not claim recipient delivery.",
+            "Pinned peer acknowledged retention of {} transferred byte(s); source sequence {} was consumed after that acknowledgement. This does not claim recipient delivery.",
             result.bytes_sent, result.source_sequence
         );
     }
