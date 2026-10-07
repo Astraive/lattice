@@ -5,10 +5,10 @@
     "source_refs": ["refs/remotes/origin/main", "refs/remotes/origin/beta", "checkout base"],
     "snapshot_base_policy": "Indexes the selected refs and prior checkout commit so the snapshot-writing commit is not self-referential; merge commits remain included when reachable.",
     "merge_commits_included": true,
-    "indexed_commit_count": 403,
-    "feature_mapped_commit_count": 403,
+    "indexed_commit_count": 404,
+    "feature_mapped_commit_count": 404,
     "reviewed_commit_count": 225,
-    "heuristic_assignment_count": 178,
+    "heuristic_assignment_count": 179,
     "history_index": "docs/quality/HISTORY_INDEX.csv",
     "commit_feature_map": "docs/quality/COMMIT_FEATURE_MAP.csv",
     "scope_complete": true,
@@ -127,7 +127,7 @@
       "id": "courier",
       "capability": "Courier queues, pinned TCP forwarding and relay outbox",
       "status": "FAILED",
-      "acceptance_boundary": "Queue mechanisms and one-hop transfer are tested; multi-hop/failure preservation is unmet and source consumption can lose a copy."
+      "acceptance_boundary": "Authenticated one- and two-hop transport plus wrong-pin and dropped-ACK source preservation pass; duplicate Core projection, scheduled/contact-driven app forwarding and independent live relay acceptance remain unverified."
     },
     {
       "id": "relay",
