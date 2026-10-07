@@ -3804,6 +3804,7 @@ impl Client {
         let credential_trust_policy = credential.trust_policy().clone();
         let credential = credential.clone();
         let reducer = created.reducer.clone();
+        let wall_time_hint = current_wall_time_hint()?;
         let (staged_reducer, control_event_id, transition_event_id, parent_epoch, new_epoch) = self
             .with_mls_transaction(move |identity, provider, transaction| {
                 let mut staged_reducer = reducer;
@@ -3833,7 +3834,7 @@ impl Client {
                         channel_id: None,
                         author_sequence: first_sequence,
                         lamport: control_lamport,
-                        wall_time_hint: 0,
+                        wall_time_hint,
                         parents: control_parents,
                         kind: EventKind::MlsControl,
                         protected_body: prepared.commit().as_bytes().to_vec(),
@@ -3882,7 +3883,7 @@ impl Client {
                         lamport: control_lamport
                             .checked_add(1)
                             .ok_or(CoreError::SpaceLamportExhausted)?,
-                        wall_time_hint: 0,
+                        wall_time_hint,
                         parents: vec![lattice_protocol::EventId::from_bytes(control_event_id)],
                         kind: EventKind::Membership,
                         protected_body: transition_ciphertext.as_bytes().to_vec(),
@@ -8256,15 +8257,27 @@ mod tests {
             member.fingerprint == bob_fingerprint
                 && member.status == super::space::MemberStatus::Removed
         }));
-        for event_id in [removal.control_event_id(), removal.transition_event_id()] {
-            assert!(
-                alice
-                    .store
-                    .load_event(event_id)
-                    .expect("load removal event")
-                    .is_some()
-            );
-        }
+        let control_record = alice
+            .store
+            .load_event(removal.control_event_id())
+            .expect("load removal control")
+            .expect("persist removal control");
+        let transition_record = alice
+            .store
+            .load_event(removal.transition_event_id())
+            .expect("load removal transition")
+            .expect("persist removal transition");
+        let control_event =
+            VerifiedSignatureOnlyEvent::decode_verify(&control_record.canonical_bytes)
+                .expect("verify removal control");
+        let transition_event =
+            VerifiedSignatureOnlyEvent::decode_verify(&transition_record.canonical_bytes)
+                .expect("verify removal transition");
+        assert!(control_event.wall_time_hint() > 0);
+        assert_eq!(
+            transition_event.wall_time_hint(),
+            control_event.wall_time_hint()
+        );
         let local_group_id = created.group_id().to_vec();
         assert_eq!(
             alice
