@@ -11,6 +11,8 @@
 | `spaces`, `members`, `channels`, `messages`, `reactions` | Indexed query projections | Rebuildable from accepted history and MLS/policy state |
 | `outbox` | Locally authored unsent/forwarded encrypted envelopes and retry schedule | Sender-local delivery queue |
 | `relay_eligible_events`, `relay_peer_event_status` | Core-authorized accepted signed events eligible for store/carry; per-peer attempt time/count and ingress acceptance | Local forwarding queue and loop-suppression state; exact signed bytes and event IDs remain unchanged |
+| `pending_relay_event_peers` | Authenticated source peers associated with dependency-pending events | Promoted to accepted per-peer status atomically with relay eligibility |
+| `accepted_application_payloads` | Locally AEAD-encrypted exact plaintexts for accepted application actions | Rebuild reducer action state without reauthorizing against newer policy |
 | `courier_queue` | Opaque third-party ciphertext, expiry/copy budget | Best-effort opt-in cache |
 | `files`, `chunks` | Manifests, path/bitmap, integrity state | Content-addressed transfers |
 | `relay_state`, `routes`, `peers` | User relay settings, cursor and path hints | Local hints, not global presence |
@@ -19,7 +21,9 @@
 
 The v6 SQLite migration added OS-protected identity and MLS-key ciphertext, an AEAD-protected local Genesis snapshot keyed by Space and MLS generation and linked to the exact event row, and fixed-width trusted-identity pin records. Core validates the complete bundle fingerprint before saving and rechecks it when loading; the storage layer itself only preserves exact bytes and prevents silent pin replacement. A stored pin does not attest that QR/SAS comparison occurred or authorize MLS membership. The initial policy payload is encrypted with the protected MLS storage key and authenticated to its Space, group reference, and root event ID. Protected OpenMLS group records commit in the same transaction as Genesis and the snapshot. Later policy projections, MLS conflict recovery metadata, incoming membership persistence, and filesystem-backed attachment chunks remain unimplemented; the test-only OpenMLS SQLite harness is not part of the application store.
 
-Relay eligibility is recorded only after current Core authorization. The v19 migration intentionally leaves its relay queue empty: earlier schemas did not persist whether a stored application event was authorized or retained only as checkpoint-excluded ancestry, so bulk backfill could forward unapproved history. Legacy stored events remain available to existing history/sync paths, but are not newly made relay-eligible; accepted inbound application events after upgrade are eligible.
+Relay eligibility is recorded only after current Core authorization. The v19 migration intentionally leaves its relay queue empty: earlier schemas did not persist whether a stored application event was authorized or retained only as checkpoint-excluded ancestry, so bulk backfill could forward unapproved history.
+
+The v20 migration adds peer identities for dependency-pending ingress and an encrypted accepted-application-payload ledger used to rebuild reducer action state after restart. Both tables start empty on upgrade. Earlier schemas cannot safely backfill the ledger: canonical event bytes do not prove prior MLS/policy acceptance or retain the decrypted action. Existing cached text remains readable, but actions from legacy events cannot be reconstructed into the reducer after restart; new accepted application actions are persisted only after authorization.
 
 ## Constraints and transitions
 

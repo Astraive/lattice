@@ -33,14 +33,15 @@ use lattice_mls::{
 use lattice_protocol::{Value, decode_canonical, encode_canonical};
 use lattice_relay::profile::MailboxToken;
 use lattice_storage::{
-    CachedSpaceMessage, CommitOutcome, DirectMessageRecord, MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
-    MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
-    SpaceMembershipTransitionSnapshot, Store, StoreError,
+    AcceptedApplicationPayload, CachedSpaceMessage, CommitOutcome, DirectMessageRecord,
+    MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE, MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot,
+    SpaceMembershipConflictSnapshot, SpaceMembershipTransitionSnapshot, Store, StoreError,
 };
 pub use lattice_storage::{
     DirectMessageConversation, DirectMessageOutboxEntry, ForwardableEventEntry,
-    MAX_DIRECT_MESSAGE_PENDING_INVITATIONS, MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState,
-    PendingDirectMessageInvitation, SpaceGenesisCursor,
+    MAX_ACCEPTED_APPLICATION_PAYLOAD_PAGE_SIZE, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
+    MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState, PendingDirectMessageInvitation,
+    SpaceGenesisCursor,
 };
 use openmls::credentials::Credential;
 use openmls::prelude::CredentialType;
@@ -437,6 +438,9 @@ pub fn authorize_and_store_application_event(
             .iter()
             .map(|parent| *parent.as_bytes())
             .collect::<Vec<_>>();
+        // Promote peer history before commit_received deletes the pending row.
+        // Both operations share this transaction, so relay visibility is atomic.
+        Store::mark_relay_eligible_in_transaction(transaction, event_id)?;
         if let CommitOutcome::Equivocation { existing_event_id } =
             Store::commit_received_in_transaction(
                 transaction,
@@ -449,7 +453,7 @@ pub fn authorize_and_store_application_event(
         {
             return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
         }
-        Store::mark_relay_eligible_in_transaction(transaction, event_id)?;
+        persist_accepted_application_payload(transaction, event)?;
     }
     Ok((staged_reducer, authorization))
 }
@@ -1105,6 +1109,43 @@ fn validate_restored_membership_state(
     if group.epoch() != expected_transition_count || group.member_count() != active_members {
         return Err(CoreError::SpaceMembershipSnapshotInvalid);
     }
+    Ok(())
+}
+
+fn accepted_application_payload_context(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+    event_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut context = Vec::with_capacity(40 + 16 + 32 + 32);
+    context.extend_from_slice(b"lattice-accepted-application-payload-v1\0");
+    context.extend_from_slice(space_id);
+    context.extend_from_slice(group_reference);
+    context.extend_from_slice(event_id);
+    context
+}
+
+fn persist_accepted_application_payload(
+    transaction: &Transaction<'_>,
+    bound: &MlsBoundEvent,
+) -> Result<(), CoreError> {
+    let event = bound.event();
+    let event_id = *event.event_id().as_bytes();
+    let context = accepted_application_payload_context(
+        event.space_id(),
+        event.mls_group_reference(),
+        &event_id,
+    );
+    let encrypted_plaintext = lattice_mls::protect_local_record(&context, bound.plaintext())?;
+    Store::save_accepted_application_payload_in_transaction(
+        transaction,
+        &AcceptedApplicationPayload {
+            event_id,
+            space_id: *event.space_id(),
+            group_reference: *event.mls_group_reference(),
+            encrypted_plaintext,
+        },
+    )?;
     Ok(())
 }
 
@@ -2606,10 +2647,7 @@ impl Client {
             event,
             None,
         )?;
-        if matches!(
-            outcome,
-            SyncedApplicationOutcome::Accepted { .. } | SyncedApplicationOutcome::Duplicate { .. }
-        ) {
+        if !matches!(outcome, SyncedApplicationOutcome::Pending { .. }) {
             self.retry_ready_synced_application_events(&mut created)?;
         }
         Ok(outcome)
@@ -2639,10 +2677,7 @@ impl Client {
             event,
             Some(authenticated_peer_identity),
         )?;
-        if matches!(
-            outcome,
-            SyncedApplicationOutcome::Accepted { .. } | SyncedApplicationOutcome::Duplicate { .. }
-        ) {
+        if !matches!(outcome, SyncedApplicationOutcome::Pending { .. }) {
             self.retry_ready_synced_application_events(&mut created)?;
         }
         Ok(outcome)
@@ -2712,6 +2747,72 @@ impl Client {
         Ok(())
     }
 
+    fn restore_accepted_application_actions(
+        &mut self,
+        created: &mut CreatedSpace,
+    ) -> Result<(), CoreError> {
+        let mut after_event_id = None;
+        loop {
+            let page = self.store.list_accepted_application_payloads(
+                &created.space_id,
+                &created.group_reference,
+                after_event_id,
+                MAX_ACCEPTED_APPLICATION_PAYLOAD_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_event_id = page.last().map(|payload| payload.event_id);
+            let mut page_events = Vec::with_capacity(page.len());
+            for payload in page {
+                if payload.space_id != created.space_id
+                    || payload.group_reference != created.group_reference
+                {
+                    return Err(CoreError::SpaceGraphEventRejected(
+                        space::RejectReason::WrongGeneration,
+                    ));
+                }
+                let record = self
+                    .store
+                    .load_event(&payload.event_id)?
+                    .ok_or(CoreError::SpaceParentEventMissing)?;
+                let event = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+                if event.event_id().as_bytes() != &payload.event_id
+                    || event.space_id() != &payload.space_id
+                    || event.mls_group_reference() != &payload.group_reference
+                {
+                    return Err(CoreError::SpaceGraphEventRejected(
+                        space::RejectReason::GraphConflict,
+                    ));
+                }
+                self.restore_synced_ancestor_graph(created, &event)?;
+                let context = accepted_application_payload_context(
+                    &payload.space_id,
+                    &payload.group_reference,
+                    &payload.event_id,
+                );
+                page_events.push((event, context, payload.encrypted_plaintext));
+            }
+            let actions = self.with_mls_transaction(move |_, _, _| {
+                page_events
+                    .into_iter()
+                    .map(|(event, context, encrypted_plaintext)| {
+                        let plaintext =
+                            lattice_mls::unprotect_local_record(&context, &encrypted_plaintext)?;
+                        Ok::<_, CoreError>((event, plaintext))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })?;
+            for (event, plaintext) in actions {
+                created
+                    .reducer
+                    .restore_authorized_application_event(&MlsBoundEvent { event, plaintext })
+                    .map_err(CoreError::SpaceGraphEventRejected)?;
+            }
+        }
+        Ok(())
+    }
+
     fn accept_verified_synced_application_event(
         &mut self,
         created: &mut CreatedSpace,
@@ -2745,6 +2846,10 @@ impl Client {
         if !missing_dependencies.is_empty() {
             self.store
                 .store_pending(event_id, canonical_bytes, &missing_dependencies)?;
+            if let Some(peer_identity) = authenticated_peer_identity {
+                self.store
+                    .record_pending_relay_event_peer(&peer_identity, event_id)?;
+            }
             return Ok(SyncedApplicationOutcome::Pending {
                 event_id,
                 missing_dependencies,
@@ -3255,7 +3360,9 @@ impl Client {
             .store
             .load_space_welcome_bootstrap_snapshot(space_id, group_reference)?
         {
-            return self.restore_joined_space(&snapshot, event, &joined_snapshot);
+            let mut created = self.restore_joined_space(&snapshot, event, &joined_snapshot)?;
+            self.restore_accepted_application_actions(&mut created)?;
+            return Ok(created);
         }
         let recovery_context = space_genesis_context(
             &snapshot.space_id,
@@ -3440,13 +3547,15 @@ impl Client {
                 // a corresponding committed MLS epoch.
                 Ok((group_reference, reducer))
             })?;
-        Ok(CreatedSpace {
+        let mut created = CreatedSpace {
             space_id,
             group_id,
             group_reference,
             genesis_event: restored_event,
             reducer,
-        })
+        };
+        self.restore_accepted_application_actions(&mut created)?;
+        Ok(created)
     }
 
     /// Restores a bounded page of locally created Space generations.
@@ -5190,6 +5299,7 @@ fn queue_application_event_in_transaction(
     {
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
+    persist_accepted_application_payload(transaction, &bound)?;
     if let Some((target, content)) = message.cached_text {
         persist_cached_text_projection(
             transaction,
@@ -8424,7 +8534,7 @@ mod tests {
                 kind: EventKind::Message,
                 protected_body: parent_ciphertext,
                 mls_group_reference: group_reference,
-                mls_epoch: 1,
+                mls_epoch: 0,
             },
         )
         .expect("sign dependency parent");
@@ -8483,8 +8593,8 @@ mod tests {
                 parent_event.encoded_bytes(),
                 relay_source,
             )
-            .expect("accept parent and retry ready child"),
-            super::SyncedApplicationOutcome::Accepted {
+            .expect("exclude checkpoint parent and retry ready child"),
+            super::SyncedApplicationOutcome::CheckpointExcluded {
                 event_id: parent_id
             }
         );
@@ -8494,7 +8604,7 @@ mod tests {
         assert!(
             relayed_after_parent
                 .iter()
-                .any(|entry| entry.event_id == parent_id)
+                .all(|entry| entry.event_id != parent_id)
         );
         assert!(
             relayed_after_parent
@@ -8511,25 +8621,31 @@ mod tests {
             bob.forwardable_event_page(&relay_source, None, 0, 16)
                 .expect("source already supplied child")
                 .iter()
-                .any(|entry| entry.event_id == child_id)
+                .all(|entry| entry.event_id != child_id)
         );
         let history = bob
             .local_text_message_history(&space_id, &group_reference, &channel_id)
             .expect("read received message history");
-        assert_eq!(history.len(), 3);
+        assert_eq!(history.len(), 2);
         assert_eq!(history[0].event_id, message_id);
         assert_eq!(history[0].author_id, alice_fingerprint);
         assert_eq!(history[0].content, "received over MLS");
-        assert_eq!(history[1].event_id, parent_id);
-        assert_eq!(history[1].content, "parent over MLS");
-        assert_eq!(history[2].event_id, child_id);
-        assert_eq!(history[2].content, "child over MLS");
+        assert_eq!(history[1].event_id, child_id);
+        assert_eq!(history[1].content, "child over MLS");
         let received_search = bob
             .search_local_text_messages(&space_id, &group_reference, &channel_id, "RECEIVED")
             .expect("search authorized received message projection offline");
         assert_eq!(received_search.total_matches, 1);
         assert_eq!(received_search.messages[0].event_id, message_id);
         assert_eq!(received_search.messages[0].content, "received over MLS");
+
+        drop(joined);
+        drop(bob);
+        let mut bob = Client::open_existing(&bob_database.0, &protector)
+            .expect("reopen recipient profile after accepted messages");
+        let mut joined = bob
+            .restore_space(&space_id, &group_reference)
+            .expect("restore accepted application actions after restart");
         let edit_plaintext =
             super::encode_text_edit(message_id, "edited over MLS").expect("encode edit");
         let edit_ciphertext = alice
@@ -8562,13 +8678,13 @@ mod tests {
         .expect("sign incoming edit");
         assert!(matches!(
             bob.accept_synced_application_event(&mut joined, edit_event.encoded_bytes())
-                .expect("accept synced edit"),
+                .expect("accept synced edit after restart"),
             super::SyncedApplicationOutcome::Accepted { .. }
         ));
         let edited_history = bob
             .local_text_message_history(&space_id, &group_reference, &channel_id)
             .expect("read edited incoming history");
-        assert_eq!(edited_history.len(), 3);
+        assert_eq!(edited_history.len(), 2);
         assert_eq!(edited_history[0].event_id, message_id);
         assert_eq!(edited_history[0].content, "edited over MLS");
         let remote_draft = |sequence, kind, parents| EventDraft {
@@ -8610,12 +8726,7 @@ mod tests {
         let visible_after_delete = bob
             .local_text_message_history(&space_id, &group_reference, &channel_id)
             .expect("history excludes only tombstoned cached content");
-        assert_eq!(visible_after_delete.len(), 2);
-        assert!(
-            visible_after_delete
-                .iter()
-                .any(|message| message.event_id == parent_id)
-        );
+        assert_eq!(visible_after_delete.len(), 1);
         assert!(
             visible_after_delete
                 .iter()
