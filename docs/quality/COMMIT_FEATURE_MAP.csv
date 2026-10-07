@@ -1,226 +1,400 @@
-ordinal,commit_short_hash,reviewed_feature_assignments,subject_and_path_rationale
-"1","64998b7","Documentation, requirements/status corrections, architectural decisions","`docs(repo)` changed the project/docs feature corpus."
-"2","ebc85b0","Workspace, build graph, platform scaffolds","Bun workspace metadata (`package.json`, `turbo.json`)."
-"3","27997a0","Workspace, build graph, platform scaffolds","Shared TS configs/toolchain files."
-"4","3bf23d4","Workspace, build graph, platform scaffolds","Tauri application initialization."
-"5","a740323","Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop protocol-lab shell (`App.tsx`)."
-"6","f25badc","Workspace, build graph, platform scaffolds","Rust workspace boundaries (`Cargo.toml`)."
-"7","908d98b","CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI application initialization."
-"8","0c6579d","NON-PRODUCT-MAINTENANCE","Native-cache ignore rule only."
-"9","577b9e3","Workspace, build graph, platform scaffolds","Android Compose project scaffold."
-"10","789f85c","Workspace, build graph, platform scaffolds","iOS SwiftUI project scaffold."
-"11","e9d56da","Workspace, build graph, platform scaffolds","Shared package workspace initialization."
-"12","4b1d541","NON-PRODUCT-MAINTENANCE","Dependency version pinning."
-"13","9ed10e7","Workspace, build graph, platform scaffolds","CI scaffold validation workflow."
-"14","de53a4f","NON-PRODUCT-MAINTENANCE","Dependabot scheduling only."
-"15","c793c14","Workspace, build graph, platform scaffolds","Initial Rust domain-crate workspace layout."
-"16","a44459b","Workspace, build graph, platform scaffolds","Protocol/schema/vector directory scaffold."
-"17","e378390","Workspace, build graph, platform scaffolds","Tooling directory scaffold."
-"18","b4c8440","Workspace, build graph, platform scaffolds","Verification directory scaffold (`.gitkeep`s)."
-"19","8fc5bee","Workspace, build graph, platform scaffolds","Design asset directory scaffold."
-"20","ba382af","Workspace, build graph, platform scaffolds","Package TypeScript project configs."
-"21","45bb66e","NON-PRODUCT-MAINTENANCE","Empty package-suite setup, not a product capability."
-"22","3a94706","NON-PRODUCT-MAINTENANCE","Tauri dependency patch update."
-"23","e50f964","NON-PRODUCT-MAINTENANCE","CLI rustfmt-only change."
-"24","ad95159","NON-PRODUCT-MAINTENANCE","Desktop lint cleanup."
-"25","bf36ad3","NON-PRODUCT-MAINTENANCE","Desktop startup-panic lint documentation."
-"26","30c5955","NON-PRODUCT-MAINTENANCE","Xcode build-state ignore rule."
-"27","521ba8f","NON-PRODUCT-MAINTENANCE","Gradle-output ignore rule."
-"28","435a5ac","Workspace, build graph, platform scaffolds","Android Gradle-wrapper executable setup."
-"29","9e192f3","NON-PRODUCT-MAINTENANCE","Android native-state ignore rule."
-"30","b41562c","Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Compose/API compatibility adjustment."
-"31","294b08d","Documentation, requirements/status corrections, architectural decisions","Membership/channel ADR and architecture documentation."
-"32","3562485","Documentation, requirements/status corrections, architectural decisions","Candidate protocol/vector publication."
-"33","9211ed5","Identity generation, storage, fingerprints and protected keys","OS-protected device identity/storage implementation."
-"34","85c3aa1","Canonical encoding, event IDs, signed events, vectors and inspector","Canonical event profile and inspector/vector paths."
-"35","1b2aa61","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","OpenMLS conformance harness in `lattice-mls`."
-"36","b073887","Bounded routing, path capability offers, path health and TCP framing","Routing/sync primitive introduction."
-"37","a092dda","Android BLE codec, scanning, GATT primitives and nearby service","BLE frame codec, scanner, permissions."
-"38","7c337d6","Desktop identity, local Space/message UI, history/search, local paths, relay settings; CLI identity, Space, local send, history/search, relay config, sync/node JSON","Protected identity workflows in both desktop and CLI."
-"39","d273f7f","Shared desktop theme and status components","Shared `packages/theme` and `desktop-ui` status components are a genuine UI capability not named in the ledger."
-"40","546c102","NON-PRODUCT-MAINTENANCE","Router Cargo metadata clarification."
-"41","f270d96","Canonical encoding, event IDs, signed events, vectors and inspector","Checked canonical integer conversion fix."
-"42","89e1543","Documentation, requirements/status corrections, architectural decisions","Identity API error documentation."
-"43","ec44041","Attachment manifests, receivers, staging quotas, verified chunks","Bounded verified attachment receiver."
-"44","ec046a2","CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI MLS state and JSON workflows."
-"45","fe7ebf3","CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI JSON output contract test."
-"46","d310bb0","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","MLS plaintext/sender-key binding."
-"47","5d00c12","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Core signed-event/MLS plaintext binding."
-"48","86f4d58","Bounded routing, path capability offers, path health and TCP framing","Platform adapter ports for transport."
-"49","fb30631","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Core MLS-bound plaintext performance change."
-"50","63c3ace","NON-PRODUCT-MAINTENANCE","Transport contract refactor."
-"51","343b314","Documentation, requirements/status corrections, architectural decisions","Implementation-maturity documentation."
-"52","8f68674","Canonical encoding, event IDs, signed events, vectors and inspector; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Event group-reference binding plus event/MLS spec changes."
-"53","fb6f29f","Bounded routing, path capability offers, path health and TCP framing","Bounded envelope receive port."
-"54","567922a","Documentation, requirements/status corrections, architectural decisions","Authorization prerequisite tracking."
-"55","b79f7b2","Canonical encoding, event IDs, signed events, vectors and inspector","MLS group-reference vector."
-"56","d8252d7","Identity generation, storage, fingerprints and protected keys","Android Keystore private-key protection."
-"57","5dbcbe9","Canonical encoding, event IDs, signed events, vectors and inspector","Protocol-inspector signed-event verification."
-"58","6e8f74f","Documentation, requirements/status corrections, architectural decisions","Space/relay candidate-profile documentation."
-"59","7e047d8","Documentation, requirements/status corrections, architectural decisions","Protocol freeze-gate clarification."
-"60","ca92119","X.509 / RFC 9420 credential validation and PKI issuance workflow; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Persistent MLS provider state/event transactions; ledger associates it with both credential/MLS lanes."
-"61","ed5e808","Text, local encrypted cache, history, send status and edits; Attachment manifests, receivers, staging quotas, verified chunks; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Authorization added for messages and file manifests in core space handling."
-"62","7d2fbb2","NIP-01/NIP-11/NIP-40 relay codec and client","Strict NIP event/capability codecs."
-"63","7633c5a","Canonical Space genesis, durable local snapshots and recovery","Atomic local Space creation."
-"64","b6ce5a9","NIP-01/NIP-11/NIP-40 relay codec and client","Mailbox-event validation across relay protocol layers."
-"65","da3d6bc","Canonical Space genesis, durable local snapshots and recovery","Protected local genesis restoration."
-"66","48b646f","NIP-01/NIP-11/NIP-40 relay codec and client; Bounded routing, path capability offers, path health and TCP framing","Relay client and bounded TCP client additions."
-"67","5413b14","Android Compose identity/Space/messages/diagnostics/permissions/accessibility; Identity generation, storage, fingerprints and protected keys","Android protected-device identity UI/UniFFI exposure."
-"68","24d86ee","Bounded routing, path capability offers, path health and TCP framing","Bounded TCP-peer acceptance."
-"69","22b2faf","NON-PRODUCT-MAINTENANCE","Workspace lint-clearing refactor."
-"70","92fd401","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Sync overflow-fixture correction."
-"71","06b6d0c","Canonical Space genesis, durable local snapshots and recovery","Recoverable local-Space enumeration."
-"72","951b8a9","Canonical Space genesis, durable local snapshots and recovery; Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Paged local snapshots exposed on Android."
-"73","45d7f71","CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local-Space cursor validation."
-"74","8663d76","Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes","Authorized deletion/reaction-removal behavior."
-"75","4f9827f","Peer pinning, mismatch handling and unpin; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI peer pinning and Space-command isolation."
-"76","187a005","Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop identity-pin and local-Space panels."
-"77","2bb2c5c","Peer pinning, mismatch handling and unpin","Persisted/exposed peer pins across surfaces."
-"78","d49a03a","Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes","Authorized edit/reaction/pin projections."
-"79","7093851","NON-PRODUCT-MAINTENANCE","CLI dispatch split refactor."
-"80","8354751","Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Mobile identity-byte input normalization."
-"81","fb270a5","NON-PRODUCT-MAINTENANCE","Generated JNI-library ignore rule."
-"82","155111b","Documentation, requirements/status corrections, architectural decisions","Android ABI verification-status documentation."
-"83","4d872da","Attachment manifests, receivers, staging quotas, verified chunks","Unsafe incoming filename rejection."
-"84","9f710c2","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Cross-summary author-fork rejection."
-"85","7350b8b","Bounded routing, path capability offers, path health and TCP framing","Volatile route-class constraint."
-"86","dd8efae","Documentation, requirements/status corrections, architectural decisions","Sync/route boundary documentation."
-"87","64d4ec9","Documentation, requirements/status corrections, architectural decisions","Voice signaling-only scope documentation."
-"88","9d34244","Documentation, requirements/status corrections, architectural decisions","CLI/desktop boundary documentation."
-"89","50cad40","Documentation, requirements/status corrections, architectural decisions","Requirements update for CLI identity pinning."
-"90","41e760e","NON-PRODUCT-MAINTENANCE","Tauri owned-input annotations."
-"91","32cc5ac","Documentation, requirements/status corrections, architectural decisions","Packaged Android ABI verification documentation."
-"92","a96da16","Documentation, requirements/status corrections, architectural decisions","Offline-emulator limitation documentation."
-"93","dd1d3d9","Peer pinning, mismatch handling and unpin","Fingerprint-bound device trust across client pin UI paths."
-"94","bb56eaa","Text, local encrypted cache, history, send status and edits; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Persisted protected policy and local history."
-"95","fc238c1","Attachment manifests, receivers, staging quotas, verified chunks","Authenticated chunk manifests."
-"96","ec0e5a3","Voice signaling, lifecycle and permission termination","Local voice-session lifecycle model."
-"97","370be31","CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local Space, relay, and sync workflows."
-"98","c2e6827","Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop local Space messaging workflow."
-"99","7e68660","Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Android protected Space messaging workflow."
-"100","684d2cc","NON-PRODUCT-MAINTENANCE","Lockfile update."
-"101","3ec8056","Documentation, requirements/status corrections, architectural decisions","Requirements/evidence documentation update."
-"102","b7a46bc","Voice signaling, lifecycle and permission termination","Permission-revocation session termination."
-"103","c40a6d9","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Missing-dependency range-request gating."
-"104","95f0001","Attachment manifests, receivers, staging quotas, verified chunks","Bounded source reads/interruption retry."
-"105","2ed2a32","Attachment manifests, receivers, staging quotas, verified chunks","Bounded-reader reuse."
-"106","a7661d1","Text, local encrypted cache, history, send status and edits","Authorized text-edit queue."
-"107","afc4852","Documentation, requirements/status corrections, architectural decisions","Voice-document formatting correction."
-"108","7caf789","NON-PRODUCT-MAINTENANCE","Sync test formatting only."
-"109","fc531b5","NON-PRODUCT-MAINTENANCE","Voice formatting only."
-"110","5f4f56c","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Replay of accepted membership policy history."
-"111","9cacb39","Text, local encrypted cache, history, send status and edits","Persisted edited local-message projections."
-"112","34bc00e","Text, local encrypted cache, history, send status and edits","UniFFI local text-edit queue exposure."
-"113","4f71f51","Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local Space edit command."
-"114","89e578b","Text, local encrypted cache, history, send status and edits; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop local-message edit surface."
-"115","1d3834f","Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local Space history display."
-"116","5177c46","Text, local encrypted cache, history, send status and edits; Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Android local-message edit surface."
-"117","887dc55","Documentation, requirements/status corrections, architectural decisions","Membership-conflict semantics documentation."
-"118","c835988","Text, local encrypted cache, history, send status and edits","Cached-message restoration for local edits."
-"119","f9581e2","Canonical Space genesis, durable local snapshots and recovery; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop local-Space recovery flow."
-"120","fee197e","Canonical Space genesis, durable local snapshots and recovery; Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Android local-Space recovery exposure."
-"121","66af4c4","Canonical Space genesis, durable local snapshots and recovery; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local-Space recovery command."
-"122","710f665","Canonical Space genesis, durable local snapshots and recovery; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Conflicted Space-generation recovery."
-"123","2ec9a68","Documentation, requirements/status corrections, architectural decisions","CLI recovery invocation documentation."
-"124","083520f","Text, local encrypted cache, history, send status and edits; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop local-outbox delivery-state clarification."
-"125","1a0c797","Documentation, requirements/status corrections, architectural decisions","Windows desktop-bundle documentation."
-"126","d73be1e","CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local-recovery capability reporting."
-"127","554133f","Invites, KeyPackages, Welcome bootstrap, and recovery generation","Pinned Welcome bootstrap checkpoints."
-"128","0c03eec","Attachment manifests, receivers, staging quotas, verified chunks","Transfers bound to authorized manifests."
-"129","9a39972","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Bounded direct transport exchanges."
-"130","60481d8","Invites, KeyPackages, Welcome bootstrap, and recovery generation","Client Welcome-bootstrap import."
-"131","56e6f96","Documentation, requirements/status corrections, architectural decisions","Voice signaling-limit documentation."
-"132","1c98f49","Documentation, requirements/status corrections, architectural decisions","Welcome checkpoint-import clarification."
-"133","7ac90b9","Documentation, requirements/status corrections, architectural decisions","libwebrtc prerequisite documentation."
-"134","6a6a9bb","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; Peer pinning, mismatch handling and unpin","Authenticated direct anti-entropy session with identity-pin integration."
-"135","c6b553f","Documentation, requirements/status corrections, architectural decisions","Checkpoint-restoration clarification."
-"136","bcbcbc4","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Bounded stored-event pages."
-"137","b328fa4","Documentation, requirements/status corrections, architectural decisions","CLI committed-event status documentation."
-"138","a45afa9","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Scoped-store verified event serving."
-"139","2e6725a","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI pinned direct-sync request serving."
-"140","31be12c","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Fetch/accept pinned application events."
-"141","eb39227","Attachment manifests, receivers, staging quotas, verified chunks","Verified attachment-chunk reading."
-"142","f105d3a","Documentation, requirements/status corrections, architectural decisions","Accepted Space-policy documentation alignment."
-"143","329499a","Documentation, requirements/status corrections, architectural decisions","Decision-index clarification."
-"144","0be643f","Search and retained-history query; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop retained-history search and CSP tightening."
-"145","3bba347","Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON","Canonical local send command."
-"146","5f23886","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Authenticated summary exchange."
-"147","537bb82","Search and retained-history query; Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Android local message search."
-"148","229a4f9","Documentation, requirements/status corrections, architectural decisions","Received local-history documentation."
-"149","6a5adb7","Search and retained-history query","Retained local Space-history search."
-"150","8345dc6","Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI queued-send status contract."
-"151","ca10562","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Durable conflict-after-restart coverage."
-"152","c43b233","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Rejection of out-of-plan requests."
-"153","dfd2ce3","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Rejection of unplanned authenticated targets."
-"154","4e4803e","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI per-Space pending-sync details."
-"155","48722a3","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Store-backed scoped summary construction."
-"156","206fe4a","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI scoped v2 direct sync."
-"157","9e7d7b6","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI scoped-range outcome reporting."
-"158","f3518a0","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Store-backed v2 repair coverage."
-"159","21f26c5","Attachment manifests, receivers, staging quotas, verified chunks","Authorized file-manifest queue."
-"160","417aa0e","Attachment manifests, receivers, staging quotas, verified chunks","Typed file-manifest receipts."
-"161","5c6ff59","Attachment manifests, receivers, staging quotas, verified chunks","Unsafe attachment-manifest rejection coverage."
-"162","ee2f787","Attachment manifests, receivers, staging quotas, verified chunks","Repeated manifest-validation avoidance."
-"163","aee2184","Attachment manifests, receivers, staging quotas, verified chunks","Shared authorized-event queue transaction used by manifest path."
-"164","ea8482b","Canonical encoding, event IDs, signed events, vectors and inspector","Hostile protocol decoder corpus."
-"165","6fda265","Canonical encoding, event IDs, signed events, vectors and inspector","Canonical decoder seed mutation tests."
-"166","dc9cf16","Canonical encoding, event IDs, signed events, vectors and inspector","Hostile signed-event decoder tests."
-"167","a612601","NIP-01/NIP-11/NIP-40 relay codec and client","Hostile relay-envelope decoder tests."
-"168","61159e5","NIP-01/NIP-11/NIP-40 relay codec and client","Bounded NIP-01 JSON fuzzing."
-"169","d6abf7b","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Bounded v2 sync-frame decoder fuzzing."
-"170","86f8883","Identity generation, storage, fingerprints and protected keys","Public identity-bundle decoding fuzzing."
-"171","dd599a8","Testkit, property/campaign and fuzz harnesses","Isolated fuzz target harness and quality-plan additions."
-"172","397b77f","Peer pinning, mismatch handling and unpin","Local peer-pin removal in storage/core/CLI."
-"173","bd8d63c","Peer pinning, mismatch handling and unpin","Mobile and desktop pin-removal exposure."
-"174","982bfa3","Bounded routing, path capability offers, path health and TCP framing","Direct-path capability offer protocol."
-"175","732aa21","Courier queues, pinned TCP forwarding and relay outbox","Persistent opt-in courier queue."
-"176","53147a8","Bounded routing, path capability offers, path health and TCP framing","Authenticated path-capability negotiation."
-"177","be0582b","Bounded routing, path capability offers, path health and TCP framing","Denied path-capability negotiation coverage."
-"178","0d83e5c","Courier queues, pinned TCP forwarding and relay outbox","Durable outbox envelope publishing through relays."
-"179","9f96085","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair","Missing-MLS-commit ciphertext holding."
-"180","4f15d06","Bounded routing, path capability offers, path health and TCP framing","Per-path health state."
-"181","dab881c","Attachment manifests, receivers, staging quotas, verified chunks; Bounded routing, path capability offers, path health and TCP framing","Authenticated resumable attachment transfer paths."
-"182","8667635","Attachment manifests, receivers, staging quotas, verified chunks","Persistent attachment staging quotas."
-"183","d6ee58f","Attachment manifests, receivers, staging quotas, verified chunks","Attachment staging-root anchoring fix."
-"184","86020ad","Invites, KeyPackages, Welcome bootstrap, and recovery generation","Signed Space invite tokens."
-"185","e73b118","Invites, KeyPackages, Welcome bootstrap, and recovery generation","KeyPackage lifecycle persistence/bootstrap paths."
-"186","cf881d2","Space policy reducer, permissions, conflicts, membership and MLS atomic transitions","Member-removal rekey proof binding."
-"187","2d9ca6a","Device-scoped DM MLS groups","Device-scoped direct-message MLS groups."
-"188","d87dc64","Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes","Stable mentions and local mutes."
-"189","8b0ba28","Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes","Expiring presence and typing state."
-"190","7472592","Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes","Parent-arrival retry for remote updates."
-"191","f50d9a6","Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes","Constrained semantic rich-text parsing."
-"192","14362e5","Testkit, property/campaign and fuzz harnesses","Scripted contact scenarios in `lattice-testkit`."
-"193","9bc5b25","Search and retained-history query","CLI offline message search."
-"194","5c811f8","Invites, KeyPackages, Welcome bootstrap, and recovery generation; CLI identity, Space, local send, history/search, relay config, sync/node JSON","Offline membership lifecycle and CLI interface."
-"195","e244fca","Bounded routing, path capability offers, path health and TCP framing","CLI local path-capability scan."
-"196","4d91ef8","Courier queues, pinned TCP forwarding and relay outbox","Pinned TCP courier v1."
-"197","f62d1c0","Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop local-path and relay-settings surface."
-"198","fc7648f","Attachment manifests, receivers, staging quotas, verified chunks; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop local attachment queue UI/backend."
-"199","c9fbb74","Courier queues, pinned TCP forwarding and relay outbox; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop persistent pinned-peer mode."
-"200","902018e","Android BLE codec, scanning, GATT primitives and nearby service","Android BLE GATT adapters."
-"201","4389c4c","Android BLE codec, scanning, GATT primitives and nearby service","Persistent nearby service."
-"202","b944e45","Android BLE codec, scanning, GATT primitives and nearby service","Android Wi-Fi capability probe."
-"203","9159caa","Documentation, requirements/status corrections, architectural decisions","FFI lifecycle/notification-scope documentation."
-"204","4bcce70","Android UI selection and native key status","Accessible selection semantics in Android UI cards."
-"205","befe8ea","Documentation, requirements/status corrections, architectural decisions","One-shot FFI observer documentation."
-"206","003968a","Android Compose identity/Space/messages/diagnostics/permissions/accessibility","Android Space/diagnostics navigation."
-"207","6e39c9c","Documentation, requirements/status corrections, architectural decisions","Desktop native-build/vector-check documentation."
-"208","295921f","Identity generation, storage, fingerprints and protected keys; Android UI selection and native key status","Keystore status reporting and Android native-key UI."
-"209","ec135b3","Documentation, requirements/status corrections, architectural decisions","Windows fuzz-runner documentation."
-"210","237b3b8","Documentation, requirements/status corrections, architectural decisions","Android-only mobile release-gate documentation."
-"211","c9c11d3","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI bidirectional history reconciliation."
-"212","b924ce1","Attachment manifests, receivers, staging quotas, verified chunks; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop authenticated local transfer workflow."
-"213","bf392fa","Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI reconciliation retry logic."
-"214","7967549","Attachment manifests, receivers, staging quotas, verified chunks; Bounded routing, path capability offers, path health and TCP framing; Desktop identity, local Space/message UI, history/search, local paths, relay settings","Desktop attachment/LAN workflow hardening."
-"215","0887888","Messaging, tombstone cleanup, sync fuzzing","Core/storage tombstone cleanup plus a bounded sync-plan fuzz target."
-"216","7c669d3","Android BLE exp0 profile, discovery and candidate documentation","The commit changes the exp0 spec and its feature/architecture documentation."
-"217","4c2ce48","Android BLE first-contact identity binding specification","The commit adds identity proof, pinning, and first-contact protocol documentation."
-"218","7e9a93f","Space invitations, Welcome bootstrap and transactional binding","Core change binds bootstrap creation to invite state."
-"219","148ac5b","Canonical events, encoding and shared boundary vectors","The commit adds ephemeral-event validation and a shared canonical-CBOR vector."
-"220","7e5008d","Protocol inspector canonical-bound parity","TypeScript inspector bounds and boundary tests align with Rust."
-"221","3b801b4","CLI relay settings error behavior","The CLI distinguishes relay-settings I/O errors."
-"222","8e27aba","X.509 development credential issuance tooling","The commit adds reproducible development CA and device-certificate scripts."
-"223","d742893","Historical capability and commit indexes","The commit adds the history index and reviewed commit-to-feature mapping."
-"224","0764872","Android UniFFI key-material clearing","The generated Android binding clears callback key material."
-"225","918fecd","CLI documentation and feature-ledger lint corrections","The commit modifies existing Markdown documentation for lint compliance."
+ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignment_basis
+1,64998b7,"Documentation, requirements/status corrections, architectural decisions",`docs(repo)` changed the project/docs feature corpus.,reviewed
+2,ebc85b0,"Workspace, build graph, platform scaffolds","Bun workspace metadata (`package.json`, `turbo.json`).",reviewed
+3,27997a0,"Workspace, build graph, platform scaffolds",Shared TS configs/toolchain files.,reviewed
+4,3bf23d4,"Workspace, build graph, platform scaffolds",Tauri application initialization.,reviewed
+5,a740323,"Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop protocol-lab shell (`App.tsx`).,reviewed
+6,f25badc,"Workspace, build graph, platform scaffolds",Rust workspace boundaries (`Cargo.toml`).,reviewed
+7,908d98b,"CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI application initialization.,reviewed
+8,0c6579d,NON-PRODUCT-MAINTENANCE,Native-cache ignore rule only.,reviewed
+9,577b9e3,"Workspace, build graph, platform scaffolds",Android Compose project scaffold.,reviewed
+10,789f85c,"Workspace, build graph, platform scaffolds",iOS SwiftUI project scaffold.,reviewed
+11,e9d56da,"Workspace, build graph, platform scaffolds",Shared package workspace initialization.,reviewed
+12,4b1d541,NON-PRODUCT-MAINTENANCE,Dependency version pinning.,reviewed
+13,9ed10e7,"Workspace, build graph, platform scaffolds",CI scaffold validation workflow.,reviewed
+14,de53a4f,NON-PRODUCT-MAINTENANCE,Dependabot scheduling only.,reviewed
+15,c793c14,"Workspace, build graph, platform scaffolds",Initial Rust domain-crate workspace layout.,reviewed
+16,a44459b,"Workspace, build graph, platform scaffolds",Protocol/schema/vector directory scaffold.,reviewed
+17,e378390,"Workspace, build graph, platform scaffolds",Tooling directory scaffold.,reviewed
+18,b4c8440,"Workspace, build graph, platform scaffolds",Verification directory scaffold (`.gitkeep`s).,reviewed
+19,8fc5bee,"Workspace, build graph, platform scaffolds",Design asset directory scaffold.,reviewed
+20,ba382af,"Workspace, build graph, platform scaffolds",Package TypeScript project configs.,reviewed
+21,45bb66e,NON-PRODUCT-MAINTENANCE,"Empty package-suite setup, not a product capability.",reviewed
+22,3a94706,NON-PRODUCT-MAINTENANCE,Tauri dependency patch update.,reviewed
+23,e50f964,NON-PRODUCT-MAINTENANCE,CLI rustfmt-only change.,reviewed
+24,ad95159,NON-PRODUCT-MAINTENANCE,Desktop lint cleanup.,reviewed
+25,bf36ad3,NON-PRODUCT-MAINTENANCE,Desktop startup-panic lint documentation.,reviewed
+26,30c5955,NON-PRODUCT-MAINTENANCE,Xcode build-state ignore rule.,reviewed
+27,521ba8f,NON-PRODUCT-MAINTENANCE,Gradle-output ignore rule.,reviewed
+28,435a5ac,"Workspace, build graph, platform scaffolds",Android Gradle-wrapper executable setup.,reviewed
+29,9e192f3,NON-PRODUCT-MAINTENANCE,Android native-state ignore rule.,reviewed
+30,b41562c,Android Compose identity/Space/messages/diagnostics/permissions/accessibility,Compose/API compatibility adjustment.,reviewed
+31,7db402c,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+32,294b08d,"Documentation, requirements/status corrections, architectural decisions",Membership/channel ADR and architecture documentation.,reviewed
+33,3562485,"Documentation, requirements/status corrections, architectural decisions",Candidate protocol/vector publication.,reviewed
+34,9211ed5,"Identity generation, storage, fingerprints and protected keys",OS-protected device identity/storage implementation.,reviewed
+35,85c3aa1,"Canonical encoding, event IDs, signed events, vectors and inspector",Canonical event profile and inspector/vector paths.,reviewed
+36,1b2aa61,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",OpenMLS conformance harness in `lattice-mls`.,reviewed
+37,b073887,"Bounded routing, path capability offers, path health and TCP framing",Routing/sync primitive introduction.,reviewed
+38,a092dda,"Android BLE codec, scanning, GATT primitives and nearby service","BLE frame codec, scanner, permissions.",reviewed
+39,7c337d6,"Desktop identity, local Space/message UI, history/search, local paths, relay settings; CLI identity, Space, local send, history/search, relay config, sync/node JSON",Protected identity workflows in both desktop and CLI.,reviewed
+40,d273f7f,Shared desktop theme and status components,Shared `packages/theme` and `desktop-ui` status components are a genuine UI capability not named in the ledger.,reviewed
+41,546c102,NON-PRODUCT-MAINTENANCE,Router Cargo metadata clarification.,reviewed
+42,f270d96,"Canonical encoding, event IDs, signed events, vectors and inspector",Checked canonical integer conversion fix.,reviewed
+43,89e1543,"Documentation, requirements/status corrections, architectural decisions",Identity API error documentation.,reviewed
+44,ec44041,"Attachment manifests, receivers, staging quotas, verified chunks",Bounded verified attachment receiver.,reviewed
+45,ec046a2,"CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI MLS state and JSON workflows.,reviewed
+46,fe7ebf3,"CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI JSON output contract test.,reviewed
+47,d310bb0,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",MLS plaintext/sender-key binding.,reviewed
+48,5d00c12,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Core signed-event/MLS plaintext binding.,reviewed
+49,86f4d58,"Bounded routing, path capability offers, path health and TCP framing",Platform adapter ports for transport.,reviewed
+50,fb30631,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Core MLS-bound plaintext performance change.,reviewed
+51,63c3ace,NON-PRODUCT-MAINTENANCE,Transport contract refactor.,reviewed
+52,343b314,"Documentation, requirements/status corrections, architectural decisions",Implementation-maturity documentation.,reviewed
+53,8f68674,"Canonical encoding, event IDs, signed events, vectors and inspector; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Event group-reference binding plus event/MLS spec changes.,reviewed
+54,fb6f29f,"Bounded routing, path capability offers, path health and TCP framing",Bounded envelope receive port.,reviewed
+55,567922a,"Documentation, requirements/status corrections, architectural decisions",Authorization prerequisite tracking.,reviewed
+56,b79f7b2,"Canonical encoding, event IDs, signed events, vectors and inspector",MLS group-reference vector.,reviewed
+57,d8252d7,"Identity generation, storage, fingerprints and protected keys",Android Keystore private-key protection.,reviewed
+58,5dbcbe9,"Canonical encoding, event IDs, signed events, vectors and inspector",Protocol-inspector signed-event verification.,reviewed
+59,6e8f74f,"Documentation, requirements/status corrections, architectural decisions",Space/relay candidate-profile documentation.,reviewed
+60,7e047d8,"Documentation, requirements/status corrections, architectural decisions",Protocol freeze-gate clarification.,reviewed
+61,ca92119,"X.509 / RFC 9420 credential validation and PKI issuance workflow; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Persistent MLS provider state/event transactions; ledger associates it with both credential/MLS lanes.,reviewed
+62,ed5e808,"Text, local encrypted cache, history, send status and edits; Attachment manifests, receivers, staging quotas, verified chunks; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Authorization added for messages and file manifests in core space handling.,reviewed
+63,7d2fbb2,NIP-01/NIP-11/NIP-40 relay codec and client,Strict NIP event/capability codecs.,reviewed
+64,7633c5a,"Canonical Space genesis, durable local snapshots and recovery",Atomic local Space creation.,reviewed
+65,b6ce5a9,NIP-01/NIP-11/NIP-40 relay codec and client,Mailbox-event validation across relay protocol layers.,reviewed
+66,da3d6bc,"Canonical Space genesis, durable local snapshots and recovery",Protected local genesis restoration.,reviewed
+67,48b646f,"NIP-01/NIP-11/NIP-40 relay codec and client; Bounded routing, path capability offers, path health and TCP framing",Relay client and bounded TCP client additions.,reviewed
+68,5413b14,"Android Compose identity/Space/messages/diagnostics/permissions/accessibility; Identity generation, storage, fingerprints and protected keys",Android protected-device identity UI/UniFFI exposure.,reviewed
+69,24d86ee,"Bounded routing, path capability offers, path health and TCP framing",Bounded TCP-peer acceptance.,reviewed
+70,22b2faf,NON-PRODUCT-MAINTENANCE,Workspace lint-clearing refactor.,reviewed
+71,92fd401,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Sync overflow-fixture correction.,reviewed
+72,06b6d0c,"Canonical Space genesis, durable local snapshots and recovery",Recoverable local-Space enumeration.,reviewed
+73,951b8a9,"Canonical Space genesis, durable local snapshots and recovery; Android Compose identity/Space/messages/diagnostics/permissions/accessibility",Paged local snapshots exposed on Android.,reviewed
+74,45d7f71,"CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI local-Space cursor validation.,reviewed
+75,8663d76,"Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes",Authorized deletion/reaction-removal behavior.,reviewed
+76,4f9827f,"Peer pinning, mismatch handling and unpin; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI peer pinning and Space-command isolation.,reviewed
+77,187a005,"Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop identity-pin and local-Space panels.,reviewed
+78,2bb2c5c,"Peer pinning, mismatch handling and unpin",Persisted/exposed peer pins across surfaces.,reviewed
+79,d49a03a,"Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes",Authorized edit/reaction/pin projections.,reviewed
+80,7093851,NON-PRODUCT-MAINTENANCE,CLI dispatch split refactor.,reviewed
+81,8354751,Android Compose identity/Space/messages/diagnostics/permissions/accessibility,Mobile identity-byte input normalization.,reviewed
+82,fb270a5,NON-PRODUCT-MAINTENANCE,Generated JNI-library ignore rule.,reviewed
+83,155111b,"Documentation, requirements/status corrections, architectural decisions",Android ABI verification-status documentation.,reviewed
+84,4d872da,"Attachment manifests, receivers, staging quotas, verified chunks",Unsafe incoming filename rejection.,reviewed
+85,9f710c2,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Cross-summary author-fork rejection.,reviewed
+86,7350b8b,"Bounded routing, path capability offers, path health and TCP framing",Volatile route-class constraint.,reviewed
+87,dd8efae,"Documentation, requirements/status corrections, architectural decisions",Sync/route boundary documentation.,reviewed
+88,64d4ec9,"Documentation, requirements/status corrections, architectural decisions",Voice signaling-only scope documentation.,reviewed
+89,9d34244,"Documentation, requirements/status corrections, architectural decisions",CLI/desktop boundary documentation.,reviewed
+90,50cad40,"Documentation, requirements/status corrections, architectural decisions",Requirements update for CLI identity pinning.,reviewed
+91,41e760e,NON-PRODUCT-MAINTENANCE,Tauri owned-input annotations.,reviewed
+92,32cc5ac,"Documentation, requirements/status corrections, architectural decisions",Packaged Android ABI verification documentation.,reviewed
+93,a96da16,"Documentation, requirements/status corrections, architectural decisions",Offline-emulator limitation documentation.,reviewed
+94,dd1d3d9,"Peer pinning, mismatch handling and unpin",Fingerprint-bound device trust across client pin UI paths.,reviewed
+95,bb56eaa,"Text, local encrypted cache, history, send status and edits; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Persisted protected policy and local history.,reviewed
+96,fc238c1,"Attachment manifests, receivers, staging quotas, verified chunks",Authenticated chunk manifests.,reviewed
+97,ec0e5a3,"Voice signaling, lifecycle and permission termination",Local voice-session lifecycle model.,reviewed
+98,370be31,"CLI identity, Space, local send, history/search, relay config, sync/node JSON","CLI local Space, relay, and sync workflows.",reviewed
+99,c2e6827,"Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop local Space messaging workflow.,reviewed
+100,7e68660,Android Compose identity/Space/messages/diagnostics/permissions/accessibility,Android protected Space messaging workflow.,reviewed
+101,684d2cc,NON-PRODUCT-MAINTENANCE,Lockfile update.,reviewed
+102,3ec8056,"Documentation, requirements/status corrections, architectural decisions",Requirements/evidence documentation update.,reviewed
+103,b7a46bc,"Voice signaling, lifecycle and permission termination",Permission-revocation session termination.,reviewed
+104,c40a6d9,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Missing-dependency range-request gating.,reviewed
+105,95f0001,"Attachment manifests, receivers, staging quotas, verified chunks",Bounded source reads/interruption retry.,reviewed
+106,2ed2a32,"Attachment manifests, receivers, staging quotas, verified chunks",Bounded-reader reuse.,reviewed
+107,a7661d1,"Text, local encrypted cache, history, send status and edits",Authorized text-edit queue.,reviewed
+108,afc4852,"Documentation, requirements/status corrections, architectural decisions",Voice-document formatting correction.,reviewed
+109,7caf789,NON-PRODUCT-MAINTENANCE,Sync test formatting only.,reviewed
+110,fc531b5,NON-PRODUCT-MAINTENANCE,Voice formatting only.,reviewed
+111,5f4f56c,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Replay of accepted membership policy history.,reviewed
+112,9cacb39,"Text, local encrypted cache, history, send status and edits",Persisted edited local-message projections.,reviewed
+113,34bc00e,"Text, local encrypted cache, history, send status and edits",UniFFI local text-edit queue exposure.,reviewed
+114,4f71f51,"Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI local Space edit command.,reviewed
+115,89e578b,"Text, local encrypted cache, history, send status and edits; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop local-message edit surface.,reviewed
+116,1d3834f,"Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI local Space history display.,reviewed
+117,5177c46,"Text, local encrypted cache, history, send status and edits; Android Compose identity/Space/messages/diagnostics/permissions/accessibility",Android local-message edit surface.,reviewed
+118,887dc55,"Documentation, requirements/status corrections, architectural decisions",Membership-conflict semantics documentation.,reviewed
+119,c835988,"Text, local encrypted cache, history, send status and edits",Cached-message restoration for local edits.,reviewed
+120,f9581e2,"Canonical Space genesis, durable local snapshots and recovery; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop local-Space recovery flow.,reviewed
+121,fee197e,"Canonical Space genesis, durable local snapshots and recovery; Android Compose identity/Space/messages/diagnostics/permissions/accessibility",Android local-Space recovery exposure.,reviewed
+122,66af4c4,"Canonical Space genesis, durable local snapshots and recovery; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI local-Space recovery command.,reviewed
+123,710f665,"Canonical Space genesis, durable local snapshots and recovery; Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Conflicted Space-generation recovery.,reviewed
+124,2ec9a68,"Documentation, requirements/status corrections, architectural decisions",CLI recovery invocation documentation.,reviewed
+125,083520f,"Text, local encrypted cache, history, send status and edits; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop local-outbox delivery-state clarification.,reviewed
+126,1a0c797,"Documentation, requirements/status corrections, architectural decisions",Windows desktop-bundle documentation.,reviewed
+127,d73be1e,"CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI local-recovery capability reporting.,reviewed
+128,554133f,"Invites, KeyPackages, Welcome bootstrap, and recovery generation",Pinned Welcome bootstrap checkpoints.,reviewed
+129,0c03eec,"Attachment manifests, receivers, staging quotas, verified chunks",Transfers bound to authorized manifests.,reviewed
+130,9a39972,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Bounded direct transport exchanges.,reviewed
+131,60481d8,"Invites, KeyPackages, Welcome bootstrap, and recovery generation",Client Welcome-bootstrap import.,reviewed
+132,56e6f96,"Documentation, requirements/status corrections, architectural decisions",Voice signaling-limit documentation.,reviewed
+133,1c98f49,"Documentation, requirements/status corrections, architectural decisions",Welcome checkpoint-import clarification.,reviewed
+134,7ac90b9,"Documentation, requirements/status corrections, architectural decisions",libwebrtc prerequisite documentation.,reviewed
+135,6a6a9bb,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; Peer pinning, mismatch handling and unpin",Authenticated direct anti-entropy session with identity-pin integration.,reviewed
+136,c6b553f,"Documentation, requirements/status corrections, architectural decisions",Checkpoint-restoration clarification.,reviewed
+137,bcbcbc4,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Bounded stored-event pages.,reviewed
+138,b328fa4,"Documentation, requirements/status corrections, architectural decisions",CLI committed-event status documentation.,reviewed
+139,a45afa9,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Scoped-store verified event serving.,reviewed
+140,2e6725a,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI pinned direct-sync request serving.,reviewed
+141,31be12c,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Fetch/accept pinned application events.,reviewed
+142,eb39227,"Attachment manifests, receivers, staging quotas, verified chunks",Verified attachment-chunk reading.,reviewed
+143,f105d3a,"Documentation, requirements/status corrections, architectural decisions",Accepted Space-policy documentation alignment.,reviewed
+144,329499a,"Documentation, requirements/status corrections, architectural decisions",Decision-index clarification.,reviewed
+145,0be643f,"Search and retained-history query; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop retained-history search and CSP tightening.,reviewed
+146,3bba347,"Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON",Canonical local send command.,reviewed
+147,5f23886,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Authenticated summary exchange.,reviewed
+148,537bb82,Search and retained-history query; Android Compose identity/Space/messages/diagnostics/permissions/accessibility,Android local message search.,reviewed
+149,229a4f9,"Documentation, requirements/status corrections, architectural decisions",Received local-history documentation.,reviewed
+150,6a5adb7,Search and retained-history query,Retained local Space-history search.,reviewed
+151,8345dc6,"Text, local encrypted cache, history, send status and edits; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI queued-send status contract.,reviewed
+152,ca10562,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Durable conflict-after-restart coverage.,reviewed
+153,c43b233,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Rejection of out-of-plan requests.,reviewed
+154,dfd2ce3,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Rejection of unplanned authenticated targets.,reviewed
+155,4e4803e,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI per-Space pending-sync details.,reviewed
+156,48722a3,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Store-backed scoped summary construction.,reviewed
+157,206fe4a,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI scoped v2 direct sync.,reviewed
+158,9e7d7b6,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI scoped-range outcome reporting.,reviewed
+159,f3518a0,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Store-backed v2 repair coverage.,reviewed
+160,21f26c5,"Attachment manifests, receivers, staging quotas, verified chunks",Authorized file-manifest queue.,reviewed
+161,417aa0e,"Attachment manifests, receivers, staging quotas, verified chunks",Typed file-manifest receipts.,reviewed
+162,5c6ff59,"Attachment manifests, receivers, staging quotas, verified chunks",Unsafe attachment-manifest rejection coverage.,reviewed
+163,ee2f787,"Attachment manifests, receivers, staging quotas, verified chunks",Repeated manifest-validation avoidance.,reviewed
+164,aee2184,"Attachment manifests, receivers, staging quotas, verified chunks",Shared authorized-event queue transaction used by manifest path.,reviewed
+165,ea8482b,"Canonical encoding, event IDs, signed events, vectors and inspector",Hostile protocol decoder corpus.,reviewed
+166,6fda265,"Canonical encoding, event IDs, signed events, vectors and inspector",Canonical decoder seed mutation tests.,reviewed
+167,dc9cf16,"Canonical encoding, event IDs, signed events, vectors and inspector",Hostile signed-event decoder tests.,reviewed
+168,a612601,NIP-01/NIP-11/NIP-40 relay codec and client,Hostile relay-envelope decoder tests.,reviewed
+169,61159e5,NIP-01/NIP-11/NIP-40 relay codec and client,Bounded NIP-01 JSON fuzzing.,reviewed
+170,d6abf7b,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Bounded v2 sync-frame decoder fuzzing.,reviewed
+171,86f8883,"Identity generation, storage, fingerprints and protected keys",Public identity-bundle decoding fuzzing.,reviewed
+172,dd599a8,"Testkit, property/campaign and fuzz harnesses",Isolated fuzz target harness and quality-plan additions.,reviewed
+173,397b77f,"Peer pinning, mismatch handling and unpin",Local peer-pin removal in storage/core/CLI.,reviewed
+174,bd8d63c,"Peer pinning, mismatch handling and unpin",Mobile and desktop pin-removal exposure.,reviewed
+175,982bfa3,"Bounded routing, path capability offers, path health and TCP framing",Direct-path capability offer protocol.,reviewed
+176,732aa21,"Courier queues, pinned TCP forwarding and relay outbox",Persistent opt-in courier queue.,reviewed
+177,53147a8,"Bounded routing, path capability offers, path health and TCP framing",Authenticated path-capability negotiation.,reviewed
+178,be0582b,"Bounded routing, path capability offers, path health and TCP framing",Denied path-capability negotiation coverage.,reviewed
+179,0d83e5c,"Courier queues, pinned TCP forwarding and relay outbox",Durable outbox envelope publishing through relays.,reviewed
+180,9f96085,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair",Missing-MLS-commit ciphertext holding.,reviewed
+181,4f15d06,"Bounded routing, path capability offers, path health and TCP framing",Per-path health state.,reviewed
+182,dab881c,"Attachment manifests, receivers, staging quotas, verified chunks; Bounded routing, path capability offers, path health and TCP framing",Authenticated resumable attachment transfer paths.,reviewed
+183,8667635,"Attachment manifests, receivers, staging quotas, verified chunks",Persistent attachment staging quotas.,reviewed
+184,d6ee58f,"Attachment manifests, receivers, staging quotas, verified chunks",Attachment staging-root anchoring fix.,reviewed
+185,86020ad,"Invites, KeyPackages, Welcome bootstrap, and recovery generation",Signed Space invite tokens.,reviewed
+186,e73b118,"Invites, KeyPackages, Welcome bootstrap, and recovery generation",KeyPackage lifecycle persistence/bootstrap paths.,reviewed
+187,cf881d2,"Space policy reducer, permissions, conflicts, membership and MLS atomic transitions",Member-removal rekey proof binding.,reviewed
+188,2d9ca6a,Device-scoped DM MLS groups,Device-scoped direct-message MLS groups.,reviewed
+189,d87dc64,"Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes",Stable mentions and local mutes.,reviewed
+190,8b0ba28,"Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes",Expiring presence and typing state.,reviewed
+191,7472592,"Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes",Parent-arrival retry for remote updates.,reviewed
+192,f50d9a6,"Tombstones, reactions, pins, mentions, rich text, parent dependencies, presence/typing, local mutes",Constrained semantic rich-text parsing.,reviewed
+193,14362e5,"Testkit, property/campaign and fuzz harnesses",Scripted contact scenarios in `lattice-testkit`.,reviewed
+194,9bc5b25,Search and retained-history query,CLI offline message search.,reviewed
+195,5c811f8,"Invites, KeyPackages, Welcome bootstrap, and recovery generation; CLI identity, Space, local send, history/search, relay config, sync/node JSON",Offline membership lifecycle and CLI interface.,reviewed
+196,e244fca,"Bounded routing, path capability offers, path health and TCP framing",CLI local path-capability scan.,reviewed
+197,4d91ef8,"Courier queues, pinned TCP forwarding and relay outbox",Pinned TCP courier v1.,reviewed
+198,f62d1c0,"Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop local-path and relay-settings surface.,reviewed
+199,fc7648f,"Attachment manifests, receivers, staging quotas, verified chunks; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop local attachment queue UI/backend.,reviewed
+200,c9fbb74,"Courier queues, pinned TCP forwarding and relay outbox; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop persistent pinned-peer mode.,reviewed
+201,902018e,"Android BLE codec, scanning, GATT primitives and nearby service",Android BLE GATT adapters.,reviewed
+202,4389c4c,"Android BLE codec, scanning, GATT primitives and nearby service",Persistent nearby service.,reviewed
+203,b944e45,"Android BLE codec, scanning, GATT primitives and nearby service",Android Wi-Fi capability probe.,reviewed
+204,9159caa,"Documentation, requirements/status corrections, architectural decisions",FFI lifecycle/notification-scope documentation.,reviewed
+205,4bcce70,Android UI selection and native key status,Accessible selection semantics in Android UI cards.,reviewed
+206,befe8ea,"Documentation, requirements/status corrections, architectural decisions",One-shot FFI observer documentation.,reviewed
+207,003968a,Android Compose identity/Space/messages/diagnostics/permissions/accessibility,Android Space/diagnostics navigation.,reviewed
+208,6e39c9c,"Documentation, requirements/status corrections, architectural decisions",Desktop native-build/vector-check documentation.,reviewed
+209,295921f,"Identity generation, storage, fingerprints and protected keys; Android UI selection and native key status",Keystore status reporting and Android native-key UI.,reviewed
+210,ec135b3,"Documentation, requirements/status corrections, architectural decisions",Windows fuzz-runner documentation.,reviewed
+211,237b3b8,"Documentation, requirements/status corrections, architectural decisions",Android-only mobile release-gate documentation.,reviewed
+212,c9c11d3,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI bidirectional history reconciliation.,reviewed
+213,b924ce1,"Attachment manifests, receivers, staging quotas, verified chunks; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop authenticated local transfer workflow.,reviewed
+214,bf392fa,"Direct authenticated sync v1/v2, scoped summaries/ranges, store-backed repair; CLI identity, Space, local send, history/search, relay config, sync/node JSON",CLI reconciliation retry logic.,reviewed
+215,7967549,"Attachment manifests, receivers, staging quotas, verified chunks; Bounded routing, path capability offers, path health and TCP framing; Desktop identity, local Space/message UI, history/search, local paths, relay settings",Desktop attachment/LAN workflow hardening.,reviewed
+216,0887888,"Messaging, tombstone cleanup, sync fuzzing",Core/storage tombstone cleanup plus a bounded sync-plan fuzz target.,reviewed
+217,7c669d3,"Android BLE exp0 profile, discovery and candidate documentation",The commit changes the exp0 spec and its feature/architecture documentation.,reviewed
+218,4c2ce48,Android BLE first-contact identity binding specification,"The commit adds identity proof, pinning, and first-contact protocol documentation.",reviewed
+219,7e9a93f,"Space invitations, Welcome bootstrap and transactional binding",Core change binds bootstrap creation to invite state.,reviewed
+220,148ac5b,"Canonical events, encoding and shared boundary vectors",The commit adds ephemeral-event validation and a shared canonical-CBOR vector.,reviewed
+221,7e5008d,Protocol inspector canonical-bound parity,TypeScript inspector bounds and boundary tests align with Rust.,reviewed
+222,3b801b4,CLI relay settings error behavior,The CLI distinguishes relay-settings I/O errors.,reviewed
+223,8e27aba,X.509 development credential issuance tooling,The commit adds reproducible development CA and device-certificate scripts.,reviewed
+224,d742893,Historical capability and commit indexes,The commit adds the history index and reviewed commit-to-feature mapping.,reviewed
+225,0764872,Android UniFFI key-material clearing,The generated Android binding clears callback key material.,reviewed
+226,918fecd,CLI documentation and feature-ledger lint corrections,The commit modifies existing Markdown documentation for lint compliance.,reviewed
+227,455d40e,"Android client; Build and CI; CLI and node; Core, Spaces and MLS; Desktop client; Development tooling; Files and transfers; Identity and trust; MLS and Spaces; Placeholder inventory and scaffold debt; Protocol and vectors; Protocol specifications and vectors; Requirements and architecture; Storage and outbox; Web client",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+228,8c54cc0,"Android client; Build and CI; CLI and node; Core, Spaces and MLS; Desktop client; Development tooling; Files and transfers; Identity and trust; MLS and Spaces; Placeholder inventory and scaffold debt; Protocol and vectors; Protocol specifications and vectors; Requirements and architecture; Storage and outbox; Web client",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+229,03c5bd4,Protocol and vectors; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+230,6e3d9f5,Protocol and vectors; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+231,05b0ea6,Android client; Protocol and vectors,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+232,f4084fc,Development tooling; MLS and Spaces; Placeholder inventory and scaffold debt; Protocol specifications and vectors; Storage and outbox,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+233,77acf77,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+234,8706e9b,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+235,0e98a02,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+236,40552db,"Core, Spaces and MLS",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+237,f20b874,Files and transfers; Identity and trust,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+238,bb5debf,MLS and Spaces,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+239,cd8aac3,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+240,842aebb,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+241,a5cf8b7,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+242,d439b07,CLI and node,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+243,e59db58,"Desktop client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+244,80ecabe,Android client; Protocol and vectors,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+245,825ce2f,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+246,bc339b8,"Android client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+247,9e8dd8b,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+248,9ab5fbc,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+249,c8a1430,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+250,cf3aaaa,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+251,b557bd2,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+252,ac88172,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+253,c39fcea,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+254,3a7df9e,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+255,ee6ee06,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+256,5aebaa9,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+257,4769594,Development tooling; Protocol and vectors; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+258,e3a2875,Desktop client; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+259,89ec503,"Core, Spaces and MLS; Desktop client; Requirements and architecture; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+260,48e54f8,"CLI and node; Core, Spaces and MLS; Desktop client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+261,00d5d5c,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+262,ef08449,"Build and CI; CLI and node; Core, Spaces and MLS",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+263,a0a43aa,Android client; Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+264,3a50f47,Android client; Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+265,d8db307,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+266,e5e6d4e,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+267,65ddb51,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+268,ff0e047,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+269,5cb5d52,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+270,a675f09,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+271,4464eeb,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+272,aa12283,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+273,3ac8266,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+274,0b52447,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+275,ba7630f,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+276,dca1a5e,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+277,3a0c4ff,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+278,31b75ac,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+279,8debfeb,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+280,c2311b0,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+281,a604d67,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+282,14bd229,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+283,9b53997,"Android client; CLI and node; Core, Spaces and MLS; Desktop client; Node and sync; Protocol specifications and vectors; Requirements and architecture; Storage and outbox",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+284,231715e,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+285,8476c9e,Android client; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+286,307c2ec,Desktop client; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+287,50a562c,"Android client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+288,37ccb05,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+289,9567dbe,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+290,bcb0285,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+291,02cb9af,Fuzzing and tests,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+292,2a36f6c,Desktop client; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+293,6cfc853,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+294,b90ac4c,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+295,5435d3a,"Android client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+296,164e630,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+297,961f8fb,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+298,f2c1896,Android client; Protocol and vectors,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+299,a524df6,"CLI and node; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+300,5cf0820,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+301,b9bf918,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+302,3e84c5b,"Desktop client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+303,e033932,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+304,c284f36,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+305,b6b1b3e,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+306,5f31620,"Desktop client; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+307,442e57e,Desktop client; Protocol and vectors,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+308,1ac39a1,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+309,6e0a467,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+310,a4d04c5,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+311,b69a901,"Core, Spaces and MLS",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+312,be095be,"Core, Spaces and MLS; Protocol events and vectors",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+313,9f255a1,"Node and sync; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+314,393d748,"Node and sync; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+315,715f805,"Node and sync; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+316,448ae80,"Relay; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+317,3509aeb,"Relay; Storage and outbox; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+318,c0db483,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+319,ea52ab3,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+320,23e2939,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+321,caba489,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+322,c0c80f7,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+323,24533cb,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+324,1d7959f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+325,d96e2d8,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+326,11ccf0e,"Identity and trust; Requirements and architecture; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+327,c383ecd,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+328,390c110,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+329,6788a32,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+330,68e632d,"Protocol and vectors; Protocol specifications and vectors; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+331,7aadb8a,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+332,85c74e9,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+333,ae6dc0b,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+334,041fa84,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+335,e6a883e,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+336,91ea690,Android client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+337,1219afd,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+338,0c6a24d,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+339,8e518ab,Web client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+340,6d969c1,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+341,038e0bf,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+342,2259299,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+343,b07461d,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+344,3f6723b,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+345,cf019d0,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+346,1944ca8,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+347,c47d615,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+348,23fe7f3,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+349,8d727ca,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+350,33de95a,"Core, Spaces and MLS",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+351,9d41e44,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+352,f6d155a,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+353,f6b7fc6,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+354,61c7064,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+355,e7c2157,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+356,c264279,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+357,85ec031,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+358,6584f06,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+359,e235bf9,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+360,3460b95,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+361,49d6525,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+362,c7f1a7c,Protocol and vectors; Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+363,1402a61,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+364,c80f6fa,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+365,dae20d8,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+366,9a8068d,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+367,16e5eed,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+368,fb34c33,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+369,67d3290,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+370,3442d56,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+371,b3d48b0,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+372,d50e9ad,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+373,54ad33b,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+374,b0ed424,Protocol and vectors; Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+375,a90c856,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+376,8ee4672,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+377,7c43f3c,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+378,72bc9ef,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+379,661e9bd,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+380,f02be60,"CLI and node; Core, Spaces and MLS; Desktop client; Node and sync; Protocol events and vectors; Relay; Storage and outbox",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+381,5f4a117,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+382,891b83e,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+383,7b5d703,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+384,d30cd5d,CLI and node; Development tooling; Identity and trust; MLS and Spaces; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+385,819da81,CLI and node; Identity and trust,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+386,0d88fbf,CLI and node; Development tooling; Identity and trust; MLS and Spaces; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+387,a8fdffd,Android client; Cryptography and trust; Identity and trust; Protocol and vectors; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+388,55f8626,Android client; Cryptography and trust; Identity and trust; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+389,032ed3b,Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+390,7089e5f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+391,47ba4fc,Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+392,85b91df,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+393,fd6a73f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+394,10b01c5,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+395,4b9caf4,Android client; Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+396,f7e3d04,Android client; Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+397,7bae986,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+398,3777b78,"CLI and node; Node and sync; Requirements and architecture; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+399,6cdfcc1,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
