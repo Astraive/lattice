@@ -2984,6 +2984,28 @@ impl Store {
         )?;
         Ok(())
     }
+    /// Records an authenticated peer's acceptance in the event-commit transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the status write fails.
+    pub fn record_relay_event_peer_acceptance_in_transaction(
+        transaction: &Transaction<'_>,
+        peer_identity: &[u8; ID_BYTES],
+        event_id: [u8; ID_BYTES],
+    ) -> Result<()> {
+        transaction.execute(
+            "INSERT INTO relay_peer_event_status
+                (peer_identity, event_id, next_attempt_ms, attempt_count, accepted)
+             SELECT ?1, ?2, 0, 0, 1
+             WHERE EXISTS (
+                 SELECT 1 FROM relay_eligible_events WHERE event_id = ?2
+             )
+             ON CONFLICT(peer_identity, event_id) DO UPDATE SET accepted = 1",
+            params![&peer_identity[..], &event_id[..]],
+        )?;
+        Ok(())
+    }
 
     /// Returns a bounded page of authorized events not yet accepted by `peer_identity`.
     ///

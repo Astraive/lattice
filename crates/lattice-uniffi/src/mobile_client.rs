@@ -1176,9 +1176,15 @@ impl MobileClient {
             })
             .transpose()?;
         let mut client = self.lock_client()?;
-        let outcome = client
-            .accept_synced_application_event_for_local_generation(&canonical_bytes)
-            .map_err(|_| MobileError::SyncIngestFailed)?;
+        let outcome = if let Some(peer_identity) = peer_identity {
+            client.accept_synced_application_event_for_local_generation_from_peer(
+                &canonical_bytes,
+                peer_identity,
+            )
+        } else {
+            client.accept_synced_application_event_for_local_generation(&canonical_bytes)
+        }
+        .map_err(|_| MobileError::SyncIngestFailed)?;
         let (event_id, state, missing_dependencies) = match outcome {
             SyncedApplicationOutcome::Accepted { event_id } => {
                 (event_id, MobileSyncEventState::Accepted, Vec::new())
@@ -1203,15 +1209,7 @@ impl MobileClient {
                     .collect(),
             ),
         };
-        if matches!(
-            state,
-            MobileSyncEventState::Accepted | MobileSyncEventState::Duplicate
-        ) && let Some(peer_identity) = peer_identity
-        {
-            client
-                .record_relay_event_peer_acceptance(&peer_identity, event_id)
-                .map_err(|_| MobileError::SyncIngestFailed)?;
-        }
+
         let result = MobileSyncEventResult {
             event_id: event_id.to_vec(),
             state,
