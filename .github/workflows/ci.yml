@@ -376,6 +376,7 @@ jobs:
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
       - name: Test Rust workspace
+        shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             dbus-run-session -- bash -euo pipefail -c 'eval "$(printf "%s" "lattice-ci-keyring" | gnome-keyring-daemon --unlock --components=secrets)"; cargo test --workspace --locked'
