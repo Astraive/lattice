@@ -66,7 +66,7 @@ impl RelaySigningKey {
         let mut bytes = Zeroizing::new([0_u8; 32]);
         for _ in 0..4 {
             getrandom::fill(&mut *bytes).map_err(|_| RelaySigningKeyError::RandomSource)?;
-            if SigningKey::from_bytes(&bytes[..]).is_ok() {
+            if SigningKey::from_slice(&bytes[..]).is_ok() {
                 return Ok(Self(bytes));
             }
         }
@@ -80,7 +80,7 @@ impl RelaySigningKey {
     /// Returns an error if the bytes are not a valid secp256k1 Schnorr secret.
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, RelaySigningKeyError> {
         let bytes = Zeroizing::new(bytes);
-        if SigningKey::from_bytes(&bytes[..]).is_err() {
+        if SigningKey::from_slice(&bytes[..]).is_err() {
             return Err(RelaySigningKeyError::InvalidSecretKey);
         }
         Ok(Self(Zeroizing::new(*bytes)))

@@ -119,3 +119,18 @@ jobs:
             ${{ runner.temp }}/reproducibility.sha256
           if-no-files-found: warn
           retention-days: 30
+  external-environment-status:
+    name: External acceptance status (not a test)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report physical and external prerequisites
+        shell: bash
+        run: |
+          {
+            echo "## External acceptance status — not covered by this hosted run"
+            echo
+            echo "- **BLOCKED:** Physical Android BLE acceptance. This workflow has no named physical-device runner; two/three-device radio scenarios were not run."
+            echo "- **UNAVAILABLE:** Live external relay/infrastructure acceptance. This workflow does not provision independent relay endpoints or an external-network test environment; those scenarios were not run."
+            echo
+            echo "These statuses are not passes and do not satisfy product or release acceptance. A successful hosted Deep run covers only its listed hosted jobs."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
