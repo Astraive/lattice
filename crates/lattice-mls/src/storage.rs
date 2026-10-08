@@ -144,7 +144,7 @@ pub fn protect_local_record(
         getrandom::fill(&mut nonce).map_err(|_| ProtectedCodecError::Randomness)?;
         let ciphertext = cipher
             .encrypt(
-                TryFrom::try_from(&nonce).map_err(|_| ProtectedCodecError::Encryption)?,
+                From::from(&nonce),
                 Payload {
                     msg: plaintext,
                     aad: &associated_data,
@@ -277,7 +277,7 @@ impl Codec for ProtectedJsonCodec {
             getrandom::fill(&mut nonce_bytes).map_err(|_| ProtectedCodecError::Randomness)?;
             let ciphertext = cipher
                 .encrypt(
-                    TryFrom::try_from(&nonce_bytes).map_err(|_| ProtectedCodecError::Encryption)?,
+                    From::from(&nonce_bytes),
                     Payload {
                         msg: plaintext.0.as_slice(),
                         aad: AAD,

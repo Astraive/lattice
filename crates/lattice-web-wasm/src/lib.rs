@@ -45,7 +45,7 @@ impl PrivateKeyProtector for SessionKeyProtector {
             Aes256Gcm::new_from_slice(&self.key[..]).map_err(|_| PrivateKeyProtectionError)?;
         let ciphertext = cipher
             .encrypt(
-                TryFrom::try_from(&nonce).map_err(|_| PrivateKeyProtectionError)?,
+                From::from(&nonce),
                 Payload {
                     msg: private_material,
                     aad: WRAP_AAD,
