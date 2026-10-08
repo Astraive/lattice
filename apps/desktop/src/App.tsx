@@ -1,45 +1,33 @@
+import { DesktopPage, DesktopWorkspaceShell } from "@lattice/ui-desktop";
+import { ActionButton, LatticeLogo, StatusNotice, type WorkspaceChannel } from "@lattice/ui-shared";
+import { ArrowsLeftRight, ChatCircle, Fingerprint, SquaresFour } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { DirectMessagePanel } from "./features/identity/DirectMessagePanel";
 import { PeerIdentityPinPanel } from "./features/identity/PeerIdentityPinPanel";
 import { LocalNetworkSettings } from "./features/network/LocalNetworkSettings";
 import { PersistentPeerMode } from "./features/network/PersistentPeerMode";
+import type { WorkspaceSpaceSnapshot } from "./features/spaces/LocalSpaceBrowser";
 import { LocalSpaceBrowser } from "./features/spaces/LocalSpaceBrowser";
 import { LocalSpaceCreator } from "./features/spaces/LocalSpaceCreator";
 import "./App.css";
 
-const stack = [
-  {
-    label: "Desktop shell",
-    state: "Ready",
-    detail: "React, TypeScript, Vite, and Tauri v2",
-  },
-  {
-    label: "Protected identity",
-    state: "Available",
-    detail: "Device keys are wrapped by the OS credential store",
-  },
-  {
-    label: "Spaces and messaging",
-    state: "Local queue + explicit sync",
-    detail:
-      "Pinned peers can exchange Space events in a bounded sync round; no recipient delivery receipt",
-  },
-  {
-    label: "Local LAN readiness",
-    state: "Local-only scan",
-    detail: "Reports non-loopback IP availability; peers and relays are not contacted.",
-  },
-] as const;
+type Destination = "spaces" | "direct-messages" | "connections" | "identity";
 
-function Mark() {
-  return (
-    <svg aria-hidden="true" className="mark" viewBox="0 0 40 40">
-      <path d="M9 11.5 20 5l11 6.5v17L20 35 9 28.5v-17Z" />
-      <path d="m14 14.5 6-3.5 6 3.5v11L20 29l-6-3.5v-11Z" />
-      <circle cx="20" cy="20" r="2.5" />
-    </svg>
-  );
-}
+const destinations = [
+  { id: "spaces", label: "Spaces", icon: <SquaresFour size={20} weight="regular" /> },
+  {
+    id: "direct-messages",
+    label: "Direct messages",
+    icon: <ChatCircle size={20} weight="regular" />,
+  },
+  {
+    id: "connections",
+    label: "Connections",
+    icon: <ArrowsLeftRight size={20} weight="regular" />,
+  },
+  { id: "identity", label: "Identity", icon: <Fingerprint size={20} weight="regular" /> },
+] as const;
 
 type IdentityStatus = {
   fingerprint: string;
@@ -48,7 +36,11 @@ type IdentityStatus = {
 };
 
 function App() {
+  const [destination, setDestination] = useState<Destination>("spaces");
   const [identity, setIdentity] = useState<IdentityStatus | null>(null);
+  const [spaces, setSpaces] = useState<WorkspaceSpaceSnapshot[]>([]);
+  const [activeSpace, setActiveSpace] = useState<string | null>(null);
+  const [activeChannel, setActiveChannel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
@@ -83,132 +75,176 @@ function App() {
     }
   }
 
+  const handleSpacesChange = useCallback(
+    (items: WorkspaceSpaceSnapshot[]) => {
+      setSpaces(items);
+      setActiveSpace((current) =>
+        current && items.some((space) => space.id === current) ? current : (items[0]?.id ?? null),
+      );
+      setActiveChannel((current) => {
+        const selected = items.find((space) => space.id === activeSpace) ?? items[0];
+        return current && selected?.channels.some((channel) => channel.id === current)
+          ? current
+          : (selected?.channels[0]?.id ?? null);
+      });
+    },
+    [activeSpace],
+  );
+
+  const channels: readonly WorkspaceChannel[] =
+    spaces.find((space) => space.id === activeSpace)?.channels ?? [];
+  const navigation = {
+    destinations,
+    activeDestination: destination,
+    onDestinationChange: (id: string) => {
+      if (destinations.some((item) => item.id === id)) setDestination(id as Destination);
+    },
+    spaces,
+    activeSpace,
+    onSpaceChange: (id: string) => {
+      setActiveSpace(id);
+      const selected = spaces.find((space) => space.id === id);
+      setActiveChannel(selected?.channels[0]?.id ?? null);
+    },
+    channels,
+    activeChannel,
+    onChannelChange: setActiveChannel,
+  } as const;
   return (
-    <div className="app-shell">
-      <header className="topbar">
+    <div className="desktop-app">
+      <header className="desktop-topbar">
         <a className="brand" href="/" aria-label="Lattice home">
-          <Mark />
-          <span>Lattice</span>
+          <LatticeLogo />
         </a>
         <span className="stage">Local client</span>
       </header>
-
-      <main>
-        <section className="hero" aria-labelledby="page-title">
-          <p className="eyebrow">Local-first community communication</p>
-          <h1 id="page-title">Your communities should not depend on a central account.</h1>
-          <p className="lede">
-            The desktop client protects the device identity and stores Space events locally. Already
-            joined peers can exchange a bounded history round through explicit authenticated sync;
-            remote membership is not automatic, and recipient delivery is not claimed.
-          </p>
-          <div className="principles">
-            <span>Offline correctness</span>
-            <span>Explicit local outbox state</span>
-            <span>Replaceable paths</span>
-          </div>
-        </section>
-
-        <section className="status-panel" aria-labelledby="status-title">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Workspace status</p>
-              <h2 id="status-title">Implementation boundaries</h2>
-            </div>
-            <span className="local-badge">
-              <span className="status-dot" aria-hidden="true" />
-              Local profile
-            </span>
-          </div>
-
-          <div className="status-grid">
-            {stack.map((item) => (
-              <article className="status-card" key={item.label}>
-                <p>{item.label}</p>
-                <strong>{item.state}</strong>
-                <span>{item.detail}</span>
-              </article>
-            ))}
-          </div>
-
-          <section aria-labelledby="identity-title">
-            <h3 id="identity-title">Device identity</h3>
-            <p>
-              Private keys are never displayed. Initializing uses the OS credential store and
-              persists only protected key material in the local database.
-            </p>
-            {runtimeAvailable ? (
-              <div className="identity-actions">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void runIdentityCommand("initialize_device_identity")}
-                >
-                  {busy ? "Working…" : "Initialize or reopen identity"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void runIdentityCommand("get_device_identity")}
-                >
-                  Show existing identity
-                </button>
+      <DesktopWorkspaceShell {...navigation}>
+        <div className="workspace-pages">
+          <div className="workspace-page" hidden={destination !== "spaces"}>
+            <DesktopPage
+              id="spaces"
+              title="Spaces"
+              description="Local Space snapshots, channels, and message history. Membership and message state remain local until an explicit authenticated exchange."
+            >
+              <div className="workspace-content">
+                <LocalSpaceCreator
+                  runtimeAvailable={runtimeAvailable}
+                  identityReady={identity !== null}
+                />
+                <LocalSpaceBrowser
+                  runtimeAvailable={runtimeAvailable}
+                  onSpacesChange={handleSpacesChange}
+                  activeSpace={activeSpace}
+                  activeChannel={activeChannel}
+                  onChannelChange={setActiveChannel}
+                />
               </div>
-            ) : (
-              <p>Open the Tauri desktop app to use its native OS-keyring commands.</p>
-            )}
-            {busy && <p role="status">Opening the protected local identity…</p>}
-            {error && <p role="alert">{error}</p>}
-            {identity && (
-              <div className="identity-status" aria-live="polite">
+            </DesktopPage>
+          </div>
+          <div className="workspace-page" hidden={destination !== "direct-messages"}>
+            <DesktopPage
+              id="direct-messages"
+              title="Direct messages"
+              description="Pairwise messages use the existing pinned-peer workflow. All data stays local to this device."
+            >
+              <DirectMessagePanel
+                runtimeAvailable={runtimeAvailable}
+                identityReady={identity !== null}
+              />
+            </DesktopPage>
+          </div>
+          <div className="workspace-page" hidden={destination !== "connections"}>
+            <DesktopPage
+              id="connections"
+              title="Connections"
+              description="Configure local network paths and peer courier behavior."
+            >
+              <div className="destination-layout">
+                <LocalNetworkSettings runtimeAvailable={runtimeAvailable} />
+                <PersistentPeerMode runtimeAvailable={runtimeAvailable} />
+              </div>
+            </DesktopPage>
+          </div>
+          <div className="workspace-page" hidden={destination !== "identity"}>
+            <DesktopPage
+              id="identity"
+              title="Identity"
+              description="Manage this device's protected identity and exact peer pins."
+            >
+              <section className="identity-section" aria-labelledby="identity-title">
+                <h2 id="identity-title">Device identity</h2>
                 <p>
-                  Local identity fingerprint: <code>{identity.fingerprint}</code>
+                  Private keys are never displayed. Initializing uses the OS credential store and
+                  persists only protected key material in the local database.
                 </p>
-                <div className="identity-actions">
-                  <button
-                    type="button"
-                    onClick={() => void copyIdentityValue("Fingerprint", identity.fingerprint)}
-                  >
-                    Copy fingerprint
-                  </button>
-                </div>
-                <p>Next local author sequence: {identity.next_author_sequence}</p>
-                <details>
-                  <summary>Public identity bundle</summary>
-                  <code>{identity.public_bundle}</code>
+                {runtimeAvailable ? (
                   <div className="identity-actions">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void copyIdentityValue("Public bundle", identity.public_bundle)
-                      }
+                    <ActionButton
+                      tone="primary"
+                      disabled={busy}
+                      onClick={() => void runIdentityCommand("initialize_device_identity")}
                     >
-                      Copy public bundle
-                    </button>
+                      {busy ? "Working…" : "Initialize or reopen identity"}
+                    </ActionButton>
+                    <ActionButton
+                      tone="quiet"
+                      disabled={busy}
+                      onClick={() => void runIdentityCommand("get_device_identity")}
+                    >
+                      Show existing identity
+                    </ActionButton>
                   </div>
-                </details>
-                <p role="status" aria-live="polite">
-                  {copyStatus}
-                </p>
-                {copyError && <p role="alert">{copyError}</p>}
-              </div>
-            )}
-            <PeerIdentityPinPanel
-              runtimeAvailable={runtimeAvailable}
-              identityReady={identity !== null}
-            />
-          </section>
-          <LocalSpaceCreator
-            runtimeAvailable={runtimeAvailable}
-            identityReady={identity !== null}
-          />
-          <LocalSpaceBrowser runtimeAvailable={runtimeAvailable} />
-          <LocalNetworkSettings runtimeAvailable={runtimeAvailable} />
-          <PersistentPeerMode runtimeAvailable={runtimeAvailable} />
-        </section>
-      </main>
-
-      <footer>
+                ) : (
+                  <p>Open the Tauri desktop app to use its native OS-keyring commands.</p>
+                )}
+                {busy && (
+                  <StatusNotice kind="info">Opening the protected local identity…</StatusNotice>
+                )}
+                {error && <StatusNotice kind="error">{error}</StatusNotice>}
+                {identity && (
+                  <div className="identity-status" aria-live="polite">
+                    <p>
+                      Local identity fingerprint: <code>{identity.fingerprint}</code>
+                    </p>
+                    <div className="identity-actions">
+                      <ActionButton
+                        tone="quiet"
+                        onClick={() => void copyIdentityValue("Fingerprint", identity.fingerprint)}
+                      >
+                        Copy fingerprint
+                      </ActionButton>
+                    </div>
+                    <p>Next local author sequence: {identity.next_author_sequence}</p>
+                    <details>
+                      <summary>Public identity bundle</summary>
+                      <code>{identity.public_bundle}</code>
+                      <div className="identity-actions">
+                        <ActionButton
+                          tone="quiet"
+                          onClick={() =>
+                            void copyIdentityValue("Public bundle", identity.public_bundle)
+                          }
+                        >
+                          Copy public bundle
+                        </ActionButton>
+                      </div>
+                    </details>
+                    <p role="status" aria-live="polite">
+                      {copyStatus}
+                    </p>
+                    {copyError && <StatusNotice kind="error">{copyError}</StatusNotice>}
+                  </div>
+                )}
+                <PeerIdentityPinPanel
+                  runtimeAvailable={runtimeAvailable}
+                  identityReady={identity !== null}
+                />
+              </section>
+            </DesktopPage>
+          </div>
+        </div>
+      </DesktopWorkspaceShell>
+      <footer className="desktop-footer">
         <span>No project cloud is required.</span>
         <span>Capabilities appear only when implemented and verified.</span>
       </footer>

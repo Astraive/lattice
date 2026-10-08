@@ -18,9 +18,25 @@
 | Privacy | BLE capture, relay capture, log export | No unintended plaintext/key; residual metadata disclosed | LAT-010/019 |
 | Accessibility | Android TalkBack, desktop screen reader/keyboard, scale, reduced motion | All critical states and actions usable | LAT-013, MOB-009 |
 
+## Executable test locations
+
+The root `tests/{e2e,interop,mesh,mobile,protocol,routing,security,sync}` directories currently contain only `.gitkeep`; they are reserved categories, not suites invoked by CI. Executable tests remain with their owning crate or app. Use this map when adding acceptance evidence; do not report a placeholder directory as coverage.
+
+| Reserved category | Current executable source | Boundary |
+| --- | --- | --- |
+| `protocol` | `protocol/vectors/` and unit tests in `crates/lattice-protocol`, `lattice-events`, and `lattice-identity` | Codec/vector behavior only; shared device-runtime parity is separate. |
+| `security` | Core/identity/storage negative tests and `fuzz/fuzz_targets/` | Existing tests/fuzz targets are bounded component evidence, not a complete security review. |
+| `sync` | Tests in `crates/lattice-sync`, `lattice-node`, and `lattice-core` | Includes component/process scenarios; does not imply every client pair converges. |
+| `routing`, `mesh` | `crates/lattice-testkit` scripted-contact tests and `lattice-node` tests | Deterministic simulation, not radio, topology-scale, or battery acceptance. |
+| `mobile` | `apps/android/app/src/test/` | JVM/component tests; no physical Android acceptance or `androidTest` suite is present. |
+| `e2e` | `apps/cli/tests/` plus selected multi-profile Core integration tests | Process/profile scenarios are limited to their recorded clients and transport. |
+| `interop` | No dedicated root suite; see `docs/verification/INTEROP_MATRIX.md` | Blocked or unverified pairs stay explicit; Core event acceptance is not a live transport run. |
+
 ## Physical devices and measurements
 
 Test Android↔Android on supported/unsupported Wi-Fi Aware hardware; verify Android↔desktop and desktop↔desktop protocol behavior separately where a shared transport exists. Capture exact model, OS/build, radios, permissions, foreground/locked/background/restarted states and environmental factors. Measure discovery/connection success, useful BLE throughput, end-to-end latency, delivery fraction, duplicated bytes, battery/power, large-sync duration, file resume, voice setup success/jitter/loss and TURN fraction. Use multiple independent trials with uncertainty intervals; separate simulated energy proxy from battery measurement. Never substitute one success on an Android emulator for physical-radio evidence.
+
+Android Compose now supports local target KeyPackage publication, invitation creation, and pinned Welcome import using externally issued trusted credentials. The focused foreground BLE path has automated framing/Core-ingress coverage, but physical acceptance is not recorded. Track the run in [PHYSICAL_ANDROID_ACCEPTANCE.md](../verification/PHYSICAL_ANDROID_ACCEPTANCE.md); do not infer radio acceptance from emulator or unit-test results.
 
 ## Automated gates
 
@@ -34,7 +50,7 @@ An ID becomes **verified** only with implementation revision, test command/scena
 
 Generate small histories across 2–6 members, with random signed message, edit, permission, invite, ban, MLS proposal and Commit operations. Permute deliveries, duplicates, pauses, clock jumps, reconnections and adversarial relays. At each prefix assert: no unauthorized projection; identical accepted sets plus chosen branch policy produce identical views; removed members do not obtain later epoch secrets; no event ID changes on path change; and every pending object has a bounded recovery/failure reason. Exhaustively enumerate very small branch histories where practical, then fuzz longer ones with fixed seeds and shrinking.
 
-Fuzz targets in the isolated `fuzz/` workspace cover canonical CBOR, identity bundles, signed events, bounded sync planning, relay envelopes, NIP-01 JSON, and attachment manifest/chunk-bitmap validation. List them with `cargo +nightly fuzz list --fuzz-dir fuzz`; run a target with `cargo +nightly fuzz run --fuzz-dir fuzz canonical -- -max_total_time=60`. On Windows, the default AddressSanitizer executable needs `clang_rt.asan_dynamic-x86_64.dll` on `PATH`. For a Visual Studio 2022 Build Tools installation, PowerShell can locate and prepend the DLL directory:
+Fuzz targets in the isolated `fuzz/` workspace cover canonical CBOR, identity bundles, signed events, bounded sync planning and repair sequences, relay envelopes, NIP-01 JSON, attachment manifests, BLE Noise handshake ingress, canonical Space invitation and Welcome parsing, X.509 MLS credential validation, and voice signaling sequences. List them with `cargo +nightly fuzz list --fuzz-dir fuzz`; run a target with `cargo +nightly fuzz run --fuzz-dir fuzz canonical -- -max_total_time=60`. On Windows, the default AddressSanitizer executable needs `clang_rt.asan_dynamic-x86_64.dll` on `PATH`. For a Visual Studio 2022 Build Tools installation, PowerShell can locate and prepend the DLL directory:
 
 ```powershell
 $asan = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" | Select-Object -First 1
@@ -42,7 +58,7 @@ $env:PATH = "$($asan.DirectoryName);$env:PATH"
 $env:ASAN_OPTIONS = "quarantine_size_mb=64:thread_local_quarantine_size_kb=256"
 ```
 
-A sanitizer-free campaign still requires a linker compatible with libFuzzer's coverage sections. On Windows, a 60-second `signed-event` campaign with `ASAN_OPTIONS=quarantine_size_mb=64:thread_local_quarantine_size_kb=256` completed 557,506 executions at 226 MiB reported process RSS; this is harness RSS, not decoder-only allocation. No campaign result is claimed until the target runs on a supported toolchain. BLE fragment assembly, invite URI, MLS wrapper, and voice signaling targets remain planned. The default libFuzzer maximum input length is 4096 bytes; increase `-max_len` explicitly when exercising decoder boundary budgets. A zero-crash run on one budget is not proof of security; reproducible crashes remain release blockers until triaged.
+A sanitizer-free campaign still requires a linker compatible with libFuzzer's coverage sections. On Windows, a 60-second `signed-event` campaign with `ASAN_OPTIONS=quarantine_size_mb=64:thread_local_quarantine_size_kb=256` completed 557,506 executions at 226 MiB reported process RSS; this is harness RSS, not decoder-only allocation. New Windows smoke campaigns completed 100 runs each for BLE Noise ingress, Space invite/Welcome parsing, MLS credential validation, voice signaling sequences, NIP-11, and path-upgrade; `sync-plan` completed 106 executions from its existing corpus. All completed without a crash. The existing Visual Studio sanitizer DLL directory had to be prepended to `PATH`; the first BLE attempt without it exited with `STATUS_DLL_NOT_FOUND`, then succeeded using a process-local PATH update. These short smoke campaigns do not satisfy the release run budget. BLE fragment assembly, invite URI/transport integration, and full authenticated repair acceptance remain planned. The default libFuzzer maximum input length is 4096 bytes; increase `-max_len` explicitly when exercising decoder boundary budgets. A zero-crash run on one budget is not proof of security; reproducible crashes remain release blockers until triaged.
 
 ## Network laboratory
 

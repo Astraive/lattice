@@ -49,7 +49,7 @@ pub const MAX_SPACE_MEMBERSHIP_TRANSITIONS: usize = 64;
 pub const MAX_SPACE_MEMBERSHIP_CONFLICTS: usize = 4_096;
 const ID_BYTES: usize = 32;
 /// Latest `SQLite` schema version understood by this crate.
-pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+pub const CURRENT_SCHEMA_VERSION: i64 = 18;
 const SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 const MAX_PROTECTED_IDENTITY_BYTES: usize = 4096;
 const MAX_PROTECTED_MLS_KEY_BYTES: usize = 4096;
@@ -58,6 +58,8 @@ const MAX_SPACE_GENESIS_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
 const MAX_CACHED_SPACE_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_SPACE_MEMBERSHIP_ENCRYPTED_STATE_BYTES: usize = 1024 * 1024;
 const MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES: usize = 1024 * 1024;
+/// Maximum unaccepted direct-message invitations retained per profile.
+pub const MAX_DIRECT_MESSAGE_PENDING_INVITATIONS: usize = 64;
 /// Encrypted local message content and signed-event routing metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CachedSpaceMessage {
@@ -90,11 +92,13 @@ pub struct PendingEvent {
     pub missing_dependencies: Vec<[u8; ID_BYTES]>,
 }
 
-/// Delivery state of a locally authored envelope.
+/// Durable progress state for a locally authored envelope; not all states prove delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboxState {
     Queued,
+    Forwarding,
     Forwarded,
+    PeerIngressAccepted,
     Delivered,
     Failed,
 }
@@ -107,6 +111,44 @@ pub struct OutboxEntry {
     pub next_attempt_ms: i64,
     pub attempt_count: u32,
     pub state: OutboxState,
+}
+
+/// Durable peer and `OpenMLS` identifiers for one two-device DM conversation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectMessageConversation {
+    pub group_reference: [u8; ID_BYTES],
+    pub group_id: Vec<u8>,
+    pub peer_identity: [u8; ID_BYTES],
+    pub closed: bool,
+}
+
+/// Durable opaque MLS packet retained for retry until peer-ingress acceptance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectMessageOutboxEntry {
+    pub packet_id: [u8; ID_BYTES],
+    pub group_reference: [u8; ID_BYTES],
+    pub envelope_bytes: Vec<u8>,
+    pub next_attempt_ms: i64,
+    pub attempt_count: u32,
+    pub state: OutboxState,
+}
+
+/// One locally retained DM message encrypted with the profile storage key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectMessageRecord {
+    pub packet_id: [u8; ID_BYTES],
+    pub group_reference: [u8; ID_BYTES],
+    pub author_identity: [u8; ID_BYTES],
+    pub encrypted_content: Vec<u8>,
+}
+
+/// Unaccepted invitation retained from authenticated peer ingress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingDirectMessageInvitation {
+    pub packet_id: [u8; ID_BYTES],
+    pub group_reference: [u8; ID_BYTES],
+    pub peer_identity: [u8; ID_BYTES],
+    pub encrypted_envelope: Vec<u8>,
 }
 
 /// Encrypted reducer state associated with a space's Genesis event.
@@ -199,6 +241,7 @@ pub enum StoreError {
     InvalidSpaceWelcomeBootstrapSnapshot,
     InvalidSpaceMembershipTransitionSnapshot,
     SpaceMembershipTransitionLimit,
+    PendingDirectMessageInvitationLimit,
     InvalidSpaceMembershipConflictSnapshot,
     SpaceMembershipConflictLimit,
     CachedSpaceMessageLimit,
@@ -269,6 +312,9 @@ impl std::fmt::Display for StoreError {
             }
             Self::InvalidSpaceMembershipConflictSnapshot => {
                 formatter.write_str("space membership conflict snapshot is invalid")
+            }
+            Self::PendingDirectMessageInvitationLimit => {
+                formatter.write_str("pending direct-message invitation limit exceeded")
             }
             Self::InvalidSpaceWelcomeBootstrapSnapshot => {
                 formatter.write_str("space Welcome bootstrap snapshot is invalid")
@@ -668,6 +714,147 @@ impl Store {
             transaction.commit()?;
         }
 
+        if version < 14 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "DROP INDEX outbox_queued_schedule;
+                ALTER TABLE outbox RENAME TO outbox_v13;
+                CREATE TABLE outbox (
+                    event_id BLOB PRIMARY KEY NOT NULL
+                        REFERENCES events(event_id) ON DELETE CASCADE,
+                    envelope_bytes BLOB NOT NULL
+                        CHECK(typeof(envelope_bytes) = 'blob'
+                            AND length(envelope_bytes) BETWEEN 1 AND 1048576),
+                    next_attempt_ms INTEGER NOT NULL CHECK(next_attempt_ms >= 0),
+                    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                    state TEXT NOT NULL
+                        CHECK(state IN (
+                            'queued', 'forwarding', 'forwarded',
+                            'peer_ingress_accepted', 'delivered', 'failed'
+                        ))
+                );
+                INSERT INTO outbox
+                    (event_id, envelope_bytes, next_attempt_ms, attempt_count, state)
+                SELECT event_id, envelope_bytes, next_attempt_ms, attempt_count,
+                    CASE state
+                        WHEN 'delivered' THEN 'peer_ingress_accepted'
+                        WHEN 'forwarded' THEN 'forwarding'
+                        ELSE state
+                    END
+                FROM outbox_v13;
+                DROP TABLE outbox_v13;
+                CREATE INDEX outbox_queued_schedule
+                    ON outbox(state, next_attempt_ms, event_id);
+                PRAGMA user_version = 14;",
+            )?;
+            transaction.commit()?;
+        }
+
+        if version < 15 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE direct_message_conversations (
+                    group_reference BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(group_reference) = 'blob' AND length(group_reference) = 32),
+                    group_id BLOB NOT NULL UNIQUE
+                        CHECK(typeof(group_id) = 'blob' AND length(group_id) BETWEEN 1 AND 256),
+                    peer_identity BLOB NOT NULL
+                        CHECK(typeof(peer_identity) = 'blob' AND length(peer_identity) = 32),
+                    closed INTEGER NOT NULL CHECK(closed IN (0, 1))
+                );
+                CREATE TABLE direct_message_outbox (
+                    packet_id BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(packet_id) = 'blob' AND length(packet_id) = 32),
+                    group_reference BLOB NOT NULL
+                        REFERENCES direct_message_conversations(group_reference) ON DELETE CASCADE,
+                    envelope_bytes BLOB NOT NULL
+                        CHECK(typeof(envelope_bytes) = 'blob'
+                            AND length(envelope_bytes) BETWEEN 1 AND 1048576),
+                    next_attempt_ms INTEGER NOT NULL CHECK(next_attempt_ms >= 0),
+                    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                    state TEXT NOT NULL
+                        CHECK(state IN (
+                            'queued', 'forwarding', 'forwarded',
+                            'peer_ingress_accepted', 'failed'
+                        ))
+                );
+                CREATE INDEX direct_message_outbox_schedule
+                    ON direct_message_outbox(state, next_attempt_ms, packet_id);
+                CREATE TABLE direct_message_history (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    packet_id BLOB NOT NULL UNIQUE
+                        CHECK(typeof(packet_id) = 'blob' AND length(packet_id) = 32),
+                    group_reference BLOB NOT NULL
+                        REFERENCES direct_message_conversations(group_reference) ON DELETE CASCADE,
+                    author_identity BLOB NOT NULL
+                        CHECK(typeof(author_identity) = 'blob' AND length(author_identity) = 32),
+                    encrypted_content BLOB NOT NULL
+                        CHECK(typeof(encrypted_content) = 'blob'
+                            AND length(encrypted_content) BETWEEN 1 AND 1048576)
+                );
+                CREATE INDEX direct_message_history_by_conversation
+                    ON direct_message_history(group_reference, sequence);
+                PRAGMA user_version = 15;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 16 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE direct_message_pending_invitations (
+                    packet_id BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(packet_id) = 'blob' AND length(packet_id) = 32),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob' AND length(group_reference) = 32),
+                    peer_identity BLOB NOT NULL
+                        CHECK(typeof(peer_identity) = 'blob' AND length(peer_identity) = 32),
+                    encrypted_envelope BLOB NOT NULL
+                        CHECK(typeof(encrypted_envelope) = 'blob'
+                            AND length(encrypted_envelope) BETWEEN 1 AND 1048576)
+                );
+                CREATE INDEX direct_message_pending_by_peer
+                    ON direct_message_pending_invitations(peer_identity, packet_id);
+                PRAGMA user_version = 16;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 17 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE space_relay_mailboxes (
+                    space_id BLOB NOT NULL
+                        CHECK(typeof(space_id) = 'blob' AND length(space_id) = 16),
+                    group_reference BLOB NOT NULL
+                        CHECK(typeof(group_reference) = 'blob' AND length(group_reference) = 32),
+                    encrypted_token BLOB NOT NULL
+                        CHECK(typeof(encrypted_token) = 'blob'
+                            AND length(encrypted_token) BETWEEN 1 AND 4096),
+                    PRIMARY KEY(space_id, group_reference)
+                );
+                PRAGMA user_version = 17;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 18 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE protected_relay_signing_keys (
+                    identity_fingerprint BLOB PRIMARY KEY NOT NULL
+                        CHECK(typeof(identity_fingerprint) = 'blob' AND length(identity_fingerprint) = 32),
+                    ciphertext BLOB NOT NULL
+                        CHECK(typeof(ciphertext) = 'blob'
+                            AND length(ciphertext) BETWEEN 1 AND 4096)
+                );
+                PRAGMA user_version = 18;",
+            )?;
+            transaction.commit()?;
+        }
+
         Ok(Self { connection })
     }
 
@@ -720,6 +907,616 @@ impl Store {
             )
             .map_err(classify_database_error)?;
         Ok(())
+    }
+    /// Loads the locally encrypted mailbox token for exactly one Space generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored mailbox data is invalid or the database query fails.
+    pub fn load_space_relay_mailbox(
+        &self,
+        space_id: &[u8; 16],
+        group_reference: &[u8; ID_BYTES],
+    ) -> Result<Option<Vec<u8>>> {
+        load_space_relay_mailbox_in_connection(&self.connection, space_id, group_reference)
+    }
+
+    /// Loads the locally encrypted mailbox token inside a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored mailbox data is invalid or the transaction query fails.
+    pub fn load_space_relay_mailbox_in_transaction(
+        transaction: &Transaction<'_>,
+        space_id: &[u8; 16],
+        group_reference: &[u8; ID_BYTES],
+    ) -> Result<Option<Vec<u8>>> {
+        load_space_relay_mailbox_in_connection(transaction, space_id, group_reference)
+    }
+
+    /// Inserts one locally encrypted mailbox token without replacing a generation's token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is invalid or the transaction insert fails.
+    pub fn insert_space_relay_mailbox_in_transaction(
+        transaction: &Transaction<'_>,
+        space_id: &[u8; 16],
+        group_reference: &[u8; ID_BYTES],
+        encrypted_token: &[u8],
+    ) -> Result<bool> {
+        if encrypted_token.is_empty() || encrypted_token.len() > MAX_PROTECTED_IDENTITY_BYTES {
+            return Err(StoreError::CorruptData(
+                "space relay mailbox ciphertext exceeds storage bounds",
+            ));
+        }
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO space_relay_mailboxes
+                (space_id, group_reference, encrypted_token)
+             VALUES (?1, ?2, ?3)",
+            params![&space_id[..], &group_reference[..], encrypted_token],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Persists one peer-bound direct-message conversation in an MLS transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the conversation is invalid, conflicts with stored metadata, or a database operation fails.
+    pub fn save_direct_message_conversation_in_transaction(
+        transaction: &Transaction<'_>,
+        conversation: &DirectMessageConversation,
+    ) -> Result<()> {
+        if conversation.group_id.is_empty()
+            || conversation.group_id.len() > MAX_SPACE_GENESIS_GROUP_ID_BYTES
+        {
+            return Err(StoreError::CorruptData(
+                "invalid direct-message group identifier",
+            ));
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO direct_message_conversations
+                (group_reference, group_id, peer_identity, closed)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &conversation.group_reference[..],
+                &conversation.group_id,
+                &conversation.peer_identity[..],
+                i64::from(conversation.closed),
+            ],
+        )?;
+        let stored = transaction.query_row(
+            "SELECT group_id, peer_identity, closed
+             FROM direct_message_conversations WHERE group_reference = ?1",
+            params![&conversation.group_reference[..]],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        if stored.0 != conversation.group_id
+            || stored.1 != conversation.peer_identity
+            || (stored.2 != 0) != conversation.closed
+        {
+            return Err(StoreError::CorruptData(
+                "direct-message conversation conflicts",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Loads the exact peer-bound group metadata for one DM reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if stored conversation metadata is invalid or the database query fails.
+    pub fn load_direct_message_conversation(
+        &self,
+        group_reference: &[u8; ID_BYTES],
+    ) -> Result<Option<DirectMessageConversation>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT group_id, peer_identity, closed
+                 FROM direct_message_conversations WHERE group_reference = ?1",
+                params![&group_reference[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(classify_database_error)?;
+        row.map(|(group_id, peer_identity, closed)| {
+            if group_id.is_empty() || group_id.len() > MAX_SPACE_GENESIS_GROUP_ID_BYTES {
+                return Err(StoreError::CorruptData(
+                    "invalid direct-message group identifier",
+                ));
+            }
+            Ok(DirectMessageConversation {
+                group_reference: *group_reference,
+                group_id,
+                peer_identity: decode_id(peer_identity)?,
+                closed: match closed {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(StoreError::CorruptData("invalid direct-message state")),
+                },
+            })
+        })
+        .transpose()
+    }
+
+    /// Returns direct-message conversations in stable group-reference order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored metadata is malformed, or a database operation fails.
+    pub fn list_direct_message_conversations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DirectMessageConversation>> {
+        if limit == 0 || limit > MAX_OUTBOX_PAGE_SIZE {
+            return Err(StoreError::OutboxPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT group_reference, group_id, peer_identity, closed
+             FROM direct_message_conversations ORDER BY group_reference LIMIT ?1",
+        )?;
+        let rows =
+            statement.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?;
+        rows.map(|row| {
+            let (group_reference, group_id, peer_identity, closed) = row?;
+            if group_id.is_empty() || group_id.len() > MAX_SPACE_GENESIS_GROUP_ID_BYTES {
+                return Err(StoreError::CorruptData(
+                    "invalid direct-message group identifier",
+                ));
+            }
+            Ok(DirectMessageConversation {
+                group_reference: decode_id(group_reference)?,
+                group_id,
+                peer_identity: decode_id(peer_identity)?,
+                closed: match closed {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(StoreError::CorruptData("invalid direct-message state")),
+                },
+            })
+        })
+        .collect()
+    }
+
+    /// Tests the durable history deduplication key inside the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction query fails.
+    pub fn direct_message_history_contains_in_transaction(
+        transaction: &Transaction<'_>,
+        packet_id: &[u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM direct_message_history WHERE packet_id = ?1
+             )",
+            params![&packet_id[..]],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Commits an encrypted direct-message packet to its durable retry queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the envelope or schedule is invalid, the outbox conflicts or exceeds its bounds, or a database operation fails.
+    pub fn commit_direct_message_outbox_in_transaction(
+        transaction: &Transaction<'_>,
+        entry: &DirectMessageOutboxEntry,
+    ) -> Result<()> {
+        validate_outbox_envelope(&entry.envelope_bytes)?;
+        if entry.next_attempt_ms < 0 {
+            return Err(StoreError::InvalidOutboxSchedule);
+        }
+        let existing: Option<(Vec<u8>, Vec<u8>)> = transaction
+            .query_row(
+                "SELECT group_reference, envelope_bytes
+                 FROM direct_message_outbox WHERE packet_id = ?1",
+                params![&entry.packet_id[..]],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((group_reference, envelope_bytes)) = existing {
+            if group_reference != entry.group_reference || envelope_bytes != entry.envelope_bytes {
+                return Err(StoreError::OutboxConflict);
+            }
+            return Ok(());
+        }
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM direct_message_outbox
+             WHERE state <> 'peer_ingress_accepted'",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_OUTBOX_EVENTS {
+            return Err(StoreError::OutboxEventLimit);
+        }
+        let total_bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(envelope_bytes)), 0)
+             FROM direct_message_outbox WHERE state <> 'peer_ingress_accepted'",
+            [],
+            |row| row.get(0),
+        )?;
+        let total_bytes = usize::try_from(total_bytes).unwrap_or(usize::MAX);
+        if entry.envelope_bytes.len() > MAX_OUTBOX_BYTES.saturating_sub(total_bytes) {
+            return Err(StoreError::OutboxByteLimit);
+        }
+        transaction.execute(
+            "INSERT INTO direct_message_outbox
+                (packet_id, group_reference, envelope_bytes, next_attempt_ms, attempt_count, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+            params![
+                &entry.packet_id[..],
+                &entry.group_reference[..],
+                &entry.envelope_bytes,
+                entry.next_attempt_ms,
+                i64::from(entry.attempt_count),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns a bounded DM outbox page in stable packet-ID order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored entries are malformed, or a database operation fails.
+    pub fn list_direct_message_outbox_page(
+        &self,
+        after_packet_id: Option<[u8; ID_BYTES]>,
+        limit: usize,
+    ) -> Result<Vec<DirectMessageOutboxEntry>> {
+        if limit == 0 || limit > MAX_OUTBOX_PAGE_SIZE {
+            return Err(StoreError::OutboxPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT packet_id, group_reference, envelope_bytes, next_attempt_ms,
+                    attempt_count, state
+             FROM direct_message_outbox
+             WHERE (?1 IS NULL OR packet_id > ?1)
+             ORDER BY packet_id LIMIT ?2",
+        )?;
+        let after = after_packet_id.map(|id| id.to_vec());
+        let rows = statement.query_map(
+            params![after, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )?;
+        rows.map(|row| {
+            let (packet_id, group_reference, envelope_bytes, next_attempt_ms, attempt_count, state) =
+                row?;
+            Ok(DirectMessageOutboxEntry {
+                packet_id: decode_id(packet_id)?,
+                group_reference: decode_id(group_reference)?,
+                envelope_bytes,
+                next_attempt_ms,
+                attempt_count: u32::try_from(attempt_count)
+                    .map_err(|_| StoreError::CorruptData("invalid DM attempt count"))?,
+                state: decode_outbox_state(&state)?,
+            })
+        })
+        .collect()
+    }
+
+    /// Persists an attempt before a DM packet is sent to an authenticated peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the schedule is invalid, the outbox transition is invalid, or a database operation fails.
+    pub fn mark_direct_message_forwarding_attempt(
+        &mut self,
+        packet_id: [u8; ID_BYTES],
+        next_attempt_ms: i64,
+    ) -> Result<()> {
+        if next_attempt_ms < 0 {
+            return Err(StoreError::InvalidOutboxSchedule);
+        }
+        let changed = self.connection.execute(
+            "UPDATE direct_message_outbox
+             SET state = 'forwarding', next_attempt_ms = ?2, attempt_count = attempt_count + 1
+             WHERE packet_id = ?1 AND state IN (
+                'queued', 'forwarding', 'forwarded', 'peer_ingress_accepted'
+             ) AND attempt_count < 4294967295",
+            params![&packet_id[..], next_attempt_ms],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOutboxTransition)
+        }
+    }
+
+    /// Records authenticated peer-ingress acceptance for a DM packet only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outbox transition is invalid or a database operation fails.
+    pub fn record_direct_message_peer_ingress_accepted(
+        &mut self,
+        packet_id: [u8; ID_BYTES],
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE direct_message_outbox SET state = 'peer_ingress_accepted'
+             WHERE packet_id = ?1 AND state IN ('forwarding', 'peer_ingress_accepted')",
+            params![&packet_id[..]],
+        )?;
+        let state: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT state FROM direct_message_outbox WHERE packet_id = ?1",
+                params![&packet_id[..]],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if changed == 1 || state.as_deref() == Some("peer_ingress_accepted") {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOutboxTransition)
+        }
+    }
+
+    /// Commits one protected direct-message history record atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record is invalid or conflicts with stored metadata, or a database operation fails.
+    pub fn save_direct_message_record_in_transaction(
+        transaction: &Transaction<'_>,
+        record: &DirectMessageRecord,
+    ) -> Result<()> {
+        if record.encrypted_content.is_empty()
+            || record.encrypted_content.len() > MAX_CACHED_SPACE_MESSAGE_BYTES
+        {
+            return Err(StoreError::CorruptData(
+                "invalid direct-message history content",
+            ));
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO direct_message_history
+                (packet_id, group_reference, author_identity, encrypted_content)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &record.packet_id[..],
+                &record.group_reference[..],
+                &record.author_identity[..],
+                &record.encrypted_content,
+            ],
+        )?;
+        let stored: (Vec<u8>, Vec<u8>) = transaction.query_row(
+            "SELECT group_reference, author_identity FROM direct_message_history
+             WHERE packet_id = ?1",
+            params![&record.packet_id[..]],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if stored.0 != record.group_reference || stored.1 != record.author_identity {
+            return Err(StoreError::CorruptData(
+                "direct-message packet identity conflicts",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns a bounded oldest-first history page for one DM conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored records are malformed, or a database operation fails.
+    pub fn list_direct_message_history(
+        &self,
+        group_reference: &[u8; ID_BYTES],
+        limit: usize,
+    ) -> Result<Vec<DirectMessageRecord>> {
+        if limit == 0 || limit > MAX_OUTBOX_PAGE_SIZE {
+            return Err(StoreError::OutboxPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT packet_id, group_reference, author_identity, encrypted_content
+             FROM (
+                 SELECT sequence, packet_id, group_reference, author_identity, encrypted_content
+                 FROM direct_message_history WHERE group_reference = ?1
+                 ORDER BY sequence DESC LIMIT ?2
+             ) ORDER BY sequence",
+        )?;
+        let rows = statement.query_map(
+            params![
+                &group_reference[..],
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        )?;
+        rows.map(|row| {
+            let (packet_id, group_reference, author_identity, encrypted_content) = row?;
+            Ok(DirectMessageRecord {
+                packet_id: decode_id(packet_id)?,
+                group_reference: decode_id(group_reference)?,
+                author_identity: decode_id(author_identity)?,
+                encrypted_content,
+            })
+        })
+        .collect()
+    }
+
+    /// Atomically retains one encrypted invitation pending user consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the invitation is invalid or conflicts with stored metadata, the pending limit is reached, or a database operation fails.
+    pub fn save_pending_direct_message_invitation_in_transaction(
+        transaction: &Transaction<'_>,
+        invitation: &PendingDirectMessageInvitation,
+    ) -> Result<()> {
+        if invitation.encrypted_envelope.is_empty()
+            || invitation.encrypted_envelope.len() > MAX_SPACE_WELCOME_BOOTSTRAP_PACKAGE_BYTES
+        {
+            return Err(StoreError::CorruptData(
+                "invalid pending direct-message invitation",
+            ));
+        }
+        let existing: Option<(Vec<u8>, Vec<u8>)> = transaction
+            .query_row(
+                "SELECT group_reference, peer_identity
+                 FROM direct_message_pending_invitations WHERE packet_id = ?1",
+                params![&invitation.packet_id[..]],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((group_reference, peer_identity)) = existing {
+            if group_reference != invitation.group_reference
+                || peer_identity != invitation.peer_identity
+            {
+                return Err(StoreError::CorruptData(
+                    "pending direct-message invitation conflicts",
+                ));
+            }
+            return Ok(());
+        }
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM direct_message_pending_invitations",
+            [],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_DIRECT_MESSAGE_PENDING_INVITATIONS {
+            return Err(StoreError::PendingDirectMessageInvitationLimit);
+        }
+        transaction.execute(
+            "INSERT INTO direct_message_pending_invitations
+                (packet_id, group_reference, peer_identity, encrypted_envelope)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &invitation.packet_id[..],
+                &invitation.group_reference[..],
+                &invitation.peer_identity[..],
+                &invitation.encrypted_envelope,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns one pending invitation by immutable packet identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if stored invitation data is malformed or the database query fails.
+    pub fn load_pending_direct_message_invitation(
+        &self,
+        packet_id: &[u8; ID_BYTES],
+    ) -> Result<Option<PendingDirectMessageInvitation>> {
+        self.connection
+            .query_row(
+                "SELECT packet_id, group_reference, peer_identity, encrypted_envelope
+                 FROM direct_message_pending_invitations WHERE packet_id = ?1",
+                params![&packet_id[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(
+                |(packet_id, group_reference, peer_identity, encrypted_envelope)| {
+                    Ok(PendingDirectMessageInvitation {
+                        packet_id: decode_id(packet_id)?,
+                        group_reference: decode_id(group_reference)?,
+                        peer_identity: decode_id(peer_identity)?,
+                        encrypted_envelope,
+                    })
+                },
+            )
+            .transpose()
+    }
+
+    /// Lists bounded pending invitation metadata and protected packet bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page limit is invalid, stored invitations are malformed, or a database operation fails.
+    pub fn list_pending_direct_message_invitations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PendingDirectMessageInvitation>> {
+        if limit == 0 || limit > MAX_DIRECT_MESSAGE_PENDING_INVITATIONS {
+            return Err(StoreError::OutboxPageLimit);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT packet_id, group_reference, peer_identity, encrypted_envelope
+             FROM direct_message_pending_invitations ORDER BY packet_id LIMIT ?1",
+        )?;
+        let rows =
+            statement.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            })?;
+        rows.map(|row| {
+            let (packet_id, group_reference, peer_identity, encrypted_envelope) = row?;
+            Ok(PendingDirectMessageInvitation {
+                packet_id: decode_id(packet_id)?,
+                group_reference: decode_id(group_reference)?,
+                peer_identity: decode_id(peer_identity)?,
+                encrypted_envelope,
+            })
+        })
+        .collect()
+    }
+
+    /// Removes one pending invitation; false means it was already absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database delete fails.
+    pub fn remove_pending_direct_message_invitation(
+        &mut self,
+        packet_id: &[u8; ID_BYTES],
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "DELETE FROM direct_message_pending_invitations WHERE packet_id = ?1",
+            params![&packet_id[..]],
+        )? == 1)
     }
 
     /// Opens an existing database without applying migrations or changing
@@ -2033,6 +2830,59 @@ impl Store {
         )?;
         Ok(changed == 1)
     }
+    /// Loads the OS-protected relay-only Schnorr key for one device identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored ciphertext is invalid or the database query fails.
+    pub fn load_protected_relay_signing_key(
+        &self,
+        identity_fingerprint: &[u8; ID_BYTES],
+    ) -> Result<Option<Vec<u8>>> {
+        let ciphertext = self
+            .connection
+            .query_row(
+                "SELECT ciphertext FROM protected_relay_signing_keys
+                 WHERE identity_fingerprint = ?1",
+                params![&identity_fingerprint[..]],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(classify_database_error)?;
+        if ciphertext
+            .as_ref()
+            .is_some_and(|bytes| bytes.is_empty() || bytes.len() > MAX_PROTECTED_IDENTITY_BYTES)
+        {
+            return Err(StoreError::CorruptData(
+                "protected relay signing key ciphertext exceeds storage bounds",
+            ));
+        }
+        Ok(ciphertext)
+    }
+
+    /// Saves OS-protected relay-only Schnorr key ciphertext without replacing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ciphertext is invalid or the database insert fails.
+    pub fn save_protected_relay_signing_key(
+        &mut self,
+        identity_fingerprint: &[u8; ID_BYTES],
+        ciphertext: &[u8],
+    ) -> Result<bool> {
+        if ciphertext.is_empty() || ciphertext.len() > MAX_PROTECTED_IDENTITY_BYTES {
+            return Err(StoreError::CorruptData(
+                "protected relay signing key ciphertext exceeds storage bounds",
+            ));
+        }
+        let inserted = self.connection.execute(
+            "INSERT OR IGNORE INTO protected_relay_signing_keys
+                (identity_fingerprint, ciphertext)
+             VALUES (?1, ?2)",
+            params![&identity_fingerprint[..], ciphertext],
+        )?;
+        Ok(inserted == 1)
+    }
 
     /// Returns an event-ID-ordered outbox page, optionally after an exclusive ID.
     ///
@@ -2081,20 +2931,27 @@ impl Store {
         .collect()
     }
 
-    /// Records local relay/courier forwarding only. This never marks delivery.
+    /// Records a durable attempt before placing an envelope on transport.
+    ///
+    /// The attempt keeps the original event/envelope identity and remains
+    /// retryable after transport failure.
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid scheduling data, an invalid state transition,
-    /// or database failures.
-    pub fn mark_forwarded(&mut self, event_id: [u8; ID_BYTES], next_attempt_ms: i64) -> Result<()> {
+    /// Returns an error if the schedule is invalid, the outbox transition is invalid, or a database operation fails.
+    pub fn mark_forwarding_attempt(
+        &mut self,
+        event_id: [u8; ID_BYTES],
+        next_attempt_ms: i64,
+    ) -> Result<()> {
         if next_attempt_ms < 0 {
             return Err(StoreError::InvalidOutboxSchedule);
         }
         let changed = self.connection.execute(
             "UPDATE outbox
-             SET state = 'forwarded', next_attempt_ms = ?2, attempt_count = attempt_count + 1
-             WHERE event_id = ?1 AND state IN ('queued', 'forwarded')
+             SET state = 'forwarding', next_attempt_ms = ?2, attempt_count = attempt_count + 1
+             WHERE event_id = ?1
+               AND state IN ('queued', 'forwarding', 'forwarded', 'peer_ingress_accepted')
                AND attempt_count < 4294967295",
             params![&event_id[..], next_attempt_ms],
         )?;
@@ -2105,20 +2962,44 @@ impl Store {
         }
     }
 
-    /// Records a destination's receipt. Only a forwarded envelope can become
-    /// delivered; duplicate receipts are idempotent.
+    /// Records a relay/next-hop acceptance after a persisted forwarding attempt.
+    /// This is forwarding, not delivery.
     ///
     /// # Errors
     ///
-    /// Returns an error if the receipt cannot be applied or the database query
-    /// fails.
-    pub fn record_destination_receipt(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
+    /// Returns an error if the schedule is invalid, the outbox transition is invalid, or a database operation fails.
+    pub fn mark_forwarded(&mut self, event_id: [u8; ID_BYTES], next_attempt_ms: i64) -> Result<()> {
+        if next_attempt_ms < 0 {
+            return Err(StoreError::InvalidOutboxSchedule);
+        }
         let changed = self.connection.execute(
-            "UPDATE outbox SET state = 'delivered'
-             WHERE event_id = ?1 AND state = 'forwarded'",
+            "UPDATE outbox
+             SET state = 'forwarded', next_attempt_ms = ?2
+             WHERE event_id = ?1 AND state IN ('forwarding', 'forwarded')",
+            params![&event_id[..], next_attempt_ms],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOutboxTransition)
+        }
+    }
+
+    /// Records only the peer's authenticated acceptance into bounded ingress.
+    ///
+    /// This is not evidence of durable Core acceptance, destination delivery,
+    /// or reading. Duplicate acknowledgements are idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the outbox transition is invalid or a database operation fails.
+    pub fn record_peer_ingress_accepted(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE outbox SET state = 'peer_ingress_accepted'
+             WHERE event_id = ?1 AND state IN ('forwarding', 'peer_ingress_accepted')",
             params![&event_id[..]],
         )?;
-        if changed == 1 || self.outbox_state(&event_id)? == Some(OutboxState::Delivered) {
+        if changed == 1 || self.outbox_state(&event_id)? == Some(OutboxState::PeerIngressAccepted) {
             Ok(())
         } else {
             Err(StoreError::InvalidOutboxTransition)
@@ -2129,12 +3010,12 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error if the transition is invalid or the database operation
-    /// fails.
+    /// Returns an error if the outbox transition is invalid or a database operation fails.
     pub fn mark_failed(&mut self, event_id: [u8; ID_BYTES]) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE outbox SET state = 'failed'
-             WHERE event_id = ?1 AND state IN ('queued', 'forwarded')",
+             WHERE event_id = ?1
+               AND state IN ('queued', 'forwarding', 'forwarded', 'peer_ingress_accepted')",
             params![&event_id[..]],
         )?;
         if changed == 1 || self.outbox_state(&event_id)? == Some(OutboxState::Failed) {
@@ -2575,6 +3456,31 @@ fn load_pending_dependencies(
     rows.map(|row| decode_id(row?)).collect()
 }
 
+fn load_space_relay_mailbox_in_connection(
+    connection: &Connection,
+    space_id: &[u8; 16],
+    group_reference: &[u8; ID_BYTES],
+) -> Result<Option<Vec<u8>>> {
+    let encrypted = connection
+        .query_row(
+            "SELECT encrypted_token FROM space_relay_mailboxes
+             WHERE space_id = ?1 AND group_reference = ?2",
+            params![&space_id[..], &group_reference[..]],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(classify_database_error)?;
+    if encrypted
+        .as_ref()
+        .is_some_and(|blob| blob.is_empty() || blob.len() > MAX_PROTECTED_IDENTITY_BYTES)
+    {
+        return Err(StoreError::CorruptData(
+            "space relay mailbox ciphertext exceeds storage bounds",
+        ));
+    }
+    Ok(encrypted)
+}
+
 fn decode_id(bytes: Vec<u8>) -> Result<[u8; ID_BYTES]> {
     bytes
         .try_into()
@@ -2597,7 +3503,9 @@ fn validate_outbox_envelope(bytes: &[u8]) -> Result<()> {
 fn decode_outbox_state(state: &str) -> Result<OutboxState> {
     match state {
         "queued" => Ok(OutboxState::Queued),
+        "forwarding" => Ok(OutboxState::Forwarding),
         "forwarded" => Ok(OutboxState::Forwarded),
+        "peer_ingress_accepted" => Ok(OutboxState::PeerIngressAccepted),
         "delivered" => Ok(OutboxState::Delivered),
         "failed" => Ok(OutboxState::Failed),
         _ => Err(StoreError::CorruptData("invalid outbox state")),
@@ -2609,9 +3517,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
-        CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES, MAX_EVENT_PAGE_SIZE,
-        MAX_OUTBOX_EVENTS, MAX_PENDING_EVENTS, OutboxState, SpaceGenesisSnapshot,
-        SpaceMembershipConflictSnapshot, SpaceMembershipTransitionSnapshot,
+        CURRENT_SCHEMA_VERSION, CommitOutcome, MAX_CANONICAL_EVENT_BYTES, MAX_EVENT_DEPENDENCIES,
+        MAX_EVENT_PAGE_SIZE, MAX_OUTBOX_EVENTS, MAX_PENDING_EVENTS, OutboxState,
+        SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot, SpaceMembershipTransitionSnapshot,
         SpaceWelcomeBootstrapSnapshot, Store, StoreError, TrustedIdentityRecord,
     };
 
@@ -2838,6 +3746,15 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE courier_queue;
+                     DROP TABLE protected_relay_signing_keys;
+                     DROP TABLE space_relay_mailboxes;
+                     DROP INDEX direct_message_pending_by_peer;
+                     DROP TABLE direct_message_pending_invitations;
+                     DROP INDEX direct_message_history_by_conversation;
+                     DROP TABLE direct_message_history;
+                     DROP INDEX direct_message_outbox_schedule;
+                     DROP TABLE direct_message_outbox;
+                     DROP TABLE direct_message_conversations;
                      DROP TABLE courier_configuration;
                      DROP TABLE space_welcome_bootstrap_snapshots;
                      DROP TABLE space_membership_conflicts;
@@ -2901,6 +3818,15 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE courier_queue;
+                     DROP TABLE protected_relay_signing_keys;
+                     DROP TABLE space_relay_mailboxes;
+                     DROP INDEX direct_message_pending_by_peer;
+                     DROP TABLE direct_message_pending_invitations;
+                     DROP INDEX direct_message_history_by_conversation;
+                     DROP TABLE direct_message_history;
+                     DROP INDEX direct_message_outbox_schedule;
+                     DROP TABLE direct_message_outbox;
+                     DROP TABLE direct_message_conversations;
                      DROP TABLE courier_configuration;
                      DROP TABLE space_welcome_bootstrap_snapshots;
                      DROP TABLE space_membership_conflicts;
@@ -2919,7 +3845,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 13);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2951,6 +3877,15 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE courier_queue;
+                     DROP TABLE protected_relay_signing_keys;
+                     DROP TABLE space_relay_mailboxes;
+                     DROP INDEX direct_message_pending_by_peer;
+                     DROP TABLE direct_message_pending_invitations;
+                     DROP INDEX direct_message_history_by_conversation;
+                     DROP TABLE direct_message_history;
+                     DROP INDEX direct_message_outbox_schedule;
+                     DROP TABLE direct_message_outbox;
+                     DROP TABLE direct_message_conversations;
                      DROP TABLE courier_configuration;
                      DROP TABLE space_welcome_bootstrap_snapshots;
                      DROP TABLE space_membership_conflicts;
@@ -2967,7 +3902,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read upgraded schema version");
-        assert_eq!(version, 13);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         assert_eq!(
             store
                 .load_event(&event)
@@ -2984,6 +3919,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn v13_outbox_migration_demotes_unverified_delivery_states() {
+        let database = TempDatabase::new();
+        let author = id(80);
+        let formerly_delivered = id(81);
+        let formerly_forwarded = id(82);
+        {
+            let mut store = Store::open(database.path()).expect("create latest schema");
+            store
+                .commit_authored_with_outbox(
+                    author,
+                    formerly_delivered,
+                    1,
+                    &[0xA1],
+                    &[],
+                    &[0x11],
+                    100,
+                )
+                .expect("create delivery fixture");
+            store
+                .commit_authored_with_outbox(
+                    author,
+                    formerly_forwarded,
+                    2,
+                    &[0xA2],
+                    &[],
+                    &[0x22],
+                    200,
+                )
+                .expect("create forwarding fixture");
+        }
+        {
+            let connection =
+                rusqlite::Connection::open(database.path()).expect("open migration fixture");
+            connection
+                .execute_batch(
+                    "DROP INDEX direct_message_pending_by_peer;
+                     DROP TABLE protected_relay_signing_keys;
+                     DROP TABLE space_relay_mailboxes;
+                     DROP TABLE direct_message_pending_invitations;
+                     DROP INDEX direct_message_history_by_conversation;
+                     DROP TABLE direct_message_history;
+                     DROP INDEX direct_message_outbox_schedule;
+                     DROP TABLE direct_message_outbox;
+                     DROP TABLE direct_message_conversations;
+                     DROP INDEX outbox_queued_schedule;
+                     ALTER TABLE outbox RENAME TO outbox_new;
+                     CREATE TABLE outbox (
+                        event_id BLOB PRIMARY KEY NOT NULL
+                            REFERENCES events(event_id) ON DELETE CASCADE,
+                        envelope_bytes BLOB NOT NULL
+                            CHECK(typeof(envelope_bytes) = 'blob'
+                                AND length(envelope_bytes) BETWEEN 1 AND 1048576),
+                        next_attempt_ms INTEGER NOT NULL CHECK(next_attempt_ms >= 0),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                        state TEXT NOT NULL
+                            CHECK(state IN ('queued', 'forwarded', 'delivered', 'failed'))
+                     );
+                     INSERT INTO outbox
+                        (event_id, envelope_bytes, next_attempt_ms, attempt_count, state)
+                     SELECT event_id, envelope_bytes, next_attempt_ms, attempt_count, 'queued'
+                     FROM outbox_new;
+                     DROP TABLE outbox_new;
+                     CREATE INDEX outbox_queued_schedule
+                        ON outbox(state, next_attempt_ms, event_id);
+                     PRAGMA user_version = 13;",
+                )
+                .expect("restore v13 outbox schema");
+            connection
+                .execute(
+                    "UPDATE outbox SET state = 'delivered' WHERE event_id = ?1",
+                    rusqlite::params![&formerly_delivered[..]],
+                )
+                .expect("restore legacy delivered state");
+            connection
+                .execute(
+                    "UPDATE outbox SET state = 'forwarded' WHERE event_id = ?1",
+                    rusqlite::params![&formerly_forwarded[..]],
+                )
+                .expect("restore legacy forwarded state");
+        }
+
+        let store = Store::open(database.path()).expect("migrate v13 outbox");
+        let rows = store
+            .list_outbox_page(None, 10)
+            .expect("read migrated outbox");
+        let delivered = rows
+            .iter()
+            .find(|row| row.event_id == formerly_delivered)
+            .expect("find former delivered row");
+        assert_eq!(delivered.state, OutboxState::PeerIngressAccepted);
+        assert_eq!(delivered.envelope_bytes, [0x11]);
+        assert_eq!(delivered.next_attempt_ms, 100);
+        let forwarded = rows
+            .iter()
+            .find(|row| row.event_id == formerly_forwarded)
+            .expect("find former forwarded row");
+        assert_eq!(forwarded.state, OutboxState::Forwarding);
+        assert_eq!(forwarded.envelope_bytes, [0x22]);
+        assert_eq!(forwarded.next_attempt_ms, 200);
+    }
     #[test]
     fn trusted_identity_persists_exact_bytes_idempotently_and_rejects_conflicts() {
         let database = TempDatabase::new();
@@ -3092,7 +4128,10 @@ mod tests {
     fn welcome_bootstrap_snapshot_round_trips_transactionally_and_enforces_bounds() {
         let database = TempDatabase::new();
         let mut store = Store::open(database.path()).expect("open database");
-        assert_eq!(store.schema_version().expect("read schema version"), 13);
+        assert_eq!(
+            store.schema_version().expect("read schema version"),
+            CURRENT_SCHEMA_VERSION
+        );
         let snapshot = SpaceWelcomeBootstrapSnapshot {
             space_id: [0x11; 16],
             group_reference: [0x22; 32],
@@ -3689,7 +4728,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn authored_event_and_outbox_transition_durably_without_false_delivery() {
+    fn authored_outbox_preserves_identity_across_attempt_ack_and_retry() {
         let database = TempDatabase::new();
         let author = id(50);
         let event = id(51);
@@ -3722,70 +4761,53 @@ mod tests {
             assert_eq!(queued[0].state, OutboxState::Queued);
             assert_eq!(queued[0].envelope_bytes, [0x01, 0x02]);
             assert_eq!(queued[0].attempt_count, 0);
-            assert_eq!(
-                store
-                    .commit_authored_with_outbox(
-                        author,
-                        event,
-                        1,
-                        &[0xA1],
-                        &[],
-                        &[0x01, 0x02],
-                        999,
-                    )
-                    .expect("repeat identical event and envelope"),
-                CommitOutcome::AlreadyPresent
-            );
 
             store
-                .mark_forwarded(event, 200)
-                .expect("record relay forwarding");
-            let forwarded = store
+                .mark_forwarding_attempt(event, 200)
+                .expect("persist attempt before transport");
+            let attempted = store.list_outbox_page(None, 10).expect("list attempt");
+            assert_eq!(attempted[0].state, OutboxState::Forwarding);
+            assert_eq!(attempted[0].attempt_count, 1);
+            assert_eq!(attempted[0].event_id, event);
+            assert_eq!(attempted[0].envelope_bytes, [0x01, 0x02]);
+            assert!(matches!(
+                store.record_peer_ingress_accepted(id(99)),
+                Err(StoreError::InvalidOutboxTransition)
+            ));
+            store
+                .record_peer_ingress_accepted(event)
+                .expect("record peer transport ingress acknowledgement");
+            store
+                .record_peer_ingress_accepted(event)
+                .expect("repeat ingress acknowledgement idempotently");
+            let accepted = store
                 .list_outbox_page(None, 10)
-                .expect("list forwarded envelope");
-            assert_eq!(forwarded[0].state, OutboxState::Forwarded);
-            assert_eq!(forwarded[0].attempt_count, 1);
+                .expect("list ingress state");
+            assert_eq!(accepted[0].state, OutboxState::PeerIngressAccepted);
+            assert_eq!(accepted[0].attempt_count, 1);
+            assert_eq!(accepted[0].envelope_bytes, [0x01, 0x02]);
             assert!(matches!(
                 store.commit_authored_with_outbox(author, event, 1, &[0xA1], &[], &[0x03], 300),
                 Err(StoreError::OutboxConflict)
             ));
-            assert_eq!(
-                store
-                    .commit_authored_with_outbox(
-                        author,
-                        event,
-                        1,
-                        &[0xA1],
-                        &[],
-                        &[0x01, 0x02],
-                        300,
-                    )
-                    .expect("repeat identical forwarded envelope"),
-                CommitOutcome::AlreadyPresent
-            );
-
-            assert!(matches!(
-                store.record_destination_receipt(id(99)),
-                Err(StoreError::InvalidOutboxTransition)
-            ));
         }
 
         let mut store = Store::open(database.path()).expect("reopen outbox database");
-        let forwarded = store
+        let accepted = store
             .list_outbox_page(None, 10)
-            .expect("load durable outbox state");
-        assert_eq!(forwarded[0].state, OutboxState::Forwarded);
-        assert_eq!(forwarded[0].next_attempt_ms, 200);
+            .expect("load durable state");
+        assert_eq!(accepted[0].state, OutboxState::PeerIngressAccepted);
+        assert_eq!(accepted[0].next_attempt_ms, 200);
+        assert_eq!(accepted[0].event_id, event);
+        assert_eq!(accepted[0].envelope_bytes, [0x01, 0x02]);
         store
-            .record_destination_receipt(event)
-            .expect("record destination receipt");
-        assert_eq!(
-            store
-                .list_outbox_page(None, 10)
-                .expect("list delivered envelope")[0]
-                .state,
-            OutboxState::Delivered
-        );
+            .mark_forwarding_attempt(event, 300)
+            .expect("retry after peer ingress acknowledgement");
+        let retried = store.list_outbox_page(None, 10).expect("load retry state");
+        assert_eq!(retried[0].state, OutboxState::Forwarding);
+        assert_eq!(retried[0].attempt_count, 2);
+        assert_eq!(retried[0].event_id, event);
+        assert_eq!(retried[0].envelope_bytes, [0x01, 0x02]);
         assert_eq!(
             store
                 .next_author_sequence(&author)
@@ -3887,7 +4909,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_outbox_entry_cannot_be_reported_delivered() {
+    fn failed_outbox_entry_rejects_peer_ingress_ack() {
         let database = TempDatabase::new();
         let mut store = Store::open(database.path()).expect("open database");
         let event = id(70);
@@ -3900,7 +4922,7 @@ mod tests {
             OutboxState::Failed
         );
         assert!(matches!(
-            store.record_destination_receipt(event),
+            store.record_peer_ingress_accepted(event),
             Err(StoreError::InvalidOutboxTransition)
         ));
     }

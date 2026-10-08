@@ -256,7 +256,9 @@ pub(super) fn print_space_page(page: &lattice_core::RestoredSpacePage, json: boo
 fn outbox_state_name(state: Option<lattice_core::OutboxState>) -> Option<&'static str> {
     state.map(|state| match state {
         lattice_core::OutboxState::Queued => "queued",
+        lattice_core::OutboxState::Forwarding => "forwarding",
         lattice_core::OutboxState::Forwarded => "forwarded",
+        lattice_core::OutboxState::PeerIngressAccepted => "peer_ingress_accepted",
         lattice_core::OutboxState::Delivered => "delivered",
         lattice_core::OutboxState::Failed => "failed",
     })

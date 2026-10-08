@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  publicDir: "../../assets/logo",
   worker: { format: "es" },
   server: { host: "127.0.0.1", port: 1430, strictPort: true },
   preview: { host: "127.0.0.1", port: 1430, strictPort: true },

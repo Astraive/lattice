@@ -4,6 +4,7 @@ import android.os.SystemClock
 import uniffi.lattice_uniffi.MobileBlePeerInfo
 import uniffi.lattice_uniffi.MobileBleSession
 import uniffi.lattice_uniffi.MobileBleRole
+import uniffi.lattice_uniffi.MobileSyncEventResult
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -18,6 +19,7 @@ internal class BleExp0SessionCoordinator(
     private val retryAt: (attemptCount: UInt, nowUnixMillis: Long) -> Long,
     private val onPeerVerificationRequired: (MobileBlePeerInfo, (Boolean) -> Unit) -> Unit,
     private val onAuthenticated: (BleExp0OutboxPump, (Boolean) -> Unit) -> Unit,
+    private val onCoreIngressResult: (MobileSyncEventResult) -> Unit,
     private val decisionExecutor: Executor,
     private val onFailure: (String) -> Unit,
 ) : AutoCloseable {
@@ -86,13 +88,13 @@ internal class BleExp0SessionCoordinator(
             require(value.isNotEmpty()) { "Empty GATT control value" }
             checkFresh(elapsedMillis)
             if (stage == Stage.AUTHENTICATED) {
-                val receipt = requireNotNull(pump).receiveControl(
+                val ingressEventId = requireNotNull(pump).receiveControl(
                     value,
                     System.currentTimeMillis(),
                     elapsedMillis,
                     retryAt,
                 )
-                if (receipt != null) startNextDue(elapsedMillis)
+                if (ingressEventId != null) startNextDue(elapsedMillis)
                 touch(elapsedMillis)
                 return
             }
@@ -333,7 +335,13 @@ internal class BleExp0SessionCoordinator(
             MobileBleRole.RESPONDER -> BleExp0TransferProtocol.ROLE_RESPONDER
         }
         val transfer = BleExp0TransferProtocol.forAuthenticatedSession(localRole, negotiatedMtu)
-        val authenticatedTransport = BleExp0EnvelopeTransport(profile, session, transfer, io)
+        val authenticatedTransport = BleExp0EnvelopeTransport(
+            profile,
+            MobileBleSessionCipher(session),
+            transfer,
+            io,
+            onCoreIngressResult,
+        )
         val outboxPump = BleExp0OutboxPump(profile, authenticatedTransport) { eventId ->
             routeAllowed.get() && isRoutedToPeer(eventId)
         }

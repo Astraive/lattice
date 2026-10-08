@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lattice_core::{
-    Client, CoreError, CreatedSpace, InitialChannel, LocalTextMessageRecord,
-    MAX_SPACE_CREDENTIAL_BYTES, MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState,
+    CoreError, CreatedSpace, InitialChannel, LocalTextMessageRecord, MAX_SPACE_CREDENTIAL_BYTES,
+    MAX_SPACE_WELCOME_BOOTSTRAP_BYTES, OutboxState, TextMessagePin, TextMessageReaction,
     space::{Channel, ChannelType},
 };
 use lattice_mls::api::{DeviceCredentialInput, MAX_MLS_WIRE_BYTES};
@@ -96,7 +96,9 @@ fn project_local_text_message(message: LocalTextMessageRecord) -> LocalTextMessa
         content: message.content,
         outbox_state: message.outbox_state.map(|state| match state {
             OutboxState::Queued => "queued",
+            OutboxState::Forwarding => "forwarding",
             OutboxState::Forwarded => "forwarded",
+            OutboxState::PeerIngressAccepted => "peer_ingress_accepted",
             OutboxState::Delivered => "delivered",
             OutboxState::Failed => "failed",
         }),
@@ -155,8 +157,7 @@ pub(crate) fn create_local_space(
         })
         .collect();
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let created = client
         .create_space_from_x509_credential(credential_vector, channels)
         .map_err(|error| error.to_string())?;
@@ -199,13 +200,17 @@ pub(crate) fn publish_local_space_key_package(
         .map_err(|error| format!("read system time: {error}"))?
         .as_secs();
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
+    let trust_policy = profile::credential_trust_policy()?;
     let credential = Credential::new(CredentialType::X509, credential_vector);
     let credential = client
         .with_mls_transaction(|identity, _, _| {
-            DeviceCredentialInput::from_x509_credential(identity, credential)
-                .map_err(CoreError::Mls)
+            DeviceCredentialInput::from_x509_credential_with_policy(
+                identity,
+                credential,
+                &trust_policy,
+            )
+            .map_err(CoreError::Mls)
         })
         .map_err(|error| error.to_string())?;
     let wire = client
@@ -267,8 +272,7 @@ pub(crate) fn import_local_space_welcome_bootstrap(
         "expected inviter fingerprint",
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let imported = client
         .join_space_from_welcome_bootstrap_from_x509_credential(
             &package,
@@ -319,8 +323,7 @@ pub(crate) fn queue_local_text_message(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let queued = client
         .queue_text_message_from_x509_credential(
             &space_id,
@@ -372,8 +375,7 @@ pub(crate) fn queue_local_text_message_edit(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let queued = client
         .queue_text_message_edit_from_x509_credential(
             &space_id,
@@ -400,6 +402,229 @@ pub(crate) fn queue_local_text_message_edit(
         event_id: encoding::hex(queued.event_id()),
     })
 }
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn queue_local_text_message_tombstone(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+    channel_id_hex: String,
+    target_message_id_hex: String,
+) -> Result<QueuedLocalMessage, String> {
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
+    let target = encoding::parse_fixed_hex::<32>(&target_message_id_hex, "message ID")?;
+    let credential_vector = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
+    let queued = client
+        .queue_text_message_tombstone_from_x509_credential(
+            &space_id,
+            &group_reference,
+            credential_vector,
+            channel_id,
+            target,
+        )
+        .map_err(|error| match error {
+            CoreError::SpaceCredentialInvalid => {
+                "the X.509 credential is invalid or not trusted".to_owned()
+            }
+            CoreError::SpaceMessageRejected(_) => {
+                "local Space policy rejected this tombstone".to_owned()
+            }
+            CoreError::SpaceGenesisRejected(_) | CoreError::SpaceGenesisSnapshotNotFound => {
+                "local Space generation is unavailable or has changed".to_owned()
+            }
+            _ => "tombstone could not be committed to the local outbox".to_owned(),
+        })?;
+    Ok(QueuedLocalMessage {
+        state: "queued",
+        event_id: encoding::hex(queued.event_id()),
+    })
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn queue_local_text_message_reply(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+    channel_id_hex: String,
+    thread_root_hex: String,
+    content: String,
+) -> Result<QueuedLocalMessage, String> {
+    if content.len() > lattice_core::space::MAX_SPACE_PAYLOAD_BYTES {
+        return Err("reply exceeds the local payload limit".to_owned());
+    }
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
+    let thread_root = encoding::parse_fixed_hex::<32>(&thread_root_hex, "thread root message ID")?;
+    let credential_vector = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
+    let queued = client
+        .queue_text_message_reply_from_x509_credential(
+            &space_id,
+            &group_reference,
+            credential_vector,
+            channel_id,
+            thread_root,
+            &content,
+        )
+        .map_err(|error| match error {
+            CoreError::SpaceCredentialInvalid => {
+                "the X.509 credential is invalid or not trusted".to_owned()
+            }
+            CoreError::SpaceMessageRejected(_) => {
+                "local Space policy rejected this reply".to_owned()
+            }
+            CoreError::SpaceGenesisRejected(_) | CoreError::SpaceGenesisSnapshotNotFound => {
+                "local Space generation is unavailable or has changed".to_owned()
+            }
+            _ => "reply could not be committed to the local outbox".to_owned(),
+        })?;
+    Ok(QueuedLocalMessage {
+        state: "queued",
+        event_id: encoding::hex(queued.event_id()),
+    })
+}
+
+// Tauri's command ABI requires these owned arguments; its public input shape is
+// intentionally kept flat for the frontend command contract.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn queue_local_text_message_reaction(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+    channel_id_hex: String,
+    target_message_id_hex: String,
+    token: String,
+    add: bool,
+    tag_hex: Option<String>,
+) -> Result<QueuedLocalMessage, String> {
+    if token.is_empty() || token.len() > 64 {
+        return Err("reaction token must contain 1 to 64 UTF-8 bytes".to_owned());
+    }
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
+    let target = encoding::parse_fixed_hex::<32>(&target_message_id_hex, "message ID")?;
+    let tag = tag_hex
+        .as_deref()
+        .map(|value| encoding::parse_fixed_hex::<32>(value, "reaction add event ID"))
+        .transpose()?;
+    let credential_vector = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
+    let queued = client
+        .queue_text_message_reaction_from_x509_credential(
+            &space_id,
+            &group_reference,
+            credential_vector,
+            &TextMessageReaction {
+                channel_id,
+                target,
+                token,
+                add,
+                tag,
+            },
+        )
+        .map_err(|error| match error {
+            CoreError::SpaceCredentialInvalid => {
+                "the X.509 credential is invalid or not trusted".to_owned()
+            }
+            CoreError::SpaceMessageRejected(_) => {
+                "local Space policy rejected this reaction".to_owned()
+            }
+            CoreError::SpaceGenesisRejected(_) | CoreError::SpaceGenesisSnapshotNotFound => {
+                "local Space generation is unavailable or has changed".to_owned()
+            }
+            _ => "reaction could not be committed to the local outbox".to_owned(),
+        })?;
+    Ok(QueuedLocalMessage {
+        state: "queued",
+        event_id: encoding::hex(queued.event_id()),
+    })
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn queue_local_text_message_pin(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+    channel_id_hex: String,
+    target_message_id_hex: String,
+    add: bool,
+    tag_hex: Option<String>,
+) -> Result<QueuedLocalMessage, String> {
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
+    let target = encoding::parse_fixed_hex::<32>(&target_message_id_hex, "message ID")?;
+    let tag = tag_hex
+        .as_deref()
+        .map(|value| encoding::parse_fixed_hex::<32>(value, "pin add event ID"))
+        .transpose()?;
+    let credential_vector = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
+    let queued = client
+        .queue_text_message_pin_from_x509_credential(
+            &space_id,
+            &group_reference,
+            credential_vector,
+            TextMessagePin {
+                channel_id,
+                target,
+                add,
+                tag,
+            },
+        )
+        .map_err(|error| match error {
+            CoreError::SpaceCredentialInvalid => {
+                "the X.509 credential is invalid or not trusted".to_owned()
+            }
+            CoreError::SpaceMessageRejected(_) => {
+                "local Space policy rejected this pin update".to_owned()
+            }
+            CoreError::SpaceGenesisRejected(_) | CoreError::SpaceGenesisSnapshotNotFound => {
+                "local Space generation is unavailable or has changed".to_owned()
+            }
+            _ => "pin update could not be committed to the local outbox".to_owned(),
+        })?;
+    Ok(QueuedLocalMessage {
+        state: "queued",
+        event_id: encoding::hex(queued.event_id()),
+    })
+}
 
 // Tauri decodes command arguments into owned strings.
 #[allow(clippy::needless_pass_by_value)]
@@ -414,8 +639,7 @@ pub(crate) fn list_local_text_messages(
         encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
     let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let history = client
         .local_text_message_history(&space_id, &group_reference, &channel_id)
         .map_err(|_| "local message history is unavailable or failed authentication".to_owned())?;
@@ -439,8 +663,7 @@ pub(crate) fn search_local_text_messages(
         encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
     let channel_id = encoding::parse_fixed_hex::<16>(&channel_id_hex, "channel ID")?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let result = client
         .search_local_text_messages(&space_id, &group_reference, &channel_id, &query)
         .map_err(|_| "local message search is unavailable or the query is invalid".to_owned())?;
@@ -464,8 +687,7 @@ pub(crate) fn list_local_spaces(after: Option<String>) -> Result<LocalSpacePage,
         .map(encoding::parse_space_cursor)
         .transpose()?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let page = client
         .restore_space_page(after)
         .map_err(|error| error.to_string())?;
@@ -503,8 +725,7 @@ pub(crate) fn recover_local_space_generation(
         MAX_SPACE_CREDENTIAL_BYTES,
     )?;
     let (database_path, protector) = profile::open_profile()?;
-    let mut client =
-        Client::open_existing(database_path, &protector).map_err(|error| error.to_string())?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
     let space = client
         .recover_space_generation_from_x509_credential(
             &space_id,

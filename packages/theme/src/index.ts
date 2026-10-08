@@ -14,14 +14,14 @@ function deepFreeze<T extends TokenTree>(value: T): DeepReadonly<T> {
 /** Presentation tokens only; values do not describe transport or security state. */
 export const latticeTheme = deepFreeze({
   color: {
-    background: "#0b100d",
-    foreground: "#e8efe9",
-    surface: "#101713",
-    surfaceRaised: "#151f19",
-    line: "rgba(221, 237, 224, 0.12)",
-    muted: "#9daaa0",
-    accent: "#a8ffbf",
-    accentStrong: "#66e98b",
+    background: "#000000",
+    foreground: "#EDF5EF",
+    surface: "#090F0B",
+    surfaceRaised: "#121A14",
+    line: "rgba(237, 245, 239, 0.12)",
+    muted: "#9AA99D",
+    accent: "#8FE3A4",
+    accentStrong: "#73CF8B",
     status: {
       success: { color: "#66e98b", label: "Success" },
       warning: { color: "#f2c66d", label: "Warning" },
@@ -41,7 +41,7 @@ export const latticeTheme = deepFreeze({
   },
   type: {
     family: {
-      sans: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      sans: 'system-ui, "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif',
       mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
     },
     size: {
@@ -56,11 +56,11 @@ export const latticeTheme = deepFreeze({
     lineHeight: { tight: 1.2, normal: 1.5, relaxed: 1.7 },
   },
   radius: {
-    none: "0",
-    sm: "4px",
-    md: "8px",
-    lg: "12px",
-    pill: "9999px",
+    none: "0px",
+    sm: "0px",
+    md: "0px",
+    lg: "0px",
+    pill: "0px",
   },
   motion: {
     duration: { instant: "0ms", fast: "120ms", normal: "200ms", slow: "320ms" },

@@ -37,6 +37,7 @@ The complete map encoding is the signed preimage. A zero sequence, duplicate/uns
 | 8 | File manifest | Exact candidate metadata validation and authorization in `07-permissions.md`; chunk transfer and file projection external |
 | 9 | Voice signal | Authorization is unsupported until session/action schema is specified |
 | 10 | Ephemeral | Reserved encrypted presence/typing hints; not durably stored or store-forwarded, and Core authorization is not defined |
+| 11 | Space-generation relay mailbox control | MLS-protected application map defined in `06-spaces.md`; null channel; Core admission and manager authorization required |
 
 ## Candidate signed outer object
 

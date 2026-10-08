@@ -6,11 +6,11 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
+import com.astraive.lattice.ui.LatticeActionButton as Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.astraive.lattice.ui.LatticeFormField as OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
+import com.astraive.lattice.ui.LatticeSurface as Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -23,6 +23,12 @@ import androidx.compose.ui.unit.dp
 import uniffi.lattice_uniffi.MobileChannelSummary
 import uniffi.lattice_uniffi.MobileChannelType
 import uniffi.lattice_uniffi.MobileLocalTextMessage
+import com.astraive.lattice.ui.LatticeSurface
+import com.astraive.lattice.ui.LatticeActionButton
+import com.astraive.lattice.ui.LatticeActionTone
+import com.astraive.lattice.ui.LatticeStatusNotice
+import com.astraive.lattice.ui.LatticeNoticeKind
+import com.astraive.lattice.ui.LatticeFormField
 
 internal data class LocalMessageComposerState(
     val credentialVectorHex: String = "",
@@ -36,7 +42,13 @@ internal data class LocalMessageComposerState(
     val status: String = "Enter the trusted X.509 credential vector to queue a local message.",
     val eventIdHex: String? = null,
     val editTargetMessageIdHex: String? = null,
+    val replyTargetMessageIdHex: String? = null,
+    val reactionToken: String = "👍",
+    val mutationTagHex: String = "",
 )
+
+internal enum class LocalTextMessageMutation { TOMBSTONE, REACTION, PIN }
+
 
 @Composable
 internal fun SpaceMessageComposer(
@@ -45,36 +57,41 @@ internal fun SpaceMessageComposer(
     profileReady: Boolean,
     onCredentialVectorHexChanged: (String) -> Unit,
     onContentChanged: (String) -> Unit,
+    onReactionTokenChanged: (String) -> Unit,
+    onMutationTagHexChanged: (String) -> Unit,
     onChannelSelected: (String) -> Unit,
     onQueue: () -> Unit,
     onLoadHistory: () -> Unit,
     onEditMessage: (MobileLocalTextMessage) -> Unit,
+    onReplyMessage: (MobileLocalTextMessage) -> Unit,
+    onQueueMutation: (MobileLocalTextMessage, LocalTextMessageMutation, Boolean) -> Unit,
     onCancelEdit: () -> Unit,
     profileIdentityHex: String,
 ) {
     val availableChannels = channels.filter {
         !it.archived && (it.channelType == MobileChannelType.TEXT || it.channelType == MobileChannelType.ANNOUNCEMENT)
     }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        tonalElevation = 1.dp,
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+    val reactionTokenIsValid = state.reactionToken.toByteArray().size in 1..64
+    val mutationTagIsValid = state.mutationTagHex.length == 64 &&
+        state.mutationTagHex.all { it.digitToIntOrNull(16) != null }
+    LatticeSurface {
             Text(
-                if (state.editTargetMessageIdHex == null) "Queue a local text message"
-                else "Edit local text message",
+                when {
+                    state.editTargetMessageIdHex != null -> "Edit local text message"
+                    state.replyTargetMessageIdHex != null -> "Reply in a message thread"
+                    else -> "Queue a local text message"
+                },
                 modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                if (state.editTargetMessageIdHex == null) {
-                    "Messages and outbox status below are local records only. The recent outgoing history is bounded; incoming messages, forwarding, and recipient delivery are not available here."
-                } else {
-                    "Editing creates a new immutable encrypted event in the local outbox; the original event remains unchanged. Forwarding and recipient delivery are not available here."
+                when {
+                    state.editTargetMessageIdHex != null ->
+                        "Editing commits a new immutable encrypted event; the original remains unchanged."
+                    state.replyTargetMessageIdHex != null ->
+                        "This commits a reply rooted at ${state.replyTargetMessageIdHex}; history remains a flat local list."
+                    else ->
+                        "Messages and outbox state are local records. Authorized incoming messages appear after Core accepts them; an outbox state does not prove that a destination received or read an event."
                 },
             )
             Text(
@@ -107,7 +124,9 @@ internal fun SpaceMessageComposer(
                     val idHex = channel.id.toLowerHex()
                     val selected = state.selectedChannelIdHex == idHex ||
                         (state.selectedChannelIdHex == null && channel == availableChannels.first())
-                    val enabled = !state.submitting && state.editTargetMessageIdHex == null
+                    val enabled = !state.submitting &&
+                        state.editTargetMessageIdHex == null &&
+                        state.replyTargetMessageIdHex == null
                     androidx.compose.foundation.layout.Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -134,43 +153,51 @@ internal fun SpaceMessageComposer(
                         }
                     }
                 }
-                OutlinedTextField(
-                    value = state.credentialVectorHex,
-                    onValueChange = onCredentialVectorHexChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Trusted X.509 credential vector (hex)") },
-                    supportingText = { Text("Even-length hexadecimal, at most 16 KiB decoded") },
+                LatticeFormField(
+                    state.credentialVectorHex, onCredentialVectorHexChanged, "Trusted X.509 credential vector (hex)",
+                    supportingText = "Even-length hexadecimal, at most 16 KiB decoded",
+                    enabled = !state.submitting, singleLine = false,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, capitalization = KeyboardCapitalization.None),
-                    enabled = !state.submitting,
-                    singleLine = false,
                 )
-                OutlinedTextField(
-                    value = state.content,
-                    onValueChange = onContentChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (state.editTargetMessageIdHex == null) "Message" else "Replacement text") },
+                LatticeFormField(
+                    state.content, onContentChanged,
+                    when {
+                        state.editTargetMessageIdHex != null -> "Replacement text"
+                        state.replyTargetMessageIdHex != null -> "Reply"
+                        else -> "Message"
+                    },
+                    enabled = !state.submitting, singleLine = false, minLines = 3,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    enabled = !state.submitting,
-                    minLines = 3,
                 )
-                Button(
-                    onClick = onQueue,
+                LatticeFormField(
+                    state.reactionToken, onReactionTokenChanged, "Reaction token",
+                    supportingText = "1–64 UTF-8 bytes", enabled = !state.submitting,
+                )
+                LatticeFormField(
+                    state.mutationTagHex, onMutationTagHexChanged,
+                    "Reaction or pin add-event ID for removal (32-byte hex)", enabled = !state.submitting,
+                )
+                LatticeActionButton(
+                    when {
+                        state.editTargetMessageIdHex != null -> "Queue edit locally"
+                        state.replyTargetMessageIdHex != null -> "Queue reply locally"
+                        else -> "Queue locally"
+                    },
+                    onQueue,
                     enabled = profileReady && !state.submitting && availableChannels.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth(),
+                    busy = state.submitting,
+                    tone = LatticeActionTone.PRIMARY,
+                )
+                if (
+                    state.editTargetMessageIdHex != null ||
+                    state.replyTargetMessageIdHex != null
                 ) {
-                    Text(
-                        if (state.submitting) "Committing locally…"
-                        else if (state.editTargetMessageIdHex == null) "Queue locally"
-                        else "Queue edit locally",
-                    )
-                }
-                if (state.editTargetMessageIdHex != null) {
                     Button(
                         onClick = onCancelEdit,
                         enabled = !state.submitting,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Cancel edit")
+                        Text(if (state.editTargetMessageIdHex != null) "Cancel edit" else "Cancel reply")
                     }
                 }
                 Button(
@@ -181,7 +208,7 @@ internal fun SpaceMessageComposer(
                     Text(if (state.loadingHistory) "Loading history…" else "Refresh recent history")
                 }
                 state.historyStatus?.let { status ->
-                    Text(status, style = MaterialTheme.typography.bodySmall)
+                    LatticeStatusNotice(LatticeNoticeKind.INFO, message = status)
                 }
                 val historyChannelId = state.selectedChannelIdHex
                     ?: availableChannels.firstOrNull()?.id?.toLowerHex()
@@ -198,7 +225,17 @@ internal fun SpaceMessageComposer(
                             ) {
                                 Text(message.content, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    "Local outbox record: ${message.outboxState ?: "no queued state; retained locally"}",
+                                    when (message.outboxState) {
+                                        "queued" -> "Queued locally; not yet sent"
+                                        "forwarding" -> "Forwarding attempt recorded; delivery unconfirmed"
+                                        "forwarded" -> "Next hop accepted; delivery unconfirmed"
+                                        "peer_ingress_accepted" ->
+                                            "Peer accepted bounded ingress; not recipient delivery"
+                                        "delivered" -> "Verified destination receipt recorded"
+                                        "failed" -> "Failed or expired; retained locally"
+                                        null -> "No queued state; retained locally"
+                                        else -> "Unknown local outbox status"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -212,6 +249,50 @@ internal fun SpaceMessageComposer(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                Button(
+                                    onClick = { onReplyMessage(message) },
+                                    enabled = !state.submitting,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Reply in thread")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.REACTION, true)
+                                    },
+                                    enabled = profileReady && !state.submitting && reactionTokenIsValid,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Add reaction")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.REACTION, false)
+                                    },
+                                    enabled = profileReady && !state.submitting && mutationTagIsValid &&
+                                        reactionTokenIsValid,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Remove reaction by tag")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.PIN, true)
+                                    },
+                                    enabled = profileReady && !state.submitting,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Pin message")
+                                }
+                                Button(
+                                    onClick = {
+                                        onQueueMutation(message, LocalTextMessageMutation.PIN, false)
+                                    },
+                                    enabled = profileReady && !state.submitting && mutationTagIsValid,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Remove pin by tag")
+                                }
                                 if (message.authorId.toLowerHex() == profileIdentityHex) {
                                     Button(
                                         onClick = { onEditMessage(message) },
@@ -220,18 +301,26 @@ internal fun SpaceMessageComposer(
                                     ) {
                                         Text("Edit locally")
                                     }
+                                    Button(
+                                        onClick = {
+                                            onQueueMutation(message, LocalTextMessageMutation.TOMBSTONE, true)
+                                        },
+                                        enabled = profileReady && !state.submitting,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text("Queue delete tombstone")
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            Text(state.status, style = MaterialTheme.typography.bodySmall)
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.status)
             state.eventIdHex?.let { eventId ->
                 Text("Event ID (queued locally)", style = MaterialTheme.typography.labelMedium)
                 Text(eventId, style = MaterialTheme.typography.bodySmall)
             }
-        }
     }
 }
 

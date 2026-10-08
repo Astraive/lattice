@@ -22,6 +22,7 @@ internal class BleExp0PeripheralSession(
     private val retryAt: (attemptCount: UInt, nowUnixMillis: Long) -> Long,
     private val onAuthenticated: (BleExp0OutboxPump, (Boolean) -> Unit) -> Unit,
     private val onPeerVerificationRequired: (MobileBlePeerInfo, (Boolean) -> Unit) -> Unit,
+    private val onCoreIngressResult: (uniffi.lattice_uniffi.MobileSyncEventResult) -> Unit,
     private val onFailure: (String) -> Unit,
 ) : BleGattPeripheralListener, AutoCloseable {
     private val lock = Any()
@@ -198,6 +199,7 @@ internal class BleExp0PeripheralSession(
                 retryAt = retryAt,
                 onPeerVerificationRequired = onPeerVerificationRequired,
                 onAuthenticated = onAuthenticated,
+                onCoreIngressResult = onCoreIngressResult,
                 onFailure = onFailure,
             )
         } catch (error: Exception) {
