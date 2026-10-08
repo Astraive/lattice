@@ -47,6 +47,10 @@ path = "tests/proposals.rs"
 name = "vc_operation_tree"
 path = "tests/vc_operation_tree.rs"
 
+[[test]]
+name = "migrations"
+path = "tests/migrations.rs"
+
 [dependencies.openmls_traits]
 version = "0.6.0"
 
