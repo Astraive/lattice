@@ -316,17 +316,21 @@ mod tests {
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256, PKCS_ED25519};
     use std::{
         fs,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    static NEXT_TEMP_PATH: AtomicU64 = AtomicU64::new(0);
+
     fn temp_path(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "lattice-dev-pki-{label}-{}-{}",
+            "lattice-dev-pki-{label}-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_TEMP_PATH.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
