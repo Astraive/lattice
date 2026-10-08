@@ -2322,6 +2322,33 @@ impl GroupState {
             .map_err(|_| MlsError::OpenMlsFailure)?;
         encode_message(&message, MlsWireKind::Application)
     }
+    /// Encrypts a parent-epoch removal transition and returns evidence binding
+    /// its plaintext, sender, ciphertext, group, and epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors from [`GroupState::encrypt_application_for_pending_removal`].
+    pub fn encrypt_application_for_pending_removal_with_evidence<P: OpenMlsProvider>(
+        &mut self,
+        provider: &P,
+        identity: &DeviceIdentity,
+        credential: &DeviceCredentialInput,
+        prepared: &PreparedRemoval,
+        plaintext: &[u8],
+    ) -> MlsResult<(MlsMessage, MlsApplication)> {
+        let wire = self.encrypt_application_for_pending_removal(
+            provider, identity, credential, prepared, plaintext,
+        )?;
+        let application = MlsApplication {
+            plaintext: plaintext.to_vec(),
+            member_signature_key: Some(identity.public_key()),
+            member_identity_fingerprint: Some(*credential.identity_fingerprint()),
+            ciphertext_sha256: Sha256::digest(wire.as_bytes()).into(),
+            epoch: self.inner.epoch().as_u64(),
+            group_reference: self.group_reference(),
+        };
+        Ok((wire, application))
+    }
 
     /// Encrypts a bounded application payload with the actual `OpenMLS` group state.
     ///
