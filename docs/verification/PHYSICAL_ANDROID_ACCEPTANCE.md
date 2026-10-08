@@ -1,6 +1,6 @@
 # Physical Android acceptance procedure
 
-Status: **not run**. Current workstation has no physical Android device or `adb`; no BLE acceptance is claimed. Use this procedure when hardware is attached. Keep this document as a ready-to-run gate, not evidence.
+Status: **physical acceptance not run**. The configured ADB target list contains two Android emulators and no physical devices. Emulator results are useful for JVM/build behavior but do not satisfy the two-/three-physical-device acceptance gates. Use this procedure when the required hardware is attached; do not claim BLE acceptance from a build or unit test.
 
 The Android CSR/system-root provisioning requirements for the development-only test CA are specified in [development PKI](../development-pki.md); until a disposable system image is prepared, this path remains externally blocked.
 
@@ -17,6 +17,9 @@ Copy this template into a dated evidence file. Leave unknown fields blank and ma
 | Android B model, release/build, Bluetooth chipset | |
 | Device A serial / device B serial | |
 | A and B full identity fingerprints | |
+| Android C model, release/build, Bluetooth chipset | |
+| Device C serial | |
+| C full identity fingerprint | |
 | Space ID / group reference | |
 | Peer pins and runtime permissions | |
 | Wi-Fi and cellular disabled on both | |
@@ -49,18 +52,20 @@ Get-FileHash $apk -Algorithm SHA256
 adb devices -l
 ```
 
-Connect two physical Android devices and confirm both serials are listed as `device`. Install the same APK on each:
+Connect physical Android devices A and B; attach C for the three-device carry scenario. Confirm every serial is listed as `device`. Install the same APK on each attached device:
 
 ```powershell
 $serialA = "replace-with-Android-A-serial"
 $serialB = "replace-with-Android-B-serial"
+$serialC = "replace-with-Android-C-serial"
 adb -s $serialA install -r $apk
 adb -s $serialB install -r $apk
+adb -s $serialC install -r $apk
 ```
 
-Record model, Android release, build ID, Bluetooth chipset, and serial for each device. Run `adb -s $serialA shell getprop ro.product.model`, `adb -s $serialA shell getprop ro.build.version.release`, and `adb -s $serialA shell getprop ro.build.display.id`; repeat for B. Record the chipset from device information when available. Grant permissions through the app's runtime flow, not by seeding app state.
+Record model, Android release, build ID, Bluetooth chipset, and serial for every participating device. Run `adb -s $serialA shell getprop ro.product.model`, `adb -s $serialA shell getprop ro.build.version.release`, and `adb -s $serialA shell getprop ro.build.display.id`; repeat for B and C. Record the chipset from device information when available. Grant permissions through the app's runtime flow, not by seeding app state.
 
-Android supports local one-time KeyPackage publishing, signed invitation creation, and pinned Welcome import. No device is available here to execute or record the physical test. Provision both profiles before the radio run using the in-app flow below; do not seed SQLite rows or count a scan as acceptance.
+Android supports local one-time KeyPackage publishing, signed invitation creation, and pinned Welcome import. No physical device is available here to execute or record the radio test. Provision all profiles before the run using the in-app flow below; do not seed SQLite rows or count a scan as acceptance.
 
 ### Provision shared membership
 
@@ -93,6 +98,26 @@ adb -s $serialA logcat -d -v threadtime > android-a-logcat.txt
 adb -s $serialB logcat -d -v threadtime > android-b-logcat.txt
 ```
 
+## Lifecycle, permissions, and network matrix
+
+Run these transitions on both named devices after the foreground offline exchange. Use a distinct event ID for each queued item. For each row, capture the device serial, Android build, permission/radio state, visible capability/status text, scanner/advertiser/GATT state, outbox state and attempt count before/after, receiver Core result, history count, duplicate count, and timestamps. Mark a row blocked rather than inferring behavior when the required state or diagnostic is unavailable.
+
+| Transition | Procedure | Required result |
+| --- | --- | --- |
+| Foreground → background or locked | Start a foreground Nearby scan/session, queue one event while the peer is unavailable, press Home and lock the screen. | The foreground GATT session stops as documented. The app does not present an active connection or delivery claim. The durable event ID and queued state remain available. |
+| Background/locked → foreground | Unlock and reopen Nearby on both devices, restore permissions if requested, then explicitly re-establish the authenticated peer session. | Capability text reflects the actual permission/radio state. The pending event is retried with the same ID and appears at most once in authorized history after Core accepts it. |
+| Persistent nearby mode | Enable the separate persistent mode, background or lock the device, and capture its notification and radio state; then return to the foreground. | Report only the service's scanning/advertising behavior. This service does not start GATT or exchange messages; it must not imply a connected peer or delivery. |
+| Bluetooth permission revoked/restored | With the app idle and during a foreground attempt, revoke required Bluetooth permissions in Android Settings; capture state, restore them through the runtime flow, and retry. | Revocation stops the affected operation without a crash or stale “available/connected” state. Restoring permissions does not fabricate a peer session; explicitly restart and verify the operation. |
+| Bluetooth off/on | Turn Bluetooth off during scan and during a transfer, then turn it on and return to Nearby. | Radio loss is visible, active work stops safely, and locally committed events remain queued or show the recorded peer-ingress state. After radio recovery, a new authenticated session is required and retries preserve IDs. |
+| Process termination/restart | Queue an event with the peer absent, terminate the app process using the device's app controls, relaunch it, and re-open Nearby. Record the termination method (force-stop is not equivalent to ordinary backgrounding). | The local event and ID survive restart; the UI does not report remote delivery. When a supported transport is explicitly re-established, pending work can retry without duplicate projection. |
+| Network loss/recovery | With Wi-Fi and cellular disabled, queue an event and record the outbox state; restore connectivity without changing the BLE peer state. | Record whether the tested feature uses network transport. Do not credit network restoration as BLE acceptance; there is no delivery claim without the corresponding authenticated peer/Core result. |
+
+| Scenario | Device serial | Event ID | Permission/radio before → after | Outbox state / attempts before → after | UI status | Core/history/duplicate result | Timestamp / evidence path | Pass / blocked |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | | | | | | | |
+
+Pass only when local commits remain durable, capability/UI state tracks real Android permissions and radio state, and no state is described as recipient delivery without the recorded Core evidence. Keep each device's result separate; an emulator run does not fill this physical matrix.
+
 ## Pairwise direct-message test
 
 Run after both Nearby screens establish authenticated BLE sessions and compare the pinned peer identities. A shared Space is not required for this section.
@@ -108,13 +133,15 @@ An invitation still pending user consent is a successful peer-ingress receipt on
 
 ## Three-device carry test
 
-This scenario remains blocked until the courier-copy lifecycle preserves a received event for onward transfer. Do not report it as passed based on two-device forwarding or a local outbox row.
+The software carry path is implemented with durable per-peer retry/acceptance state. Physical three-device carry, restart recovery, and final projection convergence remain unverified.
 
-1. Initialize A, B, and C independently. Establish common Space membership through supported flows and disable Internet on all devices.
-2. Keep C unreachable. Let A author event E and let B receive it. Disconnect A before B meets C.
-3. Connect B to C and verify C accepts the unchanged event ID and original author after signature, MLS, and Space authorization checks.
-4. Restart B during a second queued event, reconnect B/C, and verify convergence without duplicate projection.
-5. Capture the evidence fields above, plus contact schedule and restart times. Mark the scenario blocked until the courier-copy acceptance tests and physical run both pass.
+1. Initialize A, B, and C independently. Establish common Space membership through supported flows. Disable Wi-Fi and cellular on all devices.
+2. Keep C unreachable. Let A author event E and transfer it to B. Record A's event ID and B's Core outcome; B must retain one authorized copy under E's original ID and signature.
+3. Disconnect A. Restart B and confirm E remains in authorized history and its relay eligibility/retry state survives the restart. Do not seed SQLite rows.
+4. Connect B to C. Confirm C accepts the unchanged E (same event ID and original author) after signature, MLS, dependency, and Space authorization checks.
+5. Reconnect A and exercise duplicate delivery of E. Confirm no additional visible copy on A, B, or C and no forwarding loop back to already-accepting peers.
+6. Repeat with a fresh event interrupted during B's restart/transfer path. Verify retry retains the same signed bytes and all three final authorized event/projection sets converge.
+7. Capture the evidence fields above, plus the contact schedule, relay state before/after restart, Core outcomes, event IDs, duplicate counts, and timestamps. Keep the issue open until this physical run passes.
 
 ## Failure criteria
 
