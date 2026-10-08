@@ -1,0 +1,117 @@
+name: Deep verification
+
+on:
+  schedule:
+    - cron: "25 2 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - canonical
+          - identity-bundle
+          - signed-event
+          - relay-envelope
+          - nostr-event
+          - attachment-manifest
+          - sync-plan
+          - nip11
+          - path-upgrade
+          - ble-noise-ingress
+          - space-invite-bootstrap
+          - mls-credential
+          - voice-signaling-sequence
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up nightly Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # current master
+        with:
+          toolchain: nightly
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+      - name: Record source and toolchain metadata
+        shell: bash
+        run: |
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            rustc +nightly --version --verbose
+            cargo --version
+            cargo fuzz --version
+          } | tee "$RUNNER_TEMP/deep-verification-metadata.txt"
+      - name: Run bounded fuzz campaign
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: cargo +nightly fuzz run "$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET" -- -max_total_time=300 -print_final_stats=1
+      - name: Retain corpus, crash artifacts, and metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deep-fuzz-${{ matrix.target }}-${{ github.sha }}
+          path: |
+            fuzz/corpus/${{ matrix.target }}/
+            fuzz/artifacts/${{ matrix.target }}/
+            ${{ runner.temp }}/deep-verification-metadata.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  deterministic:
+    name: Migration, protocol, convergence, and reproducibility checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # current master
+        with:
+          toolchain: 1.95.0
+      - name: Install native Desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Record source and toolchain metadata
+        run: |
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            rustc --version --verbose
+            cargo --version
+          } | tee "$RUNNER_TEMP/deep-verification-metadata.txt"
+      - name: Verify clean-install database migrations
+        run: cargo test --locked -p openmls_sqlite_storage --test migrations
+      - name: Run full workspace tests
+        run: cargo test --workspace --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/deep-verification-tests.log"
+      - name: Run fixed-seed convergence and protocol vectors
+        run: cargo test -p lattice-scenario-tests --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/deep-verification-scenarios.log"
+      - name: Compare clean release CLI builds
+        shell: bash
+        run: |
+          cargo build --release --locked -p lattice-cli --target-dir "$RUNNER_TEMP/repro-a"
+          cargo build --release --locked -p lattice-cli --target-dir "$RUNNER_TEMP/repro-b"
+          sha256sum "$RUNNER_TEMP/repro-a/release/lattice" "$RUNNER_TEMP/repro-b/release/lattice" | tee "$RUNNER_TEMP/reproducibility.sha256"
+          cmp "$RUNNER_TEMP/repro-a/release/lattice" "$RUNNER_TEMP/repro-b/release/lattice"
+      - name: Retain test logs and reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deep-deterministic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/deep-verification-metadata.txt
+            ${{ runner.temp }}/deep-verification-tests.log
+            ${{ runner.temp }}/deep-verification-scenarios.log
+            ${{ runner.temp }}/reproducibility.sha256
+          if-no-files-found: warn
+          retention-days: 30
