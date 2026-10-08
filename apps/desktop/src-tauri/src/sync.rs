@@ -392,6 +392,7 @@ fn pair_membership_events(
         let mut policy_parents = control.parents().iter().filter_map(|parent| {
             events.iter().enumerate().find_map(|(index, (_, event))| {
                 (event.kind() == EventKind::Membership
+                    && event.mls_epoch() == control.mls_epoch()
                     && event.event_id().as_bytes() == parent.as_bytes())
                 .then_some(index)
             })

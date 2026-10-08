@@ -156,6 +156,19 @@ pub struct MobileOutboxEntry {
     /// Local outbox state; this is not proof of destination receipt.
     pub state: MobileOutboxState,
 }
+
+/// An accepted signed event pending authenticated peer forwarding.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileForwardableEventEntry {
+    /// Original immutable event identifier.
+    pub event_id: Vec<u8>,
+    /// Exact original signed event bytes; forwarding never re-signs the event.
+    pub canonical_bytes: Vec<u8>,
+    /// Persisted retry time in Unix milliseconds.
+    pub next_attempt_ms: i64,
+    /// Number of attempts made to this peer.
+    pub attempt_count: u32,
+}
 /// Outcome class from Core's authenticated sync-event acceptance path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum MobileSyncEventState {

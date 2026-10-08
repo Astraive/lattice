@@ -4,12 +4,50 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.lattice_uniffi.MobileForwardableEventEntry
 import uniffi.lattice_uniffi.MobileOutboxEntry
 import uniffi.lattice_uniffi.MobileOutboxState
 import uniffi.lattice_uniffi.MobileSyncEventResult
 import uniffi.lattice_uniffi.MobileSyncEventState
 
 class BleExp0EnvelopeTransportTest {
+    @Test
+    fun outboxPumpSelectsAcceptedRelayEventForAuthenticatedPeer() {
+        val eventId = ByteArray(32) { (it + 1).toByte() }
+        val canonicalBytes = byteArrayOf(0x01, 0x02, 0x03, 0x04)
+        val peerIdentity = ByteArray(32) { 0x11 }
+        val profile = RecordingProfile(eventId, MobileSyncEventState.ACCEPTED, false)
+        profile.forwardableEvents = listOf(
+            MobileForwardableEventEntry(eventId, canonicalBytes, 0, 0u),
+        )
+        val io = RecordingIo()
+        val transport = BleExp0EnvelopeTransport(
+            profile,
+            IdentitySessionCipher(),
+            BleExp0TransferProtocol(1, 247, 41),
+            io,
+        )
+        val pump = BleExp0OutboxPump(profile, transport) { it.contentEquals(eventId) }
+
+        assertTrue(pump.startNextDue(0, 0) { _, now -> now + 100 })
+        assertEquals(peerIdentity.toList(), profile.relayAttemptPeer?.toList())
+        assertEquals(eventId.toList(), profile.relayAttemptEventId?.toList())
+        assertEquals(1, io.controls.size)
+    }
+    @Test
+    fun relayAttemptAndAuthenticatedAcceptanceAreTrackedPerPeer() {
+        val peerIdentity = ByteArray(32) { 0x11 }
+        val fixture = transfer(MobileSyncEventState.ACCEPTED, false, peerIdentity)
+
+        assertEquals(peerIdentity.toList(), fixture.senderProfile.relayAttemptPeer?.toList())
+        assertEquals(peerIdentity.toList(), fixture.senderProfile.relayAcceptedPeer?.toList())
+        assertEquals(fixture.eventId.toList(), fixture.senderProfile.relayAcceptedEventId?.toList())
+        assertEquals(
+            byteArrayOf(0x01, 0x02, 0x03, 0x04).toList(),
+            fixture.receiverProfile.ingressCanonicalBytes?.toList(),
+        )
+        assertEquals(peerIdentity.toList(), fixture.receiverProfile.authenticatedPeer?.toList())
+    }
     @Test
     fun pendingIngressAcknowledgementNeverBecomesDestinationDelivery() {
         val fixture = transferWithIngressResult(MobileSyncEventState.PENDING)
@@ -136,7 +174,11 @@ class BleExp0EnvelopeTransportTest {
 
     private fun transferWithIngressFailure(): Fixture = transfer(MobileSyncEventState.ACCEPTED, true)
 
-    private fun transfer(state: MobileSyncEventState, failIngress: Boolean): Fixture {
+    private fun transfer(
+        state: MobileSyncEventState,
+        failIngress: Boolean,
+        relayPeerIdentity: ByteArray? = null,
+    ): Fixture {
         val eventId = ByteArray(32) { (it + 1).toByte() }
         val envelope = byteArrayOf(0x01, 0x02, 0x03, 0x04)
         val senderProfile = RecordingProfile(eventId, state, false)
@@ -168,6 +210,7 @@ class BleExp0EnvelopeTransportTest {
             retryAtUnixMillis = 100,
             nowUnixMillis = 0,
             nowElapsedMillis = 0,
+            relayPeerIdentity = relayPeerIdentity,
         )
         receiver.receiveControl(senderIo.controls.single(), nowMillis = 1)
         sender.receiveControl(receiverIo.controls.last(), nowMillis = 2)
@@ -233,7 +276,8 @@ class BleExp0EnvelopeTransportTest {
         private val eventId: ByteArray,
         private val resultState: MobileSyncEventState,
         private val failIngress: Boolean,
-    ) : BleExp0IngressProfile {
+    ) : BleExp0OutboxProfile {
+        var forwardableEvents = emptyList<MobileForwardableEventEntry>()
         var state = MobileOutboxState.QUEUED
         var ingressEventId: ByteArray? = null
         var attemptEventId: ByteArray? = null
@@ -241,8 +285,12 @@ class BleExp0EnvelopeTransportTest {
         var directMessageAttemptId: ByteArray? = null
         var directMessageIngressId: ByteArray? = null
         var directMessageIngressCalls = 0
+        var relayAttemptPeer: ByteArray? = null
+        var relayAttemptEventId: ByteArray? = null
+        var relayAcceptedPeer: ByteArray? = null
+        var relayAcceptedEventId: ByteArray? = null
         var authenticatedPeer: ByteArray? = null
-
+        var ingressCanonicalBytes: ByteArray? = null
         override fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long) {
             require(eventId.contentEquals(this.eventId))
             require(nextAttemptMs == 100L)
@@ -255,9 +303,45 @@ class BleExp0EnvelopeTransportTest {
             ingressEventId = eventId.copyOf()
             state = MobileOutboxState.PEER_INGRESS_ACCEPTED
         }
+        override fun outboxPage(afterEventId: ByteArray?, limit: Int): List<MobileOutboxEntry> =
+            emptyList()
 
-        override fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult {
+        override fun directMessageOutboxPage(
+            afterPacketId: ByteArray?,
+            limit: UInt,
+        ): List<uniffi.lattice_uniffi.MobileDirectMessageOutboxEntry> = emptyList()
+
+        override fun forwardableEventPage(
+            peerIdentity: ByteArray,
+            afterEventId: ByteArray?,
+            nowUnixMillis: Long,
+            limit: Int,
+        ): List<MobileForwardableEventEntry> = forwardableEvents
+
+        override fun markRelayEventAttempt(
+            peerIdentity: ByteArray,
+            eventId: ByteArray,
+            nextAttemptMs: Long,
+        ) {
+            require(eventId.contentEquals(this.eventId))
+            require(nextAttemptMs == 100L)
+            relayAttemptPeer = peerIdentity.copyOf()
+            relayAttemptEventId = eventId.copyOf()
+        }
+
+        override fun recordRelayEventPeerAcceptance(peerIdentity: ByteArray, eventId: ByteArray) {
+            require(eventId.contentEquals(this.eventId))
+            relayAcceptedPeer = peerIdentity.copyOf()
+            relayAcceptedEventId = eventId.copyOf()
+        }
+
+        override fun ingestSyncedApplicationEvent(
+            canonicalBytes: ByteArray,
+            authenticatedPeerIdentity: ByteArray,
+        ): MobileSyncEventResult {
             ingressCalls++
+            authenticatedPeer = authenticatedPeerIdentity.copyOf()
+            ingressCanonicalBytes = canonicalBytes.copyOf()
             if (failIngress) throw IllegalStateException("Core rejected unauthorized ingress")
             return MobileSyncEventResult(
                 eventId = eventId.copyOf(),
