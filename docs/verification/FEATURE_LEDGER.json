@@ -5,10 +5,10 @@
     "source_refs": ["refs/remotes/origin/main", "refs/remotes/origin/beta", "checkout base"],
     "snapshot_base_policy": "Indexes the selected refs and prior checkout commit so the snapshot-writing commit is not self-referential; merge commits remain included when reachable.",
     "merge_commits_included": true,
-    "indexed_commit_count": 412,
-    "feature_mapped_commit_count": 412,
+    "indexed_commit_count": 415,
+    "feature_mapped_commit_count": 415,
     "reviewed_commit_count": 225,
-    "heuristic_assignment_count": 187,
+    "heuristic_assignment_count": 190,
     "history_index": "docs/quality/HISTORY_INDEX.csv",
     "commit_feature_map": "docs/quality/COMMIT_FEATURE_MAP.csv",
     "scope_complete": true,
@@ -55,7 +55,7 @@
       "id": "space-membership",
       "capability": "Space policy, permissions, conflicts, membership and MLS transitions",
       "status": "FAILED",
-      "acceptance_boundary": "Core authorization and conflict recovery pass; product member-removal/rekey transitions remain unavailable."
+      "acceptance_boundary": "Core exposes atomic member removal; regression tests prove exact Remove rekey, next-epoch exclusion, and persistence after restart. Product-client removal controls, cross-client conflict recovery/restart, and broader convergence remain unverified."
     },
     {
       "id": "invite-welcome",
