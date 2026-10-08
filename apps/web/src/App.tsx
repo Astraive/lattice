@@ -565,6 +565,7 @@ export default function App() {
                 >
                   {selectedSpace && selectedChannel ? (
                     <WebMessageHistory
+                      key={`${spaceKey(selectedSpace)}:${toHex(selectedChannel.id)}`}
                       channelName={selectedChannel.name}
                       messages={messages.map((message) => ({
                         id: toHex(message.event_id),

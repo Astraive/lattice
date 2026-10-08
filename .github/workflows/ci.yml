@@ -13,42 +13,177 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  workspace:
-    name: Workspace
+  format:
+    name: Formatting
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          fetch-depth: 0
+          bun-version-file: .bun-version
+      - name: Set up Rust formatter
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Check Biome and Rust formatting
+        run: bun run format:check
 
-      - name: Test and validate historical ledger
-        if: github.event_name == 'pull_request'
-        env:
-          LEDGER_HEAD: ${{ format('{0}^', github.event.pull_request.head.sha) }}
-        run: |
-          python3 -m unittest discover -s tooling/quality -p "test_*.py"
-          python3 tooling/quality/history_ledger.py --check --head "$LEDGER_HEAD" --ref refs/remotes/origin/main --ref refs/remotes/origin/beta
+  markdown:
+    name: Markdown docs lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint Markdown
+        run: bunx markdownlint-cli2 "docs/**/*.md" "!docs/spec.md" "!docs/spec2.md" --config .github/markdownlint-ci.jsonc
+
+  js-lint:
+    name: JavaScript and TypeScript lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint workspace packages
+        run: bunx turbo run lint
+
+  js-check:
+    name: JavaScript and WebAssembly checks
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      AR: llvm-ar
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust and WebAssembly target
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+      - name: Install WebAssembly C toolchain
+        run: sudo apt-get update && sudo apt-get install --yes clang llvm
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Check workspace TypeScript and WebAssembly
+        run: bunx turbo run check
+
+  js-test:
+    name: JavaScript tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Run workspace tests
+        run: bunx turbo run test
+
+  rust-check:
+    name: Rust workspace check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf dbus-x11 gnome-keyring
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
-
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.95.0
-          components: clippy,rustfmt
-          targets: wasm32-unknown-unknown
+      - name: Check all workspace targets
+        run: cargo check --workspace --all-targets --locked
 
+  rust-clippy:
+    name: Rust Clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.95.0
+          components: clippy
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  rust-test:
+    name: Rust workspace tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.95.0
+      - name: Run all workspace tests
+        run: cargo test --workspace --locked
+
+  build:
+    name: Desktop and Web asset builds
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      AR: llvm-ar
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust and WebAssembly target
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+      - name: Install WebAssembly C toolchain
+        run: sudo apt-get update && sudo apt-get install --yes clang llvm dbus-x11 gnome-keyring
       - name: Install wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
-
       - name: Install JavaScript dependencies
         run: bun install --frozen-lockfile
 
@@ -64,8 +199,97 @@ jobs:
       - name: Run tests
         run: dbus-run-session -- bash -euo pipefail -c 'eval "$(printf "%s" "lattice-ci-keyring" | gnome-keyring-daemon --unlock --components=secrets)"; bun run test'
 
-      - name: Build web assets
+      - name: Build Desktop and Web assets
         run: bun run build
+
+  ledger:
+    name: Quality ledger
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Test and validate historical ledger
+        run: python3 -m unittest discover -s tooling/quality -p "test_*.py"
+      - name: Validate PR history ledger
+        if: github.event_name == 'pull_request'
+        env:
+          LEDGER_HEAD: ${{ format('{0}^', github.event.pull_request.head.sha) }}
+        run: python3 tooling/quality/history_ledger.py --check --head "$LEDGER_HEAD" --ref refs/remotes/origin/main --ref refs/remotes/origin/beta
+
+
+  security:
+    name: Dependency and repository security
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Install frozen JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Check Bun advisories
+        run: python3 tooling/quality/security_policy.py
+      - name: Check Rust advisories and sources
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+          # hpke-rs-libcrux 0.7.0 locks vulnerable libcrux-kem only as an optional dependency.
+          # Fail if any workspace target or feature activates it; otherwise ignore only its two lockfile advisories.
+          cargo tree --locked --workspace --all-features --target all \
+            -e normal,build,dev -i libcrux-kem > "$RUNNER_TEMP/libcrux-kem-active.txt"
+          if [ -s "$RUNNER_TEMP/libcrux-kem-active.txt" ]; then
+            cat "$RUNNER_TEMP/libcrux-kem-active.txt"
+            echo "libcrux-kem is active; refusing the lockfile-only advisory exception." >&2
+            exit 1
+          fi
+          cargo audit --json \
+            --ignore RUSTSEC-2026-0330 \
+            --ignore RUSTSEC-2026-0331 \
+            > "$RUNNER_TEMP/cargo-audit.json"
+          cargo deny check advisories sources
+      - name: Check third-party Rust licenses
+        run: python3 tooling/quality/cargo_license_policy.py
+      - name: Set up Go for pinned scanners
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
+
+      - name: Install pinned source scanners
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0
+      - name: Scan Gradle lockfiles
+        run: |
+          osv-scanner scan source --lockfile=apps/android/app/gradle.lockfile \
+            --lockfile=packages/ui/android/gradle.lockfile --format json \
+            > "$RUNNER_TEMP/gradle-osv.json"
+      - name: Scan committed history for secrets
+        run: python3 tooling/quality/gitleaks_policy.py
+      - name: Retain redacted security reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: security-reports
+          path: |
+            ${{ runner.temp }}/bun-audit.json
+            ${{ runner.temp }}/cargo-audit.json
+            ${{ runner.temp }}/cargo-license-policy.json
+            ${{ runner.temp }}/gradle-osv.json
+            ${{ runner.temp }}/gitleaks.json
+          if-no-files-found: ignore
 
   android:
     name: Android
@@ -75,44 +299,35 @@ jobs:
         working-directory: apps/android
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Java
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: microsoft
           java-version: "17"
-
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
         with:
           packages: platform-tools
-
       - name: Install Android SDK packages
         run: sdkmanager --channel=3 "platforms;android-37.2" "build-tools;37.0.0" "ndk;28.2.13676358"
-
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.95.0
           targets: aarch64-linux-android,x86_64-linux-android
-
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
-
       - name: Configure Android NDK
         run: |
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
-
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
       - name: Validate Android application
         run: ./gradlew lintDebug testDebugUnitTest assembleDebug
-
       - name: Upload Android validation reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: android-validation-reports
@@ -120,12 +335,148 @@ jobs:
             apps/android/app/build/reports/
             apps/android/app/build/test-results/testDebugUnitTest/
           if-no-files-found: warn
-
       - name: Upload Android debug APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: success()
         with:
           name: android-debug-apk
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+  desktop-cli-platforms:
+    name: Supported Desktop and CLI hosts
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: 1.95.0
+      - name: Install Linux Desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Record toolchain versions
+        run: |
+          rustc --version --verbose
+          cargo --version
+          bun --version
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+      - name: Build release CLI
+        run: cargo build --release --locked -p lattice-cli
+      - name: Build Desktop release executable without signing/bundling
+        run: bunx tauri build --no-bundle
+        working-directory: apps/desktop
+      - name: Set up Go for SBOM tooling
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
+      - name: Generate CycloneDX SBOM for release evidence
+        shell: bash
+        run: |
+          go run github.com/anchore/syft/cmd/syft@v1.41.0 dir:. \
+            --source-name lattice --source-version "$GITHUB_SHA" \
+            --output "cyclonedx-json=$RUNNER_TEMP/lattice-sbom.json"
+      - name: Hash release binaries
+        if: runner.os != 'Windows'
+        run: sha256sum target/release/lattice target/release/lattice-desktop
+      - name: Hash release binaries on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem target/release/lattice.exe,target/release/lattice-desktop.exe | Get-FileHash -Algorithm SHA256
+      - name: Upload unsigned CLI and Desktop binaries
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unsigned-desktop-cli-${{ runner.os }}
+          path: |
+            target/release/lattice
+            target/release/lattice-desktop
+            ${{ runner.temp }}/lattice-sbom.json
+          if-no-files-found: error
+      - name: Upload unsigned CLI and Desktop binaries on Windows
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unsigned-desktop-cli-${{ runner.os }}
+          path: |
+            target/release/lattice.exe
+            target/release/lattice-desktop.exe
+            ${{ runner.temp }}/lattice-sbom.json
+          if-no-files-found: error
+
+
+  required:
+    name: CI required
+    if: always()
+    needs:
+      - format
+      - markdown
+      - js-lint
+      - js-check
+      - js-test
+      - rust-check
+      - rust-clippy
+      - rust-test
+      - build
+      - ledger
+      - android
+      - desktop-cli-platforms
+      - security
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every gate to succeed
+        env:
+          FORMAT_RESULT: ${{ needs.format.result }}
+          MARKDOWN_RESULT: ${{ needs.markdown.result }}
+          JS_LINT_RESULT: ${{ needs.js-lint.result }}
+          JS_CHECK_RESULT: ${{ needs.js-check.result }}
+          JS_TEST_RESULT: ${{ needs.js-test.result }}
+          RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
+          RUST_CLIPPY_RESULT: ${{ needs.rust-clippy.result }}
+          RUST_TEST_RESULT: ${{ needs.rust-test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          LEDGER_RESULT: ${{ needs.ledger.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          DESKTOP_CLI_PLATFORMS_RESULT: ${{ needs.desktop-cli-platforms.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          failed=0
+          for gate in \
+            "format:$FORMAT_RESULT" \
+            "markdown:$MARKDOWN_RESULT" \
+            "js-lint:$JS_LINT_RESULT" \
+            "js-check:$JS_CHECK_RESULT" \
+            "js-test:$JS_TEST_RESULT" \
+            "rust-check:$RUST_CHECK_RESULT" \
+            "rust-clippy:$RUST_CLIPPY_RESULT" \
+            "rust-test:$RUST_TEST_RESULT" \
+            "build:$BUILD_RESULT" \
+            "ledger:$LEDGER_RESULT" \
+            "android:$ANDROID_RESULT" \
+            "desktop-cli-platforms:$DESKTOP_CLI_PLATFORMS_RESULT" \
+            "security:$SECURITY_RESULT"; do
+            name="${gate%%:*}"
+            result="${gate#*:}"
+            if [[ "$result" != success ]]; then
+              echo "::error::$name gate finished with '$result' (expected success)"
+              failed=1
+            fi
+          done
+          exit "$failed"
