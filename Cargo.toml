@@ -10,7 +10,7 @@ members = [
     "crates/lattice-identity",
     "crates/lattice-mesh",
     "crates/lattice-mls",
-    "crates/openmls-sqlite-storage",
+    "tooling/mesh-simulator",
     "crates/lattice-node",
     "crates/lattice-platform",
     "crates/lattice-protocol",

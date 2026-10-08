@@ -5,10 +5,10 @@
     "source_refs": ["refs/remotes/origin/main", "refs/remotes/origin/beta", "checkout base"],
     "snapshot_base_policy": "Indexes the selected refs and prior checkout commit so the snapshot-writing commit is not self-referential; merge commits remain included when reachable.",
     "merge_commits_included": true,
-    "indexed_commit_count": 416,
-    "feature_mapped_commit_count": 416,
+    "indexed_commit_count": 420,
+    "feature_mapped_commit_count": 420,
     "reviewed_commit_count": 225,
-    "heuristic_assignment_count": 191,
+    "heuristic_assignment_count": 195,
     "history_index": "docs/quality/HISTORY_INDEX.csv",
     "commit_feature_map": "docs/quality/COMMIT_FEATURE_MAP.csv",
     "scope_complete": true,
@@ -350,12 +350,9 @@
       "tests/mesh/.gitkeep",
       "tests/mobile/.gitkeep",
       "tests/routing/.gitkeep",
-      "tests/security/.gitkeep",
-      "tooling/benchmarks/.gitkeep",
-      "tooling/network-chaos/.gitkeep",
-      "tooling/packet-inspector/.gitkeep"
+      "tests/security/.gitkeep"
     ],
-    "tracked_gitkeep_count": 9,
+    "tracked_gitkeep_count": 6,
     "explicit_stub_marker_scan": {
       "scanned_source_extensions": [".rs", ".kt", ".ts", ".tsx", ".swift", ".py", ".ps1"],
       "patterns": ["TODO: implement", "todo!(", "unimplemented!(", "#[allow(dead_code)]"],
