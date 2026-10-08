@@ -1,0 +1,21 @@
+; Candidate v1 opaque delivery-envelope CBOR schema.
+; Semantic, canonical-encoding, and aggregate-size constraints are listed in README.md.
+
+envelope-id = bstr .size 32
+event-id = bstr .size 32
+; Individual event bytes may be 1 MiB; the complete encoded envelope remains separately capped at 1 MiB.
+signed-event-bytes = bstr .size (1..1048576)
+delivery-class = 0..3
+budget = 0..64
+
+delivery-envelope = {
+  0: 1,
+  1: envelope-id,
+  2: event-id,
+  3: delivery-class,
+  4: uint .gt 0,
+  5: uint .gt 0,
+  6: budget,
+  7: budget,
+  8: signed-event-bytes
+}

@@ -41,5 +41,9 @@ sha2 = "=0.10.9"
 rcgen = { version = "=0.14.10", features = ["x509-parser"] }
 
 
+[[test]]
+name = "cli_identity_restart"
+path = "../../tests/e2e/cli_identity_restart.rs"
+
 [lints]
 workspace = true
