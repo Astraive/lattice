@@ -7,8 +7,8 @@ use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use directories::BaseDirs;
 use fs4::fs_std::FileExt;
 use lattice_identity::{PrivateKeyProtectionError, PrivateKeyProtector};
@@ -319,7 +319,8 @@ impl OsKeyringProtector {
             .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?;
         let encrypted = cipher
             .encrypt(
-                Nonce::from_slice(&nonce[..]),
+                TryFrom::try_from(&nonce[..])
+                    .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?,
                 Payload {
                     msg: private_material,
                     aad: &aad,
@@ -367,7 +368,8 @@ impl OsKeyringProtector {
             .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?;
         let plaintext = cipher
             .decrypt(
-                Nonce::from_slice(&ciphertext[1..=NONCE_BYTES]),
+                TryFrom::try_from(&ciphertext[1..=NONCE_BYTES])
+                    .map_err(|_| OsKeyringProtectionError::InvalidFormat)?,
                 Payload {
                     msg: &ciphertext[1 + NONCE_BYTES..],
                     aad: &aad,
