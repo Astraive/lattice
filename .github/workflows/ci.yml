@@ -227,7 +227,19 @@ jobs:
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
           cargo install cargo-deny --version 0.20.2 --locked
-          cargo audit --json > "$RUNNER_TEMP/cargo-audit.json"
+          # hpke-rs-libcrux 0.7.0 locks vulnerable libcrux-kem only as an optional dependency.
+          # Fail if any workspace target or feature activates it; otherwise ignore only its two lockfile advisories.
+          cargo tree --locked --workspace --all-features --target all \
+            -e normal,build,dev -i libcrux-kem > "$RUNNER_TEMP/libcrux-kem-active.txt"
+          if [ -s "$RUNNER_TEMP/libcrux-kem-active.txt" ]; then
+            cat "$RUNNER_TEMP/libcrux-kem-active.txt"
+            echo "libcrux-kem is active; refusing the lockfile-only advisory exception." >&2
+            exit 1
+          fi
+          cargo audit --json \
+            --ignore RUSTSEC-2026-0330 \
+            --ignore RUSTSEC-2026-0331 \
+            > "$RUNNER_TEMP/cargo-audit.json"
           cargo deny check advisories sources
       - name: Check third-party Rust licenses
         run: python3 tooling/quality/cargo_license_policy.py
