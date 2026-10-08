@@ -399,4 +399,9 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 398,891b83e,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 399,7b5d703,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 400,26138ca,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-401,124c702,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+401,d53c0fd,Android client; Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+402,29d89ab,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+403,e73c81c,Android client; Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+404,b7b2994,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+405,e7548c0,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+406,9b61318,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
