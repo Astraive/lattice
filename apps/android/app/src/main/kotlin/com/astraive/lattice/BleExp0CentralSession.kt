@@ -67,6 +67,8 @@ internal class BleExp0CentralSession(
         val result = adapter.connect(device)
         if (result != BleGattStatus.STARTED) {
             fail("GATT connection could not start ($result)", retryable = result == BleGattStatus.FAILED)
+        } else {
+            timeoutHandler.postDelayed(timeoutTask, TIMER_INTERVAL_MS)
         }
         return result
     }
