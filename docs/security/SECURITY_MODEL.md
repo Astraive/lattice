@@ -39,6 +39,8 @@ Reject duplicate CBOR keys, noncanonical signed bytes, oversized allocation clai
 
 Before stable v1: public protocol vectors; parser fuzzing; MLS/key lifecycle review; multi-device secure-storage tests; BLE and relay packet captures; key/reset/recovery review; threat model reconciled with implementation and UI copy; high/critical issues closed. Reference [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420) and [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750).
 
+Supply-chain CI accepts only the SPDX identifiers in the root `deny.toml` allowlist, plus exact package/version/license exceptions in [`tooling/quality/security-exceptions.json`](../../tooling/quality/security-exceptions.json). Each exception requires a maintainer, reason, tracking issue and expiry; unmatched or expired entries fail closed. Issue #37's approved Cargo exceptions expire on 2026-11-06 and must be reviewed or removed before then.
+
 ## Trust by protocol phase
 
 | Phase | Peer may learn | Check before advancing | Remaining exposure |
