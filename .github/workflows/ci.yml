@@ -252,6 +252,72 @@ jobs:
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+  desktop-cli-platforms:
+    name: Supported Desktop and CLI hosts
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Install Linux Desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+      - name: Record toolchain versions
+        run: |
+          rustc --version --verbose
+          cargo --version
+          bun --version
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+      - name: Build release CLI
+        run: cargo build --release --locked -p lattice-cli
+      - name: Build Desktop release executable without signing/bundling
+        run: bunx tauri build --no-bundle
+        working-directory: apps/desktop
+      - name: Hash release binaries
+        if: runner.os != 'Windows'
+        run: sha256sum target/release/lattice target/release/lattice-desktop
+      - name: Hash release binaries on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem target/release/lattice.exe,target/release/lattice-desktop.exe | Get-FileHash -Algorithm SHA256
+      - name: Upload unsigned CLI and Desktop binaries
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-desktop-cli-${{ runner.os }}
+          path: |
+            target/release/lattice
+            target/release/lattice-desktop
+          if-no-files-found: error
+      - name: Upload unsigned CLI and Desktop binaries on Windows
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-desktop-cli-${{ runner.os }}
+          path: |
+            target/release/lattice.exe
+            target/release/lattice-desktop.exe
+          if-no-files-found: error
+
+
   required:
     name: CI required
     if: always()
@@ -267,6 +333,7 @@ jobs:
       - build
       - ledger
       - android
+      - desktop-cli-platforms
     runs-on: ubuntu-24.04
     steps:
       - name: Require every gate to succeed
@@ -282,6 +349,7 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           LEDGER_RESULT: ${{ needs.ledger.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          DESKTOP_CLI_PLATFORMS_RESULT: ${{ needs.desktop-cli-platforms.result }}
         run: |
           failed=0
           for gate in \
@@ -295,7 +363,8 @@ jobs:
             "rust-test:$RUST_TEST_RESULT" \
             "build:$BUILD_RESULT" \
             "ledger:$LEDGER_RESULT" \
-            "android:$ANDROID_RESULT"; do
+            "android:$ANDROID_RESULT" \
+            "desktop-cli-platforms:$DESKTOP_CLI_PLATFORMS_RESULT"; do
             name="${gate%%:*}"
             result="${gate#*:}"
             if [[ "$result" != success ]]; then
