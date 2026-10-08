@@ -52,13 +52,17 @@ jobs:
             cargo --version
             cargo fuzz --version
           } | tee "$RUNNER_TEMP/deep-verification-metadata.txt"
+      - name: Prepare corpus and artifact directories
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: mkdir -p "fuzz/corpus/$FUZZ_TARGET" "fuzz/artifacts/$FUZZ_TARGET"
       - name: Run bounded fuzz campaign
         env:
           FUZZ_TARGET: ${{ matrix.target }}
         run: cargo +nightly fuzz run "$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET" -- -max_total_time=300 -print_final_stats=1
       - name: Retain corpus, crash artifacts, and metadata
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deep-fuzz-${{ matrix.target }}-${{ github.sha }}
           path: |
@@ -105,7 +109,7 @@ jobs:
           cmp "$RUNNER_TEMP/repro-a/release/lattice" "$RUNNER_TEMP/repro-b/release/lattice"
       - name: Retain test logs and reproducibility evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deep-deterministic-${{ github.sha }}
           path: |
@@ -115,3 +119,18 @@ jobs:
             ${{ runner.temp }}/reproducibility.sha256
           if-no-files-found: warn
           retention-days: 30
+  external-environment-status:
+    name: External acceptance status (not a test)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report physical and external prerequisites
+        shell: bash
+        run: |
+          {
+            echo "## External acceptance status — not covered by this hosted run"
+            echo
+            echo "- **BLOCKED:** Physical Android BLE acceptance. This workflow has no named physical-device runner; two/three-device radio scenarios were not run."
+            echo "- **UNAVAILABLE:** Live external relay/infrastructure acceptance. This workflow does not provision independent relay endpoints or an external-network test environment; those scenarios were not run."
+            echo
+            echo "These statuses are not passes and do not satisfy product or release acceptance. A successful hosted Deep run covers only its listed hosted jobs."
+          } | tee -a "$GITHUB_STEP_SUMMARY"

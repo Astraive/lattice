@@ -380,21 +380,23 @@ ordinal,commit_short_hash,feature_assignments,subject_and_path_rationale,assignm
 379,661e9bd,Desktop client,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 380,f02be60,"CLI and node; Core, Spaces and MLS; Desktop client; Node and sync; Protocol events and vectors; Relay; Storage and outbox",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
 381,5f4a117,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-382,891b83e,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-383,7b5d703,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-384,d30cd5d,CLI and node; Development tooling; Identity and trust; MLS and Spaces; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-385,819da81,CLI and node; Identity and trust,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-386,0d88fbf,CLI and node; Development tooling; Identity and trust; MLS and Spaces; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-387,a8fdffd,Android client; Cryptography and trust; Identity and trust; Protocol and vectors; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-388,55f8626,Android client; Cryptography and trust; Identity and trust; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-389,032ed3b,Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-390,7089e5f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-391,47ba4fc,Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-392,85b91df,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-393,fd6a73f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-394,10b01c5,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-395,4b9caf4,Android client; Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-396,f7e3d04,Android client; Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-397,7bae986,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-398,3777b78,"CLI and node; Node and sync; Requirements and architecture; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
-399,6cdfcc1,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+382,d30cd5d,CLI and node; Development tooling; Identity and trust; MLS and Spaces; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+383,819da81,CLI and node; Identity and trust,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+384,0d88fbf,CLI and node; Development tooling; Identity and trust; MLS and Spaces; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+385,a8fdffd,Android client; Cryptography and trust; Identity and trust; Protocol and vectors; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+386,55f8626,Android client; Cryptography and trust; Identity and trust; Protocol specifications and vectors; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+387,032ed3b,Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+388,7089e5f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+389,47ba4fc,Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+390,85b91df,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+391,fd6a73f,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+392,10b01c5,"Placeholder inventory and scaffold debt; Protocol and vectors; Requirements and architecture; Sync, routing and transport; Verification and tests",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+393,4b9caf4,Android client; Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+394,f7e3d04,Android client; Build and CI; Development tooling; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+395,7bae986,Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+396,3777b78,"CLI and node; Node and sync; Requirements and architecture; Sync, routing and transport",Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+397,6cdfcc1,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+398,891b83e,Repository maintenance,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+399,7b5d703,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+400,26138ca,Build and CI; Requirements and architecture,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
+401,124c702,Build and CI,Subject/path heuristic; capability status and runtime evidence are in FEATURE_LEDGER.json.,subject-path heuristic
