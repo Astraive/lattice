@@ -1173,13 +1173,13 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(`
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(`ptr`: Pointer,`exportId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
-fun uniffi_lattice_uniffi_fn_method_mobileclient_forwardable_event_page(`ptr`: Pointer,`peerIdentity`: RustBuffer.ByValue,`afterEventId`: RustBuffer.ByValue,`nowMs`: Long,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_lattice_uniffi_fn_method_mobileclient_forwardable_event_page(`ptr`: Pointer,`peerIdentity`: RustBuffer.ByValue,`afterEventId`: RustBuffer.ByValue,`nowMs`: Long,`limit`: Int,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(`ptr`: Pointer,`authenticatedPeerIdentity`: RustBuffer.ByValue,`envelopeBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(`ptr`: Pointer,`canonicalBytes`: RustBuffer.ByValue,`authenticatedPeerIdentity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(`ptr`: Pointer,`canonicalBytes`: RustBuffer.ByValue,`authenticatedPeerIdentity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(`ptr`: Pointer,`bootstrapPackage`: RustBuffer.ByValue,`expectedInviterFingerprint`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1191,7 +1191,7 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(`pt
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_relay_event_attempt(`ptr`: Pointer,`peerIdentity`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_relay_event_attempt(`ptr`: Pointer,`peerIdentity`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1231,7 +1231,7 @@ fun uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingr
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Pointer,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_lattice_uniffi_fn_method_mobileclient_record_relay_event_peer_acceptance(`ptr`: Pointer,`peerIdentity`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_lattice_uniffi_fn_method_mobileclient_record_relay_event_peer_acceptance(`ptr`: Pointer,`peerIdentity`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Pointer,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -2962,7 +2962,7 @@ public interface MobileClientInterface {
      * or unavailable persisted relay state.
      */
     fun `forwardableEventPage`(`peerIdentity`: kotlin.ByteArray, `afterEventId`: kotlin.ByteArray?, `nowMs`: kotlin.Long, `limit`: kotlin.Int): List<MobileForwardableEventEntry>
-    
+
     /**
      * Returns the non-secret public identity information for native UI.
      *
@@ -3072,7 +3072,7 @@ public interface MobileClientInterface {
      * a rejected relay-state transition.
      */
     fun `markRelayEventAttempt`(`peerIdentity`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
-    
+
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -3323,7 +3323,7 @@ public interface MobileClientInterface {
      * storage failure.
      */
     fun `recordRelayEventPeerAcceptance`(`peerIdentity`: kotlin.ByteArray, `eventId`: kotlin.ByteArray)
-    
+
     /**
      * Restores a named local generation, then creates its authorized one-member recovery generation.
      *
@@ -3869,9 +3869,9 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
     }
     )
     }
-    
 
-    
+
+
     /**
      * Returns the non-secret public identity information for native UI.
      *
@@ -4067,17 +4067,17 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
      * a rejected relay-state transition.
      */
     @Throws(MobileException::class)override fun `markRelayEventAttempt`(`peerIdentity`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
-        = 
+        =
     callWithPointer {
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_mark_relay_event_attempt(
         it, FfiConverterByteArray.lower(`peerIdentity`),FfiConverterByteArray.lower(`eventId`),FfiConverterLong.lower(`nextAttemptMs`),_status)
 }
     }
-    
-    
 
-    
+
+
+
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -4535,17 +4535,17 @@ open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
      * storage failure.
      */
     @Throws(MobileException::class)override fun `recordRelayEventPeerAcceptance`(`peerIdentity`: kotlin.ByteArray, `eventId`: kotlin.ByteArray)
-        = 
+        =
     callWithPointer {
     uniffiRustCallWithError(MobileException) { _status ->
     UniffiLib.INSTANCE.uniffi_lattice_uniffi_fn_method_mobileclient_record_relay_event_peer_acceptance(
         it, FfiConverterByteArray.lower(`peerIdentity`),FfiConverterByteArray.lower(`eventId`),_status)
 }
     }
-    
-    
 
-    
+
+
+
     /**
      * Restores a named local generation, then creates its authorized one-member recovery generation.
      *
@@ -6163,21 +6163,21 @@ data class MobileForwardableEventEntry (
     /**
      * Original immutable event identifier.
      */
-    var `eventId`: kotlin.ByteArray, 
+    var `eventId`: kotlin.ByteArray,
     /**
      * Exact original signed event bytes; forwarding never re-signs the event.
      */
-    var `canonicalBytes`: kotlin.ByteArray, 
+    var `canonicalBytes`: kotlin.ByteArray,
     /**
      * Persisted retry time in Unix milliseconds.
      */
-    var `nextAttemptMs`: kotlin.Long, 
+    var `nextAttemptMs`: kotlin.Long,
     /**
      * Number of attempts made to this peer.
      */
     var `attemptCount`: kotlin.UInt
 ) {
-    
+
     companion object
 }
 
