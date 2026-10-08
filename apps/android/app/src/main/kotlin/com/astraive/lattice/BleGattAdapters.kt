@@ -123,7 +123,7 @@ internal object BleGattPermissionPolicy {
 }
 
 internal interface BleGattCentralListener {
-    fun onConnectionChanged(connected: Boolean)
+    fun onConnectionChanged(connected: Boolean, status: Int)
     fun onMtuChanged(mtu: Int, status: Int)
     fun onServicesDiscovered(status: Int, services: List<BluetoothGattService>)
     fun onCharacteristicChanged(characteristic: UUID, value: ByteArray)
@@ -345,7 +345,7 @@ internal class BleGattCentralAdapter(
                     // The platform may already have closed this handle.
                 }
             }
-            listener.onConnectionChanged(connected)
+            listener.onConnectionChanged(connected, status)
             if (status != BluetoothGatt.GATT_SUCCESS) listener.onFailure(status)
         }
 
