@@ -1,0 +1,48 @@
+{
+  "bun": {
+    "required": [
+      "@lattice/desktop",
+      "@lattice/protocol-inspector",
+      "@lattice/theme",
+      "@lattice/ui-desktop",
+      "@lattice/ui-shared",
+      "@lattice/ui-web",
+      "@lattice/web"
+    ],
+    "intentional_no_tests": ["@lattice/config"]
+  },
+  "rust": {
+    "required": [
+      "lattice-cli",
+      "lattice-core",
+      "lattice-crypto",
+      "lattice-desktop",
+      "lattice-dev-pki",
+      "lattice-events",
+      "lattice-files",
+      "lattice-identity",
+      "lattice-mesh",
+      "lattice-mesh-simulator",
+      "lattice-mls",
+      "lattice-node",
+      "lattice-platform",
+      "lattice-protocol",
+      "lattice-relay",
+      "lattice-router",
+      "lattice-scenario-tests",
+      "lattice-storage",
+      "lattice-sync",
+      "lattice-testkit",
+      "lattice-transport",
+      "lattice-uniffi",
+      "lattice-voice",
+      "lattice-web-wasm",
+      "openmls_sqlite_storage"
+    ],
+    "intentional_no_tests": []
+  },
+  "gradle": {
+    "required": [":app:testDebugUnitTest"],
+    "intentional_no_tests": [":ui-android:testDebugUnitTest"]
+  }
+}
