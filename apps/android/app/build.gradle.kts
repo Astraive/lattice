@@ -40,7 +40,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation(project(":ui-android"))
 
-    implementation("net.java.dev.jna:jna:5.17.0@aar")
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
