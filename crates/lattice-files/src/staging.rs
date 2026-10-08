@@ -6,7 +6,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use fs4::fs_std::FileExt;
+use fs4::{FileExt, TryLockError};
 
 use crate::{AttachmentError, AttachmentManifest, AttachmentTransferId, MAX_FILE_SIZE};
 
@@ -189,8 +189,10 @@ impl AttachmentStagingStore {
                 return Err(error.into());
             }
         };
-        if !file.try_lock_exclusive().map_err(AttachmentError::Io)? {
-            return Err(AttachmentError::StagingBusy);
+        match FileExt::try_lock(&file) {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(AttachmentError::StagingBusy),
+            Err(error) => return Err(AttachmentError::Io(error.into())),
         }
         let file_length = file.metadata()?.len();
         if file_length > manifest.file_size {
@@ -238,11 +240,12 @@ impl AttachmentStagingStore {
                 return Err(AttachmentError::StagingMetadataInvalid);
             }
             let file = OpenOptions::new().read(true).write(true).open(&data_path)?;
-            if !file.try_lock_exclusive()? {
-                return Err(AttachmentError::StagingBusy);
+            match FileExt::try_lock(&file) {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => return Err(AttachmentError::StagingBusy),
+                Err(error) => return Err(AttachmentError::Io(error.into())),
             }
-            file.unlock()?;
-            drop(file);
+            FileExt::unlock(&file)?;
             fs::remove_file(&data_path)?;
             removed = true;
         }
@@ -275,8 +278,10 @@ impl AttachmentStagingStore {
             options.mode(0o600);
         }
         let lock = options.open(path)?;
-        if !lock.try_lock_exclusive()? {
-            return Err(AttachmentError::StagingBusy);
+        match FileExt::try_lock(&lock) {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(AttachmentError::StagingBusy),
+            Err(error) => return Err(AttachmentError::Io(error.into())),
         }
         Ok(lock)
     }
@@ -530,11 +535,12 @@ fn remove_if_unlocked(path: &Path) -> Result<bool, AttachmentError> {
         return Ok(true);
     }
     let file = OpenOptions::new().read(true).write(true).open(path)?;
-    if !file.try_lock_exclusive()? {
-        return Ok(false);
+    match FileExt::try_lock(&file) {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Ok(false),
+        Err(error) => return Err(AttachmentError::Io(error.into())),
     }
-    file.unlock()?;
-    drop(file);
+    FileExt::unlock(&file)?;
     fs::remove_file(path)?;
     Ok(true)
 }
