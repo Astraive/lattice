@@ -186,6 +186,48 @@ impl CreatedSpaceInvite {
     }
 }
 
+/// Durable event identifiers and epochs for one committed Space member removal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CreatedSpaceMemberRemoval {
+    target_fingerprint: [u8; 32],
+    control_event_id: [u8; 32],
+    transition_event_id: [u8; 32],
+    parent_epoch: u64,
+    new_epoch: u64,
+}
+
+impl CreatedSpaceMemberRemoval {
+    /// Returns the removed device's full identity fingerprint.
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> &[u8; 32] {
+        &self.target_fingerprint
+    }
+
+    /// Returns the persisted MLS Remove control event identifier.
+    #[must_use]
+    pub const fn control_event_id(&self) -> &[u8; 32] {
+        &self.control_event_id
+    }
+
+    /// Returns the persisted Space policy transition event identifier.
+    #[must_use]
+    pub const fn transition_event_id(&self) -> &[u8; 32] {
+        &self.transition_event_id
+    }
+
+    /// Returns the MLS epoch used to authorize the removal.
+    #[must_use]
+    pub const fn parent_epoch(&self) -> u64 {
+        self.parent_epoch
+    }
+
+    /// Returns the MLS epoch after the exact Remove Commit was merged.
+    #[must_use]
+    pub const fn new_epoch(&self) -> u64 {
+        self.new_epoch
+    }
+}
+
 /// Event identifier for one locally authorized text message in the queued outbox.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueuedMessage {
@@ -3931,6 +3973,230 @@ impl Client {
             token,
             welcome_bootstrap,
         })
+    }
+
+    /// Removes one active Space member with an authorized, persisted MLS
+    /// Commit and matching policy transition.
+    ///
+    /// The MLS epoch, control event, policy transition, replay snapshot, and
+    /// local reducer are committed in one storage transaction. A conflicted
+    /// generation or unauthorized removal produces no outbox events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the credential is invalid, the generation is
+    /// blocked, the target is not removable, policy denies removal, event
+    /// construction fails, or the atomic MLS/store update cannot be committed.
+    #[allow(clippy::too_many_lines)] // Membership control, transition, rekey, and replay evidence are atomic.
+    pub fn remove_space_member(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential: &DeviceCredentialInput,
+        target_fingerprint: [u8; 32],
+    ) -> Result<CreatedSpaceMemberRemoval, CoreError> {
+        self.ensure_credential_trust_policy(credential)?;
+        let policy = created
+            .reducer
+            .policy()
+            .ok_or(CoreError::SpaceMembershipNotApplied(
+                space::ApplyResult::Rejected(space::RejectReason::MissingPolicy),
+            ))?;
+        self.ensure_space_generation_mutable(&policy.space_id, &policy.group_reference)?;
+        let (control_parents, control_lamport) = resolve_policy_parents(&self.store, policy)?;
+        let existing_snapshots = self.store.list_space_membership_transition_snapshots(
+            &created.space_id,
+            &created.group_reference,
+        )?;
+        let replay_base_revision = match existing_snapshots.last() {
+            Some(snapshot) => snapshot.policy_revision,
+            None => created
+                .reducer
+                .policy_replay_base_revision()
+                .map_err(|reason| {
+                    CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
+                })?,
+        };
+        let expected_space_id = created.space_id;
+        let expected_group_reference = created.group_reference;
+        let group_id = created.group_id.clone();
+        let identity_fingerprint = self.identity.fingerprint();
+        let credential_trust_policy = credential.trust_policy().clone();
+        let credential = credential.clone();
+        let reducer = created.reducer.clone();
+        let wall_time_hint = current_wall_time_hint()?;
+        let (staged_reducer, control_event_id, transition_event_id, parent_epoch, new_epoch) = self
+            .with_mls_transaction(move |identity, provider, transaction| {
+                let mut staged_reducer = reducer;
+                if identity.fingerprint() != identity_fingerprint {
+                    return Err(CoreError::SpaceCredentialInvalid);
+                }
+                let mut group = GroupState::load_with_trust_policy(
+                    provider,
+                    &group_id,
+                    &credential_trust_policy,
+                )?;
+                if group.group_reference() != expected_group_reference {
+                    return Err(CoreError::SpaceMembershipNotApplied(
+                        space::ApplyResult::Rejected(space::RejectReason::WrongGeneration),
+                    ));
+                }
+                let prepared =
+                    group.prepare_remove(provider, identity, &credential, &target_fingerprint)?;
+                let parent_epoch = prepared.parent_epoch();
+                let target = *prepared.removed_member_identity_fingerprint();
+                let first_sequence =
+                    Store::next_author_sequence_in_transaction(transaction, &identity_fingerprint)?;
+                let control_event = VerifiedSignatureOnlyEvent::create(
+                    identity,
+                    EventDraft {
+                        space_id: expected_space_id,
+                        channel_id: None,
+                        author_sequence: first_sequence,
+                        lamport: control_lamport,
+                        wall_time_hint,
+                        parents: control_parents,
+                        kind: EventKind::MlsControl,
+                        protected_body: prepared.commit().as_bytes().to_vec(),
+                        mls_group_reference: expected_group_reference,
+                        mls_epoch: parent_epoch,
+                    },
+                )?;
+                staged_reducer
+                    .observe_persisted_control_event(
+                        &control_event,
+                        lattice_mls::api::MlsMembershipAction::Remove,
+                        target,
+                        None,
+                    )
+                    .map_err(CoreError::SpaceControlRejected)?;
+                let policy_events = staged_reducer
+                    .policy_replay_events_after(replay_base_revision)
+                    .map_err(|reason| {
+                        CoreError::SpaceMembershipNotApplied(space::ApplyResult::Rejected(reason))
+                    })?;
+                let control_event_id = *control_event.event_id().as_bytes();
+                let transition_plaintext = encode_canonical(&Value::Map(vec![
+                    (0, Value::Unsigned(1)),
+                    (1, Value::Unsigned(6)),
+                    (2, Value::Unsigned(1)),
+                    (3, Value::Bytes(target.to_vec())),
+                    (4, Value::Null),
+                    (5, Value::Bytes(control_event_id.to_vec())),
+                ]))?;
+                let (transition_ciphertext, transition_application) = group
+                    .encrypt_application_for_pending_removal_with_evidence(
+                        provider,
+                        identity,
+                        &credential,
+                        &prepared,
+                        &transition_plaintext,
+                    )?;
+                let transition_event = VerifiedSignatureOnlyEvent::create(
+                    identity,
+                    EventDraft {
+                        space_id: expected_space_id,
+                        channel_id: None,
+                        author_sequence: first_sequence
+                            .checked_add(1)
+                            .ok_or(lattice_storage::StoreError::SequenceExhausted)?,
+                        lamport: control_lamport
+                            .checked_add(1)
+                            .ok_or(CoreError::SpaceLamportExhausted)?,
+                        wall_time_hint,
+                        parents: vec![lattice_protocol::EventId::from_bytes(control_event_id)],
+                        kind: EventKind::Membership,
+                        protected_body: transition_ciphertext.as_bytes().to_vec(),
+                        mls_group_reference: expected_group_reference,
+                        mls_epoch: parent_epoch,
+                    },
+                )?;
+                let bound_transition =
+                    bind_mls_application(transition_event, transition_application)?;
+                let transition_result = staged_reducer.apply(&bound_transition, None);
+                if !matches!(transition_result, space::ApplyResult::Applied { .. }) {
+                    return Err(CoreError::SpaceMembershipNotApplied(transition_result));
+                }
+                commit_authored_event_to_outbox(transaction, &control_event)?;
+                commit_authored_event_to_outbox(transaction, bound_transition.event())?;
+                group.accept_prepared_remove(provider, &prepared, prepared.commit().as_bytes())?;
+                let new_epoch = group.epoch();
+                let revision = staged_reducer
+                    .policy()
+                    .ok_or(CoreError::SpaceMembershipSnapshotInvalid)?
+                    .revision;
+                let transition_event_id = *bound_transition.event().event_id().as_bytes();
+                let replay_data = encode_space_membership_replay_data(
+                    parent_epoch,
+                    revision,
+                    lattice_mls::api::MlsMembershipAction::Remove,
+                    target,
+                    None,
+                    bound_transition.plaintext(),
+                    policy_events,
+                )?;
+                let context = space_membership_context(
+                    &expected_space_id,
+                    &expected_group_reference,
+                    parent_epoch,
+                    &control_event_id,
+                    &transition_event_id,
+                );
+                let encrypted_state = lattice_mls::protect_local_record(&context, &replay_data)?;
+                Store::save_space_membership_transition_snapshot_in_transaction(
+                    transaction,
+                    &SpaceMembershipTransitionSnapshot {
+                        space_id: expected_space_id,
+                        group_reference: expected_group_reference,
+                        parent_epoch,
+                        policy_revision: revision,
+                        control_event_id,
+                        transition_event_id,
+                        encrypted_state,
+                    },
+                )?;
+                Ok((
+                    staged_reducer,
+                    control_event_id,
+                    transition_event_id,
+                    parent_epoch,
+                    new_epoch,
+                ))
+            })?;
+        created.reducer = staged_reducer;
+        Ok(CreatedSpaceMemberRemoval {
+            target_fingerprint,
+            control_event_id,
+            transition_event_id,
+            parent_epoch,
+            new_epoch,
+        })
+    }
+
+    /// Removes a member after validating the supplied X.509 credential against
+    /// this profile's pinned issuer and the client's configured trust policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::SpaceCredentialInvalid`] for malformed, untrusted,
+    /// oversized, or mismatched credential bytes. Removal, policy, MLS, and
+    /// storage failures are also returned.
+    pub fn remove_space_member_from_x509_credential(
+        &mut self,
+        created: &mut CreatedSpace,
+        credential_content: Vec<u8>,
+        target_fingerprint: [u8; 32],
+    ) -> Result<CreatedSpaceMemberRemoval, CoreError> {
+        if credential_content.is_empty() || credential_content.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(CoreError::SpaceCredentialInvalid);
+        }
+        let credential = Credential::new(CredentialType::X509, credential_content);
+        let credential = DeviceCredentialInput::from_x509_credential_with_policy(
+            &self.identity,
+            credential,
+            &self.credential_trust_policy,
+        )
+        .map_err(|_| CoreError::SpaceCredentialInvalid)?;
+        self.remove_space_member(created, &credential, target_fingerprint)
     }
 
     /// Publishes a one-time X.509 `KeyPackage` using this profile's pinned issuer.
@@ -8161,8 +8427,178 @@ mod tests {
             && message.is_deleted()));
     }
 
+    #[allow(clippy::too_many_lines)] // Exercises the complete persisted removal/rekey transaction.
+    #[test]
+    fn space_member_removal_commits_rekey_and_restores_policy() {
+        let alice_database = TestDatabase::new();
+        let bob_database = TestDatabase::new();
+        let protector = TestProtector;
+        let mut alice =
+            Client::open_or_create(&alice_database.0, &protector).expect("initialize admin");
+        let mut bob =
+            Client::open_or_create(&bob_database.0, &protector).expect("initialize member");
+        let alice_credential = test_credential(&alice.identity);
+        let bob_credential = test_credential(&bob.identity);
+        let bob_fingerprint = bob.identity.fingerprint();
+        let mut created = alice
+            .create_space(
+                &alice_credential,
+                vec![super::InitialChannel {
+                    channel_type: super::space::ChannelType::Text,
+                    name: "general".to_owned(),
+                    default_allow: 0,
+                    default_deny: 0,
+                    role_overrides: Vec::new(),
+                }],
+            )
+            .expect("create Space");
+        let key_package = bob
+            .publish_key_package(&bob_credential, 100)
+            .expect("publish member KeyPackage");
+        let invitation = alice
+            .create_space_invite(
+                &mut created,
+                &alice_credential,
+                &key_package,
+                None,
+                2_000,
+                Some(1),
+            )
+            .expect("add member through normal invite API");
+        bob.pin_identity(
+            &alice.identity.public_bundle().to_bytes(),
+            alice.identity.fingerprint(),
+        )
+        .expect("pin inviter");
+        let joined = bob
+            .join_space_from_welcome_bootstrap(
+                invitation.welcome_bootstrap(),
+                alice.identity.fingerprint(),
+                &bob_credential,
+            )
+            .expect("join with authenticated Welcome");
+        assert!(joined.reducer().policy().is_some_and(|policy| {
+            policy.members.iter().any(|member| {
+                member.fingerprint == bob_fingerprint
+                    && member.status == super::space::MemberStatus::Active
+            })
+        }));
+        alice
+            .restore_space(created.space_id(), created.group_reference())
+            .expect("restore two-member generation before removal");
+
+        let mut absent_fingerprint = [0xA5; 32];
+        while absent_fingerprint == bob_fingerprint
+            || absent_fingerprint == alice.identity.fingerprint()
+        {
+            absent_fingerprint[0] = absent_fingerprint[0].wrapping_add(1);
+        }
+        let before_failed_removal = alice
+            .store
+            .list_outbox_page(None, 16)
+            .expect("read outbox before rejected removal")
+            .len();
+        assert!(
+            alice
+                .remove_space_member(&mut created, &alice_credential, absent_fingerprint)
+                .is_err()
+        );
+        assert_eq!(
+            alice
+                .store
+                .list_outbox_page(None, 16)
+                .expect("read outbox after rejected removal")
+                .len(),
+            before_failed_removal
+        );
+        assert_eq!(
+            created
+                .reducer()
+                .policy()
+                .expect("membership policy")
+                .revision,
+            2
+        );
+
+        let removal = alice
+            .remove_space_member(&mut created, &alice_credential, bob_fingerprint)
+            .expect("commit authorized Remove and rekey");
+        assert_eq!(removal.target_fingerprint(), &bob_fingerprint);
+        assert_eq!(removal.parent_epoch(), 1);
+        assert_eq!(removal.new_epoch(), 2);
+        let policy = created.reducer().policy().expect("removed policy");
+        assert_eq!(policy.revision, 3);
+        assert!(policy.members.iter().any(|member| {
+            member.fingerprint == bob_fingerprint
+                && member.status == super::space::MemberStatus::Removed
+        }));
+        let control_record = alice
+            .store
+            .load_event(removal.control_event_id())
+            .expect("load removal control")
+            .expect("persist removal control");
+        let transition_record = alice
+            .store
+            .load_event(removal.transition_event_id())
+            .expect("load removal transition")
+            .expect("persist removal transition");
+        let control_event =
+            VerifiedSignatureOnlyEvent::decode_verify(&control_record.canonical_bytes)
+                .expect("verify removal control");
+        let transition_event =
+            VerifiedSignatureOnlyEvent::decode_verify(&transition_record.canonical_bytes)
+                .expect("verify removal transition");
+        assert!(control_event.wall_time_hint() > 0);
+        assert_eq!(
+            transition_event.wall_time_hint(),
+            control_event.wall_time_hint()
+        );
+        let local_group_id = created.group_id().to_vec();
+        assert_eq!(
+            alice
+                .with_mls_transaction(|_, provider, _| {
+                    let group = GroupState::load(provider, &local_group_id)?;
+                    Ok::<_, CoreError>((group.epoch(), group.member_count()))
+                })
+                .expect("inspect committed removal roster"),
+            (2, 1)
+        );
+        let space_id = *created.space_id();
+        let group_reference = *created.group_reference();
+        drop(created);
+        drop(alice);
+
+        let mut restored =
+            Client::open_existing(&alice_database.0, &protector).expect("reopen admin profile");
+        let restored_space = restored
+            .restore_space(&space_id, &group_reference)
+            .expect("restore removal checkpoint");
+        assert_eq!(
+            restored_space
+                .reducer()
+                .policy()
+                .expect("restored membership policy")
+                .members
+                .iter()
+                .find(|member| member.fingerprint == bob_fingerprint)
+                .expect("removed member retained in history")
+                .status,
+            super::space::MemberStatus::Removed
+        );
+        let group_id = restored_space.group_id().to_vec();
+        assert_eq!(
+            restored
+                .with_mls_transaction(|_, provider, _| {
+                    Ok::<_, CoreError>(GroupState::load(provider, &group_id)?.epoch())
+                })
+                .expect("read restored MLS epoch"),
+            2
+        );
+    }
+
     #[allow(clippy::too_many_lines)] // Covers the accepted join and durable history replay path.
     #[test]
+
     fn pinned_welcome_bootstrap_joins_and_restores_checkpoint_policy() {
         use lattice_protocol::{Value, encode_canonical};
 
