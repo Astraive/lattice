@@ -98,6 +98,26 @@ adb -s $serialA logcat -d -v threadtime > android-a-logcat.txt
 adb -s $serialB logcat -d -v threadtime > android-b-logcat.txt
 ```
 
+## Lifecycle, permissions, and network matrix
+
+Run these transitions on both named devices after the foreground offline exchange. Use a distinct event ID for each queued item. For each row, capture the device serial, Android build, permission/radio state, visible capability/status text, scanner/advertiser/GATT state, outbox state and attempt count before/after, receiver Core result, history count, duplicate count, and timestamps. Mark a row blocked rather than inferring behavior when the required state or diagnostic is unavailable.
+
+| Transition | Procedure | Required result |
+| --- | --- | --- |
+| Foreground → background or locked | Start a foreground Nearby scan/session, queue one event while the peer is unavailable, press Home and lock the screen. | The foreground GATT session stops as documented. The app does not present an active connection or delivery claim. The durable event ID and queued state remain available. |
+| Background/locked → foreground | Unlock and reopen Nearby on both devices, restore permissions if requested, then explicitly re-establish the authenticated peer session. | Capability text reflects the actual permission/radio state. The pending event is retried with the same ID and appears at most once in authorized history after Core accepts it. |
+| Persistent nearby mode | Enable the separate persistent mode, background or lock the device, and capture its notification and radio state; then return to the foreground. | Report only the service's scanning/advertising behavior. This service does not start GATT or exchange messages; it must not imply a connected peer or delivery. |
+| Bluetooth permission revoked/restored | With the app idle and during a foreground attempt, revoke required Bluetooth permissions in Android Settings; capture state, restore them through the runtime flow, and retry. | Revocation stops the affected operation without a crash or stale “available/connected” state. Restoring permissions does not fabricate a peer session; explicitly restart and verify the operation. |
+| Bluetooth off/on | Turn Bluetooth off during scan and during a transfer, then turn it on and return to Nearby. | Radio loss is visible, active work stops safely, and locally committed events remain queued or show the recorded peer-ingress state. After radio recovery, a new authenticated session is required and retries preserve IDs. |
+| Process termination/restart | Queue an event with the peer absent, terminate the app process using the device's app controls, relaunch it, and re-open Nearby. Record the termination method (force-stop is not equivalent to ordinary backgrounding). | The local event and ID survive restart; the UI does not report remote delivery. When a supported transport is explicitly re-established, pending work can retry without duplicate projection. |
+| Network loss/recovery | With Wi-Fi and cellular disabled, queue an event and record the outbox state; restore connectivity without changing the BLE peer state. | Record whether the tested feature uses network transport. Do not credit network restoration as BLE acceptance; there is no delivery claim without the corresponding authenticated peer/Core result. |
+
+| Scenario | Device serial | Event ID | Permission/radio before → after | Outbox state / attempts before → after | UI status | Core/history/duplicate result | Timestamp / evidence path | Pass / blocked |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | | | | | | | |
+
+Pass only when local commits remain durable, capability/UI state tracks real Android permissions and radio state, and no state is described as recipient delivery without the recorded Core evidence. Keep each device's result separate; an emulator run does not fill this physical matrix.
+
 ## Pairwise direct-message test
 
 Run after both Nearby screens establish authenticated BLE sessions and compare the pinned peer identities. A shared Space is not required for this section.
