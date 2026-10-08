@@ -16,7 +16,18 @@ internal interface BleExp0EnvelopeIo {
 internal interface BleExp0IngressProfile {
     fun markOutboxAttempt(eventId: ByteArray, nextAttemptMs: Long)
     fun recordPeerIngressAccepted(eventId: ByteArray)
-    fun ingestSyncedApplicationEvent(canonicalBytes: ByteArray): MobileSyncEventResult
+    fun forwardableEventPage(
+        peerIdentity: ByteArray,
+        afterEventId: ByteArray?,
+        nowUnixMillis: Long,
+        limit: Int,
+    ): List<uniffi.lattice_uniffi.MobileForwardableEventEntry>
+    fun markRelayEventAttempt(peerIdentity: ByteArray, eventId: ByteArray, nextAttemptMs: Long)
+    fun recordRelayEventPeerAcceptance(peerIdentity: ByteArray, eventId: ByteArray)
+    fun ingestSyncedApplicationEvent(
+        canonicalBytes: ByteArray,
+        authenticatedPeerIdentity: ByteArray,
+    ): MobileSyncEventResult
     fun markDirectMessageAttempt(packetId: ByteArray, nextAttemptMs: Long)
     fun recordDirectMessagePeerIngressAccepted(packetId: ByteArray)
     fun ingestDirectMessagePacket(
@@ -59,6 +70,7 @@ internal class BleExp0EnvelopeTransport(
     private var activeOutboundEventId: ByteArray? = null
     private var activeOutboundIsDirectMessage = false
 
+    private var activeOutboundRelayPeer: ByteArray? = null
     /** Starts a due durable envelope and records the attempt before GATT transmission. */
     @Synchronized
     fun sendEnvelope(
@@ -66,6 +78,7 @@ internal class BleExp0EnvelopeTransport(
         retryAtUnixMillis: Long,
         nowUnixMillis: Long,
         nowElapsedMillis: Long,
+        relayPeerIdentity: ByteArray? = null,
     ) {
         requireAuthenticated()
         require(
@@ -85,13 +98,21 @@ internal class BleExp0EnvelopeTransport(
         }
         try {
             val directMessage = isDirectMessageEnvelope(entry.envelopeBytes)
-            if (directMessage) {
-                profile.markDirectMessageAttempt(entry.eventId, retryAtUnixMillis)
-            } else {
-                profile.markOutboxAttempt(entry.eventId, retryAtUnixMillis)
+            require(!directMessage || relayPeerIdentity == null) {
+                "Direct-message packets cannot use Space-event forwarding receipts"
+            }
+            when {
+                directMessage -> profile.markDirectMessageAttempt(entry.eventId, retryAtUnixMillis)
+                relayPeerIdentity != null -> profile.markRelayEventAttempt(
+                    relayPeerIdentity,
+                    entry.eventId,
+                    retryAtUnixMillis,
+                )
+                else -> profile.markOutboxAttempt(entry.eventId, retryAtUnixMillis)
             }
             activeOutboundEventId = entry.eventId.copyOf()
             activeOutboundIsDirectMessage = directMessage
+            activeOutboundRelayPeer = relayPeerIdentity?.copyOf()
             sendProtectedControl(start)
         } catch (error: Exception) {
             failClosed()
@@ -118,13 +139,18 @@ internal class BleExp0EnvelopeTransport(
                     transfer.acceptCompletion(plaintext, nowMillis)
                     val eventId = activeOutboundEventId
                         ?: throw IllegalStateException("Completion has no active outbox entry")
-                    if (activeOutboundIsDirectMessage) {
-                        profile.recordDirectMessagePeerIngressAccepted(eventId)
-                    } else {
-                        profile.recordPeerIngressAccepted(eventId)
+                    val relayPeer = activeOutboundRelayPeer
+                    when {
+                        activeOutboundIsDirectMessage ->
+                            profile.recordDirectMessagePeerIngressAccepted(eventId)
+                        relayPeer != null ->
+                            profile.recordRelayEventPeerAcceptance(relayPeer, eventId)
+                        else -> profile.recordPeerIngressAccepted(eventId)
                     }
                     activeOutboundEventId = null
                     activeOutboundIsDirectMessage = false
+                    relayPeer?.fill(0)
+                    activeOutboundRelayPeer = null
                     eventId.copyOf()
                 }
                 else -> throw IllegalArgumentException("Unsupported exp0 transfer control")
@@ -150,7 +176,10 @@ internal class BleExp0EnvelopeTransport(
                 )
             } else {
                 // Sync ingress acceptance is not destination delivery.
-                val result = profile.ingestSyncedApplicationEvent(completedEnvelope)
+                val result = profile.ingestSyncedApplicationEvent(
+                    completedEnvelope,
+                    session.peerIdentityFingerprint(),
+                )
                 try {
                     onCoreIngressResult(result)
                 } catch (_: RuntimeException) {
@@ -216,6 +245,8 @@ internal class BleExp0EnvelopeTransport(
         closed = true
         activeOutboundEventId = null
         activeOutboundIsDirectMessage = false
+        activeOutboundRelayPeer?.fill(0)
+        activeOutboundRelayPeer = null
         transfer.close()
         io.disconnect()
     }
