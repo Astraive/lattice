@@ -28,6 +28,37 @@ android {
     }
 }
 
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    outputs.cacheIf("Required tests must execute on every run") { false }
+    outputs.upToDateWhen { false }
+    val testTaskPath = path
+    val testTaskLogger = logger
+    addTestListener(
+        object : org.gradle.api.tasks.testing.TestListener {
+            override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+
+            override fun afterSuite(
+                suite: org.gradle.api.tasks.testing.TestDescriptor,
+                result: org.gradle.api.tasks.testing.TestResult,
+            ) {
+                if (suite.parent == null) {
+                    testTaskLogger.lifecycle("$testTaskPath: ${result.testCount} tests")
+                    if (result.testCount == 0L) {
+                        throw GradleException("$testTaskPath discovered no tests")
+                    }
+                }
+            }
+
+            override fun beforeTest(test: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+
+            override fun afterTest(
+                test: org.gradle.api.tasks.testing.TestDescriptor,
+                result: org.gradle.api.tasks.testing.TestResult,
+            ) = Unit
+        },
+    )
+}
+
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
@@ -68,6 +99,8 @@ val buildUniFfiBindingLibrary = tasks.register<Exec>("buildUniFfiBindingLibrary"
     inputs.file(rustWorkspace.resolve("Cargo.toml"))
     inputs.file(rustWorkspace.resolve("Cargo.lock"))
     outputs.file(hostRustLibrary)
+    outputs.cacheIf("Required native library must be rebuilt") { false }
+    outputs.upToDateWhen { false }
     commandLine("cargo", "build", "--locked", "-p", "lattice-uniffi")
 }
 val kotlinBindings = layout.projectDirectory.file("src/main/kotlin/uniffi/lattice_uniffi/lattice_uniffi.kt")
@@ -79,6 +112,8 @@ val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
     inputs.file(hostRustLibrary)
     inputs.file(rustWorkspace.resolve("crates/lattice-uniffi/uniffi.toml"))
     outputs.file(kotlinBindings)
+    outputs.cacheIf("UniFFI bindings must be regenerated") { false }
+    outputs.upToDateWhen { false }
     commandLine(
         "cargo",
         "run",
@@ -108,6 +143,8 @@ val buildRustMobile = tasks.register<Exec>("buildRustMobile") {
     inputs.file(rustWorkspace.resolve("Cargo.toml"))
     inputs.file(rustWorkspace.resolve("Cargo.lock"))
     outputs.dir(rustJniLibs)
+    outputs.cacheIf("Android Rust libraries must be rebuilt") { false }
+    outputs.upToDateWhen { false }
     commandLine(
         "cargo",
         "ndk",

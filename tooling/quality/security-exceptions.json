@@ -1,0 +1,121 @@
+{
+  "cargo_licenses": [
+    {
+      "package": "fiat-crypto",
+      "version": "0.2.9",
+      "license": "BSD-1-Clause",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "fiat-crypto",
+      "version": "0.3.0",
+      "license": "BSD-1-Clause",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "r-efi",
+      "version": "5.3.0",
+      "license": "LGPL-2.1-or-later",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "r-efi",
+      "version": "6.0.0",
+      "license": "LGPL-2.1-or-later",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "webpki-root-certs",
+      "version": "1.0.9",
+      "license": "CDLA-Permissive-2.0",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "webpki-roots",
+      "version": "0.26.11",
+      "license": "CDLA-Permissive-2.0",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "package": "webpki-roots",
+      "version": "1.0.9",
+      "license": "CDLA-Permissive-2.0",
+      "owner": "@NeerajCodz",
+      "reason": "Maintainer-approved temporary exception for issue #37; review before expiry.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    }
+  ],
+  "bun": [
+    {
+      "package": "braces",
+      "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+      "owner": "@NeerajCodz",
+      "reason": "No patched braces release is published. This is a dev-only markdownlint glob dependency; the CI job has read-only permissions and the invocation uses fixed repository globs.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    }
+  ],
+  "gitleaks": [
+    {
+      "fingerprint": "02cb9afe740968bd73ab90a2f5b913f0afb1c855:fuzz/Cargo.lock:generic-api-key:1771",
+      "owner": "@NeerajCodz",
+      "reason": "False positive: Cargo.lock lists the libcrux-secrets crate; the matched text is a package identifier, not a credential.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "fingerprint": "455d40e0f4bb6f0812b5ce2fdcb6856e87c76ef2:protocol/vectors/ble-exp0.json:generic-api-key:18",
+      "owner": "@NeerajCodz",
+      "reason": "False positive: token_hex is a fixed public BLE interoperability test vector, not a live credential.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "fingerprint": "455d40e0f4bb6f0812b5ce2fdcb6856e87c76ef2:protocol/vectors/ble-exp0.json:generic-api-key:26",
+      "owner": "@NeerajCodz",
+      "reason": "False positive: observed_responder_token_hex is a fixed public BLE interoperability test vector, not a live credential.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "fingerprint": "6e3d9f59cc5e21f5224b3a0edb28c80e37cc99c2:protocol/vectors/ble-exp0.json:generic-api-key:18",
+      "owner": "@NeerajCodz",
+      "reason": "False positive: token_hex is a fixed public BLE interoperability test vector, not a live credential.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "fingerprint": "6e3d9f59cc5e21f5224b3a0edb28c80e37cc99c2:protocol/vectors/ble-exp0.json:generic-api-key:26",
+      "owner": "@NeerajCodz",
+      "reason": "False positive: observed_responder_token_hex is a fixed public BLE interoperability test vector, not a live credential.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "fingerprint": "9211ed5cc4dc26f97bae2b30d8cb5ddfe08a13b2:Cargo.lock:generic-api-key:3170",
+      "owner": "@NeerajCodz",
+      "reason": "False positive: Cargo.lock lists the libcrux-secrets crate; the matched text is a package identifier, not a credential.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    }
+  ]
+}

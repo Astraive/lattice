@@ -38,11 +38,11 @@ use super::{
     MobileCreatedDirectMessage, MobileCreatedSpace, MobileDirectMessageConversation,
     MobileDirectMessageExchange, MobileDirectMessageHistoryEntry, MobileDirectMessageIngressResult,
     MobileDirectMessageOutboxEntry, MobileDirectMessagePacket,
-    MobileDirectMessagePendingInvitation, MobileError, MobileIdentityInfo, MobileInitialChannel,
-    MobileLocalTextMessage, MobileLocalTextMessageSearch, MobileOutboxEntry, MobileOutboxState,
-    MobilePinnedIdentity, MobileProjectionChange, MobileQueuedMessage, MobileSpaceCursor,
-    MobileSpaceInvitation, MobileSpacePage, MobileSpaceSummary, MobileSyncEventResult,
-    MobileSyncEventState, PlatformKeyProtector,
+    MobileDirectMessagePendingInvitation, MobileError, MobileForwardableEventEntry,
+    MobileIdentityInfo, MobileInitialChannel, MobileLocalTextMessage, MobileLocalTextMessageSearch,
+    MobileOutboxEntry, MobileOutboxState, MobilePinnedIdentity, MobileProjectionChange,
+    MobileQueuedMessage, MobileSpaceCursor, MobileSpaceInvitation, MobileSpacePage,
+    MobileSpaceSummary, MobileSyncEventResult, MobileSyncEventState, PlatformKeyProtector,
 };
 
 #[derive(Clone)]
@@ -354,7 +354,7 @@ mod projection_observer_tests {
         .unwrap();
         let subscription = client.subscribe_projection_changes().unwrap();
         assert!(matches!(
-            client.ingest_synced_application_event(Vec::new()),
+            client.ingest_synced_application_event(Vec::new(), None),
             Err(MobileError::SyncIngestFailed)
         ));
         assert_eq!(subscription.wait_for_change(1).unwrap(), None);
@@ -1009,6 +1009,106 @@ impl MobileClient {
             .map_err(|_| MobileError::OutboxUnavailable)?;
         Ok(entries.into_iter().map(mobile_outbox_entry).collect())
     }
+    /// Lists accepted signed events not yet retained by the authenticated peer.
+    ///
+    /// Event bytes remain exact. Forwarding attempts and peer acknowledgements
+    /// persist independently, so interrupted contacts resume after restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid peer/cursor IDs, timestamps, page limits,
+    /// or unavailable persisted relay state.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned buffers at the FFI boundary.
+    pub fn forwardable_event_page(
+        &self,
+        peer_identity: Vec<u8>,
+        after_event_id: Option<Vec<u8>>,
+        now_ms: i64,
+        limit: i32,
+    ) -> Result<Vec<MobileForwardableEventEntry>, MobileError> {
+        let peer_identity: [u8; 32] = peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let after_event_id = after_event_id
+            .map(|id| {
+                id.as_slice()
+                    .try_into()
+                    .map_err(|_| MobileError::InvalidOutboxCursor)
+            })
+            .transpose()?;
+        let limit = usize::try_from(limit).map_err(|_| MobileError::InvalidOutboxPage)?;
+        if limit == 0 || limit > MAX_OUTBOX_PAGE_SIZE {
+            return Err(MobileError::InvalidOutboxPage);
+        }
+        if now_ms < 0 {
+            return Err(MobileError::InvalidOutboxSchedule);
+        }
+        self.lock_client()?
+            .forwardable_event_page(&peer_identity, after_event_id, now_ms, limit)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| MobileForwardableEventEntry {
+                        event_id: entry.event_id.to_vec(),
+                        canonical_bytes: entry.canonical_bytes,
+                        next_attempt_ms: entry.next_attempt_ms,
+                        attempt_count: entry.attempt_count,
+                    })
+                    .collect()
+            })
+            .map_err(|_| MobileError::OutboxUnavailable)
+    }
+
+    /// Persists a retryable attempt to carry one accepted event to one peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid peer/event IDs, an invalid retry time, or
+    /// a rejected relay-state transition.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned buffers at the FFI boundary.
+    pub fn mark_relay_event_attempt(
+        &self,
+        peer_identity: Vec<u8>,
+        event_id: Vec<u8>,
+        next_attempt_ms: i64,
+    ) -> Result<(), MobileError> {
+        let peer_identity: [u8; 32] = peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidOutboxEventId)?;
+        if next_attempt_ms < 0 {
+            return Err(MobileError::InvalidOutboxSchedule);
+        }
+        self.lock_client()?
+            .mark_relay_event_attempt(&peer_identity, event_id, next_attempt_ms)
+            .map_err(|_| MobileError::OutboxTransitionRejected)
+    }
+
+    /// Records authenticated peer acceptance, not destination delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid peer/event IDs, an ineligible event, or a
+    /// storage failure.
+    #[allow(clippy::needless_pass_by_value)] // UniFFI requires owned buffers at the FFI boundary.
+    pub fn record_relay_event_peer_acceptance(
+        &self,
+        peer_identity: Vec<u8>,
+        event_id: Vec<u8>,
+    ) -> Result<(), MobileError> {
+        let peer_identity: [u8; 32] = peer_identity
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        let event_id: [u8; 32] = event_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidOutboxEventId)?;
+        self.lock_client()?
+            .record_relay_event_peer_acceptance(&peer_identity, event_id)
+            .map_err(|_| MobileError::OutboxTransitionRejected)
+    }
+
     /// Persists one forwarding attempt before its envelope is placed on transport.
     ///
     /// # Errors
@@ -1065,11 +1165,26 @@ impl MobileClient {
     pub fn ingest_synced_application_event(
         &self,
         canonical_bytes: Vec<u8>,
+        authenticated_peer_identity: Option<Vec<u8>>,
     ) -> Result<MobileSyncEventResult, MobileError> {
+        let peer_identity = authenticated_peer_identity
+            .map(|identity| {
+                identity
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| MobileError::InvalidFingerprint)
+            })
+            .transpose()?;
         let mut client = self.lock_client()?;
-        let outcome = client
-            .accept_synced_application_event_for_local_generation(&canonical_bytes)
-            .map_err(|_| MobileError::SyncIngestFailed)?;
+        let outcome = if let Some(peer_identity) = peer_identity {
+            client.accept_synced_application_event_for_local_generation_from_peer(
+                &canonical_bytes,
+                peer_identity,
+            )
+        } else {
+            client.accept_synced_application_event_for_local_generation(&canonical_bytes)
+        }
+        .map_err(|_| MobileError::SyncIngestFailed)?;
         let (event_id, state, missing_dependencies) = match outcome {
             SyncedApplicationOutcome::Accepted { event_id } => {
                 (event_id, MobileSyncEventState::Accepted, Vec::new())
@@ -1094,6 +1209,7 @@ impl MobileClient {
                     .collect(),
             ),
         };
+
         let result = MobileSyncEventResult {
             event_id: event_id.to_vec(),
             state,
