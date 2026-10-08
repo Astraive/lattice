@@ -51,8 +51,9 @@ jobs:
           fi
           git fetch --force origin main "refs/tags/$tag:refs/tags/$tag"
           sha="$(git rev-parse "$tag^{commit}")"
-          if [[ "$GITHUB_EVENT_NAME" == "push" && "$sha" != "$GITHUB_SHA" ]]; then
-            echo "::error::tag ref does not resolve to the event SHA"
+          event_sha="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$sha" != "$event_sha" ]]; then
+            echo "::error::tag ref does not resolve to the event commit SHA"
             exit 1
           fi
           git fetch --force origin main:refs/remotes/origin/main
