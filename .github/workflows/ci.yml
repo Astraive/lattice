@@ -115,6 +115,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
@@ -146,16 +151,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Tauri system dependencies
+      - name: Install Tauri system and test Secret Service dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf dbus-x11 gnome-keyring
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.95.0
-      - name: Run all workspace tests
-        run: cargo test --workspace --locked
+      - name: Run all workspace tests with ephemeral Secret Service
+        run: dbus-run-session -- bash -euo pipefail -c 'eval "$(printf "%s" "lattice-ci-keyring" | gnome-keyring-daemon --unlock --components=secrets)"; cargo test --workspace --locked'
 
   build:
     name: Desktop and Web asset builds
@@ -175,12 +180,25 @@ jobs:
         with:
           toolchain: 1.95.0
           targets: wasm32-unknown-unknown
-      - name: Install WebAssembly C toolchain
-        run: sudo apt-get update && sudo apt-get install --yes clang llvm
+      - name: Install Desktop, WebAssembly, and test Secret Service dependencies
+        run: sudo apt-get update && sudo apt-get install --yes clang llvm libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf dbus-x11 gnome-keyring
       - name: Install wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - name: Install JavaScript dependencies
         run: bun install --frozen-lockfile
+
+      - name: Check formatting
+        run: bun run format:check
+
+      - name: Lint workspace
+        run: bun run lint
+
+      - name: Check types and native crates
+        run: bun run check
+
+      - name: Run tests
+        run: dbus-run-session -- bash -euo pipefail -c 'eval "$(printf "%s" "lattice-ci-keyring" | gnome-keyring-daemon --unlock --components=secrets)"; bun run test'
+
       - name: Build Desktop and Web assets
         run: bun run build
 
@@ -343,11 +361,11 @@ jobs:
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.95.0
-      - name: Install Linux Desktop dependencies
+      - name: Install Linux Desktop and test Secret Service dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install --yes clang libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf dbus-x11 gnome-keyring
       - name: Install JavaScript dependencies
         run: bun install --frozen-lockfile
       - name: Record toolchain versions
@@ -358,7 +376,13 @@ jobs:
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
       - name: Test Rust workspace
-        run: cargo test --workspace --locked
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            dbus-run-session -- bash -euo pipefail -c 'eval "$(printf "%s" "lattice-ci-keyring" | gnome-keyring-daemon --unlock --components=secrets)"; cargo test --workspace --locked'
+          else
+            cargo test --workspace --locked
+          fi
       - name: Build release CLI
         run: cargo build --release --locked -p lattice-cli
       - name: Build Desktop release executable without signing/bundling

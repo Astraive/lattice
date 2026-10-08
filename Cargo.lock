@@ -3461,7 +3461,9 @@ version = "0.1.0"
 dependencies = [
  "lattice-events",
  "lattice-identity",
+ "lattice-mesh",
  "lattice-protocol",
+ "lattice-router",
  "lattice-sync",
  "lattice-testkit",
  "serde_json",
