@@ -1132,6 +1132,48 @@ impl SpaceReducer {
         }
     }
 
+    /// Rehydrates an application action whose encrypted local acceptance record
+    /// was written only after the normal MLS and policy authorization gate.
+    ///
+    /// This preserves the accepted historical action without rechecking it
+    /// against a newer policy. The signed graph, payload schema, parent closure,
+    /// conflicts, and retained-history bounds are still checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event metadata, missing parents, malformed
+    /// payload, generation conflicts, or reducer history limits.
+    pub(crate) fn restore_authorized_application_event(
+        &mut self,
+        event: &MlsBoundEvent,
+    ) -> Result<(), RejectReason> {
+        let verified_event = event.event();
+        if !matches!(
+            verified_event.kind(),
+            EventKind::Message
+                | EventKind::Edit
+                | EventKind::Tombstone
+                | EventKind::Reaction
+                | EventKind::Pin
+                | EventKind::FileManifest
+                | EventKind::VoiceSignal
+        ) {
+            return Err(RejectReason::WrongEventKind);
+        }
+        if event.plaintext().len() > MAX_SPACE_PAYLOAD_BYTES {
+            return Err(RejectReason::PayloadTooLarge);
+        }
+        self.register_event(verified_event, None, true)?;
+        let metadata = EventMetadata::from_verified(verified_event);
+        self.ancestor_set(&metadata).map_err(|error| match error {
+            AncestorError::Pending => RejectReason::GraphConflict,
+            AncestorError::Rejected(reason) => reason,
+        })?;
+        let (action, attachment_manifest) =
+            parse_application_action(verified_event.kind(), event.plaintext())?;
+        self.retain_application_action(metadata.event_id, action, attachment_manifest)
+    }
+
     fn retain_application_action(
         &mut self,
         event_id: EventReference,
@@ -4524,7 +4566,10 @@ mod tests {
         let mut store = lattice_storage::Store::open(":memory:").unwrap();
         let (staged, result) = store
             .with_transaction(|transaction| {
-                crate::authorize_and_store_application_event(transaction, &reducer, &message)
+                lattice_mls::with_mls_storage_key(&[0xA7; 32], || {
+                    crate::authorize_and_store_application_event(transaction, &reducer, &message)
+                })
+                .map_err(crate::CoreError::from)?
             })
             .unwrap();
         assert_eq!(
