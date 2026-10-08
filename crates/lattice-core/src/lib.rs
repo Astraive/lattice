@@ -33,12 +33,13 @@ use lattice_mls::{
 use lattice_protocol::{Value, decode_canonical, encode_canonical};
 use lattice_relay::profile::MailboxToken;
 use lattice_storage::{
-    CachedSpaceMessage, CommitOutcome, DirectMessageRecord, MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE,
-    MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot, SpaceMembershipConflictSnapshot,
-    SpaceMembershipTransitionSnapshot, Store, StoreError,
+    AcceptedApplicationPayload, CachedSpaceMessage, CommitOutcome, DirectMessageRecord,
+    MAX_LOCAL_SPACE_MESSAGE_PAGE_SIZE, MAX_SPACE_GENESIS_PAGE_SIZE, SpaceGenesisSnapshot,
+    SpaceMembershipConflictSnapshot, SpaceMembershipTransitionSnapshot, Store, StoreError,
 };
 pub use lattice_storage::{
-    DirectMessageConversation, DirectMessageOutboxEntry, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
+    DirectMessageConversation, DirectMessageOutboxEntry, ForwardableEventEntry,
+    MAX_ACCEPTED_APPLICATION_PAYLOAD_PAGE_SIZE, MAX_DIRECT_MESSAGE_PENDING_INVITATIONS,
     MAX_OUTBOX_PAGE_SIZE, OutboxEntry, OutboxState, PendingDirectMessageInvitation,
     SpaceGenesisCursor,
 };
@@ -87,6 +88,7 @@ pub const MAX_LOCAL_KEY_PACKAGE_INVENTORY: usize = 32;
 /// Maximum distinct local identity/role mention targets retained in preferences.
 pub const MAX_LOCAL_MUTED_MENTION_TARGETS: usize = 4096;
 const MAX_SPACE_RECOVERY_DEPTH: usize = 32;
+const MAX_SYNCED_ANCESTOR_EVENTS: usize = 16_384;
 
 /// Caller-selected fields for one initial channel; its identifier is generated
 /// by [`Client::create_space`].
@@ -478,6 +480,9 @@ pub fn authorize_and_store_application_event(
             .iter()
             .map(|parent| *parent.as_bytes())
             .collect::<Vec<_>>();
+        // Promote peer history before commit_received deletes the pending row.
+        // Both operations share this transaction, so relay visibility is atomic.
+        Store::mark_relay_eligible_in_transaction(transaction, event_id)?;
         if let CommitOutcome::Equivocation { existing_event_id } =
             Store::commit_received_in_transaction(
                 transaction,
@@ -490,6 +495,7 @@ pub fn authorize_and_store_application_event(
         {
             return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
         }
+        persist_accepted_application_payload(transaction, event)?;
     }
     Ok((staged_reducer, authorization))
 }
@@ -516,6 +522,43 @@ fn store_received_event(
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
     Ok(())
+}
+
+fn retain_checkpoint_excluded_event(
+    transaction: &Transaction<'_>,
+    reducer: &space::SpaceReducer,
+    event: &VerifiedSignatureOnlyEvent,
+    event_id: [u8; 32],
+) -> Result<space::SpaceReducer, CoreError> {
+    if !matches!(
+        event.kind(),
+        EventKind::Message
+            | EventKind::Edit
+            | EventKind::Tombstone
+            | EventKind::Reaction
+            | EventKind::Pin
+            | EventKind::FileManifest
+            | EventKind::VoiceSignal
+    ) {
+        return Err(CoreError::MlsEventBindingFailed);
+    }
+    let active_channel_author = event.channel_id().is_some_and(|channel_id| {
+        reducer
+            .effective_channel_permissions(event.author_fingerprint(), channel_id)
+            .is_some()
+    });
+    if !active_channel_author {
+        return Err(CoreError::SpaceMessageRejected(
+            space::EventAuthorization::Rejected(space::RejectReason::Unauthorized),
+        ));
+    }
+    let mut staged_reducer = reducer.clone();
+    staged_reducer
+        .observe_graph_event(event)
+        .map_err(CoreError::SpaceGraphEventRejected)?;
+    store_received_event(transaction, event)?;
+    Store::resolve_pending_in_transaction(transaction, event_id)?;
+    Ok(staged_reducer)
 }
 
 fn commit_authored_event_to_outbox(
@@ -1108,6 +1151,43 @@ fn validate_restored_membership_state(
     if group.epoch() != expected_transition_count || group.member_count() != active_members {
         return Err(CoreError::SpaceMembershipSnapshotInvalid);
     }
+    Ok(())
+}
+
+fn accepted_application_payload_context(
+    space_id: &space::SpaceId,
+    group_reference: &space::GroupReference,
+    event_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut context = Vec::with_capacity(40 + 16 + 32 + 32);
+    context.extend_from_slice(b"lattice-accepted-application-payload-v1\0");
+    context.extend_from_slice(space_id);
+    context.extend_from_slice(group_reference);
+    context.extend_from_slice(event_id);
+    context
+}
+
+fn persist_accepted_application_payload(
+    transaction: &Transaction<'_>,
+    bound: &MlsBoundEvent,
+) -> Result<(), CoreError> {
+    let event = bound.event();
+    let event_id = *event.event_id().as_bytes();
+    let context = accepted_application_payload_context(
+        event.space_id(),
+        event.mls_group_reference(),
+        &event_id,
+    );
+    let encrypted_plaintext = lattice_mls::protect_local_record(&context, bound.plaintext())?;
+    Store::save_accepted_application_payload_in_transaction(
+        transaction,
+        &AcceptedApplicationPayload {
+            event_id,
+            space_id: *event.space_id(),
+            group_reference: *event.mls_group_reference(),
+            encrypted_plaintext,
+        },
+    )?;
     Ok(())
 }
 
@@ -2580,7 +2660,7 @@ impl Client {
         canonical_bytes: &[u8],
     ) -> Result<SyncedApplicationOutcome, CoreError> {
         let event = VerifiedSignatureOnlyEvent::decode_verify(canonical_bytes)?;
-        self.accept_verified_synced_application_event(created, canonical_bytes, event)
+        self.accept_verified_synced_application_event(created, canonical_bytes, event, None)
     }
 
     /// Restores the local generation named by a verified event and ingests it.
@@ -2603,7 +2683,46 @@ impl Client {
         let space_id = *event.space_id();
         let group_reference = *event.mls_group_reference();
         let mut created = self.restore_space(&space_id, &group_reference)?;
-        self.accept_verified_synced_application_event(&mut created, canonical_bytes, event)
+        let outcome = self.accept_verified_synced_application_event(
+            &mut created,
+            canonical_bytes,
+            event,
+            None,
+        )?;
+        if !matches!(outcome, SyncedApplicationOutcome::Pending { .. }) {
+            self.retry_ready_synced_application_events(&mut created)?;
+        }
+        Ok(outcome)
+    }
+
+    /// Ingests an event from an authenticated transport peer.
+    ///
+    /// The peer's acceptance is committed with the event's relay eligibility,
+    /// preventing a crash from leaving an accepted event queued back to its source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed event bytes, unavailable generation, failed
+    /// authorization, invalid peer identity, or MLS/storage validation.
+    pub fn accept_synced_application_event_for_local_generation_from_peer(
+        &mut self,
+        canonical_bytes: &[u8],
+        authenticated_peer_identity: [u8; 32],
+    ) -> Result<SyncedApplicationOutcome, CoreError> {
+        let event = VerifiedSignatureOnlyEvent::decode_verify(canonical_bytes)?;
+        let space_id = *event.space_id();
+        let group_reference = *event.mls_group_reference();
+        let mut created = self.restore_space(&space_id, &group_reference)?;
+        let outcome = self.accept_verified_synced_application_event(
+            &mut created,
+            canonical_bytes,
+            event,
+            Some(authenticated_peer_identity),
+        )?;
+        if !matches!(outcome, SyncedApplicationOutcome::Pending { .. }) {
+            self.retry_ready_synced_application_events(&mut created)?;
+        }
+        Ok(outcome)
     }
 
     fn missing_synced_event_dependencies(
@@ -2631,11 +2750,117 @@ impl Client {
         Ok(missing)
     }
 
+    fn restore_synced_ancestor_graph(
+        &self,
+        created: &mut CreatedSpace,
+        event: &VerifiedSignatureOnlyEvent,
+    ) -> Result<(), CoreError> {
+        let mut pending = event
+            .parents()
+            .iter()
+            .map(|parent| *parent.as_bytes())
+            .collect::<Vec<_>>();
+        let mut observed = BTreeSet::new();
+        while let Some(event_id) = pending.pop() {
+            if !observed.insert(event_id) {
+                continue;
+            }
+            if observed.len() > MAX_SYNCED_ANCESTOR_EVENTS {
+                return Err(CoreError::SpaceGraphEventRejected(
+                    space::RejectReason::LimitExceeded,
+                ));
+            }
+            let Some(record) = self.store.load_event(&event_id)? else {
+                continue;
+            };
+            let ancestor = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+            if ancestor.event_id().as_bytes() != &event_id
+                || ancestor.space_id() != &created.space_id
+                || ancestor.mls_group_reference() != &created.group_reference
+            {
+                return Err(CoreError::SpaceParentEventMissing);
+            }
+            pending.extend(ancestor.parents().iter().map(|parent| *parent.as_bytes()));
+            created
+                .reducer
+                .observe_graph_event(&ancestor)
+                .map_err(CoreError::SpaceGraphEventRejected)?;
+        }
+        Ok(())
+    }
+
+    fn restore_accepted_application_actions(
+        &mut self,
+        created: &mut CreatedSpace,
+    ) -> Result<(), CoreError> {
+        let mut after_event_id = None;
+        loop {
+            let page = self.store.list_accepted_application_payloads(
+                &created.space_id,
+                &created.group_reference,
+                after_event_id,
+                MAX_ACCEPTED_APPLICATION_PAYLOAD_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_event_id = page.last().map(|payload| payload.event_id);
+            let mut page_events = Vec::with_capacity(page.len());
+            for payload in page {
+                if payload.space_id != created.space_id
+                    || payload.group_reference != created.group_reference
+                {
+                    return Err(CoreError::SpaceGraphEventRejected(
+                        space::RejectReason::WrongGeneration,
+                    ));
+                }
+                let record = self
+                    .store
+                    .load_event(&payload.event_id)?
+                    .ok_or(CoreError::SpaceParentEventMissing)?;
+                let event = VerifiedSignatureOnlyEvent::decode_verify(&record.canonical_bytes)?;
+                if event.event_id().as_bytes() != &payload.event_id
+                    || event.space_id() != &payload.space_id
+                    || event.mls_group_reference() != &payload.group_reference
+                {
+                    return Err(CoreError::SpaceGraphEventRejected(
+                        space::RejectReason::GraphConflict,
+                    ));
+                }
+                self.restore_synced_ancestor_graph(created, &event)?;
+                let context = accepted_application_payload_context(
+                    &payload.space_id,
+                    &payload.group_reference,
+                    &payload.event_id,
+                );
+                page_events.push((event, context, payload.encrypted_plaintext));
+            }
+            let actions = self.with_mls_transaction(move |_, _, _| {
+                page_events
+                    .into_iter()
+                    .map(|(event, context, encrypted_plaintext)| {
+                        let plaintext =
+                            lattice_mls::unprotect_local_record(&context, &encrypted_plaintext)?;
+                        Ok::<_, CoreError>((event, plaintext))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })?;
+            for (event, plaintext) in actions {
+                created
+                    .reducer
+                    .restore_authorized_application_event(&MlsBoundEvent { event, plaintext })
+                    .map_err(CoreError::SpaceGraphEventRejected)?;
+            }
+        }
+        Ok(())
+    }
+
     fn accept_verified_synced_application_event(
         &mut self,
         created: &mut CreatedSpace,
         canonical_bytes: &[u8],
         event: VerifiedSignatureOnlyEvent,
+        authenticated_peer_identity: Option<[u8; 32]>,
     ) -> Result<SyncedApplicationOutcome, CoreError> {
         if event.space_id() != &created.space_id
             || event.mls_group_reference() != &created.group_reference
@@ -2652,6 +2877,10 @@ impl Client {
             }
             self.store.resolve_pending(event_id)?;
             self.store.resolve_dependency(event_id)?;
+            if let Some(peer_identity) = authenticated_peer_identity {
+                self.store
+                    .record_relay_event_peer_acceptance(&peer_identity, event_id)?;
+            }
             return Ok(SyncedApplicationOutcome::Duplicate { event_id });
         }
         self.ensure_space_generation_mutable(&created.space_id, &created.group_reference)?;
@@ -2659,11 +2888,16 @@ impl Client {
         if !missing_dependencies.is_empty() {
             self.store
                 .store_pending(event_id, canonical_bytes, &missing_dependencies)?;
+            if let Some(peer_identity) = authenticated_peer_identity {
+                self.store
+                    .record_pending_relay_event_peer(&peer_identity, event_id)?;
+            }
             return Ok(SyncedApplicationOutcome::Pending {
                 event_id,
                 missing_dependencies,
             });
         }
+        self.restore_synced_ancestor_graph(created, &event)?;
 
         let group_id = created.group_id.clone();
         let space_id = created.space_id;
@@ -2681,34 +2915,8 @@ impl Client {
                     return Err(CoreError::MlsEventBindingFailed);
                 }
                 if event.mls_epoch() < group.epoch() {
-                    if !matches!(
-                        event.kind(),
-                        EventKind::Message
-                            | EventKind::Edit
-                            | EventKind::Tombstone
-                            | EventKind::Reaction
-                            | EventKind::Pin
-                            | EventKind::FileManifest
-                            | EventKind::VoiceSignal
-                    ) {
-                        return Err(CoreError::MlsEventBindingFailed);
-                    }
-                    let active_channel_author = event.channel_id().is_some_and(|channel_id| {
-                        reducer
-                            .effective_channel_permissions(event.author_fingerprint(), channel_id)
-                            .is_some()
-                    });
-                    if !active_channel_author {
-                        return Err(CoreError::SpaceMessageRejected(
-                            space::EventAuthorization::Rejected(space::RejectReason::Unauthorized),
-                        ));
-                    }
-                    let mut staged_reducer = reducer.clone();
-                    staged_reducer
-                        .observe_graph_event(&event)
-                        .map_err(CoreError::SpaceGraphEventRejected)?;
-                    store_received_event(transaction, &event)?;
-                    Store::resolve_pending_in_transaction(transaction, event_id)?;
+                    let staged_reducer =
+                        retain_checkpoint_excluded_event(transaction, &reducer, &event, event_id)?;
                     return Ok((staged_reducer, true));
                 }
                 let IncomingResult::Application(application) =
@@ -2721,6 +2929,13 @@ impl Client {
                     authorize_and_store_application_event(transaction, &reducer, &bound)?;
                 if !matches!(authorization, space::EventAuthorization::Authorized { .. }) {
                     return Err(CoreError::SpaceMessageRejected(authorization));
+                }
+                if let Some(peer_identity) = authenticated_peer_identity {
+                    Store::record_relay_event_peer_acceptance_in_transaction(
+                        transaction,
+                        &peer_identity,
+                        event_id,
+                    )?;
                 }
                 persist_received_text_projection(transaction, &bound, space_id, group_reference)?;
                 Store::resolve_pending_in_transaction(transaction, event_id)?;
@@ -3187,7 +3402,9 @@ impl Client {
             .store
             .load_space_welcome_bootstrap_snapshot(space_id, group_reference)?
         {
-            return self.restore_joined_space(&snapshot, event, &joined_snapshot);
+            let mut created = self.restore_joined_space(&snapshot, event, &joined_snapshot)?;
+            self.restore_accepted_application_actions(&mut created)?;
+            return Ok(created);
         }
         let recovery_context = space_genesis_context(
             &snapshot.space_id,
@@ -3372,13 +3589,15 @@ impl Client {
                 // a corresponding committed MLS epoch.
                 Ok((group_reference, reducer))
             })?;
-        Ok(CreatedSpace {
+        let mut created = CreatedSpace {
             space_id,
             group_id,
             group_reference,
             genesis_event: restored_event,
             reducer,
-        })
+        };
+        self.restore_accepted_application_actions(&mut created)?;
+        Ok(created)
     }
 
     /// Restores a bounded page of locally created Space generations.
@@ -4746,6 +4965,61 @@ impl Client {
             next_cursor,
         })
     }
+    /// Returns a bounded page of accepted events not yet retained by one authenticated peer.
+    ///
+    /// The exact signed bytes are reused; the event ID and author signature do
+    /// not change. Pending, checkpoint-excluded, and unauthorized events are
+    /// not eligible for onward forwarding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the peer ID, cursor, timestamp, page size, or
+    /// persisted event bytes are invalid.
+    pub fn forwardable_event_page(
+        &self,
+        peer_identity: &[u8; 32],
+        after_event_id: Option<[u8; 32]>,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<ForwardableEventEntry>, CoreError> {
+        Ok(self
+            .store
+            .list_forwardable_event_page(peer_identity, after_event_id, now_ms, limit)?)
+    }
+
+    /// Persists a retryable forwarding attempt for an accepted event and peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the timestamp is invalid, the event is not relayable,
+    /// attempts are exhausted, or storage fails.
+    pub fn mark_relay_event_attempt(
+        &mut self,
+        peer_identity: &[u8; 32],
+        event_id: [u8; 32],
+        next_attempt_ms: i64,
+    ) -> Result<(), CoreError> {
+        self.store
+            .mark_relay_event_attempt(peer_identity, event_id, next_attempt_ms)?;
+        Ok(())
+    }
+
+    /// Records authenticated peer ingress acceptance for an accepted event.
+    ///
+    /// This is a hop-level retention acknowledgement, not destination delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if a relay-eligible row cannot be updated or storage fails.
+    pub fn record_relay_event_peer_acceptance(
+        &mut self,
+        peer_identity: &[u8; 32],
+        event_id: [u8; 32],
+    ) -> Result<(), CoreError> {
+        self.store
+            .record_relay_event_peer_acceptance(peer_identity, event_id)?;
+        Ok(())
+    }
     /// Records one persisted forwarding attempt for a durable outbox row.
     ///
     /// # Errors
@@ -5291,6 +5565,7 @@ fn queue_application_event_in_transaction(
     {
         return Err(CoreError::ReceivedEventEquivocation { existing_event_id });
     }
+    persist_accepted_application_payload(transaction, &bound)?;
     if let Some((target, content)) = message.cached_text {
         persist_cached_text_projection(
             transaction,
@@ -8653,6 +8928,15 @@ mod tests {
                 event_id: message_id
             }
         );
+        let relay_peer = [0xA5; 32];
+        let relay_page = bob
+            .forwardable_event_page(&relay_peer, None, 0, 16)
+            .expect("list relayable events after Core authorization");
+        let relay_entry = relay_page
+            .iter()
+            .find(|entry| entry.event_id == message_id)
+            .expect("accepted application event is relayable");
+        assert_eq!(relay_entry.canonical_bytes, message_event.encoded_bytes());
         assert_eq!(
             bob.accept_synced_application_event_for_local_generation(message_event.encoded_bytes())
                 .expect("restore and recognize exact duplicate"),
@@ -8660,8 +8944,21 @@ mod tests {
                 event_id: message_id
             }
         );
-        let missing_parent = [0x99; 32];
-        let pending_event = VerifiedSignatureOnlyEvent::create(
+        let parent_plaintext =
+            super::encode_text_message("parent over MLS").expect("encode parent message");
+        let parent_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &parent_plaintext,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt parent message");
+        let parent_event = VerifiedSignatureOnlyEvent::create(
             &alice.identity,
             EventDraft {
                 space_id,
@@ -8669,41 +8966,122 @@ mod tests {
                 author_sequence: 6,
                 lamport: 6,
                 wall_time_hint: 0,
-                parents: vec![lattice_protocol::EventId::from_bytes(missing_parent)],
+                parents: vec![lattice_protocol::EventId::from_bytes(message_id)],
                 kind: EventKind::Message,
-                protected_body: message_event.protected_body().to_vec(),
+                protected_body: parent_ciphertext,
+                mls_group_reference: group_reference,
+                mls_epoch: 0,
+            },
+        )
+        .expect("sign dependency parent");
+        let parent_id = *parent_event.event_id().as_bytes();
+        let child_plaintext =
+            super::encode_text_message("child over MLS").expect("encode child message");
+        let child_ciphertext = alice
+            .with_mls_transaction(|identity, provider, _| {
+                let mut group = GroupState::load(provider, &created.group_id)?;
+                let ciphertext = group.encrypt_application(
+                    provider,
+                    identity,
+                    &alice_credential,
+                    &child_plaintext,
+                )?;
+                Ok::<_, CoreError>(ciphertext.as_bytes().to_vec())
+            })
+            .expect("encrypt child message");
+        let child_event = VerifiedSignatureOnlyEvent::create(
+            &alice.identity,
+            EventDraft {
+                space_id,
+                channel_id: Some(channel_id),
+                author_sequence: 7,
+                lamport: 7,
+                wall_time_hint: 0,
+                parents: vec![lattice_protocol::EventId::from_bytes(parent_id)],
+                kind: EventKind::Message,
+                protected_body: child_ciphertext,
                 mls_group_reference: group_reference,
                 mls_epoch: 1,
             },
         )
-        .expect("sign event with an unavailable parent");
-        let pending_id = *pending_event.event_id().as_bytes();
+        .expect("sign dependency child");
+        let child_id = *child_event.event_id().as_bytes();
+        let relay_source = [0xB6; 32];
         assert_eq!(
-            bob.accept_synced_application_event(&mut joined, pending_event.encoded_bytes())
-                .expect("retain event until its parent arrives"),
+            bob.accept_synced_application_event_for_local_generation_from_peer(
+                child_event.encoded_bytes(),
+                relay_source,
+            )
+            .expect("retain child until its parent arrives"),
             super::SyncedApplicationOutcome::Pending {
-                event_id: pending_id,
-                missing_dependencies: vec![missing_parent],
+                event_id: child_id,
+                missing_dependencies: vec![parent_id],
             }
         );
         assert!(
-            bob.store
-                .resolve_pending(pending_id)
-                .expect("remove test-only pending event")
+            bob.forwardable_event_page(&relay_peer, None, 0, 16)
+                .expect("list relayable events before parent arrival")
+                .iter()
+                .all(|entry| entry.event_id != child_id)
+        );
+        assert_eq!(
+            bob.accept_synced_application_event_for_local_generation_from_peer(
+                parent_event.encoded_bytes(),
+                relay_source,
+            )
+            .expect("exclude checkpoint parent and retry ready child"),
+            super::SyncedApplicationOutcome::CheckpointExcluded {
+                event_id: parent_id
+            }
+        );
+        let relayed_after_parent = bob
+            .forwardable_event_page(&relay_peer, None, 0, 16)
+            .expect("list relayable events after dependency resolution");
+        assert!(
+            relayed_after_parent
+                .iter()
+                .all(|entry| entry.event_id != parent_id)
+        );
+        assert!(
+            relayed_after_parent
+                .iter()
+                .any(|entry| entry.event_id == child_id)
+        );
+        assert!(
+            bob.forwardable_event_page(&relay_source, None, 0, 16)
+                .expect("source already supplied parent")
+                .iter()
+                .all(|entry| entry.event_id != parent_id)
+        );
+        assert!(
+            bob.forwardable_event_page(&relay_source, None, 0, 16)
+                .expect("source already supplied child")
+                .iter()
+                .all(|entry| entry.event_id != child_id)
         );
         let history = bob
             .local_text_message_history(&space_id, &group_reference, &channel_id)
             .expect("read received message history");
-        assert_eq!(history.len(), 1);
+        assert_eq!(history.len(), 2);
         assert_eq!(history[0].event_id, message_id);
         assert_eq!(history[0].author_id, alice_fingerprint);
         assert_eq!(history[0].content, "received over MLS");
+        assert_eq!(history[1].event_id, child_id);
+        assert_eq!(history[1].content, "child over MLS");
         let received_search = bob
             .search_local_text_messages(&space_id, &group_reference, &channel_id, "RECEIVED")
             .expect("search authorized received message projection offline");
         assert_eq!(received_search.total_matches, 1);
         assert_eq!(received_search.messages[0].event_id, message_id);
         assert_eq!(received_search.messages[0].content, "received over MLS");
+
+        drop(joined);
+        drop(bob);
+        let mut bob = Client::open_existing(&bob_database.0, &protector)
+            .expect("reopen recipient profile after accepted messages");
+        let mut joined = bob
+            .restore_space(&space_id, &group_reference)
+            .expect("restore accepted application actions after restart");
         let edit_plaintext =
             super::encode_text_edit(message_id, "edited over MLS").expect("encode edit");
         let edit_ciphertext = alice
@@ -8723,8 +9101,8 @@ mod tests {
             EventDraft {
                 space_id,
                 channel_id: Some(channel_id),
-                author_sequence: 6,
-                lamport: 6,
+                author_sequence: 8,
+                lamport: 8,
                 wall_time_hint: 0,
                 parents: vec![lattice_protocol::EventId::from_bytes(message_id)],
                 kind: EventKind::Edit,
@@ -8736,13 +9114,13 @@ mod tests {
         .expect("sign incoming edit");
         assert!(matches!(
             bob.accept_synced_application_event(&mut joined, edit_event.encoded_bytes())
-                .expect("accept synced edit"),
+                .expect("accept synced edit after restart"),
             super::SyncedApplicationOutcome::Accepted { .. }
         ));
         let edited_history = bob
             .local_text_message_history(&space_id, &group_reference, &channel_id)
             .expect("read edited incoming history");
-        assert_eq!(edited_history.len(), 1);
+        assert_eq!(edited_history.len(), 2);
         assert_eq!(edited_history[0].event_id, message_id);
         assert_eq!(edited_history[0].content, "edited over MLS");
         let remote_draft = |sequence, kind, parents| EventDraft {
@@ -8771,7 +9149,7 @@ mod tests {
             &created.group_id,
             &alice_credential,
             remote_draft(
-                7,
+                9,
                 EventKind::Tombstone,
                 vec![lattice_protocol::EventId::from_bytes(message_id)],
             ),
@@ -8781,10 +9159,14 @@ mod tests {
             .search_local_text_messages(&space_id, &group_reference, &channel_id, "edited over MLS")
             .expect("search excludes tombstoned cached content");
         assert_eq!(deleted_search.total_matches, 0);
+        let visible_after_delete = bob
+            .local_text_message_history(&space_id, &group_reference, &channel_id)
+            .expect("history excludes only tombstoned cached content");
+        assert_eq!(visible_after_delete.len(), 1);
         assert!(
-            bob.local_text_message_history(&space_id, &group_reference, &channel_id)
-                .expect("history excludes tombstoned cached content")
-                .is_empty()
+            visible_after_delete
+                .iter()
+                .any(|message| message.event_id == child_id)
         );
         let history = joined.reducer().message_history(&channel_id);
         let projected = history
@@ -8809,7 +9191,7 @@ mod tests {
             &created.group_id,
             &alice_credential,
             remote_draft(
-                8,
+                10,
                 EventKind::Reaction,
                 vec![lattice_protocol::EventId::from_bytes(message_id)],
             ),
@@ -8829,7 +9211,7 @@ mod tests {
             &created.group_id,
             &alice_credential,
             remote_draft(
-                9,
+                11,
                 EventKind::Reaction,
                 vec![lattice_protocol::EventId::from_bytes(reaction_id)],
             ),
@@ -8881,7 +9263,7 @@ mod tests {
             &created.group_id,
             &alice_credential,
             remote_draft(
-                10,
+                12,
                 EventKind::Pin,
                 vec![lattice_protocol::EventId::from_bytes(message_id)],
             ),
@@ -8900,7 +9282,7 @@ mod tests {
             &created.group_id,
             &alice_credential,
             remote_draft(
-                11,
+                13,
                 EventKind::Pin,
                 vec![lattice_protocol::EventId::from_bytes(pin_id)],
             ),
@@ -8960,8 +9342,8 @@ mod tests {
                     EventDraft {
                         space_id,
                         channel_id: None,
-                        author_sequence: 12,
-                        lamport: 12,
+                        author_sequence: 14,
+                        lamport: 14,
                         wall_time_hint: 0,
                         parents: vec![lattice_protocol::EventId::from_bytes(
                             charlie_invite_event_id,
@@ -8994,8 +9376,8 @@ mod tests {
                     EventDraft {
                         space_id,
                         channel_id: None,
-                        author_sequence: 13,
-                        lamport: 13,
+                        author_sequence: 15,
+                        lamport: 15,
                         wall_time_hint: 0,
                         parents: vec![lattice_protocol::EventId::from_bytes(control_id)],
                         kind: EventKind::Membership,

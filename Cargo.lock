@@ -3352,6 +3352,14 @@ name = "lattice-mesh"
 version = "0.1.0"
 
 [[package]]
+name = "lattice-mesh-simulator"
+version = "0.1.0"
+dependencies = [
+ "lattice-testkit",
+ "serde_json",
+]
+
+[[package]]
 name = "lattice-mls"
 version = "0.1.0"
 dependencies = [
