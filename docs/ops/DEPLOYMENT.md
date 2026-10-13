@@ -23,6 +23,16 @@ An opt-in node runs the same validation and storage model. It can join Spaces no
 
 Pin protocol major and tested dependencies. Upgrades preserve canonical event bytes and migrate derived projections; the previous stable schema must be read or migrated. Backups protect a device-local identity only through an explicit encrypted export/recovery design. Do not silently upload private keys or logs. Key reset produces a new identity requiring authorized re-add. Monitor optional relay/voice path via local diagnostics; no mandatory telemetry service. The incident procedure for a compromised member is to remove/rekey and tell users earlier plaintext cannot be recalled.
 
+### Tag-driven release workflow
+
+`.github/workflows/release.yml` accepts `vMAJOR.MINOR.PATCH` tags on `main` or a manual dispatch naming an existing tag. It rejects tags outside protected `main`, mismatched Cargo/npm/Tauri/Android versions, and source SHAs without a successful `CI required` check plus a successful manually dispatched Deep verification run (all deterministic and 13 fuzz jobs). Android `versionCode` is `major * 1,000,000 + minor * 1,000 + patch`.
+
+Configure the GitHub `release` environment to require an approval, disable administrator bypass, and allow only protected `main` plus `v*.*.*` tags. Keep these Android signing secrets in that environment only: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The workflow fails closed if a secret is missing. Do not expose signing secrets to pull-request workflows.
+
+An active repository tag ruleset protects `refs/tags/v*` against updates and deletion with no bypass actors. The publish job re-resolves the tag immediately before release creation and rejects any SHA change.
+
+The workflow builds signed Android APK/AAB artifacts and Linux x86_64, Windows x86_64, and macOS 15 CLI/Desktop artifacts. Each desktop/CLI target is published as a uniquely named tar archive to preserve executable modes and bundle metadata. It checks artifact metadata/signatures where supported, includes CycloneDX SBOMs and SHA-256 checksums, and attaches GitHub build provenance. Publication is always a GitHub **draft prerelease**, never a stable release. Keep it a draft until physical Android acceptance, repeatable cross-client interoperability, restart/recovery acceptance, and independent security review are complete; see [release readiness](../verification/RELEASE_READINESS.md).
+
 ## Deployment checks
 
 - DNS/Internet blocked: nearby text still works.
