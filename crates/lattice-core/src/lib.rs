@@ -8195,7 +8195,7 @@ mod tests {
             alice.identity.fingerprint(),
         )
         .expect("pin inviter");
-        let joined = bob
+        let mut joined = bob
             .join_space_from_welcome_bootstrap(
                 invitation.welcome_bootstrap(),
                 alice.identity.fingerprint(),
@@ -8273,6 +8273,39 @@ mod tests {
         let transition_event =
             VerifiedSignatureOnlyEvent::decode_verify(&transition_record.canonical_bytes)
                 .expect("verify removal transition");
+        assert!(
+            bob.accept_synced_space_membership_transition(
+                &mut joined,
+                None,
+                &control_record.canonical_bytes,
+                &transition_record.canonical_bytes,
+            )
+            .expect("accept synchronized removal and rekey"),
+            "first removal delivery applies",
+        );
+        assert!(
+            !bob.accept_synced_space_membership_transition(
+                &mut joined,
+                None,
+                &control_record.canonical_bytes,
+                &transition_record.canonical_bytes,
+            )
+            .expect("duplicate removal delivery is idempotent"),
+            "duplicate removal does not apply twice",
+        );
+        assert_eq!(
+            joined
+                .reducer()
+                .policy()
+                .expect("member policy after remote removal")
+                .members
+                .iter()
+                .find(|member| member.fingerprint == bob_fingerprint)
+                .expect("removed member retained")
+                .status,
+            super::space::MemberStatus::Removed,
+        );
+
         assert!(control_event.wall_time_hint() > 0);
         assert_eq!(
             transition_event.wall_time_hint(),
@@ -8318,6 +8351,36 @@ mod tests {
                 })
                 .expect("read restored MLS epoch"),
             2
+        );
+        drop(restored_space);
+
+        drop(joined);
+        drop(bob);
+        let mut restored_bob = Client::open_existing(&bob_database.0, &protector)
+            .expect("reopen removed member profile");
+        let bob_space = restored_bob
+            .restore_space(&space_id, &group_reference)
+            .expect("restore removed member's synchronized generation");
+        assert_eq!(
+            bob_space
+                .reducer()
+                .policy()
+                .expect("restored member policy")
+                .members
+                .iter()
+                .find(|member| member.fingerprint == bob_fingerprint)
+                .expect("removed recipient retained in history")
+                .status,
+            super::space::MemberStatus::Removed,
+        );
+        let bob_group_id = bob_space.group_id().to_vec();
+        assert_eq!(
+            restored_bob
+                .with_mls_transaction(|_, provider, _| {
+                    Ok::<_, CoreError>(GroupState::load(provider, &bob_group_id)?.epoch())
+                })
+                .expect("read restored recipient MLS epoch"),
+            2,
         );
     }
 

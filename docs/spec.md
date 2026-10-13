@@ -265,7 +265,7 @@ The CLI is native Rust so it can use the same core crates without an additional 
 | --- | --- |
 | `lattice identity show` | Display fingerprint, device ID, capabilities, and verification code. |
 | `lattice peer scan` | Observe nearby peers and transport capabilities for debugging. |
-| `lattice space create/join/leave` | Operate Space membership without a graphical client. |
+| `lattice space create/join/leave/remove-member` | Operate Space membership without a graphical client; removal commits a local MLS rekey and policy transition but makes no network-delivery claim. |
 | `lattice send` | Send text or an attachment to a channel/DM. |
 | `lattice sync status` | Print event-log gaps, vector summaries, queue depth, and reconciliation state. |
 | `lattice relay add/list/test` | Configure and test user-selected Internet relays. |

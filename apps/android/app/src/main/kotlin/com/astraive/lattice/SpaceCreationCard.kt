@@ -10,12 +10,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import com.astraive.lattice.ui.LatticeActionButton as Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import com.astraive.lattice.ui.LatticeFormField as OutlinedTextField
 import androidx.compose.material3.RadioButton
 import com.astraive.lattice.ui.LatticeSurface as Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -351,7 +357,13 @@ internal data class SpaceMembershipUiState(
     val creatingInvitation: Boolean = false,
     val invitationStatus: String = "Select a local Space and provide the target device's KeyPackage.",
     val invitation: uniffi.lattice_uniffi.MobileSpaceInvitation? = null,
+    val removalTargetFingerprintHex: String = "",
+    val removalCredentialHex: String = "",
+    val removingMember: Boolean = false,
+    val removalStatus: String = "Remove a member by its complete identity fingerprint.",
+    val removal: uniffi.lattice_uniffi.MobileSpaceMemberRemoval? = null,
 )
+
 
 @Composable
 internal fun SpaceMembershipCard(
@@ -363,10 +375,15 @@ internal fun SpaceMembershipCard(
     onInvitationKeyPackageChanged: (String) -> Unit,
     onInvitationCredentialChanged: (String) -> Unit,
     onExpiryHoursChanged: (String) -> Unit,
+    onRemovalTargetChanged: (String) -> Unit,
+    onRemovalCredentialChanged: (String) -> Unit,
+    onRemoveMember: () -> Unit,
+
     onMaxUsesChanged: (String) -> Unit,
     onCreateInvitation: () -> Unit,
     onCopyValue: (String, String) -> Unit,
 ) {
+    var showRemovalConfirmation by remember { mutableStateOf(false) }
     val keyPackageCredentialValid = isCredentialVectorHex(state.keyPackageCredentialHex)
     val invitationCredentialValid = isCredentialVectorHex(state.invitationCredentialHex)
     val keyPackageBounded = state.invitationKeyPackageBase64.isNotEmpty() &&
@@ -495,8 +512,84 @@ internal fun SpaceMembershipCard(
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Copy Welcome bootstrap") }
             }
+            Text(
+                "Remove a member",
+                modifier = Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                "This commits a local MLS Remove and policy transition only. It does not contact peers or erase data already received.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val targetValid = state.removalTargetFingerprintHex.length == 64 &&
+                state.removalTargetFingerprintHex.all { it.isHexDigit() }
+            OutlinedTextField(
+                value = state.removalTargetFingerprintHex,
+                onValueChange = onRemovalTargetChanged,
+                label = { Text("Target's full identity fingerprint (hex)") },
+                enabled = profileReady && !state.removingMember,
+                isError = state.removalTargetFingerprintHex.isNotEmpty() && !targetValid,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.removalCredentialHex,
+                onValueChange = onRemovalCredentialChanged,
+                label = { Text("Administrator X.509 credential vector (hex)") },
+                enabled = profileReady && !state.removingMember,
+                isError = state.removalCredentialHex.isNotEmpty() &&
+                    !isCredentialVectorHex(state.removalCredentialHex),
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { showRemovalConfirmation = true },
+                enabled = profileReady && selectedSpace != null && !state.removingMember &&
+                    targetValid && isCredentialVectorHex(state.removalCredentialHex),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.removingMember) "Committing removal…" else "Remove member locally")
+            }
+            LatticeStatusNotice(LatticeNoticeKind.INFO, message = state.removalStatus)
+            state.removal?.let { removal ->
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Local removal committed at MLS epoch ${removal.parentEpoch} → ${removal.newEpoch}.")
+                        Text("Control event: ${removal.controlEventId.toLowerHex()}")
+                        Text("Policy transition: ${removal.transitionEventId.toLowerHex()}")
+                        Text("No peers were contacted; delivery is not claimed.")
+                    }
+                }
+            }
+
         }
     }
+    if (showRemovalConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRemovalConfirmation = false },
+            title = { Text("Remove this Space member?") },
+            text = {
+                Text(
+                    "This commits a local rekey for ${state.removalTargetFingerprintHex}. " +
+                        "Peers are not contacted, and previously received data cannot be erased.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRemovalConfirmation = false
+                        onRemoveMember()
+                    },
+                ) { Text("Remove locally") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemovalConfirmation = false }) { Text("Cancel") }
+            },
+        )
+    }
+
 }
 
 internal fun isCredentialVectorHex(value: String): Boolean =

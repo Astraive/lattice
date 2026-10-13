@@ -88,6 +88,25 @@ pub(super) enum SpaceCommand {
         #[arg(long)]
         credential: PathBuf,
     },
+    /// Commit an authorized MLS Remove and policy transition for one device.
+    ///
+    /// This advances the local epoch and records signed membership events; it
+    /// does not deliver them to peers or erase data already received.
+    RemoveMember {
+        /// Random 16-byte Space ID as exactly 32 hexadecimal characters.
+        #[arg(long)]
+        space_id: String,
+        /// 32-byte MLS group reference as exactly 64 hexadecimal characters.
+        #[arg(long)]
+        group_reference: String,
+        /// Path to the RFC 9420 TLS-encoded X.509 credential vector.
+        #[arg(long)]
+        credential: PathBuf,
+        /// Target device's full identity fingerprint as exactly 64 hex characters.
+        #[arg(long)]
+        target_fingerprint: String,
+    },
+
     /// Restore one locally persisted Space Genesis snapshot by its identifiers.
     ///
     /// Restoration verifies the local signed Genesis and protected MLS snapshot;

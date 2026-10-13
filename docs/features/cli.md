@@ -16,6 +16,7 @@ The production CLI is native Rust. It uses the same core and local identity form
 | CLI-010 | `lattice identity pin` shall persist an exact public bundle only when its full fingerprint matches. | Wrong fingerprints and conflicting bundle bytes fail without replacing the existing pin; lookup after reopen returns the exact stored bundle. | M7 |
 | CLI-011 | `lattice identity csr` shall export a PKCS#10 request for the device's Ed25519 key and exact full-fingerprint URI SAN without exporting private material. | The request signature, SPKI key and fingerprint SAN verify; `--output` refuses to overwrite an existing file. | M7 |
 | CLI-012 | `lattice identity unpin` shall remove one exact pin from the selected local profile. | Future pinned operations no longer load it; repeated removal is safe and output does not claim remote revocation. | M7 |
+| CLI-013 | `lattice space remove-member` shall commit an authorized member removal and exact MLS rekey locally. | Rejected targets do not mutate the outbox; accepted results report parent/new epochs and never claim peer delivery. | M3 |
 
 CLI output should support human and machine-readable modes with stable error classes. It may facilitate test harnesses, but its existence does not imply a globally reachable node or centralized administration.
 
@@ -28,6 +29,8 @@ CLI output should support human and machine-readable modes with stable error cla
 `lattice space restore --space-id <hex> --group-reference <hex>` revalidates one locally persisted signed Genesis and protected MLS snapshot, then reports its channels. It does not check remote membership or contact the network.
 
 `lattice space recover --space-id <hex> --group-reference <hex> --credential <path>` restores that locally retained generation and creates a new one-member root after validating the RFC 9420 X.509 credential vector. It preserves supported channel descriptors, resets membership to the local administrator, and does not rejoin prior members or contact the network.
+
+`lattice space remove-member --space-id <hex> --group-reference <hex> --credential <path> --target-fingerprint <hex>` commits an authorized MLS Remove Commit and matching policy transition for the exact full target fingerprint. It advances the local epoch and emits control/transition IDs; it does not contact peers, guarantee delivery, or erase previously received content.
 
 `lattice peer scan` reads local IP-interface assignments only. Its output reports whether a non-loopback, non-unspecified IP address was observed; that is a local candidate, not evidence of reachability or peer presence. BLE, Wi-Fi Aware, Wi-Fi Direct, and relay paths remain `not_probed` by the CLI. It sends no packets, does not start peer discovery, creates no profile data, and omits interface names, IP addresses, peer identities, Space IDs, and keys.
 
@@ -55,6 +58,8 @@ The CLI implements `about`, `status`, identity initialization/CSR/pinning, local
 `space_join` returns `state: "local_welcome_imported"`, the imported Space/group/root event IDs and channel summaries, `local_state_persisted: true`, and explicit `network_contacted`, `peer_delivery`, and `general_history_replayed` false values.
 
 `space_leave` returns `state: "queued"` with the event ID and explicit `forwarded: false`, `delivered: false`, and `network_contacted: false`. The request is authenticated by both the enclosing event and MLS Remove proposal. It does not locally change the roster; another current member must commit the proposal for group membership to end.
+
+`space_remove_member` returns `state: "member_removed_locally"`, the target fingerprint, control and policy-transition event IDs, parent/new MLS epochs, `network_contacted: false`, and `peer_delivery_claimed: false`.
 
 `space_key_package` returns `state: "published_locally"`, the output path, byte count, `tracked_as_one_time: true`, and `network_contacted: false`.
 
@@ -84,6 +89,7 @@ The JSON `about.available` array includes `local_space_one_member_recovery`, `lo
 | `space invite` | Signed invite token and Welcome bootstrap written; three events queued | Invalid KeyPackage, denied invite permission, rejected transition, or existing output |
 | `space join` | Pinned-inviter Welcome checkpoint imported locally | Invalid package or credential, inviter not pinned, or rejected MLS Welcome |
 | `space leave` | Signed encrypted self-removal proposal queued locally | Root author is protected or credential/MLS proposal is invalid |
+| `space remove-member` | Exact target removed from the local policy and MLS roster; epoch transition IDs | Invalid/untrusted credential, unauthorized target, conflicting generation, or MLS/storage rejection |
 | `send` | Durable event ID and queued/delivery status | Storage full, denied permission, invalid draft |
 | `relay test` | Transport connectivity/compatibility result | Relay unreachable, incompatible profile, rate limit |
 | `node run` | Opt-in active mode with queue/quota report | Invalid DB, key unavailable, port/path conflict |

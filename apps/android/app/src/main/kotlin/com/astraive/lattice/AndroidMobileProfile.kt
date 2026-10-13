@@ -263,6 +263,18 @@ internal class AndroidMobileProfile private constructor(
         expiresAtUnixSeconds,
         maxUses,
     )
+    fun removeSpaceMember(
+        spaceId: ByteArray,
+        groupReference: ByteArray,
+        credentialVector: ByteArray,
+        targetFingerprint: ByteArray,
+    ) = client.removeSpaceMember(
+        spaceId,
+        groupReference,
+        credentialVector,
+        targetFingerprint,
+    )
+
 
     fun joinSpaceFromWelcomeBootstrap(
         bootstrapPackage: ByteArray,
