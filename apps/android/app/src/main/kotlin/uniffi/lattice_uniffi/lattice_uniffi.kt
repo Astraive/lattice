@@ -17,22 +17,22 @@ package uniffi.lattice_uniffi
 // compile the Rust component. The easiest way to ensure this is to bundle the Kotlin
 // helpers directly inline like we're doing here.
 
-import android.os.Build
-import androidx.annotation.RequiresApi
-import com.sun.jna.Callback
-import com.sun.jna.IntegerType
 import com.sun.jna.Library
+import com.sun.jna.IntegerType
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.Structure
+import com.sun.jna.Callback
 import com.sun.jna.ptr.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
+import android.os.Build
+import androidx.annotation.RequiresApi
+import java.util.concurrent.atomic.AtomicBoolean
 
 // This is a helper for safely working with byte buffers returned from the Rust code.
 // A rust-owned buffer is represented by its capacity, its current length, and a
@@ -46,41 +46,29 @@ open class RustBuffer : Structure() {
     // Note: `capacity` and `len` are actually `ULong` values, but JVM only supports signed values.
     // When dealing with these fields, make sure to call `toULong()`.
     @JvmField var capacity: Long = 0
-
     @JvmField var len: Long = 0
-
     @JvmField var data: Pointer? = null
 
-    class ByValue :
-        RustBuffer(),
-        Structure.ByValue
+    class ByValue: RustBuffer(), Structure.ByValue
+    class ByReference: RustBuffer(), Structure.ByReference
 
-    class ByReference :
-        RustBuffer(),
-        Structure.ByReference
-
-    internal fun setValue(other: RustBuffer) {
+   internal fun setValue(other: RustBuffer) {
         capacity = other.capacity
         len = other.len
         data = other.data
     }
 
     companion object {
-        internal fun alloc(size: ULong = 0UL) =
-            uniffiRustCall { status ->
-                // Note: need to convert the size to a `Long` value to make this work with JVM.
-                UniffiLib.ffi_lattice_uniffi_rustbuffer_alloc(size.toLong(), status)
-            }.also {
-                if (it.data == null) {
-                    throw RuntimeException("RustBuffer.alloc() returned null data pointer (size=$size)")
-                }
-            }
+        internal fun alloc(size: ULong = 0UL) = uniffiRustCall() { status ->
+            // Note: need to convert the size to a `Long` value to make this work with JVM.
+            UniffiLib.ffi_lattice_uniffi_rustbuffer_alloc(size.toLong(), status)
+        }.also {
+            if(it.data == null) {
+               throw RuntimeException("RustBuffer.alloc() returned null data pointer (size=${size})")
+           }
+        }
 
-        internal fun create(
-            capacity: ULong,
-            len: ULong,
-            data: Pointer?,
-        ): RustBuffer.ByValue {
+        internal fun create(capacity: ULong, len: ULong, data: Pointer?): RustBuffer.ByValue {
             var buf = RustBuffer.ByValue()
             buf.capacity = capacity.toLong()
             buf.len = len.toLong()
@@ -88,10 +76,9 @@ open class RustBuffer : Structure() {
             return buf
         }
 
-        internal fun free(buf: RustBuffer.ByValue) =
-            uniffiRustCall { status ->
-                UniffiLib.ffi_lattice_uniffi_rustbuffer_free(buf, status)
-            }
+        internal fun free(buf: RustBuffer.ByValue) = uniffiRustCall() { status ->
+            UniffiLib.ffi_lattice_uniffi_rustbuffer_free(buf, status)
+        }
     }
 
     @Suppress("TooGenericExceptionThrown")
@@ -110,12 +97,9 @@ open class RustBuffer : Structure() {
 @Structure.FieldOrder("len", "data")
 internal open class ForeignBytes : Structure() {
     @JvmField var len: Int = 0
-
     @JvmField var data: Pointer? = null
 
-    class ByValue :
-        ForeignBytes(),
-        Structure.ByValue
+    class ByValue : ForeignBytes(), Structure.ByValue
 }
 
 // Converter for `&[u8]` / `[ByRef] bytes` arguments.
@@ -138,13 +122,7 @@ internal object FfiConverterByRefBytes : FfiConverter<java.nio.ByteBuffer, Forei
         fb.len = remaining
         // Zero-length direct buffers: skip getDirectBufferPointer (platform-variable behavior)
         // and pass null. The Rust side treats (null, 0) as &[].
-        fb.data =
-            if (remaining == 0) {
-                null
-            } else {
-                com.sun.jna.Native
-                    .getDirectBufferPointer(value)
-            }
+        fb.data = if (remaining == 0) null else com.sun.jna.Native.getDirectBufferPointer(value)
         return fb
     }
 
@@ -152,24 +130,14 @@ internal object FfiConverterByRefBytes : FfiConverter<java.nio.ByteBuffer, Forei
         error("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
 
     override fun read(buf: java.nio.ByteBuffer): java.nio.ByteBuffer =
-        error(
-            "ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.",
-        )
+        error("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
 
-    override fun write(
-        value: java.nio.ByteBuffer,
-        buf: java.nio.ByteBuffer,
-    ): Unit =
-        error(
-            "ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.",
-        )
+    override fun write(value: java.nio.ByteBuffer, buf: java.nio.ByteBuffer): Unit =
+        error("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
 
     override fun allocationSize(value: java.nio.ByteBuffer): ULong =
-        error(
-            "ByRef bytes have no RustBuffer allocation size: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.",
-        )
+        error("ByRef bytes have no RustBuffer allocation size: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
 }
-
 /**
  * The FfiConverter interface handles converter types to and from the FFI
  *
@@ -199,10 +167,7 @@ public interface FfiConverter<KotlinType, FfiType> {
     fun allocationSize(value: KotlinType): ULong
 
     // Write a Kotlin type to a `ByteBuffer`
-    fun write(
-        value: KotlinType,
-        buf: ByteBuffer,
-    )
+    fun write(value: KotlinType, buf: ByteBuffer)
 
     // Lower a value into a `RustBuffer`
     //
@@ -213,10 +178,9 @@ public interface FfiConverter<KotlinType, FfiType> {
     fun lowerIntoRustBuffer(value: KotlinType): RustBuffer.ByValue {
         val rbuf = RustBuffer.alloc(allocationSize(value))
         try {
-            val bbuf =
-                rbuf.data!!.getByteBuffer(0, rbuf.capacity).also {
-                    it.order(ByteOrder.BIG_ENDIAN)
-                }
+            val bbuf = rbuf.data!!.getByteBuffer(0, rbuf.capacity).also {
+                it.order(ByteOrder.BIG_ENDIAN)
+            }
             write(value, bbuf)
             rbuf.writeField("len", bbuf.position().toLong())
             return rbuf
@@ -233,11 +197,11 @@ public interface FfiConverter<KotlinType, FfiType> {
     fun liftFromRustBuffer(rbuf: RustBuffer.ByValue): KotlinType {
         val byteBuf = rbuf.asByteBuffer()!!
         try {
-            val item = read(byteBuf)
-            if (byteBuf.hasRemaining()) {
-                throw RuntimeException("junk remaining in buffer after lifting, something is very wrong!!")
-            }
-            return item
+           val item = read(byteBuf)
+           if (byteBuf.hasRemaining()) {
+               throw RuntimeException("junk remaining in buffer after lifting, something is very wrong!!")
+           }
+           return item
         } finally {
             RustBuffer.free(rbuf)
         }
@@ -249,9 +213,8 @@ public interface FfiConverter<KotlinType, FfiType> {
  *
  * @suppress
  */
-public interface FfiConverterRustBuffer<KotlinType> : FfiConverter<KotlinType, RustBuffer.ByValue> {
+public interface FfiConverterRustBuffer<KotlinType>: FfiConverter<KotlinType, RustBuffer.ByValue> {
     override fun lift(value: RustBuffer.ByValue) = liftFromRustBuffer(value)
-
     override fun lower(value: KotlinType) = lowerIntoRustBuffer(value)
 }
 // A handful of classes and functions to support the generated data structures.
@@ -264,24 +227,24 @@ internal const val UNIFFI_CALL_UNEXPECTED_ERROR = 2.toByte()
 @Structure.FieldOrder("code", "error_buf")
 internal open class UniffiRustCallStatus : Structure() {
     @JvmField var code: Byte = 0
-
     @JvmField var error_buf: RustBuffer.ByValue = RustBuffer.ByValue()
 
-    class ByValue :
-        UniffiRustCallStatus(),
-        Structure.ByValue
+    class ByValue: UniffiRustCallStatus(), Structure.ByValue
 
-    fun isSuccess(): Boolean = code == UNIFFI_CALL_SUCCESS
+    fun isSuccess(): Boolean {
+        return code == UNIFFI_CALL_SUCCESS
+    }
 
-    fun isError(): Boolean = code == UNIFFI_CALL_ERROR
+    fun isError(): Boolean {
+        return code == UNIFFI_CALL_ERROR
+    }
 
-    fun isPanic(): Boolean = code == UNIFFI_CALL_UNEXPECTED_ERROR
+    fun isPanic(): Boolean {
+        return code == UNIFFI_CALL_UNEXPECTED_ERROR
+    }
 
     companion object {
-        fun create(
-            code: Byte,
-            errorBuf: RustBuffer.ByValue,
-        ): UniffiRustCallStatus.ByValue {
+        fun create(code: Byte, errorBuf: RustBuffer.ByValue): UniffiRustCallStatus.ByValue {
             val callStatus = UniffiRustCallStatus.ByValue()
             callStatus.code = code
             callStatus.error_buf = errorBuf
@@ -290,9 +253,7 @@ internal open class UniffiRustCallStatus : Structure() {
     }
 }
 
-class InternalException(
-    message: String,
-) : kotlin.Exception(message)
+class InternalException(message: String) : kotlin.Exception(message)
 
 /**
  * Each top-level error class has a companion object that can lift the error from the call status's rust buffer
@@ -300,7 +261,7 @@ class InternalException(
  * @suppress
  */
 interface UniffiRustCallStatusErrorHandler<E> {
-    fun lift(error_buf: RustBuffer.ByValue): E
+    fun lift(error_buf: RustBuffer.ByValue): E;
 }
 
 // Helpers for calling Rust
@@ -308,10 +269,7 @@ interface UniffiRustCallStatusErrorHandler<E> {
 // synchronize itself
 
 // Call a rust function that returns a Result<>.  Pass in the Error class companion that corresponds to the Err
-private inline fun <U, E : kotlin.Exception> uniffiRustCallWithError(
-    errorHandler: UniffiRustCallStatusErrorHandler<E>,
-    callback: (UniffiRustCallStatus) -> U,
-): U {
+private inline fun <U, E: kotlin.Exception> uniffiRustCallWithError(errorHandler: UniffiRustCallStatusErrorHandler<E>, callback: (UniffiRustCallStatus) -> U): U {
     var status = UniffiRustCallStatus()
     val return_value = callback(status)
     uniffiCheckCallStatus(errorHandler, status)
@@ -319,10 +277,7 @@ private inline fun <U, E : kotlin.Exception> uniffiRustCallWithError(
 }
 
 // Check UniffiRustCallStatus and throw an error if the call wasn't successful
-private fun <E : kotlin.Exception> uniffiCheckCallStatus(
-    errorHandler: UniffiRustCallStatusErrorHandler<E>,
-    status: UniffiRustCallStatus,
-) {
+private fun<E: kotlin.Exception> uniffiCheckCallStatus(errorHandler: UniffiRustCallStatusErrorHandler<E>, status: UniffiRustCallStatus) {
     if (status.isSuccess()) {
         return
     } else if (status.isError()) {
@@ -346,7 +301,7 @@ private fun <E : kotlin.Exception> uniffiCheckCallStatus(
  *
  * @suppress
  */
-object UniffiNullRustCallStatusErrorHandler : UniffiRustCallStatusErrorHandler<InternalException> {
+object UniffiNullRustCallStatusErrorHandler: UniffiRustCallStatusErrorHandler<InternalException> {
     override fun lift(error_buf: RustBuffer.ByValue): InternalException {
         RustBuffer.free(error_buf)
         return InternalException("Unexpected CALL_ERROR")
@@ -354,54 +309,44 @@ object UniffiNullRustCallStatusErrorHandler : UniffiRustCallStatusErrorHandler<I
 }
 
 // Call a rust function that returns a plain value
-private inline fun <U> uniffiRustCall(callback: (UniffiRustCallStatus) -> U): U =
-    uniffiRustCallWithError(UniffiNullRustCallStatusErrorHandler, callback)
+private inline fun <U> uniffiRustCall(callback: (UniffiRustCallStatus) -> U): U {
+    return uniffiRustCallWithError(UniffiNullRustCallStatusErrorHandler, callback)
+}
 
-internal inline fun <T> uniffiTraitInterfaceCall(
+internal inline fun<T> uniffiTraitInterfaceCall(
     callStatus: UniffiRustCallStatus,
     makeCall: () -> T,
     writeReturn: (T) -> Unit,
 ) {
     try {
         writeReturn(makeCall())
-    } catch (e: kotlin.Exception) {
-        val err =
-            try {
-                e.stackTraceToString()
-            } catch (_: Throwable) {
-                ""
-            }
+    } catch(e: kotlin.Exception) {
+        val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
         callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
         callStatus.error_buf = FfiConverterString.lower(err)
     }
 }
 
-internal inline fun <T, reified E : Throwable> uniffiTraitInterfaceCallWithError(
+internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
     callStatus: UniffiRustCallStatus,
     makeCall: () -> T,
     writeReturn: (T) -> Unit,
-    lowerError: (E) -> RustBuffer.ByValue,
+    lowerError: (E) -> RustBuffer.ByValue
 ) {
     try {
         writeReturn(makeCall())
-    } catch (e: kotlin.Exception) {
+    } catch(e: kotlin.Exception) {
         if (e is E) {
             callStatus.code = UNIFFI_CALL_ERROR
             callStatus.error_buf = lowerError(e)
         } else {
-            val err =
-                try {
-                    e.stackTraceToString()
-                } catch (_: Throwable) {
-                    ""
-                }
+            val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
             callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
             callStatus.error_buf = FfiConverterString.lower(err)
         }
     }
 }
-
-// Initial value and increment amount for handles.
+// Initial value and increment amount for handles. 
 // These ensure that Kotlin-generated handles always have the lowest bit set
 private const val UNIFFI_HANDLEMAP_INITIAL = 1.toLong()
 private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
@@ -409,13 +354,10 @@ private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
 // Map handles to objects
 //
 // This is used pass an opaque 64-bit handle representing a foreign object to the Rust code.
-internal class UniffiHandleMap<T : Any> {
+internal class UniffiHandleMap<T: Any> {
     private val map = ConcurrentHashMap<Long, T>()
-
-    // Start
-    private val counter =
-        java.util.concurrent.atomic
-            .AtomicLong(UNIFFI_HANDLEMAP_INITIAL)
+    // Start 
+    private val counter = java.util.concurrent.atomic.AtomicLong(UNIFFI_HANDLEMAP_INITIAL)
 
     val size: Int
         get() = map.size
@@ -434,10 +376,14 @@ internal class UniffiHandleMap<T : Any> {
     }
 
     // Get an object from the handle map
-    fun get(handle: Long): T = map.get(handle) ?: throw InternalException("UniffiHandleMap.get: Invalid handle")
+    fun get(handle: Long): T {
+        return map.get(handle) ?: throw InternalException("UniffiHandleMap.get: Invalid handle")
+    }
 
     // Remove an entry from the handlemap and get the Kotlin object back
-    fun remove(handle: Long): T = map.remove(handle) ?: throw InternalException("UniffiHandleMap: Invalid handle")
+    fun remove(handle: Long): T {
+        return map.remove(handle) ?: throw InternalException("UniffiHandleMap: Invalid handle")
+    }
 }
 
 // Contains loading, initialization code,
@@ -453,24 +399,18 @@ private fun findLibraryName(componentName: String): String {
 
 // Define FFI callback types
 internal interface UniffiRustFutureContinuationCallback : com.sun.jna.Callback {
-    fun callback(
-        `data`: Long,
-        `pollResult`: Byte,
-    )
+    fun callback(`data`: Long,`pollResult`: Byte,)
 }
-
 internal interface UniffiForeignFutureDroppedCallback : com.sun.jna.Callback {
-    fun callback(`handle`: Long)
+    fun callback(`handle`: Long,)
 }
-
 internal interface UniffiCallbackInterfaceFree : com.sun.jna.Callback {
-    fun callback(`handle`: Long)
+    fun callback(`handle`: Long,)
 }
-
 internal interface UniffiCallbackInterfaceClone : com.sun.jna.Callback {
-    fun callback(`handle`: Long): Long
+    fun callback(`handle`: Long,)
+    : Long
 }
-
 @Structure.FieldOrder("handle", "free")
 internal open class UniffiForeignFutureDroppedCallbackStruct(
     @JvmField internal var `handle`: Long = 0.toLong(),
@@ -479,15 +419,14 @@ internal open class UniffiForeignFutureDroppedCallbackStruct(
     class UniffiByValue(
         `handle`: Long = 0.toLong(),
         `free`: UniffiForeignFutureDroppedCallback? = null,
-    ) : UniffiForeignFutureDroppedCallbackStruct(`handle`, `free`),
-        Structure.ByValue
+    ): UniffiForeignFutureDroppedCallbackStruct(`handle`,`free`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureDroppedCallbackStruct) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureDroppedCallbackStruct) {
         `handle` = other.`handle`
         `free` = other.`free`
     }
-}
 
+}
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultU8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
@@ -496,22 +435,17 @@ internal open class UniffiForeignFutureResultU8(
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultU8(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultU8(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultU8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU8 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultU8.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU8.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultI8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
@@ -520,22 +454,17 @@ internal open class UniffiForeignFutureResultI8(
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultI8(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultI8(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultI8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI8 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultI8.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI8.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultU16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
@@ -544,22 +473,17 @@ internal open class UniffiForeignFutureResultU16(
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultU16(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultU16(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultU16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU16 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultU16.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU16.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultI16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
@@ -568,22 +492,17 @@ internal open class UniffiForeignFutureResultI16(
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultI16(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultI16(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultI16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI16 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultI16.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI16.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultU32(
     @JvmField internal var `returnValue`: Int = 0,
@@ -592,22 +511,17 @@ internal open class UniffiForeignFutureResultU32(
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultU32(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultU32(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultU32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU32 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultU32.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU32.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultI32(
     @JvmField internal var `returnValue`: Int = 0,
@@ -616,22 +530,17 @@ internal open class UniffiForeignFutureResultI32(
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultI32(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultI32(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultI32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI32 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultI32.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI32.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultU64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
@@ -640,22 +549,17 @@ internal open class UniffiForeignFutureResultU64(
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultU64(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultU64(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultU64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteU64 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultU64.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU64.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultI64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
@@ -664,22 +568,17 @@ internal open class UniffiForeignFutureResultI64(
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultI64(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultI64(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultI64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteI64 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultI64.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI64.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultF32(
     @JvmField internal var `returnValue`: Float = 0.0f,
@@ -688,22 +587,17 @@ internal open class UniffiForeignFutureResultF32(
     class UniffiByValue(
         `returnValue`: Float = 0.0f,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultF32(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultF32(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultF32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultF32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteF32 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultF32.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultF32.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultF64(
     @JvmField internal var `returnValue`: Double = 0.0,
@@ -712,22 +606,17 @@ internal open class UniffiForeignFutureResultF64(
     class UniffiByValue(
         `returnValue`: Double = 0.0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultF64(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultF64(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultF64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultF64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteF64 : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultF64.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultF64.UniffiByValue,)
 }
-
 @Structure.FieldOrder("returnValue", "callStatus")
 internal open class UniffiForeignFutureResultRustBuffer(
     @JvmField internal var `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
@@ -736,63 +625,39 @@ internal open class UniffiForeignFutureResultRustBuffer(
     class UniffiByValue(
         `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultRustBuffer(`returnValue`, `callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultRustBuffer(`returnValue`,`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultRustBuffer) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultRustBuffer) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteRustBuffer : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultRustBuffer.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultRustBuffer.UniffiByValue,)
 }
-
 @Structure.FieldOrder("callStatus")
 internal open class UniffiForeignFutureResultVoid(
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ) : UniffiForeignFutureResultVoid(`callStatus`),
-        Structure.ByValue
+    ): UniffiForeignFutureResultVoid(`callStatus`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiForeignFutureResultVoid) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultVoid) {
         `callStatus` = other.`callStatus`
     }
-}
 
+}
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
-    fun callback(
-        `callbackData`: Long,
-        `result`: UniffiForeignFutureResultVoid.UniffiByValue,
-    )
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
-
 internal interface UniffiCallbackInterfacePlatformKeyProtectorMethod0 : com.sun.jna.Callback {
-    fun callback(
-        `uniffiHandle`: Long,
-        `profileId`: RustBuffer.ByValue,
-        `clearMaterial`: RustBuffer.ByValue,
-        `uniffiOutReturn`: RustBuffer,
-        uniffiCallStatus: UniffiRustCallStatus,
-    )
+    fun callback(`uniffiHandle`: Long,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-
 internal interface UniffiCallbackInterfacePlatformKeyProtectorMethod1 : com.sun.jna.Callback {
-    fun callback(
-        `uniffiHandle`: Long,
-        `profileId`: RustBuffer.ByValue,
-        `ciphertext`: RustBuffer.ByValue,
-        `uniffiOutReturn`: RustBuffer,
-        uniffiCallStatus: UniffiRustCallStatus,
-    )
+    fun callback(`uniffiHandle`: Long,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "wrap", "unwrap")
 internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
@@ -805,15 +670,15 @@ internal open class UniffiVTableCallbackInterfacePlatformKeyProtector(
         `uniffiClone`: UniffiCallbackInterfaceClone? = null,
         `wrap`: UniffiCallbackInterfacePlatformKeyProtectorMethod0? = null,
         `unwrap`: UniffiCallbackInterfacePlatformKeyProtectorMethod1? = null,
-    ) : UniffiVTableCallbackInterfacePlatformKeyProtector(`uniffiFree`, `uniffiClone`, `wrap`, `unwrap`),
-        Structure.ByValue
+    ): UniffiVTableCallbackInterfacePlatformKeyProtector(`uniffiFree`,`uniffiClone`,`wrap`,`unwrap`,), Structure.ByValue
 
-    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfacePlatformKeyProtector) {
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfacePlatformKeyProtector) {
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `wrap` = other.`wrap`
         `unwrap` = other.`unwrap`
     }
+
 }
 
 // A JNA Library to expose the extern-C FFI definitions.
@@ -840,899 +705,431 @@ internal object IntegrityCheckingUniffiLib {
     }
 
     internal fun ensureInitialized() = Unit
-
-    external fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_unwrap(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_confirmation_write_succeeded(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_decrypt_record(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_encrypt_record(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_peer_identity_fingerprint(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_identity_proof(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_terminate(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_validate_active_responder_token(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_confirmation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_message(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_accept_direct_message_invitation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_accept_pending_direct_message_invitation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_attachment_staging_status(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_authorized_attachment_manifest(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_attachment_manifest(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_direct_message(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_decline_pending_direct_message_invitation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_conversations(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_history(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_is_for_peer(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_outbox_page(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_exchange_direct_messages_once(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_finish_attachment_export(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_direct_message_packet(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_direct_message_attempt(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_pending_direct_message_invitations(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_prepare_attachment_export(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_direct_message_key_package(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_attachment_manifest(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_direct_message_text(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_pin(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reaction(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reply(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_receive_attachment_once(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_direct_message_peer_ingress_accepted(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_send_attachment_once(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_unpin_identity(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_cancel(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_is_closed(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_wait_for_change(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_constructor_mobileblesession_new(): Int
-
-    external fun uniffi_lattice_uniffi_checksum_constructor_mobileclient_open_or_create(): Int
-
-    external fun ffi_lattice_uniffi_uniffi_contract_version(): Int
+    external fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_platformkeyprotector_unwrap(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_confirmation_write_succeeded(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_decrypt_record(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_encrypt_record(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_handshake_complete(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_is_authenticated(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_peer_identity_fingerprint(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_confirmation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_handshake_message(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_read_identity_proof(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_terminate(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_validate_active_responder_token(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_confirmation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_handshake_message(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileblesession_write_identity_proof(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_accept_direct_message_invitation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_accept_pending_direct_message_invitation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_attachment_staging_status(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_authorized_attachment_manifest(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_certificate_signing_request(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_attachment_manifest(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_direct_message(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_local_space(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_create_space_invitation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_decline_pending_direct_message_invitation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_conversations(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_history(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_is_for_peer(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_direct_message_outbox_page(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_exchange_direct_messages_once(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_finish_attachment_export(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_identity_info(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_direct_message_packet(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_ingest_synced_application_event(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_join_space_from_welcome_bootstrap(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_spaces(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_list_local_text_messages(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_direct_message_attempt(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_mark_outbox_attempt(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_next_author_sequence(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_outbox_page(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_pending_direct_message_invitations(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_pin_identity(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_pinned_identity(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_prepare_attachment_export(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_direct_message_key_package(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_publish_space_key_package(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_attachment_manifest(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_direct_message_text(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_edit(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_pin(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reaction(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_reply(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_queue_local_text_message_tombstone(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_receive_attachment_once(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_direct_message_peer_ingress_accepted(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_record_peer_ingress_accepted(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_remove_space_member(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_send_attachment_once(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_subscribe_projection_changes(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileclient_unpin_identity(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_cancel(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_is_closed(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_method_mobileprojectionsubscription_wait_for_change(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_constructor_mobileblesession_new(
+    ): Int
+    external fun uniffi_lattice_uniffi_checksum_constructor_mobileclient_open_or_create(
+    ): Int
+    external fun ffi_lattice_uniffi_uniffi_contract_version(
+    ): Int
+
+        
 }
 
 internal object UniffiLib {
+    
     // The Cleaner for the whole library
     internal val CLEANER: UniffiCleaner by lazy {
         UniffiCleaner.create()
     }
+    
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "lattice_uniffi"))
         uniffiCallbackInterfacePlatformKeyProtector.register(this)
+        
     }
 
     internal fun ensureInitialized() = Unit
-
-    external fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_clone_platformkeyprotector(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_free_platformkeyprotector(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_init_callback_vtable_platformkeyprotector(
-        `vtable`: UniffiVTableCallbackInterfacePlatformKeyProtector,
+    external fun uniffi_lattice_uniffi_fn_init_callback_vtable_platformkeyprotector(`vtable`: UniffiVTableCallbackInterfacePlatformKeyProtector,
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(
-        `ptr`: Long,
-        `profileId`: RustBuffer.ByValue,
-        `clearMaterial`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(`ptr`: Long,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(
-        `ptr`: Long,
-        `profileId`: RustBuffer.ByValue,
-        `ciphertext`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(`ptr`: Long,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_clone_mobileblesession(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_clone_mobileblesession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_free_mobileblesession(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_free_mobileblesession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_constructor_mobileblesession_new(
-        `client`: Long,
-        `role`: RustBuffer.ByValue,
-        `responderToken`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_constructor_mobileblesession_new(`client`: Long,`role`: RustBuffer.ByValue,`responderToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_confirmation_write_succeeded(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_confirmation_write_succeeded(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_decrypt_record(
-        `ptr`: Long,
-        `ciphertext`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_decrypt_record(`ptr`: Long,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_encrypt_record(
-        `ptr`: Long,
-        `plaintext`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_encrypt_record(`ptr`: Long,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_handshake_complete(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_handshake_complete(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_peer_identity_fingerprint(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_peer_identity_fingerprint(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_confirmation(
-        `ptr`: Long,
-        `packet`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_confirmation(`ptr`: Long,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_handshake_message(
-        `ptr`: Long,
-        `packet`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_handshake_message(`ptr`: Long,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_identity_proof(
-        `ptr`: Long,
-        `packet`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_read_identity_proof(`ptr`: Long,`packet`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_terminate(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_terminate(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_validate_active_responder_token(
-        `ptr`: Long,
-        `activeToken`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_validate_active_responder_token(`ptr`: Long,`activeToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_confirmation(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_confirmation(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_handshake_message(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_handshake_message(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_identity_proof(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileblesession_write_identity_proof(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_clone_mobileclient(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_clone_mobileclient(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_free_mobileclient(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_free_mobileclient(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(
-        `databasePath`: RustBuffer.ByValue,
-        `profileId`: RustBuffer.ByValue,
-        `protector`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(`databasePath`: RustBuffer.ByValue,`profileId`: RustBuffer.ByValue,`protector`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_accept_direct_message_invitation(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        `authenticatedPeerIdentity`: RustBuffer.ByValue,
-        `invitationPacket`: RustBuffer.ByValue,
-        `userAccepted`: Byte,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_accept_direct_message_invitation(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,`authenticatedPeerIdentity`: RustBuffer.ByValue,`invitationPacket`: RustBuffer.ByValue,`userAccepted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_accept_pending_direct_message_invitation(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        `authenticatedPeerIdentity`: RustBuffer.ByValue,
-        `packetId`: RustBuffer.ByValue,
-        `userAccepted`: Byte,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_accept_pending_direct_message_invitation(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,`authenticatedPeerIdentity`: RustBuffer.ByValue,`packetId`: RustBuffer.ByValue,`userAccepted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_attachment_staging_status(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `eventId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_attachment_staging_status(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_authorized_attachment_manifest(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `eventId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_authorized_attachment_manifest(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_attachment_manifest(
-        `ptr`: Long,
-        `sourceId`: RustBuffer.ByValue,
-        `filename`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_attachment_manifest(`ptr`: Long,`sourceId`: RustBuffer.ByValue,`filename`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_direct_message(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        `peerIdentity`: RustBuffer.ByValue,
-        `peerKeyPackage`: RustBuffer.ByValue,
-        `nextAttemptMs`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_direct_message(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,`peerIdentity`: RustBuffer.ByValue,`peerKeyPackage`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        `channels`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,`channels`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `keyPackageWire`: RustBuffer.ByValue,
-        `expiresAtUnixSeconds`: Long,
-        `maxUses`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`keyPackageWire`: RustBuffer.ByValue,`expiresAtUnixSeconds`: Long,`maxUses`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_decline_pending_direct_message_invitation(
-        `ptr`: Long,
-        `packetId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_decline_pending_direct_message_invitation(`ptr`: Long,`packetId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_conversations(
-        `ptr`: Long,
-        `limit`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_conversations(`ptr`: Long,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_history(
-        `ptr`: Long,
-        `groupReference`: RustBuffer.ByValue,
-        `limit`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_history(`ptr`: Long,`groupReference`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_is_for_peer(
-        `ptr`: Long,
-        `groupReference`: RustBuffer.ByValue,
-        `peerIdentity`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_is_for_peer(`ptr`: Long,`groupReference`: RustBuffer.ByValue,`peerIdentity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_outbox_page(
-        `ptr`: Long,
-        `afterPacketId`: RustBuffer.ByValue,
-        `limit`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_outbox_page(`ptr`: Long,`afterPacketId`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(
-        `ptr`: Long,
-        `connectAddress`: RustBuffer.ByValue,
-        `listenAddress`: RustBuffer.ByValue,
-        `peerFingerprint`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(`ptr`: Long,`connectAddress`: RustBuffer.ByValue,`listenAddress`: RustBuffer.ByValue,`peerFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(
-        `ptr`: Long,
-        `exportId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(`ptr`: Long,`exportId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(
-        `ptr`: Long,
-        `authenticatedPeerIdentity`: RustBuffer.ByValue,
-        `envelopeBytes`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(`ptr`: Long,`authenticatedPeerIdentity`: RustBuffer.ByValue,`envelopeBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(
-        `ptr`: Long,
-        `canonicalBytes`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(`ptr`: Long,`canonicalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(
-        `ptr`: Long,
-        `bootstrapPackage`: RustBuffer.ByValue,
-        `expectedInviterFingerprint`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(`ptr`: Long,`bootstrapPackage`: RustBuffer.ByValue,`expectedInviterFingerprint`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(
-        `ptr`: Long,
-        `after`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(`ptr`: Long,`after`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(
-        `ptr`: Long,
-        `packetId`: RustBuffer.ByValue,
-        `nextAttemptMs`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(`ptr`: Long,`packetId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(
-        `ptr`: Long,
-        `eventId`: RustBuffer.ByValue,
-        `nextAttemptMs`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(`ptr`: Long,`eventId`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(
-        `ptr`: Long,
-        `afterEventId`: RustBuffer.ByValue,
-        `limit`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(`ptr`: Long,`afterEventId`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_pending_direct_message_invitations(
-        `ptr`: Long,
-        `limit`: Int,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_pending_direct_message_invitations(`ptr`: Long,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(
-        `ptr`: Long,
-        `publicBundle`: RustBuffer.ByValue,
-        `expectedFingerprint`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(`ptr`: Long,`publicBundle`: RustBuffer.ByValue,`expectedFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(
-        `ptr`: Long,
-        `fingerprint`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(`ptr`: Long,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_prepare_attachment_export(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `eventId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_prepare_attachment_export(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_direct_message_key_package(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        `nowUnixSeconds`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_direct_message_key_package(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,`nowUnixSeconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_attachment_manifest(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `sourceId`: RustBuffer.ByValue,
-        `preview`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_attachment_manifest(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`sourceId`: RustBuffer.ByValue,`preview`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_direct_message_text(
-        `ptr`: Long,
-        `credentialVector`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `content`: RustBuffer.ByValue,
-        `nextAttemptMs`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_direct_message_text(`ptr`: Long,`credentialVector`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,`nextAttemptMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `content`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `targetMessageId`: RustBuffer.ByValue,
-        `content`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_pin(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `targetMessageId`: RustBuffer.ByValue,
-        `add`: Byte,
-        `tag`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_pin(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`add`: Byte,`tag`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reaction(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `targetMessageId`: RustBuffer.ByValue,
-        `token`: RustBuffer.ByValue,
-        `add`: Byte,
-        `tag`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reaction(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`add`: Byte,`tag`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `threadRoot`: RustBuffer.ByValue,
-        `content`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`threadRoot`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `targetMessageId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`targetMessageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_receive_attachment_once(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `eventId`: RustBuffer.ByValue,
-        `peerFingerprint`: RustBuffer.ByValue,
-        `listenAddress`: RustBuffer.ByValue,
-        `userConsented`: Byte,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_receive_attachment_once(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,`peerFingerprint`: RustBuffer.ByValue,`listenAddress`: RustBuffer.ByValue,`userConsented`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingress_accepted(
-        `ptr`: Long,
-        `packetId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingress_accepted(`ptr`: Long,`packetId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(
-        `ptr`: Long,
-        `eventId`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(`ptr`: Long,`eventId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `credentialVector`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `channelId`: RustBuffer.ByValue,
-        `query`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_remove_space_member(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`credentialVector`: RustBuffer.ByValue,`targetFingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_send_attachment_once(
-        `ptr`: Long,
-        `spaceId`: RustBuffer.ByValue,
-        `groupReference`: RustBuffer.ByValue,
-        `eventId`: RustBuffer.ByValue,
-        `peerFingerprint`: RustBuffer.ByValue,
-        `connectAddress`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_send_attachment_once(`ptr`: Long,`spaceId`: RustBuffer.ByValue,`groupReference`: RustBuffer.ByValue,`eventId`: RustBuffer.ByValue,`peerFingerprint`: RustBuffer.ByValue,`connectAddress`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(
-        `ptr`: Long,
-        `fingerprint`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(`ptr`: Long,`fingerprint`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_clone_mobileprojectionsubscription(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_clone_mobileprojectionsubscription(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun uniffi_lattice_uniffi_fn_free_mobileprojectionsubscription(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_free_mobileprojectionsubscription(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_cancel(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_cancel(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_is_closed(
-        `ptr`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_is_closed(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_wait_for_change(
-        `ptr`: Long,
-        `timeoutMs`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_wait_for_change(`ptr`: Long,`timeoutMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun ffi_lattice_uniffi_rustbuffer_alloc(
-        `size`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun ffi_lattice_uniffi_rustbuffer_from_bytes(
-        `bytes`: ForeignBytes.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun ffi_lattice_uniffi_rustbuffer_free(
-        `buf`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-
-    external fun ffi_lattice_uniffi_rustbuffer_reserve(
-        `buf`: RustBuffer.ByValue,
-        `additional`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun ffi_lattice_uniffi_rust_future_poll_u8(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_u8(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_u8(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_u8(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_u8(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_u8(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Int
-
-    external fun ffi_lattice_uniffi_rust_future_poll_i8(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_i8(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_i8(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_i8(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_i8(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_i8(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-
-    external fun ffi_lattice_uniffi_rust_future_poll_u16(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_u16(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_u16(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_u16(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_u16(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_u16(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Int
-
-    external fun ffi_lattice_uniffi_rust_future_poll_i16(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_i16(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_i16(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_i16(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_i16(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_i16(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Short
-
-    external fun ffi_lattice_uniffi_rust_future_poll_u32(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_u32(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_u32(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_u32(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_u32(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_u32(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Int
-
-    external fun ffi_lattice_uniffi_rust_future_poll_i32(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_i32(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_i32(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_i32(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_i32(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_i32(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Int
-
-    external fun ffi_lattice_uniffi_rust_future_poll_u64(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_u64(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_u64(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_u64(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_u64(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_u64(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun ffi_lattice_uniffi_rust_future_poll_i64(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_i64(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_i64(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_i64(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_i64(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_i64(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-
-    external fun ffi_lattice_uniffi_rust_future_poll_f32(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_f32(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_f32(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_f32(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_f32(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_f32(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Float
-
-    external fun ffi_lattice_uniffi_rust_future_poll_f64(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_f64(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_f64(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_f64(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_f64(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_f64(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Double
-
-    external fun ffi_lattice_uniffi_rust_future_poll_rust_buffer(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_cancel_rust_buffer(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_rust_buffer(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_rust_buffer(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_lattice_uniffi_rust_future_cancel_rust_buffer(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_rust_buffer(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-
-    external fun ffi_lattice_uniffi_rust_future_poll_void(
-        `handle`: Long,
-        `callback`: UniffiRustFutureContinuationCallback,
-        `callbackData`: Long,
+    external fun ffi_lattice_uniffi_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_cancel_void(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_free_void(`handle`: Long,
+    ): Unit
+    external fun ffi_lattice_uniffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
 
-    external fun ffi_lattice_uniffi_rust_future_cancel_void(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_free_void(`handle`: Long): Unit
-
-    external fun ffi_lattice_uniffi_rust_future_complete_void(
-        `handle`: Long,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): Unit
+        
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
@@ -1744,7 +1141,6 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI contract version mismatch: try cleaning and rebuilding your project")
     }
 }
-
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_lattice_uniffi_checksum_method_platformkeyprotector_wrap() and 0xFFFF) != 28960) {
@@ -1927,6 +1323,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_lattice_uniffi_checksum_method_mobileclient_recover_local_space_generation() and 0xFFFF) != 6891) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_lattice_uniffi_checksum_method_mobileclient_remove_space_member() and 0xFFFF) != 27669) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_lattice_uniffi_checksum_method_mobileclient_search_local_text_messages() and 0xFFFF) != 25582) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1970,6 +1369,7 @@ public fun uniffiEnsureInitialized() {
 
 // Public interface members begin here.
 
+
 // Interface implemented by anything that can contain an object reference.
 //
 // Such types expose a `destroy()` method that must be called to cleanly
@@ -1980,15 +1380,11 @@ public fun uniffiEnsureInitialized() {
 // helper method to execute a block and destroy the object at the end.
 interface Disposable {
     fun destroy()
-
     companion object {
         fun destroy(vararg args: Any?) {
             for (arg in args) {
                 when (arg) {
-                    is Disposable -> {
-                        arg.destroy()
-                    }
-
+                    is Disposable -> arg.destroy()
                     is ArrayList<*> -> {
                         for (idx in arg.indices) {
                             val element = arg[idx]
@@ -1997,7 +1393,6 @@ interface Disposable {
                             }
                         }
                     }
-
                     is Map<*, *> -> {
                         for (element in arg.values) {
                             if (element is Disposable) {
@@ -2005,7 +1400,6 @@ interface Disposable {
                             }
                         }
                     }
-
                     is Iterable<*> -> {
                         for (element in arg) {
                             if (element is Disposable) {
@@ -2034,7 +1428,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/**
+/** 
  * Placeholder object used to signal that we're constructing an interface with a FFI handle.
  *
  * This is the first argument for interface constructors that input a raw handle. It exists is that
@@ -2045,16 +1439,14 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
  * */
 object UniffiWithHandle
 
-/**
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
  * */
-object NoHandle // Magic number for the Rust proxy to call using the same mechanism as every other method,
-
+object NoHandle// Magic number for the Rust proxy to call using the same mechanism as every other method,
 // to free the callback once it's dropped by Rust.
 internal const val IDX_CALLBACK_FREE = 0
-
 // Callback return codes
 internal const val UNIFFI_CALLBACK_SUCCESS = 0
 internal const val UNIFFI_CALLBACK_ERROR = 1
@@ -2063,14 +1455,16 @@ internal const val UNIFFI_CALLBACK_UNEXPECTED_ERROR = 2
 /**
  * @suppress
  */
-public abstract class FfiConverterCallbackInterface<CallbackInterface : Any> : FfiConverter<CallbackInterface, Long> {
+public abstract class FfiConverterCallbackInterface<CallbackInterface: Any>: FfiConverter<CallbackInterface, Long> {
     internal val handleMap = UniffiHandleMap<CallbackInterface>()
 
     internal fun drop(handle: Long) {
         handleMap.remove(handle)
     }
 
-    override fun lift(value: Long): CallbackInterface = handleMap.get(value)
+    override fun lift(value: Long): CallbackInterface {
+        return handleMap.get(value)
+    }
 
     override fun read(buf: ByteBuffer) = lift(buf.getLong())
 
@@ -2078,14 +1472,10 @@ public abstract class FfiConverterCallbackInterface<CallbackInterface : Any> : F
 
     override fun allocationSize(value: CallbackInterface) = 8UL
 
-    override fun write(
-        value: CallbackInterface,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: CallbackInterface, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
-
 /**
  * The cleaner interface for Object finalization code to run.
  * This is the entry point to any implementation that we're using.
@@ -2101,24 +1491,17 @@ interface UniffiCleaner {
         fun clean()
     }
 
-    fun register(
-        value: Any,
-        cleanUpTask: Runnable,
-    ): UniffiCleaner.Cleanable
+    fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable
 
     companion object
 }
 
 // The fallback Jna cleaner, which is available for both Android, and the JVM.
 private class UniffiJnaCleaner : UniffiCleaner {
-    private val cleaner =
-        com.sun.jna.internal.Cleaner
-            .getCleaner()
+    private val cleaner = com.sun.jna.internal.Cleaner.getCleaner()
 
-    override fun register(
-        value: Any,
-        cleanUpTask: Runnable,
-    ): UniffiCleaner.Cleanable = UniffiJnaCleanable(cleaner.register(value, cleanUpTask))
+    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
+        UniffiJnaCleanable(cleaner.register(value, cleanUpTask))
 }
 
 private class UniffiJnaCleanable(
@@ -2127,10 +1510,12 @@ private class UniffiJnaCleanable(
     override fun clean() = cleanable.clean()
 }
 
+
 // We decide at uniffi binding generation time whether we were
 // using Android or not.
 // There are further runtime checks to chose the correct implementation
 // of the cleaner.
+
 
 private fun UniffiCleaner.Companion.create(): UniffiCleaner =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -2145,10 +1530,8 @@ private fun UniffiCleaner.Companion.create(): UniffiCleaner =
 private class AndroidSystemCleaner : UniffiCleaner {
     val cleaner = android.system.SystemCleaner.cleaner()
 
-    override fun register(
-        value: Any,
-        cleanUpTask: Runnable,
-    ): UniffiCleaner.Cleanable = AndroidSystemCleanable(cleaner.register(value, cleanUpTask))
+    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
+        AndroidSystemCleanable(cleaner.register(value, cleanUpTask))
 }
 
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -2161,19 +1544,22 @@ private class AndroidSystemCleanable(
 /**
  * @suppress
  */
-public object FfiConverterUInt : FfiConverter<UInt, Int> {
-    override fun lift(value: Int): UInt = value.toUInt()
+public object FfiConverterUInt: FfiConverter<UInt, Int> {
+    override fun lift(value: Int): UInt {
+        return value.toUInt()
+    }
 
-    override fun read(buf: ByteBuffer): UInt = lift(buf.getInt())
+    override fun read(buf: ByteBuffer): UInt {
+        return lift(buf.getInt())
+    }
 
-    override fun lower(value: UInt): Int = value.toInt()
+    override fun lower(value: UInt): Int {
+        return value.toInt()
+    }
 
     override fun allocationSize(value: UInt) = 4UL
 
-    override fun write(
-        value: UInt,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
     }
 }
@@ -2181,19 +1567,22 @@ public object FfiConverterUInt : FfiConverter<UInt, Int> {
 /**
  * @suppress
  */
-public object FfiConverterInt : FfiConverter<Int, Int> {
-    override fun lift(value: Int): Int = value
+public object FfiConverterInt: FfiConverter<Int, Int> {
+    override fun lift(value: Int): Int {
+        return value
+    }
 
-    override fun read(buf: ByteBuffer): Int = buf.getInt()
+    override fun read(buf: ByteBuffer): Int {
+        return buf.getInt()
+    }
 
-    override fun lower(value: Int): Int = value
+    override fun lower(value: Int): Int {
+        return value
+    }
 
     override fun allocationSize(value: Int) = 4UL
 
-    override fun write(
-        value: Int,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: Int, buf: ByteBuffer) {
         buf.putInt(value)
     }
 }
@@ -2201,19 +1590,22 @@ public object FfiConverterInt : FfiConverter<Int, Int> {
 /**
  * @suppress
  */
-public object FfiConverterULong : FfiConverter<ULong, Long> {
-    override fun lift(value: Long): ULong = value.toULong()
+public object FfiConverterULong: FfiConverter<ULong, Long> {
+    override fun lift(value: Long): ULong {
+        return value.toULong()
+    }
 
-    override fun read(buf: ByteBuffer): ULong = lift(buf.getLong())
+    override fun read(buf: ByteBuffer): ULong {
+        return lift(buf.getLong())
+    }
 
-    override fun lower(value: ULong): Long = value.toLong()
+    override fun lower(value: ULong): Long {
+        return value.toLong()
+    }
 
     override fun allocationSize(value: ULong) = 8UL
 
-    override fun write(
-        value: ULong,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: ULong, buf: ByteBuffer) {
         buf.putLong(value.toLong())
     }
 }
@@ -2221,19 +1613,22 @@ public object FfiConverterULong : FfiConverter<ULong, Long> {
 /**
  * @suppress
  */
-public object FfiConverterLong : FfiConverter<Long, Long> {
-    override fun lift(value: Long): Long = value
+public object FfiConverterLong: FfiConverter<Long, Long> {
+    override fun lift(value: Long): Long {
+        return value
+    }
 
-    override fun read(buf: ByteBuffer): Long = buf.getLong()
+    override fun read(buf: ByteBuffer): Long {
+        return buf.getLong()
+    }
 
-    override fun lower(value: Long): Long = value
+    override fun lower(value: Long): Long {
+        return value
+    }
 
     override fun allocationSize(value: Long) = 8UL
 
-    override fun write(
-        value: Long,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: Long, buf: ByteBuffer) {
         buf.putLong(value)
     }
 }
@@ -2241,19 +1636,22 @@ public object FfiConverterLong : FfiConverter<Long, Long> {
 /**
  * @suppress
  */
-public object FfiConverterBoolean : FfiConverter<Boolean, Byte> {
-    override fun lift(value: Byte): Boolean = value.toInt() != 0
+public object FfiConverterBoolean: FfiConverter<Boolean, Byte> {
+    override fun lift(value: Byte): Boolean {
+        return value.toInt() != 0
+    }
 
-    override fun read(buf: ByteBuffer): Boolean = lift(buf.get())
+    override fun read(buf: ByteBuffer): Boolean {
+        return lift(buf.get())
+    }
 
-    override fun lower(value: Boolean): Byte = if (value) 1.toByte() else 0.toByte()
+    override fun lower(value: Boolean): Byte {
+        return if (value) 1.toByte() else 0.toByte()
+    }
 
     override fun allocationSize(value: Boolean) = 1UL
 
-    override fun write(
-        value: Boolean,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: Boolean, buf: ByteBuffer) {
         buf.put(lower(value))
     }
 }
@@ -2261,7 +1659,7 @@ public object FfiConverterBoolean : FfiConverter<Boolean, Byte> {
 /**
  * @suppress
  */
-public object FfiConverterString : FfiConverter<String, RustBuffer.ByValue> {
+public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     // Note: we don't inherit from FfiConverterRustBuffer, because we use a
     // special encoding when lowering/lifting.  We can use `RustBuffer.len` to
     // store our length and avoid writing it out to the buffer.
@@ -2308,10 +1706,7 @@ public object FfiConverterString : FfiConverter<String, RustBuffer.ByValue> {
         return sizeForLength + sizeForString
     }
 
-    override fun write(
-        value: String,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: String, buf: ByteBuffer) {
         val byteBuf = toUtf8(value)
         buf.putInt(byteBuf.limit())
         buf.put(byteBuf)
@@ -2321,24 +1716,22 @@ public object FfiConverterString : FfiConverter<String, RustBuffer.ByValue> {
 /**
  * @suppress
  */
-public object FfiConverterByteArray : FfiConverterRustBuffer<ByteArray> {
+public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
     override fun read(buf: ByteBuffer): ByteArray {
         val len = buf.getInt()
         val byteArr = ByteArray(len)
         buf.get(byteArr)
         return byteArr
     }
-
-    override fun allocationSize(value: ByteArray): ULong = 4UL + value.size.toULong()
-
-    override fun write(
-        value: ByteArray,
-        buf: ByteBuffer,
-    ) {
+    override fun allocationSize(value: ByteArray): ULong {
+        return 4UL + value.size.toULong()
+    }
+    override fun write(value: ByteArray, buf: ByteBuffer) {
         buf.putInt(value.size)
         buf.put(value)
     }
 }
+
 
 // This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
@@ -2434,6 +1827,7 @@ public object FfiConverterByteArray : FfiConverterRustBuffer<ByteArray> {
 // [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
 //
 
+
 /**
  * One exp0 connection's transcript-bound Noise and Lattice identity state.
  *
@@ -2442,6 +1836,7 @@ public object FfiConverterByteArray : FfiConverterRustBuffer<ByteArray> {
  * bundle after the user compares the session safety number.
  */
 public interface MobileBleSessionInterface {
+    
     /**
      * Marks the responder's confirmation as locally accepted by the GATT write callback.
      *
@@ -2451,7 +1846,7 @@ public interface MobileBleSessionInterface {
      * or `BleSessionFailed` if the state mutex is poisoned.
      */
     fun `confirmationWriteSucceeded`()
-
+    
     /**
      * Authenticates and decrypts one record after identity confirmation.
      *
@@ -2461,7 +1856,7 @@ public interface MobileBleSessionInterface {
      * `BleSessionFailed` for an invalid, oversized, or unauthentic record.
      */
     fun `decryptRecord`(`ciphertext`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     /**
      * Encrypts one authenticated application/control record after identity confirmation.
      *
@@ -2471,7 +1866,7 @@ public interface MobileBleSessionInterface {
      * `BleRecordRejected` for an empty or oversized record, or session errors.
      */
     fun `encryptRecord`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     /**
      * Reports whether Noise has established the encrypted transport.
      *
@@ -2480,7 +1875,7 @@ public interface MobileBleSessionInterface {
      * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
     fun `handshakeComplete`(): kotlin.Boolean
-
+    
     /**
      * Reports whether the peer identity has been confirmed.
      *
@@ -2489,7 +1884,7 @@ public interface MobileBleSessionInterface {
      * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
     fun `isAuthenticated`(): kotlin.Boolean
-
+    
     /**
      * Returns the pinned fingerprint bound to this authenticated session.
      *
@@ -2500,7 +1895,7 @@ public interface MobileBleSessionInterface {
      * or `BleSessionFailed` if the session state mutex is poisoned.
      */
     fun `peerIdentityFingerprint`(): kotlin.ByteArray
-
+    
     /**
      * Verifies the peer confirmation; responders must then write their own confirmation.
      *
@@ -2510,7 +1905,7 @@ public interface MobileBleSessionInterface {
      * `BlePeerNotPinned` when explicit pinning is missing, or session errors.
      */
     fun `readConfirmation`(`packet`: kotlin.ByteArray)
-
+    
     /**
      * Reads one empty-payload Noise XX handshake packet.
      *
@@ -2520,7 +1915,7 @@ public interface MobileBleSessionInterface {
      * `BleRecordRejected` when the current handshake step cannot read.
      */
     fun `readHandshakeMessage`(`packet`: kotlin.ByteArray)
-
+    
     /**
      * Verifies the remote identity proof and returns the SAS for explicit pinning.
      *
@@ -2530,7 +1925,7 @@ public interface MobileBleSessionInterface {
      * `BlePeerIdentityMismatch` for a conflicting pin, or Core/session errors.
      */
     fun `readIdentityProof`(`packet`: kotlin.ByteArray): MobileBlePeerInfo
-
+    
     /**
      * Discards all handshake, transcript, peer, and transport state.
      *
@@ -2539,7 +1934,7 @@ public interface MobileBleSessionInterface {
      * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
     fun `terminate`()
-
+    
     /**
      * Checks the responder token again against the advertiser's active token.
      *
@@ -2552,7 +1947,7 @@ public interface MobileBleSessionInterface {
      * `BleRecordRejected` if the role, state, or token value does not match.
      */
     fun `validateActiveResponderToken`(`activeToken`: kotlin.ByteArray)
-
+    
     /**
      * Writes the role-appropriate encrypted identity confirmation after this device pins the peer.
      *
@@ -2562,7 +1957,7 @@ public interface MobileBleSessionInterface {
      * or a Core/Noise error if signing or encryption fails.
      */
     fun `writeConfirmation`(): kotlin.ByteArray
-
+    
     /**
      * Writes the next empty-payload Noise XX handshake packet.
      *
@@ -2572,7 +1967,7 @@ public interface MobileBleSessionInterface {
      * packet, or `BleSessionFailed` if Noise fails and the session is cleared.
      */
     fun `writeHandshakeMessage`(): kotlin.ByteArray
-
+    
     /**
      * Writes the role-specific encrypted 135-byte identity proof.
      *
@@ -2582,7 +1977,7 @@ public interface MobileBleSessionInterface {
      * or a Core/Noise error when signing or encrypting fails.
      */
     fun `writeIdentityProof`(): kotlin.ByteArray
-
+    
     companion object
 }
 
@@ -2593,14 +1988,13 @@ public interface MobileBleSessionInterface {
  * blocked from application records until this device pins the verified peer
  * bundle after the user compares the session safety number.
  */
-open class MobileBleSession :
-    Disposable,
-    AutoCloseable,
-    MobileBleSessionInterface {
+open class MobileBleSession: Disposable, AutoCloseable, MobileBleSessionInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
     /**
      * @suppress
      */
-    @Suppress("UNUSED_PARAMETER")
     constructor(withHandle: UniffiWithHandle, handle: Long) {
         this.handle = handle
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
@@ -2618,7 +2012,6 @@ open class MobileBleSession :
         this.handle = 0
         this.cleanable = null
     }
-
     /**
      * Creates an exp0 Noise XX session using the observed responder token.
      *
@@ -2631,17 +2024,16 @@ open class MobileBleSession :
      * bytes and `BleSessionFailed` if Core or Noise cannot initialize.
      */
     constructor(`client`: MobileClient, `role`: MobileBleRole, `responderToken`: kotlin.ByteArray) :
-        this(
-            UniffiWithHandle,
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_constructor_mobileblesession_new(
-                    FfiConverterTypeMobileClient.lower(`client`),
-                    FfiConverterTypeMobileBleRole.lower(`role`),
-                    FfiConverterByteArray.lower(`responderToken`),
-                    _status,
-                )
-            },
-        )
+        this(UniffiWithHandle, 
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_constructor_mobileblesession_new(
+    
+        
+        FfiConverterTypeMobileClient.lower(`client`),
+        FfiConverterTypeMobileBleRole.lower(`role`),
+        FfiConverterByteArray.lower(`responderToken`),_status)
+}
+    )
 
     protected val handle: Long
     protected val cleanable: UniffiCleaner.Cleanable?
@@ -2681,7 +2073,7 @@ open class MobileBleSession :
             if (c == Long.MAX_VALUE) {
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
-        } while (!this.callCounter.compareAndSet(c, c + 1L))
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
         // Now we can safely do the method call without the handle being freed concurrently.
         try {
             return block(this.uniffiCloneHandle())
@@ -2695,13 +2087,11 @@ open class MobileBleSession :
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(
-        private val handle: Long,
-    ) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
             if (handle == 0.toLong()) {
                 // Fake object created with `NoHandle`, don't try to free.
-                return
+                return;
             }
             uniffiRustCall { status ->
                 UniffiLib.uniffi_lattice_uniffi_fn_free_mobileblesession(handle, status)
@@ -2714,13 +2104,14 @@ open class MobileBleSession :
      */
     fun uniffiCloneHandle(): Long {
         if (handle == 0.toLong()) {
-            throw InternalException("uniffiCloneHandle() called on NoHandle object")
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
         }
-        return uniffiRustCall { status ->
+        return uniffiRustCall() { status ->
             UniffiLib.uniffi_lattice_uniffi_fn_clone_mobileblesession(handle, status)
         }
     }
 
+    
     /**
      * Marks the responder's confirmation as locally accepted by the GATT write callback.
      *
@@ -2729,17 +2120,19 @@ open class MobileBleSession :
      * Returns `BleRecordRejected` unless a responder confirmation is pending,
      * or `BleSessionFailed` if the state mutex is poisoned.
      */
-    @Throws(MobileException::class)
-    override fun `confirmationWriteSucceeded`() =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_confirmation_write_succeeded(
-                    it,
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `confirmationWriteSucceeded`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_confirmation_write_succeeded(
+        it,
+        _status)
+}
+    }
+    
+    
 
+    
     /**
      * Authenticates and decrypts one record after identity confirmation.
      *
@@ -2748,20 +2141,21 @@ open class MobileBleSession :
      * Returns `BlePeerNotAuthenticated` before peer confirmation, or
      * `BleSessionFailed` for an invalid, oversized, or unauthentic record.
      */
-    @Throws(MobileException::class)
-    override fun `decryptRecord`(`ciphertext`: kotlin.ByteArray): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_decrypt_record(
-                        it,
-                        FfiConverterByteArray.lower(`ciphertext`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `decryptRecord`(`ciphertext`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_decrypt_record(
+        it,
+        
+        FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Encrypts one authenticated application/control record after identity confirmation.
      *
@@ -2770,20 +2164,21 @@ open class MobileBleSession :
      * Returns `BlePeerNotAuthenticated` before peer confirmation,
      * `BleRecordRejected` for an empty or oversized record, or session errors.
      */
-    @Throws(MobileException::class)
-    override fun `encryptRecord`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_encrypt_record(
-                        it,
-                        FfiConverterByteArray.lower(`plaintext`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `encryptRecord`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_encrypt_record(
+        it,
+        
+        FfiConverterByteArray.lower(`plaintext`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Reports whether Noise has established the encrypted transport.
      *
@@ -2791,19 +2186,20 @@ open class MobileBleSession :
      *
      * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
-    @Throws(MobileException::class)
-    override fun `handshakeComplete`(): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_handshake_complete(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `handshakeComplete`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_handshake_complete(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Reports whether the peer identity has been confirmed.
      *
@@ -2811,19 +2207,20 @@ open class MobileBleSession :
      *
      * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
-    @Throws(MobileException::class)
-    override fun `isAuthenticated`(): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `isAuthenticated`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_is_authenticated(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Returns the pinned fingerprint bound to this authenticated session.
      *
@@ -2833,19 +2230,20 @@ open class MobileBleSession :
      * `BleRecordRejected` if the authenticated session has no peer identity,
      * or `BleSessionFailed` if the session state mutex is poisoned.
      */
-    @Throws(MobileException::class)
-    override fun `peerIdentityFingerprint`(): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_peer_identity_fingerprint(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `peerIdentityFingerprint`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_peer_identity_fingerprint(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Verifies the peer confirmation; responders must then write their own confirmation.
      *
@@ -2854,18 +2252,20 @@ open class MobileBleSession :
      * Returns `BleRecordRejected` for an invalid peer proof or transition,
      * `BlePeerNotPinned` when explicit pinning is missing, or session errors.
      */
-    @Throws(MobileException::class)
-    override fun `readConfirmation`(`packet`: kotlin.ByteArray) =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_read_confirmation(
-                    it,
-                    FfiConverterByteArray.lower(`packet`),
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `readConfirmation`(`packet`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_read_confirmation(
+        it,
+        
+        FfiConverterByteArray.lower(`packet`),_status)
+}
+    }
+    
+    
 
+    
     /**
      * Reads one empty-payload Noise XX handshake packet.
      *
@@ -2874,18 +2274,20 @@ open class MobileBleSession :
      * Returns `BleSessionFailed` for malformed or failed Noise packets, or
      * `BleRecordRejected` when the current handshake step cannot read.
      */
-    @Throws(MobileException::class)
-    override fun `readHandshakeMessage`(`packet`: kotlin.ByteArray) =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_read_handshake_message(
-                    it,
-                    FfiConverterByteArray.lower(`packet`),
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `readHandshakeMessage`(`packet`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_read_handshake_message(
+        it,
+        
+        FfiConverterByteArray.lower(`packet`),_status)
+}
+    }
+    
+    
 
+    
     /**
      * Verifies the remote identity proof and returns the SAS for explicit pinning.
      *
@@ -2894,20 +2296,21 @@ open class MobileBleSession :
      * Returns `BleRecordRejected` for an invalid proof or transition,
      * `BlePeerIdentityMismatch` for a conflicting pin, or Core/session errors.
      */
-    @Throws(MobileException::class)
-    override fun `readIdentityProof`(`packet`: kotlin.ByteArray): MobileBlePeerInfo =
-        FfiConverterTypeMobileBlePeerInfo.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_read_identity_proof(
-                        it,
-                        FfiConverterByteArray.lower(`packet`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `readIdentityProof`(`packet`: kotlin.ByteArray): MobileBlePeerInfo {
+            return FfiConverterTypeMobileBlePeerInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_read_identity_proof(
+        it,
+        
+        FfiConverterByteArray.lower(`packet`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Discards all handshake, transcript, peer, and transport state.
      *
@@ -2915,17 +2318,19 @@ open class MobileBleSession :
      *
      * Returns `BleSessionFailed` if the session state mutex is poisoned.
      */
-    @Throws(MobileException::class)
-    override fun `terminate`() =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_terminate(
-                    it,
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `terminate`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_terminate(
+        it,
+        _status)
+}
+    }
+    
+    
 
+    
     /**
      * Checks the responder token again against the advertiser's active token.
      *
@@ -2937,18 +2342,20 @@ open class MobileBleSession :
      * Returns `InvalidBleDiscoveryToken` for a malformed token and
      * `BleRecordRejected` if the role, state, or token value does not match.
      */
-    @Throws(MobileException::class)
-    override fun `validateActiveResponderToken`(`activeToken`: kotlin.ByteArray) =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_validate_active_responder_token(
-                    it,
-                    FfiConverterByteArray.lower(`activeToken`),
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `validateActiveResponderToken`(`activeToken`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_validate_active_responder_token(
+        it,
+        
+        FfiConverterByteArray.lower(`activeToken`),_status)
+}
+    }
+    
+    
 
+    
     /**
      * Writes the role-appropriate encrypted identity confirmation after this device pins the peer.
      *
@@ -2957,19 +2364,20 @@ open class MobileBleSession :
      * Returns a pin or state error when the peer is not verified and pinned,
      * or a Core/Noise error if signing or encryption fails.
      */
-    @Throws(MobileException::class)
-    override fun `writeConfirmation`(): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_write_confirmation(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `writeConfirmation`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_write_confirmation(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Writes the next empty-payload Noise XX handshake packet.
      *
@@ -2978,19 +2386,20 @@ open class MobileBleSession :
      * Returns `BleRecordRejected` when the peer is not ready for a local
      * packet, or `BleSessionFailed` if Noise fails and the session is cleared.
      */
-    @Throws(MobileException::class)
-    override fun `writeHandshakeMessage`(): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_write_handshake_message(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `writeHandshakeMessage`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_write_handshake_message(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Writes the role-specific encrypted 135-byte identity proof.
      *
@@ -2999,44 +2408,57 @@ open class MobileBleSession :
      * Returns `BleRecordRejected` when the handshake/proof ordering is invalid,
      * or a Core/Noise error when signing or encrypting fails.
      */
-    @Throws(MobileException::class)
-    override fun `writeIdentityProof`(): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_write_identity_proof(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `writeIdentityProof`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileblesession_write_identity_proof(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
+
+    
+
+
+    
+    
     /**
      * @suppress
      */
     companion object
+    
 }
+
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileBleSession : FfiConverter<MobileBleSession, Long> {
-    override fun lower(value: MobileBleSession): Long = value.uniffiCloneHandle()
+public object FfiConverterTypeMobileBleSession: FfiConverter<MobileBleSession, Long> {
+    override fun lower(value: MobileBleSession): Long {
+        return value.uniffiCloneHandle()
+    }
 
-    override fun lift(value: Long): MobileBleSession = MobileBleSession(UniffiWithHandle, value)
+    override fun lift(value: Long): MobileBleSession {
+        return MobileBleSession(UniffiWithHandle, value)
+    }
 
-    override fun read(buf: ByteBuffer): MobileBleSession = lift(buf.getLong())
+    override fun read(buf: ByteBuffer): MobileBleSession {
+        return lift(buf.getLong())
+    }
 
     override fun allocationSize(value: MobileBleSession) = 8UL
 
-    override fun write(
-        value: MobileBleSession,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileBleSession, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
+
 
 // This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
@@ -3132,10 +2554,12 @@ public object FfiConverterTypeMobileBleSession : FfiConverter<MobileBleSession, 
 // [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
 //
 
+
 /**
  * Thread-safe handle to one durable local profile.
  */
 public interface MobileClientInterface {
+    
     /**
      * Imports a routed Welcome only after explicit user acceptance.
      *
@@ -3146,13 +2570,8 @@ public interface MobileClientInterface {
      * `DirectMessageFailed` for invalid packet/credential bytes or failed
      * import, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `acceptDirectMessageInvitation`(
-        `credentialVector`: kotlin.ByteArray,
-        `authenticatedPeerIdentity`: kotlin.ByteArray,
-        `invitationPacket`: kotlin.ByteArray,
-        `userAccepted`: kotlin.Boolean,
-    ): kotlin.ByteArray
-
+    fun `acceptDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `invitationPacket`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray
+    
     /**
      * Accepts a persisted invitation only with user consent and matching peer.
      *
@@ -3163,13 +2582,8 @@ public interface MobileClientInterface {
      * `InvalidSpaceCredential` for invalid credentials, or
      * `DirectMessageFailed` if importing the accepted invitation fails.
      */
-    fun `acceptPendingDirectMessageInvitation`(
-        `credentialVector`: kotlin.ByteArray,
-        `authenticatedPeerIdentity`: kotlin.ByteArray,
-        `packetId`: kotlin.ByteArray,
-        `userAccepted`: kotlin.Boolean,
-    ): kotlin.ByteArray
-
+    fun `acceptPendingDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `packetId`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray
+    
     /**
      * Reopens the private receiver store and verifies staged chunks before
      * reporting resumable progress.
@@ -3180,12 +2594,8 @@ public interface MobileClientInterface {
      * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
      * `AttachmentOperationFailed` when staged data cannot be verified.
      */
-    fun `attachmentStagingStatus`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-    ): MobileAttachmentStagingStatus
-
+    fun `attachmentStagingStatus`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentStagingStatus
+    
     /**
      * Returns a display-only summary only when Core authorizes this exact
      * event ID in the restored Space generation.
@@ -3196,12 +2606,8 @@ public interface MobileClientInterface {
      * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
      * `AttachmentOperationFailed` if its summary cannot be formed.
      */
-    fun `authorizedAttachmentManifest`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-    ): MobileAuthorizedAttachmentManifest
-
+    fun `authorizedAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAuthorizedAttachmentManifest
+    
     /**
      * Creates a DER PKCS#10 request for the local identity without exposing private keys.
      *
@@ -3211,7 +2617,7 @@ public interface MobileClientInterface {
      * `CertificateSigningRequestFailed` when the bounded CSR cannot be encoded.
      */
     fun `certificateSigningRequest`(): kotlin.ByteArray
-
+    
     /**
      * Computes bounded manifest metadata from one app-private imported source.
      *
@@ -3223,11 +2629,8 @@ public interface MobileClientInterface {
      * Returns `AttachmentOperationFailed` if the source cannot be read or its
      * metadata cannot be computed.
      */
-    fun `createAttachmentManifest`(
-        `sourceId`: kotlin.String,
-        `filename`: kotlin.String,
-    ): MobileAttachmentManifest
-
+    fun `createAttachmentManifest`(`sourceId`: kotlin.String, `filename`: kotlin.String): MobileAttachmentManifest
+    
     /**
      * Creates and durably queues an opaque MLS Welcome invitation packet.
      *
@@ -3237,13 +2640,8 @@ public interface MobileClientInterface {
      * `DirectMessageFailed` for invalid package/scheduling input or failed
      * creation, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `createDirectMessage`(
-        `credentialVector`: kotlin.ByteArray,
-        `peerIdentity`: kotlin.ByteArray,
-        `peerKeyPackage`: kotlin.ByteArray,
-        `nextAttemptMs`: kotlin.Long,
-    ): MobileCreatedDirectMessage
-
+    fun `createDirectMessage`(`credentialVector`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray, `peerKeyPackage`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long): MobileCreatedDirectMessage
+    
     /**
      * Creates a local one-member Space after OS-trust validation of the supplied RFC 9420 X.509 vector.
      *
@@ -3257,11 +2655,8 @@ public interface MobileClientInterface {
      * errors; `ProfileUnavailable` if the profile lock is poisoned; and
      * `SpaceCreationFailed` for other core transaction failures.
      */
-    fun `createLocalSpace`(
-        `credentialVector`: kotlin.ByteArray,
-        `channels`: List<MobileInitialChannel>,
-    ): MobileCreatedSpace
-
+    fun `createLocalSpace`(`credentialVector`: kotlin.ByteArray, `channels`: List<MobileInitialChannel>): MobileCreatedSpace
+    
     /**
      * Commits an offline invitation for one published target `KeyPackage`.
      *
@@ -3276,15 +2671,8 @@ public interface MobileClientInterface {
      * `InvalidSpaceInput` for invalid expiry/use limits, and
      * `SpaceInvitationFailed` if restoring or committing the invitation fails.
      */
-    fun `createSpaceInvitation`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `keyPackageWire`: kotlin.ByteArray,
-        `expiresAtUnixSeconds`: kotlin.ULong,
-        `maxUses`: kotlin.UInt?,
-    ): MobileSpaceInvitation
-
+    fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation
+    
     /**
      * Declines a pending invitation without importing its MLS Welcome.
      *
@@ -3294,7 +2682,7 @@ public interface MobileClientInterface {
      * `DirectMessageFailed` if the pending invitation cannot be declined.
      */
     fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean
-
+    
     /**
      * Lists local pairwise conversations in stable bounded order.
      *
@@ -3305,7 +2693,7 @@ public interface MobileClientInterface {
      * unavailable.
      */
     fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation>
-
+    
     /**
      * Reads decrypted local history for one pairwise conversation.
      *
@@ -3315,11 +2703,8 @@ public interface MobileClientInterface {
      * `DirectMessageFailed` for an invalid page size or failed history lookup,
      * or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `directMessageHistory`(
-        `groupReference`: kotlin.ByteArray,
-        `limit`: kotlin.UInt,
-    ): List<MobileDirectMessageHistoryEntry>
-
+    fun `directMessageHistory`(`groupReference`: kotlin.ByteArray, `limit`: kotlin.UInt): List<MobileDirectMessageHistoryEntry>
+    
     /**
      * Verifies that an outbox packet targets the authenticated BLE peer.
      *
@@ -3329,11 +2714,8 @@ public interface MobileClientInterface {
      * IDs, `DirectMessageFailed` if the conversation lookup fails, or
      * `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `directMessageIsForPeer`(
-        `groupReference`: kotlin.ByteArray,
-        `peerIdentity`: kotlin.ByteArray,
-    ): kotlin.Boolean
-
+    fun `directMessageIsForPeer`(`groupReference`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray): kotlin.Boolean
+    
     /**
      * Reads a bounded page of durable opaque DM packets awaiting forwarding.
      *
@@ -3343,11 +2725,8 @@ public interface MobileClientInterface {
      * `InvalidOutboxPage` for an invalid page size, `OutboxUnavailable` for
      * storage failures, or `ProfileUnavailable` if the profile lock fails.
      */
-    fun `directMessageOutboxPage`(
-        `afterPacketId`: kotlin.ByteArray?,
-        `limit`: kotlin.UInt,
-    ): List<MobileDirectMessageOutboxEntry>
-
+    fun `directMessageOutboxPage`(`afterPacketId`: kotlin.ByteArray?, `limit`: kotlin.UInt): List<MobileDirectMessageOutboxEntry>
+    
     /**
      * Runs one authenticated, pinned TCP direct-message exchange over a local
      * LAN path. It sends at most one due opaque packet in each direction.
@@ -3360,12 +2739,8 @@ public interface MobileClientInterface {
      * `OutboxTransitionRejected` for invalid state changes, or
      * `ProfileOpenFailed` if a read-only ingress client cannot be opened.
      */
-    fun `exchangeDirectMessagesOnce`(
-        `connectAddress`: kotlin.String,
-        `listenAddress`: kotlin.String,
-        `peerFingerprint`: kotlin.ByteArray,
-    ): MobileDirectMessageExchange
-
+    fun `exchangeDirectMessagesOnce`(`connectAddress`: kotlin.String, `listenAddress`: kotlin.String, `peerFingerprint`: kotlin.ByteArray): MobileDirectMessageExchange
+    
     /**
      * Removes one internal export temporary file after document-picker use.
      *
@@ -3375,7 +2750,7 @@ public interface MobileClientInterface {
      * when the temporary file cannot safely be removed.
      */
     fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean
-
+    
     /**
      * Returns the non-secret public identity information for native UI.
      *
@@ -3384,7 +2759,7 @@ public interface MobileClientInterface {
      * Returns `ProfileUnavailable` if the local profile lock is poisoned.
      */
     fun `identityInfo`(): MobileIdentityInfo
-
+    
     /**
      * Authenticates one opaque application packet from the pinned peer.
      *
@@ -3394,11 +2769,8 @@ public interface MobileClientInterface {
      * `DirectMessageFailed` for invalid packets or failed authenticated
      * ingress, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `ingestDirectMessagePacket`(
-        `authenticatedPeerIdentity`: kotlin.ByteArray,
-        `envelopeBytes`: kotlin.ByteArray,
-    ): MobileDirectMessageIngressResult
-
+    fun `ingestDirectMessagePacket`(`authenticatedPeerIdentity`: kotlin.ByteArray, `envelopeBytes`: kotlin.ByteArray): MobileDirectMessageIngressResult
+    
     /**
      * Sends one signed event through Rust's signature, MLS, dependency, and
      * local Space authorization gates.
@@ -3413,7 +2785,7 @@ public interface MobileClientInterface {
      * safely retains the event as pending.
      */
     fun `ingestSyncedApplicationEvent`(`canonicalBytes`: kotlin.ByteArray): MobileSyncEventResult
-
+    
     /**
      * Joins one validated MLS Welcome using a signed policy checkpoint from
      * an explicitly pinned inviter.
@@ -3429,12 +2801,8 @@ public interface MobileClientInterface {
      * `UntrustedSpaceInviter` when the exact inviter bundle is not pinned, and
      * `SpaceJoinFailed` for other policy, MLS, or storage failures.
      */
-    fun `joinSpaceFromWelcomeBootstrap`(
-        `bootstrapPackage`: kotlin.ByteArray,
-        `expectedInviterFingerprint`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-    ): MobileCreatedSpace
-
+    fun `joinSpaceFromWelcomeBootstrap`(`bootstrapPackage`: kotlin.ByteArray, `expectedInviterFingerprint`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace
+    
     /**
      * Restores one bounded page of local Genesis snapshots.
      *
@@ -3447,7 +2815,7 @@ public interface MobileClientInterface {
      * `ProfileUnavailable` when a snapshot or profile cannot be restored.
      */
     fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage
-
+    
     /**
      * Returns the newest bounded history of locally retained authorized text messages.
      *
@@ -3460,12 +2828,8 @@ public interface MobileClientInterface {
      * Returns `InvalidSpaceMessageId` for malformed identifier lengths and
      * `MessageHistoryUnavailable` when local recovery or authentication fails.
      */
-    fun `listLocalTextMessages`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-    ): List<MobileLocalTextMessage>
-
+    fun `listLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray): List<MobileLocalTextMessage>
+    
     /**
      * Persists the retry attempt before routing the DM packet.
      *
@@ -3475,11 +2839,8 @@ public interface MobileClientInterface {
      * `InvalidOutboxSchedule` for a negative retry time, or
      * `OutboxTransitionRejected` if the state transition is invalid.
      */
-    fun `markDirectMessageAttempt`(
-        `packetId`: kotlin.ByteArray,
-        `nextAttemptMs`: kotlin.Long,
-    )
-
+    fun `markDirectMessageAttempt`(`packetId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+    
     /**
      * Persists one forwarding attempt before its envelope is placed on transport.
      *
@@ -3488,11 +2849,8 @@ public interface MobileClientInterface {
      * Returns `InvalidOutboxEventId`, `InvalidOutboxSchedule`, or
      * `OutboxTransitionRejected`.
      */
-    fun `markOutboxAttempt`(
-        `eventId`: kotlin.ByteArray,
-        `nextAttemptMs`: kotlin.Long,
-    )
-
+    fun `markOutboxAttempt`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+    
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -3501,7 +2859,7 @@ public interface MobileClientInterface {
      * Returns `ProfileUnavailable` if the profile lock or sequence lookup fails.
      */
     fun `nextAuthorSequence`(): kotlin.ULong
-
+    
     /**
      * Returns a bounded keyset page of exact durable opaque envelopes.
      *
@@ -3514,11 +2872,8 @@ public interface MobileClientInterface {
      * `InvalidOutboxPage` for a zero or oversized page, and
      * `OutboxUnavailable` for storage failures.
      */
-    fun `outboxPage`(
-        `afterEventId`: kotlin.ByteArray?,
-        `limit`: kotlin.Int,
-    ): List<MobileOutboxEntry>
-
+    fun `outboxPage`(`afterEventId`: kotlin.ByteArray?, `limit`: kotlin.Int): List<MobileOutboxEntry>
+    
     /**
      * Lists bounded invitations saved from authenticated transport ingress.
      *
@@ -3528,7 +2883,7 @@ public interface MobileClientInterface {
      * or `ProfileUnavailable` if the profile lock is unavailable.
      */
     fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation>
-
+    
     /**
      * Stores one exact identity bundle after checking its caller-supplied full
      * fingerprint.
@@ -3545,11 +2900,8 @@ public interface MobileClientInterface {
      * `FingerprintMismatch` for a valid but nonmatching bundle, or
      * `PinnedIdentityConflict` if that fingerprint already maps to other bytes.
      */
-    fun `pinIdentity`(
-        `publicBundle`: kotlin.ByteArray,
-        `expectedFingerprint`: kotlin.ByteArray,
-    ): MobilePinnedIdentity
-
+    fun `pinIdentity`(`publicBundle`: kotlin.ByteArray, `expectedFingerprint`: kotlin.ByteArray): MobilePinnedIdentity
+    
     /**
      * Loads and revalidates one pinned peer by its full fingerprint.
      *
@@ -3560,7 +2912,7 @@ public interface MobileClientInterface {
      * and `ProfileUnavailable` if the profile cannot be read.
      */
     fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity?
-
+    
     /**
      * Copies an already-complete staged attachment to a bounded app-private
      * temporary file for the native document picker to export.
@@ -3572,12 +2924,8 @@ public interface MobileClientInterface {
      * `AttachmentOperationFailed` if staged bytes are incomplete or fail
      * verification, or a profile/filesystem error.
      */
-    fun `prepareAttachmentExport`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-    ): MobileAttachmentExport
-
+    fun `prepareAttachmentExport`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentExport
+    
     /**
      * Publishes one validated local `KeyPackage` for a pairwise DM invitation.
      *
@@ -3587,11 +2935,8 @@ public interface MobileClientInterface {
      * `ProfileUnavailable` if the profile lock is poisoned, or
      * `DirectMessageFailed` if Core cannot publish the package.
      */
-    fun `publishDirectMessageKeyPackage`(
-        `credentialVector`: kotlin.ByteArray,
-        `nowUnixSeconds`: kotlin.ULong,
-    ): kotlin.ByteArray
-
+    fun `publishDirectMessageKeyPackage`(`credentialVector`: kotlin.ByteArray, `nowUnixSeconds`: kotlin.ULong): kotlin.ByteArray
+    
     /**
      * Publishes one locally retained X.509 `KeyPackage` for offline invitation.
      *
@@ -3605,7 +2950,7 @@ public interface MobileClientInterface {
      * `SpaceKeyPackagePublicationFailed` if publication fails.
      */
     fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray
-
+    
     /**
      * Queues one Core-authorized signed Space manifest and durably stages the
      * verified source under its event-bound transfer identity.
@@ -3618,15 +2963,8 @@ public interface MobileClientInterface {
      * `AttachmentManifestSourceChanged` if the imported file no longer matches
      * the preview, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `queueAttachmentManifest`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `sourceId`: kotlin.String,
-        `preview`: MobileAttachmentManifest,
-    ): MobileAttachmentQueueReceipt
-
+    fun `queueAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `sourceId`: kotlin.String, `preview`: MobileAttachmentManifest): MobileAttachmentQueueReceipt
+    
     /**
      * Encrypts text locally and commits the resulting opaque packet to Core.
      *
@@ -3636,13 +2974,8 @@ public interface MobileClientInterface {
      * `DirectMessageFailed` for invalid input or a failed queue operation, or
      * `ProfileUnavailable` if the profile lock is unavailable.
      */
-    fun `queueDirectMessageText`(
-        `credentialVector`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `content`: kotlin.String,
-        `nextAttemptMs`: kotlin.Long,
-    ): MobileDirectMessagePacket
-
+    fun `queueDirectMessageText`(`credentialVector`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `content`: kotlin.String, `nextAttemptMs`: kotlin.Long): MobileDirectMessagePacket
+    
     /**
      * Validates and commits a text event to this device's local durable outbox.
      *
@@ -3658,14 +2991,8 @@ public interface MobileClientInterface {
      * `MessageRejected` when local policy denies the message, and
      * `MessageQueueFailed` for other queue/restore failures.
      */
-    fun `queueLocalTextMessage`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `content`: kotlin.String,
-    ): MobileQueuedMessage
-
+    fun `queueLocalTextMessage`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
+    
     /**
      * Queues a locally authorized immutable Edit event and updates the
      * encrypted local message cache.
@@ -3679,15 +3006,8 @@ public interface MobileClientInterface {
      * `InvalidMessageInput` for oversized text, `MessageRejected` when local
      * policy denies the edit, or `MessageQueueFailed` for other failures.
      */
-    fun `queueLocalTextMessageEdit`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-        `content`: kotlin.String,
-    ): MobileQueuedMessage
-
+    fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
+    
     /**
      * Queues a pin add or observed-tag removal.
      *
@@ -3698,16 +3018,8 @@ public interface MobileClientInterface {
      * `MessageRejected` when local policy denies the pin, or
      * `MessageQueueFailed` for other failures.
      */
-    fun `queueLocalTextMessagePin`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-        `add`: kotlin.Boolean,
-        `tag`: kotlin.ByteArray?,
-    ): MobileQueuedMessage
-
+    fun `queueLocalTextMessagePin`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage
+    
     /**
      * Queues a tagged reaction add or observed-tag removal.
      *
@@ -3719,17 +3031,8 @@ public interface MobileClientInterface {
      * when local policy denies the reaction, or `MessageQueueFailed` for
      * other failures.
      */
-    fun `queueLocalTextMessageReaction`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-        `token`: kotlin.String,
-        `add`: kotlin.Boolean,
-        `tag`: kotlin.ByteArray?,
-    ): MobileQueuedMessage
-
+    fun `queueLocalTextMessageReaction`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `token`: kotlin.String, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage
+    
     /**
      * Queues a locally authorized immutable thread reply.
      *
@@ -3740,15 +3043,8 @@ public interface MobileClientInterface {
      * `InvalidMessageInput` for oversized text, `MessageRejected` when local
      * policy denies the reply, or `MessageQueueFailed` for other failures.
      */
-    fun `queueLocalTextMessageReply`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `threadRoot`: kotlin.ByteArray,
-        `content`: kotlin.String,
-    ): MobileQueuedMessage
-
+    fun `queueLocalTextMessageReply`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `threadRoot`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage
+    
     /**
      * Queues a locally authorized tombstone for a locally authored message.
      *
@@ -3759,14 +3055,8 @@ public interface MobileClientInterface {
      * `MessageRejected` when local policy denies the tombstone, or
      * `MessageQueueFailed` for other failures.
      */
-    fun `queueLocalTextMessageTombstone`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-    ): MobileQueuedMessage
-
+    fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage
+    
     /**
      * Receives one authorized manifest into persistent private staging after
      * explicit user consent and exact pinned-peer authorization.
@@ -3780,15 +3070,8 @@ public interface MobileClientInterface {
      * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
      * authorization, connection, verification, or transfer failures.
      */
-    fun `receiveAttachmentOnce`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-        `peerFingerprint`: kotlin.ByteArray,
-        `listenAddress`: kotlin.String,
-        `userConsented`: kotlin.Boolean,
-    ): MobileAttachmentTransferReceipt
-
+    fun `receiveAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `listenAddress`: kotlin.String, `userConsented`: kotlin.Boolean): MobileAttachmentTransferReceipt
+    
     /**
      * Records authenticated peer-ingress acceptance, not destination delivery.
      *
@@ -3798,7 +3081,7 @@ public interface MobileClientInterface {
      * `OutboxTransitionRejected` if the ingress transition is invalid.
      */
     fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray)
-
+    
     /**
      * Records only authenticated peer acceptance into bounded BLE ingress.
      * It is not proof of destination delivery or reading.
@@ -3808,7 +3091,7 @@ public interface MobileClientInterface {
      * Returns `InvalidOutboxEventId` or `OutboxTransitionRejected`.
      */
     fun `recordPeerIngressAccepted`(`eventId`: kotlin.ByteArray)
-
+    
     /**
      * Restores a named local generation, then creates its authorized one-member recovery generation.
      *
@@ -3823,12 +3106,22 @@ public interface MobileClientInterface {
      * `SpaceRecoveryFailed` if restoring the prior generation or creating the
      * recovery generation fails.
      */
-    fun `recoverLocalSpaceGeneration`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-    ): MobileCreatedSpace
-
+    fun `recoverLocalSpaceGeneration`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace
+    
+    /**
+     * Commits an authorized MLS Remove and matching Space policy transition locally.
+     *
+     * This advances the local MLS epoch and stages signed membership events; it
+     * does not deliver them to peers or prove that the removed device observed them.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed Space/group identifiers,
+     * `InvalidFingerprint` for a malformed target fingerprint, and
+     * `InvalidSpaceCredential` for empty or oversized credentials.
+     */
+    fun `removeSpaceMember`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `targetFingerprint`: kotlin.ByteArray): MobileSpaceMemberRemoval
+    
     /**
      * Searches all locally retained authorized messages in one channel offline.
      *
@@ -3842,13 +3135,8 @@ public interface MobileClientInterface {
      * for an empty or oversized query, and `MessageHistoryUnavailable` when
      * local recovery, decryption, or event validation fails.
      */
-    fun `searchLocalTextMessages`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `query`: kotlin.String,
-    ): MobileLocalTextMessageSearch
-
+    fun `searchLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `query`: kotlin.String): MobileLocalTextMessageSearch
+    
     /**
      * Sends one authorized manifest over TCP and a separately domain-bound
      * Noise session pinned to the exact active Space member.
@@ -3861,14 +3149,8 @@ public interface MobileClientInterface {
      * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
      * authorization, connection, verification, or transfer failures.
      */
-    fun `sendAttachmentOnce`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-        `peerFingerprint`: kotlin.ByteArray,
-        `connectAddress`: kotlin.String,
-    ): MobileAttachmentTransferReceipt
-
+    fun `sendAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `connectAddress`: kotlin.String): MobileAttachmentTransferReceipt
+    
     /**
      * Subscribes to bounded, coalesced Core projection changes.
      *
@@ -3878,7 +3160,7 @@ public interface MobileClientInterface {
      * the observer registry is unavailable.
      */
     fun `subscribeProjectionChanges`(): MobileProjectionSubscription
-
+    
     /**
      * Removes one full-fingerprint peer pin from this local profile.
      *
@@ -3891,21 +3173,20 @@ public interface MobileClientInterface {
      * `ProfileUnavailable` if the profile cannot update its trust store.
      */
     fun `unpinIdentity`(`fingerprint`: kotlin.ByteArray): kotlin.Boolean
-
+    
     companion object
 }
 
 /**
  * Thread-safe handle to one durable local profile.
  */
-open class MobileClient :
-    Disposable,
-    AutoCloseable,
-    MobileClientInterface {
+open class MobileClient: Disposable, AutoCloseable, MobileClientInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
     /**
      * @suppress
      */
-    @Suppress("UNUSED_PARAMETER")
     constructor(withHandle: UniffiWithHandle, handle: Long) {
         this.handle = handle
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
@@ -3962,7 +3243,7 @@ open class MobileClient :
             if (c == Long.MAX_VALUE) {
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
-        } while (!this.callCounter.compareAndSet(c, c + 1L))
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
         // Now we can safely do the method call without the handle being freed concurrently.
         try {
             return block(this.uniffiCloneHandle())
@@ -3976,13 +3257,11 @@ open class MobileClient :
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(
-        private val handle: Long,
-    ) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
             if (handle == 0.toLong()) {
                 // Fake object created with `NoHandle`, don't try to free.
-                return
+                return;
             }
             uniffiRustCall { status ->
                 UniffiLib.uniffi_lattice_uniffi_fn_free_mobileclient(handle, status)
@@ -3995,13 +3274,14 @@ open class MobileClient :
      */
     fun uniffiCloneHandle(): Long {
         if (handle == 0.toLong()) {
-            throw InternalException("uniffiCloneHandle() called on NoHandle object")
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
         }
-        return uniffiRustCall { status ->
+        return uniffiRustCall() { status ->
             UniffiLib.uniffi_lattice_uniffi_fn_clone_mobileclient(handle, status)
         }
     }
 
+    
     /**
      * Imports a routed Welcome only after explicit user acceptance.
      *
@@ -4012,28 +3292,24 @@ open class MobileClient :
      * `DirectMessageFailed` for invalid packet/credential bytes or failed
      * import, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `acceptDirectMessageInvitation`(
-        `credentialVector`: kotlin.ByteArray,
-        `authenticatedPeerIdentity`: kotlin.ByteArray,
-        `invitationPacket`: kotlin.ByteArray,
-        `userAccepted`: kotlin.Boolean,
-    ): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_accept_direct_message_invitation(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`authenticatedPeerIdentity`),
-                        FfiConverterByteArray.lower(`invitationPacket`),
-                        FfiConverterBoolean.lower(`userAccepted`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `acceptDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `invitationPacket`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_accept_direct_message_invitation(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`authenticatedPeerIdentity`),
+        FfiConverterByteArray.lower(`invitationPacket`),
+        FfiConverterBoolean.lower(`userAccepted`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Accepts a persisted invitation only with user consent and matching peer.
      *
@@ -4044,28 +3320,24 @@ open class MobileClient :
      * `InvalidSpaceCredential` for invalid credentials, or
      * `DirectMessageFailed` if importing the accepted invitation fails.
      */
-    @Throws(MobileException::class)
-    override fun `acceptPendingDirectMessageInvitation`(
-        `credentialVector`: kotlin.ByteArray,
-        `authenticatedPeerIdentity`: kotlin.ByteArray,
-        `packetId`: kotlin.ByteArray,
-        `userAccepted`: kotlin.Boolean,
-    ): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_accept_pending_direct_message_invitation(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`authenticatedPeerIdentity`),
-                        FfiConverterByteArray.lower(`packetId`),
-                        FfiConverterBoolean.lower(`userAccepted`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `acceptPendingDirectMessageInvitation`(`credentialVector`: kotlin.ByteArray, `authenticatedPeerIdentity`: kotlin.ByteArray, `packetId`: kotlin.ByteArray, `userAccepted`: kotlin.Boolean): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_accept_pending_direct_message_invitation(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`authenticatedPeerIdentity`),
+        FfiConverterByteArray.lower(`packetId`),
+        FfiConverterBoolean.lower(`userAccepted`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Reopens the private receiver store and verifies staged chunks before
      * reporting resumable progress.
@@ -4076,26 +3348,23 @@ open class MobileClient :
      * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
      * `AttachmentOperationFailed` when staged data cannot be verified.
      */
-    @Throws(MobileException::class)
-    override fun `attachmentStagingStatus`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-    ): MobileAttachmentStagingStatus =
-        FfiConverterTypeMobileAttachmentStagingStatus.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_attachment_staging_status(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`eventId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `attachmentStagingStatus`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentStagingStatus {
+            return FfiConverterTypeMobileAttachmentStagingStatus.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_attachment_staging_status(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Returns a display-only summary only when Core authorizes this exact
      * event ID in the restored Space generation.
@@ -4106,26 +3375,23 @@ open class MobileClient :
      * `AttachmentNotAuthorized` unless Core authorizes the exact manifest, or
      * `AttachmentOperationFailed` if its summary cannot be formed.
      */
-    @Throws(MobileException::class)
-    override fun `authorizedAttachmentManifest`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-    ): MobileAuthorizedAttachmentManifest =
-        FfiConverterTypeMobileAuthorizedAttachmentManifest.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_authorized_attachment_manifest(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`eventId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `authorizedAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAuthorizedAttachmentManifest {
+            return FfiConverterTypeMobileAuthorizedAttachmentManifest.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_authorized_attachment_manifest(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Creates a DER PKCS#10 request for the local identity without exposing private keys.
      *
@@ -4134,19 +3400,20 @@ open class MobileClient :
      * Returns `ProfileUnavailable` for a poisoned profile lock and
      * `CertificateSigningRequestFailed` when the bounded CSR cannot be encoded.
      */
-    @Throws(MobileException::class)
-    override fun `certificateSigningRequest`(): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `certificateSigningRequest`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_certificate_signing_request(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Computes bounded manifest metadata from one app-private imported source.
      *
@@ -4158,24 +3425,22 @@ open class MobileClient :
      * Returns `AttachmentOperationFailed` if the source cannot be read or its
      * metadata cannot be computed.
      */
-    @Throws(MobileException::class)
-    override fun `createAttachmentManifest`(
-        `sourceId`: kotlin.String,
-        `filename`: kotlin.String,
-    ): MobileAttachmentManifest =
-        FfiConverterTypeMobileAttachmentManifest.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_attachment_manifest(
-                        it,
-                        FfiConverterString.lower(`sourceId`),
-                        FfiConverterString.lower(`filename`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `createAttachmentManifest`(`sourceId`: kotlin.String, `filename`: kotlin.String): MobileAttachmentManifest {
+            return FfiConverterTypeMobileAttachmentManifest.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_attachment_manifest(
+        it,
+        
+        FfiConverterString.lower(`sourceId`),
+        FfiConverterString.lower(`filename`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Creates and durably queues an opaque MLS Welcome invitation packet.
      *
@@ -4185,28 +3450,24 @@ open class MobileClient :
      * `DirectMessageFailed` for invalid package/scheduling input or failed
      * creation, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `createDirectMessage`(
-        `credentialVector`: kotlin.ByteArray,
-        `peerIdentity`: kotlin.ByteArray,
-        `peerKeyPackage`: kotlin.ByteArray,
-        `nextAttemptMs`: kotlin.Long,
-    ): MobileCreatedDirectMessage =
-        FfiConverterTypeMobileCreatedDirectMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_direct_message(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`peerIdentity`),
-                        FfiConverterByteArray.lower(`peerKeyPackage`),
-                        FfiConverterLong.lower(`nextAttemptMs`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `createDirectMessage`(`credentialVector`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray, `peerKeyPackage`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long): MobileCreatedDirectMessage {
+            return FfiConverterTypeMobileCreatedDirectMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_direct_message(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`peerIdentity`),
+        FfiConverterByteArray.lower(`peerKeyPackage`),
+        FfiConverterLong.lower(`nextAttemptMs`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Creates a local one-member Space after OS-trust validation of the supplied RFC 9420 X.509 vector.
      *
@@ -4220,24 +3481,22 @@ open class MobileClient :
      * errors; `ProfileUnavailable` if the profile lock is poisoned; and
      * `SpaceCreationFailed` for other core transaction failures.
      */
-    @Throws(MobileException::class)
-    override fun `createLocalSpace`(
-        `credentialVector`: kotlin.ByteArray,
-        `channels`: List<MobileInitialChannel>,
-    ): MobileCreatedSpace =
-        FfiConverterTypeMobileCreatedSpace.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterSequenceTypeMobileInitialChannel.lower(`channels`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `createLocalSpace`(`credentialVector`: kotlin.ByteArray, `channels`: List<MobileInitialChannel>): MobileCreatedSpace {
+            return FfiConverterTypeMobileCreatedSpace.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_local_space(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterSequenceTypeMobileInitialChannel.lower(`channels`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Commits an offline invitation for one published target `KeyPackage`.
      *
@@ -4252,32 +3511,26 @@ open class MobileClient :
      * `InvalidSpaceInput` for invalid expiry/use limits, and
      * `SpaceInvitationFailed` if restoring or committing the invitation fails.
      */
-    @Throws(MobileException::class)
-    override fun `createSpaceInvitation`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `keyPackageWire`: kotlin.ByteArray,
-        `expiresAtUnixSeconds`: kotlin.ULong,
-        `maxUses`: kotlin.UInt?,
-    ): MobileSpaceInvitation =
-        FfiConverterTypeMobileSpaceInvitation.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`keyPackageWire`),
-                        FfiConverterULong.lower(`expiresAtUnixSeconds`),
-                        FfiConverterOptionalUInt.lower(`maxUses`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `createSpaceInvitation`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `keyPackageWire`: kotlin.ByteArray, `expiresAtUnixSeconds`: kotlin.ULong, `maxUses`: kotlin.UInt?): MobileSpaceInvitation {
+            return FfiConverterTypeMobileSpaceInvitation.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_create_space_invitation(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`keyPackageWire`),
+        FfiConverterULong.lower(`expiresAtUnixSeconds`),
+        FfiConverterOptionalUInt.lower(`maxUses`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Declines a pending invitation without importing its MLS Welcome.
      *
@@ -4286,20 +3539,21 @@ open class MobileClient :
      * Returns `InvalidOutboxEventId` for a malformed packet ID or
      * `DirectMessageFailed` if the pending invitation cannot be declined.
      */
-    @Throws(MobileException::class)
-    override fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_decline_pending_direct_message_invitation(
-                        it,
-                        FfiConverterByteArray.lower(`packetId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `declinePendingDirectMessageInvitation`(`packetId`: kotlin.ByteArray): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_decline_pending_direct_message_invitation(
+        it,
+        
+        FfiConverterByteArray.lower(`packetId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Lists local pairwise conversations in stable bounded order.
      *
@@ -4309,20 +3563,21 @@ open class MobileClient :
      * conversation lookup, or `ProfileUnavailable` if the profile lock is
      * unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation> =
-        FfiConverterSequenceTypeMobileDirectMessageConversation.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_conversations(
-                        it,
-                        FfiConverterUInt.lower(`limit`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `directMessageConversations`(`limit`: kotlin.UInt): List<MobileDirectMessageConversation> {
+            return FfiConverterSequenceTypeMobileDirectMessageConversation.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_conversations(
+        it,
+        
+        FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Reads decrypted local history for one pairwise conversation.
      *
@@ -4332,24 +3587,22 @@ open class MobileClient :
      * `DirectMessageFailed` for an invalid page size or failed history lookup,
      * or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `directMessageHistory`(
-        `groupReference`: kotlin.ByteArray,
-        `limit`: kotlin.UInt,
-    ): List<MobileDirectMessageHistoryEntry> =
-        FfiConverterSequenceTypeMobileDirectMessageHistoryEntry.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_history(
-                        it,
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterUInt.lower(`limit`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `directMessageHistory`(`groupReference`: kotlin.ByteArray, `limit`: kotlin.UInt): List<MobileDirectMessageHistoryEntry> {
+            return FfiConverterSequenceTypeMobileDirectMessageHistoryEntry.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_history(
+        it,
+        
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Verifies that an outbox packet targets the authenticated BLE peer.
      *
@@ -4359,24 +3612,22 @@ open class MobileClient :
      * IDs, `DirectMessageFailed` if the conversation lookup fails, or
      * `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `directMessageIsForPeer`(
-        `groupReference`: kotlin.ByteArray,
-        `peerIdentity`: kotlin.ByteArray,
-    ): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_is_for_peer(
-                        it,
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`peerIdentity`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `directMessageIsForPeer`(`groupReference`: kotlin.ByteArray, `peerIdentity`: kotlin.ByteArray): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_is_for_peer(
+        it,
+        
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`peerIdentity`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Reads a bounded page of durable opaque DM packets awaiting forwarding.
      *
@@ -4386,24 +3637,22 @@ open class MobileClient :
      * `InvalidOutboxPage` for an invalid page size, `OutboxUnavailable` for
      * storage failures, or `ProfileUnavailable` if the profile lock fails.
      */
-    @Throws(MobileException::class)
-    override fun `directMessageOutboxPage`(
-        `afterPacketId`: kotlin.ByteArray?,
-        `limit`: kotlin.UInt,
-    ): List<MobileDirectMessageOutboxEntry> =
-        FfiConverterSequenceTypeMobileDirectMessageOutboxEntry.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_outbox_page(
-                        it,
-                        FfiConverterOptionalByteArray.lower(`afterPacketId`),
-                        FfiConverterUInt.lower(`limit`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `directMessageOutboxPage`(`afterPacketId`: kotlin.ByteArray?, `limit`: kotlin.UInt): List<MobileDirectMessageOutboxEntry> {
+            return FfiConverterSequenceTypeMobileDirectMessageOutboxEntry.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_direct_message_outbox_page(
+        it,
+        
+        FfiConverterOptionalByteArray.lower(`afterPacketId`),
+        FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Runs one authenticated, pinned TCP direct-message exchange over a local
      * LAN path. It sends at most one due opaque packet in each direction.
@@ -4416,26 +3665,23 @@ open class MobileClient :
      * `OutboxTransitionRejected` for invalid state changes, or
      * `ProfileOpenFailed` if a read-only ingress client cannot be opened.
      */
-    @Throws(MobileException::class)
-    override fun `exchangeDirectMessagesOnce`(
-        `connectAddress`: kotlin.String,
-        `listenAddress`: kotlin.String,
-        `peerFingerprint`: kotlin.ByteArray,
-    ): MobileDirectMessageExchange =
-        FfiConverterTypeMobileDirectMessageExchange.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(
-                        it,
-                        FfiConverterString.lower(`connectAddress`),
-                        FfiConverterString.lower(`listenAddress`),
-                        FfiConverterByteArray.lower(`peerFingerprint`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `exchangeDirectMessagesOnce`(`connectAddress`: kotlin.String, `listenAddress`: kotlin.String, `peerFingerprint`: kotlin.ByteArray): MobileDirectMessageExchange {
+            return FfiConverterTypeMobileDirectMessageExchange.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_exchange_direct_messages_once(
+        it,
+        
+        FfiConverterString.lower(`connectAddress`),
+        FfiConverterString.lower(`listenAddress`),
+        FfiConverterByteArray.lower(`peerFingerprint`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Removes one internal export temporary file after document-picker use.
      *
@@ -4444,20 +3690,21 @@ open class MobileClient :
      * Returns `AttachmentOperationFailed` for an invalid export identifier or
      * when the temporary file cannot safely be removed.
      */
-    @Throws(MobileException::class)
-    override fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(
-                        it,
-                        FfiConverterString.lower(`exportId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `finishAttachmentExport`(`exportId`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_finish_attachment_export(
+        it,
+        
+        FfiConverterString.lower(`exportId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Returns the non-secret public identity information for native UI.
      *
@@ -4465,19 +3712,20 @@ open class MobileClient :
      *
      * Returns `ProfileUnavailable` if the local profile lock is poisoned.
      */
-    @Throws(MobileException::class)
-    override fun `identityInfo`(): MobileIdentityInfo =
-        FfiConverterTypeMobileIdentityInfo.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `identityInfo`(): MobileIdentityInfo {
+            return FfiConverterTypeMobileIdentityInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_identity_info(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Authenticates one opaque application packet from the pinned peer.
      *
@@ -4487,24 +3735,22 @@ open class MobileClient :
      * `DirectMessageFailed` for invalid packets or failed authenticated
      * ingress, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `ingestDirectMessagePacket`(
-        `authenticatedPeerIdentity`: kotlin.ByteArray,
-        `envelopeBytes`: kotlin.ByteArray,
-    ): MobileDirectMessageIngressResult =
-        FfiConverterTypeMobileDirectMessageIngressResult.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(
-                        it,
-                        FfiConverterByteArray.lower(`authenticatedPeerIdentity`),
-                        FfiConverterByteArray.lower(`envelopeBytes`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `ingestDirectMessagePacket`(`authenticatedPeerIdentity`: kotlin.ByteArray, `envelopeBytes`: kotlin.ByteArray): MobileDirectMessageIngressResult {
+            return FfiConverterTypeMobileDirectMessageIngressResult.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_ingest_direct_message_packet(
+        it,
+        
+        FfiConverterByteArray.lower(`authenticatedPeerIdentity`),
+        FfiConverterByteArray.lower(`envelopeBytes`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Sends one signed event through Rust's signature, MLS, dependency, and
      * local Space authorization gates.
@@ -4518,20 +3764,21 @@ open class MobileClient :
      * Returns `SyncIngestFailed` unless Core accepts, recognizes, excludes, or
      * safely retains the event as pending.
      */
-    @Throws(MobileException::class)
-    override fun `ingestSyncedApplicationEvent`(`canonicalBytes`: kotlin.ByteArray): MobileSyncEventResult =
-        FfiConverterTypeMobileSyncEventResult.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(
-                        it,
-                        FfiConverterByteArray.lower(`canonicalBytes`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `ingestSyncedApplicationEvent`(`canonicalBytes`: kotlin.ByteArray): MobileSyncEventResult {
+            return FfiConverterTypeMobileSyncEventResult.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_ingest_synced_application_event(
+        it,
+        
+        FfiConverterByteArray.lower(`canonicalBytes`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Joins one validated MLS Welcome using a signed policy checkpoint from
      * an explicitly pinned inviter.
@@ -4547,26 +3794,23 @@ open class MobileClient :
      * `UntrustedSpaceInviter` when the exact inviter bundle is not pinned, and
      * `SpaceJoinFailed` for other policy, MLS, or storage failures.
      */
-    @Throws(MobileException::class)
-    override fun `joinSpaceFromWelcomeBootstrap`(
-        `bootstrapPackage`: kotlin.ByteArray,
-        `expectedInviterFingerprint`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-    ): MobileCreatedSpace =
-        FfiConverterTypeMobileCreatedSpace.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(
-                        it,
-                        FfiConverterByteArray.lower(`bootstrapPackage`),
-                        FfiConverterByteArray.lower(`expectedInviterFingerprint`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `joinSpaceFromWelcomeBootstrap`(`bootstrapPackage`: kotlin.ByteArray, `expectedInviterFingerprint`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace {
+            return FfiConverterTypeMobileCreatedSpace.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_join_space_from_welcome_bootstrap(
+        it,
+        
+        FfiConverterByteArray.lower(`bootstrapPackage`),
+        FfiConverterByteArray.lower(`expectedInviterFingerprint`),
+        FfiConverterByteArray.lower(`credentialVector`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Restores one bounded page of local Genesis snapshots.
      *
@@ -4578,20 +3822,21 @@ open class MobileClient :
      * Returns `InvalidSpaceCursor` for malformed cursor byte lengths or
      * `ProfileUnavailable` when a snapshot or profile cannot be restored.
      */
-    @Throws(MobileException::class)
-    override fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage =
-        FfiConverterTypeMobileSpacePage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(
-                        it,
-                        FfiConverterOptionalTypeMobileSpaceCursor.lower(`after`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `listLocalSpaces`(`after`: MobileSpaceCursor?): MobileSpacePage {
+            return FfiConverterTypeMobileSpacePage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_list_local_spaces(
+        it,
+        
+        FfiConverterOptionalTypeMobileSpaceCursor.lower(`after`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Returns the newest bounded history of locally retained authorized text messages.
      *
@@ -4604,26 +3849,23 @@ open class MobileClient :
      * Returns `InvalidSpaceMessageId` for malformed identifier lengths and
      * `MessageHistoryUnavailable` when local recovery or authentication fails.
      */
-    @Throws(MobileException::class)
-    override fun `listLocalTextMessages`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-    ): List<MobileLocalTextMessage> =
-        FfiConverterSequenceTypeMobileLocalTextMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `listLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray): List<MobileLocalTextMessage> {
+            return FfiConverterSequenceTypeMobileLocalTextMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_list_local_text_messages(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`channelId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Persists the retry attempt before routing the DM packet.
      *
@@ -4633,21 +3875,21 @@ open class MobileClient :
      * `InvalidOutboxSchedule` for a negative retry time, or
      * `OutboxTransitionRejected` if the state transition is invalid.
      */
-    @Throws(MobileException::class)
-    override fun `markDirectMessageAttempt`(
-        `packetId`: kotlin.ByteArray,
-        `nextAttemptMs`: kotlin.Long,
-    ) = callWithHandle {
-        uniffiRustCallWithError(MobileException) { _status ->
-            UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(
-                it,
-                FfiConverterByteArray.lower(`packetId`),
-                FfiConverterLong.lower(`nextAttemptMs`),
-                _status,
-            )
-        }
+    @Throws(MobileException::class)override fun `markDirectMessageAttempt`(`packetId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_mark_direct_message_attempt(
+        it,
+        
+        FfiConverterByteArray.lower(`packetId`),
+        FfiConverterLong.lower(`nextAttemptMs`),_status)
+}
     }
+    
+    
 
+    
     /**
      * Persists one forwarding attempt before its envelope is placed on transport.
      *
@@ -4656,21 +3898,21 @@ open class MobileClient :
      * Returns `InvalidOutboxEventId`, `InvalidOutboxSchedule`, or
      * `OutboxTransitionRejected`.
      */
-    @Throws(MobileException::class)
-    override fun `markOutboxAttempt`(
-        `eventId`: kotlin.ByteArray,
-        `nextAttemptMs`: kotlin.Long,
-    ) = callWithHandle {
-        uniffiRustCallWithError(MobileException) { _status ->
-            UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(
-                it,
-                FfiConverterByteArray.lower(`eventId`),
-                FfiConverterLong.lower(`nextAttemptMs`),
-                _status,
-            )
-        }
+    @Throws(MobileException::class)override fun `markOutboxAttempt`(`eventId`: kotlin.ByteArray, `nextAttemptMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_mark_outbox_attempt(
+        it,
+        
+        FfiConverterByteArray.lower(`eventId`),
+        FfiConverterLong.lower(`nextAttemptMs`),_status)
+}
     }
+    
+    
 
+    
     /**
      * Returns the next durable author sequence for this identity.
      *
@@ -4678,19 +3920,20 @@ open class MobileClient :
      *
      * Returns `ProfileUnavailable` if the profile lock or sequence lookup fails.
      */
-    @Throws(MobileException::class)
-    override fun `nextAuthorSequence`(): kotlin.ULong =
-        FfiConverterULong.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `nextAuthorSequence`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_next_author_sequence(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Returns a bounded keyset page of exact durable opaque envelopes.
      *
@@ -4703,24 +3946,22 @@ open class MobileClient :
      * `InvalidOutboxPage` for a zero or oversized page, and
      * `OutboxUnavailable` for storage failures.
      */
-    @Throws(MobileException::class)
-    override fun `outboxPage`(
-        `afterEventId`: kotlin.ByteArray?,
-        `limit`: kotlin.Int,
-    ): List<MobileOutboxEntry> =
-        FfiConverterSequenceTypeMobileOutboxEntry.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(
-                        it,
-                        FfiConverterOptionalByteArray.lower(`afterEventId`),
-                        FfiConverterInt.lower(`limit`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `outboxPage`(`afterEventId`: kotlin.ByteArray?, `limit`: kotlin.Int): List<MobileOutboxEntry> {
+            return FfiConverterSequenceTypeMobileOutboxEntry.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_outbox_page(
+        it,
+        
+        FfiConverterOptionalByteArray.lower(`afterEventId`),
+        FfiConverterInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Lists bounded invitations saved from authenticated transport ingress.
      *
@@ -4729,20 +3970,21 @@ open class MobileClient :
      * Returns `DirectMessageFailed` for an invalid page size or failed lookup,
      * or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation> =
-        FfiConverterSequenceTypeMobileDirectMessagePendingInvitation.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_pending_direct_message_invitations(
-                        it,
-                        FfiConverterUInt.lower(`limit`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `pendingDirectMessageInvitations`(`limit`: kotlin.UInt): List<MobileDirectMessagePendingInvitation> {
+            return FfiConverterSequenceTypeMobileDirectMessagePendingInvitation.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_pending_direct_message_invitations(
+        it,
+        
+        FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Stores one exact identity bundle after checking its caller-supplied full
      * fingerprint.
@@ -4759,24 +4001,22 @@ open class MobileClient :
      * `FingerprintMismatch` for a valid but nonmatching bundle, or
      * `PinnedIdentityConflict` if that fingerprint already maps to other bytes.
      */
-    @Throws(MobileException::class)
-    override fun `pinIdentity`(
-        `publicBundle`: kotlin.ByteArray,
-        `expectedFingerprint`: kotlin.ByteArray,
-    ): MobilePinnedIdentity =
-        FfiConverterTypeMobilePinnedIdentity.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(
-                        it,
-                        FfiConverterByteArray.lower(`publicBundle`),
-                        FfiConverterByteArray.lower(`expectedFingerprint`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `pinIdentity`(`publicBundle`: kotlin.ByteArray, `expectedFingerprint`: kotlin.ByteArray): MobilePinnedIdentity {
+            return FfiConverterTypeMobilePinnedIdentity.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_pin_identity(
+        it,
+        
+        FfiConverterByteArray.lower(`publicBundle`),
+        FfiConverterByteArray.lower(`expectedFingerprint`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Loads and revalidates one pinned peer by its full fingerprint.
      *
@@ -4786,20 +4026,21 @@ open class MobileClient :
      * `InvalidIdentityBundle` or `FingerprintMismatch` for corrupt stored data,
      * and `ProfileUnavailable` if the profile cannot be read.
      */
-    @Throws(MobileException::class)
-    override fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity? =
-        FfiConverterOptionalTypeMobilePinnedIdentity.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(
-                        it,
-                        FfiConverterByteArray.lower(`fingerprint`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `pinnedIdentity`(`fingerprint`: kotlin.ByteArray): MobilePinnedIdentity? {
+            return FfiConverterOptionalTypeMobilePinnedIdentity.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_pinned_identity(
+        it,
+        
+        FfiConverterByteArray.lower(`fingerprint`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Copies an already-complete staged attachment to a bounded app-private
      * temporary file for the native document picker to export.
@@ -4811,26 +4052,23 @@ open class MobileClient :
      * `AttachmentOperationFailed` if staged bytes are incomplete or fail
      * verification, or a profile/filesystem error.
      */
-    @Throws(MobileException::class)
-    override fun `prepareAttachmentExport`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-    ): MobileAttachmentExport =
-        FfiConverterTypeMobileAttachmentExport.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_prepare_attachment_export(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`eventId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `prepareAttachmentExport`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray): MobileAttachmentExport {
+            return FfiConverterTypeMobileAttachmentExport.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_prepare_attachment_export(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Publishes one validated local `KeyPackage` for a pairwise DM invitation.
      *
@@ -4840,24 +4078,22 @@ open class MobileClient :
      * `ProfileUnavailable` if the profile lock is poisoned, or
      * `DirectMessageFailed` if Core cannot publish the package.
      */
-    @Throws(MobileException::class)
-    override fun `publishDirectMessageKeyPackage`(
-        `credentialVector`: kotlin.ByteArray,
-        `nowUnixSeconds`: kotlin.ULong,
-    ): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_publish_direct_message_key_package(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterULong.lower(`nowUnixSeconds`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `publishDirectMessageKeyPackage`(`credentialVector`: kotlin.ByteArray, `nowUnixSeconds`: kotlin.ULong): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_publish_direct_message_key_package(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterULong.lower(`nowUnixSeconds`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Publishes one locally retained X.509 `KeyPackage` for offline invitation.
      *
@@ -4870,20 +4106,21 @@ open class MobileClient :
      * bytes, `ProfileUnavailable` if the profile lock is poisoned, and
      * `SpaceKeyPackagePublicationFailed` if publication fails.
      */
-    @Throws(MobileException::class)
-    override fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `publishSpaceKeyPackage`(`credentialVector`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_publish_space_key_package(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Queues one Core-authorized signed Space manifest and durably stages the
      * verified source under its event-bound transfer identity.
@@ -4896,32 +4133,26 @@ open class MobileClient :
      * `AttachmentManifestSourceChanged` if the imported file no longer matches
      * the preview, or `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `queueAttachmentManifest`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `sourceId`: kotlin.String,
-        `preview`: MobileAttachmentManifest,
-    ): MobileAttachmentQueueReceipt =
-        FfiConverterTypeMobileAttachmentQueueReceipt.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_attachment_manifest(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterString.lower(`sourceId`),
-                        FfiConverterTypeMobileAttachmentManifest.lower(`preview`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueAttachmentManifest`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `sourceId`: kotlin.String, `preview`: MobileAttachmentManifest): MobileAttachmentQueueReceipt {
+            return FfiConverterTypeMobileAttachmentQueueReceipt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_attachment_manifest(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterString.lower(`sourceId`),
+        FfiConverterTypeMobileAttachmentManifest.lower(`preview`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Encrypts text locally and commits the resulting opaque packet to Core.
      *
@@ -4931,28 +4162,24 @@ open class MobileClient :
      * `DirectMessageFailed` for invalid input or a failed queue operation, or
      * `ProfileUnavailable` if the profile lock is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `queueDirectMessageText`(
-        `credentialVector`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `content`: kotlin.String,
-        `nextAttemptMs`: kotlin.Long,
-    ): MobileDirectMessagePacket =
-        FfiConverterTypeMobileDirectMessagePacket.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_direct_message_text(
-                        it,
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterString.lower(`content`),
-                        FfiConverterLong.lower(`nextAttemptMs`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueDirectMessageText`(`credentialVector`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `content`: kotlin.String, `nextAttemptMs`: kotlin.Long): MobileDirectMessagePacket {
+            return FfiConverterTypeMobileDirectMessagePacket.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_direct_message_text(
+        it,
+        
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterString.lower(`content`),
+        FfiConverterLong.lower(`nextAttemptMs`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Validates and commits a text event to this device's local durable outbox.
      *
@@ -4968,30 +4195,25 @@ open class MobileClient :
      * `MessageRejected` when local policy denies the message, and
      * `MessageQueueFailed` for other queue/restore failures.
      */
-    @Throws(MobileException::class)
-    override fun `queueLocalTextMessage`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `content`: kotlin.String,
-    ): MobileQueuedMessage =
-        FfiConverterTypeMobileQueuedMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterString.lower(`content`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueLocalTextMessage`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Queues a locally authorized immutable Edit event and updates the
      * encrypted local message cache.
@@ -5005,32 +4227,26 @@ open class MobileClient :
      * `InvalidMessageInput` for oversized text, `MessageRejected` when local
      * policy denies the edit, or `MessageQueueFailed` for other failures.
      */
-    @Throws(MobileException::class)
-    override fun `queueLocalTextMessageEdit`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-        `content`: kotlin.String,
-    ): MobileQueuedMessage =
-        FfiConverterTypeMobileQueuedMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterByteArray.lower(`targetMessageId`),
-                        FfiConverterString.lower(`content`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueLocalTextMessageEdit`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_edit(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterByteArray.lower(`targetMessageId`),
+        FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Queues a pin add or observed-tag removal.
      *
@@ -5041,34 +4257,27 @@ open class MobileClient :
      * `MessageRejected` when local policy denies the pin, or
      * `MessageQueueFailed` for other failures.
      */
-    @Throws(MobileException::class)
-    override fun `queueLocalTextMessagePin`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-        `add`: kotlin.Boolean,
-        `tag`: kotlin.ByteArray?,
-    ): MobileQueuedMessage =
-        FfiConverterTypeMobileQueuedMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_pin(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterByteArray.lower(`targetMessageId`),
-                        FfiConverterBoolean.lower(`add`),
-                        FfiConverterOptionalByteArray.lower(`tag`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueLocalTextMessagePin`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_pin(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterByteArray.lower(`targetMessageId`),
+        FfiConverterBoolean.lower(`add`),
+        FfiConverterOptionalByteArray.lower(`tag`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Queues a tagged reaction add or observed-tag removal.
      *
@@ -5080,36 +4289,28 @@ open class MobileClient :
      * when local policy denies the reaction, or `MessageQueueFailed` for
      * other failures.
      */
-    @Throws(MobileException::class)
-    override fun `queueLocalTextMessageReaction`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-        `token`: kotlin.String,
-        `add`: kotlin.Boolean,
-        `tag`: kotlin.ByteArray?,
-    ): MobileQueuedMessage =
-        FfiConverterTypeMobileQueuedMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reaction(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterByteArray.lower(`targetMessageId`),
-                        FfiConverterString.lower(`token`),
-                        FfiConverterBoolean.lower(`add`),
-                        FfiConverterOptionalByteArray.lower(`tag`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueLocalTextMessageReaction`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray, `token`: kotlin.String, `add`: kotlin.Boolean, `tag`: kotlin.ByteArray?): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reaction(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterByteArray.lower(`targetMessageId`),
+        FfiConverterString.lower(`token`),
+        FfiConverterBoolean.lower(`add`),
+        FfiConverterOptionalByteArray.lower(`tag`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Queues a locally authorized immutable thread reply.
      *
@@ -5120,32 +4321,26 @@ open class MobileClient :
      * `InvalidMessageInput` for oversized text, `MessageRejected` when local
      * policy denies the reply, or `MessageQueueFailed` for other failures.
      */
-    @Throws(MobileException::class)
-    override fun `queueLocalTextMessageReply`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `threadRoot`: kotlin.ByteArray,
-        `content`: kotlin.String,
-    ): MobileQueuedMessage =
-        FfiConverterTypeMobileQueuedMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterByteArray.lower(`threadRoot`),
-                        FfiConverterString.lower(`content`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueLocalTextMessageReply`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `threadRoot`: kotlin.ByteArray, `content`: kotlin.String): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_reply(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterByteArray.lower(`threadRoot`),
+        FfiConverterString.lower(`content`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Queues a locally authorized tombstone for a locally authored message.
      *
@@ -5156,30 +4351,25 @@ open class MobileClient :
      * `MessageRejected` when local policy denies the tombstone, or
      * `MessageQueueFailed` for other failures.
      */
-    @Throws(MobileException::class)
-    override fun `queueLocalTextMessageTombstone`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `targetMessageId`: kotlin.ByteArray,
-    ): MobileQueuedMessage =
-        FfiConverterTypeMobileQueuedMessage.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterByteArray.lower(`targetMessageId`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `queueLocalTextMessageTombstone`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `targetMessageId`: kotlin.ByteArray): MobileQueuedMessage {
+            return FfiConverterTypeMobileQueuedMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_queue_local_text_message_tombstone(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterByteArray.lower(`targetMessageId`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Receives one authorized manifest into persistent private staging after
      * explicit user consent and exact pinned-peer authorization.
@@ -5193,32 +4383,26 @@ open class MobileClient :
      * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
      * authorization, connection, verification, or transfer failures.
      */
-    @Throws(MobileException::class)
-    override fun `receiveAttachmentOnce`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-        `peerFingerprint`: kotlin.ByteArray,
-        `listenAddress`: kotlin.String,
-        `userConsented`: kotlin.Boolean,
-    ): MobileAttachmentTransferReceipt =
-        FfiConverterTypeMobileAttachmentTransferReceipt.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_receive_attachment_once(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`eventId`),
-                        FfiConverterByteArray.lower(`peerFingerprint`),
-                        FfiConverterString.lower(`listenAddress`),
-                        FfiConverterBoolean.lower(`userConsented`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `receiveAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `listenAddress`: kotlin.String, `userConsented`: kotlin.Boolean): MobileAttachmentTransferReceipt {
+            return FfiConverterTypeMobileAttachmentTransferReceipt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_receive_attachment_once(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`eventId`),
+        FfiConverterByteArray.lower(`peerFingerprint`),
+        FfiConverterString.lower(`listenAddress`),
+        FfiConverterBoolean.lower(`userConsented`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Records authenticated peer-ingress acceptance, not destination delivery.
      *
@@ -5227,18 +4411,20 @@ open class MobileClient :
      * Returns `InvalidOutboxEventId` for a malformed packet ID or
      * `OutboxTransitionRejected` if the ingress transition is invalid.
      */
-    @Throws(MobileException::class)
-    override fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray) =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingress_accepted(
-                    it,
-                    FfiConverterByteArray.lower(`packetId`),
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `recordDirectMessagePeerIngressAccepted`(`packetId`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_record_direct_message_peer_ingress_accepted(
+        it,
+        
+        FfiConverterByteArray.lower(`packetId`),_status)
+}
+    }
+    
+    
 
+    
     /**
      * Records only authenticated peer acceptance into bounded BLE ingress.
      * It is not proof of destination delivery or reading.
@@ -5247,18 +4433,20 @@ open class MobileClient :
      *
      * Returns `InvalidOutboxEventId` or `OutboxTransitionRejected`.
      */
-    @Throws(MobileException::class)
-    override fun `recordPeerIngressAccepted`(`eventId`: kotlin.ByteArray) =
-        callWithHandle {
-            uniffiRustCallWithError(MobileException) { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(
-                    it,
-                    FfiConverterByteArray.lower(`eventId`),
-                    _status,
-                )
-            }
-        }
+    @Throws(MobileException::class)override fun `recordPeerIngressAccepted`(`eventId`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_record_peer_ingress_accepted(
+        it,
+        
+        FfiConverterByteArray.lower(`eventId`),_status)
+}
+    }
+    
+    
 
+    
     /**
      * Restores a named local generation, then creates its authorized one-member recovery generation.
      *
@@ -5273,26 +4461,53 @@ open class MobileClient :
      * `SpaceRecoveryFailed` if restoring the prior generation or creating the
      * recovery generation fails.
      */
-    @Throws(MobileException::class)
-    override fun `recoverLocalSpaceGeneration`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `credentialVector`: kotlin.ByteArray,
-    ): MobileCreatedSpace =
-        FfiConverterTypeMobileCreatedSpace.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`credentialVector`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `recoverLocalSpaceGeneration`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray): MobileCreatedSpace {
+            return FfiConverterTypeMobileCreatedSpace.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_recover_local_space_generation(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),_status)
+}
+    }
+    )
+    }
+    
 
+    
+    /**
+     * Commits an authorized MLS Remove and matching Space policy transition locally.
+     *
+     * This advances the local MLS epoch and stages signed membership events; it
+     * does not deliver them to peers or prove that the removed device observed them.
+     *
+     * # Errors
+     *
+     * Returns `InvalidSpaceMessageId` for malformed Space/group identifiers,
+     * `InvalidFingerprint` for a malformed target fingerprint, and
+     * `InvalidSpaceCredential` for empty or oversized credentials.
+     */
+    @Throws(MobileException::class)override fun `removeSpaceMember`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `credentialVector`: kotlin.ByteArray, `targetFingerprint`: kotlin.ByteArray): MobileSpaceMemberRemoval {
+            return FfiConverterTypeMobileSpaceMemberRemoval.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_remove_space_member(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`credentialVector`),
+        FfiConverterByteArray.lower(`targetFingerprint`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     /**
      * Searches all locally retained authorized messages in one channel offline.
      *
@@ -5306,28 +4521,24 @@ open class MobileClient :
      * for an empty or oversized query, and `MessageHistoryUnavailable` when
      * local recovery, decryption, or event validation fails.
      */
-    @Throws(MobileException::class)
-    override fun `searchLocalTextMessages`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `channelId`: kotlin.ByteArray,
-        `query`: kotlin.String,
-    ): MobileLocalTextMessageSearch =
-        FfiConverterTypeMobileLocalTextMessageSearch.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`channelId`),
-                        FfiConverterString.lower(`query`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `searchLocalTextMessages`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `channelId`: kotlin.ByteArray, `query`: kotlin.String): MobileLocalTextMessageSearch {
+            return FfiConverterTypeMobileLocalTextMessageSearch.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_search_local_text_messages(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`channelId`),
+        FfiConverterString.lower(`query`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Sends one authorized manifest over TCP and a separately domain-bound
      * Noise session pinned to the exact active Space member.
@@ -5340,30 +4551,25 @@ open class MobileClient :
      * `AttachmentNotAuthorized` or `AttachmentOperationFailed` for
      * authorization, connection, verification, or transfer failures.
      */
-    @Throws(MobileException::class)
-    override fun `sendAttachmentOnce`(
-        `spaceId`: kotlin.ByteArray,
-        `groupReference`: kotlin.ByteArray,
-        `eventId`: kotlin.ByteArray,
-        `peerFingerprint`: kotlin.ByteArray,
-        `connectAddress`: kotlin.String,
-    ): MobileAttachmentTransferReceipt =
-        FfiConverterTypeMobileAttachmentTransferReceipt.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_send_attachment_once(
-                        it,
-                        FfiConverterByteArray.lower(`spaceId`),
-                        FfiConverterByteArray.lower(`groupReference`),
-                        FfiConverterByteArray.lower(`eventId`),
-                        FfiConverterByteArray.lower(`peerFingerprint`),
-                        FfiConverterString.lower(`connectAddress`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `sendAttachmentOnce`(`spaceId`: kotlin.ByteArray, `groupReference`: kotlin.ByteArray, `eventId`: kotlin.ByteArray, `peerFingerprint`: kotlin.ByteArray, `connectAddress`: kotlin.String): MobileAttachmentTransferReceipt {
+            return FfiConverterTypeMobileAttachmentTransferReceipt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_send_attachment_once(
+        it,
+        
+        FfiConverterByteArray.lower(`spaceId`),
+        FfiConverterByteArray.lower(`groupReference`),
+        FfiConverterByteArray.lower(`eventId`),
+        FfiConverterByteArray.lower(`peerFingerprint`),
+        FfiConverterString.lower(`connectAddress`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Subscribes to bounded, coalesced Core projection changes.
      *
@@ -5372,19 +4578,20 @@ open class MobileClient :
      * Returns `ProfileUnavailable` if the subscription limit is reached or
      * the observer registry is unavailable.
      */
-    @Throws(MobileException::class)
-    override fun `subscribeProjectionChanges`(): MobileProjectionSubscription =
-        FfiConverterTypeMobileProjectionSubscription.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `subscribeProjectionChanges`(): MobileProjectionSubscription {
+            return FfiConverterTypeMobileProjectionSubscription.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_subscribe_projection_changes(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Removes one full-fingerprint peer pin from this local profile.
      *
@@ -5396,71 +4603,83 @@ open class MobileClient :
      * Returns `InvalidFingerprint` for a non-32-byte fingerprint, or
      * `ProfileUnavailable` if the profile cannot update its trust store.
      */
-    @Throws(MobileException::class)
-    override fun `unpinIdentity`(`fingerprint`: kotlin.ByteArray): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(
-                        it,
-                        FfiConverterByteArray.lower(`fingerprint`),
-                        _status,
-                    )
-                }
-            },
-        )
-
-    companion object {
-        /**
-         * Opens a durable profile using a caller-provided OS keystore bridge.
-         *
-         * This API has no software-key fallback. The profile identifier is passed
-         * to the native protector for key binding and must remain stable.
-         *
-         * # Errors
-         *
-         * Returns `InvalidProfileId` for a malformed identifier,
-         * `KeyProtectionFailed` when the OS keystore refuses access, or
-         * `ProfileOpenFailed` for storage or profile initialization failures.
-         */
-        @Throws(MobileException::class)
-        fun `openOrCreate`(
-            `databasePath`: kotlin.String,
-            `profileId`: kotlin.String,
-            `protector`: PlatformKeyProtector,
-        ): MobileClient =
-            FfiConverterTypeMobileClient.lift(
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(
-                        FfiConverterString.lower(`databasePath`),
-                        FfiConverterString.lower(`profileId`),
-                        FfiConverterTypePlatformKeyProtector.lower(`protector`),
-                        _status,
-                    )
-                },
-            )
-    }
+    @Throws(MobileException::class)override fun `unpinIdentity`(`fingerprint`: kotlin.ByteArray): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileclient_unpin_identity(
+        it,
+        
+        FfiConverterByteArray.lower(`fingerprint`),_status)
 }
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    companion object {
+        
+    /**
+     * Opens a durable profile using a caller-provided OS keystore bridge.
+     *
+     * This API has no software-key fallback. The profile identifier is passed
+     * to the native protector for key binding and must remain stable.
+     *
+     * # Errors
+     *
+     * Returns `InvalidProfileId` for a malformed identifier,
+     * `KeyProtectionFailed` when the OS keystore refuses access, or
+     * `ProfileOpenFailed` for storage or profile initialization failures.
+     */
+    @Throws(MobileException::class) fun `openOrCreate`(`databasePath`: kotlin.String, `profileId`: kotlin.String, `protector`: PlatformKeyProtector): MobileClient {
+            return FfiConverterTypeMobileClient.lift(
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_constructor_mobileclient_open_or_create(
+    
+        
+        FfiConverterString.lower(`databasePath`),
+        FfiConverterString.lower(`profileId`),
+        FfiConverterTypePlatformKeyProtector.lower(`protector`),_status)
+}
+    )
+    }
+    
+
+        
+    }
+    
+}
+
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileClient : FfiConverter<MobileClient, Long> {
-    override fun lower(value: MobileClient): Long = value.uniffiCloneHandle()
+public object FfiConverterTypeMobileClient: FfiConverter<MobileClient, Long> {
+    override fun lower(value: MobileClient): Long {
+        return value.uniffiCloneHandle()
+    }
 
-    override fun lift(value: Long): MobileClient = MobileClient(UniffiWithHandle, value)
+    override fun lift(value: Long): MobileClient {
+        return MobileClient(UniffiWithHandle, value)
+    }
 
-    override fun read(buf: ByteBuffer): MobileClient = lift(buf.getLong())
+    override fun read(buf: ByteBuffer): MobileClient {
+        return lift(buf.getLong())
+    }
 
     override fun allocationSize(value: MobileClient) = 8UL
 
-    override fun write(
-        value: MobileClient,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileClient, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
+
 
 // This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
@@ -5556,20 +4775,22 @@ public object FfiConverterTypeMobileClient : FfiConverter<MobileClient, Long> {
 // [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
 //
 
+
 /**
  * Cancellable bounded observer for local Core projection changes.
  */
 public interface MobileProjectionSubscriptionInterface {
+    
     /**
      * Closes the subscription and wakes any blocked waiter.
      */
     fun `cancel`()
-
+    
     /**
      * Reports whether this subscription has been closed.
      */
     fun `isClosed`(): kotlin.Boolean
-
+    
     /**
      * Waits for one coalesced change; `None` means timeout or closure.
      *
@@ -5580,21 +4801,20 @@ public interface MobileProjectionSubscriptionInterface {
      * fails.
      */
     fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange?
-
+    
     companion object
 }
 
 /**
  * Cancellable bounded observer for local Core projection changes.
  */
-open class MobileProjectionSubscription :
-    Disposable,
-    AutoCloseable,
-    MobileProjectionSubscriptionInterface {
+open class MobileProjectionSubscription: Disposable, AutoCloseable, MobileProjectionSubscriptionInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
     /**
      * @suppress
      */
-    @Suppress("UNUSED_PARAMETER")
     constructor(withHandle: UniffiWithHandle, handle: Long) {
         this.handle = handle
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
@@ -5651,7 +4871,7 @@ open class MobileProjectionSubscription :
             if (c == Long.MAX_VALUE) {
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
-        } while (!this.callCounter.compareAndSet(c, c + 1L))
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
         // Now we can safely do the method call without the handle being freed concurrently.
         try {
             return block(this.uniffiCloneHandle())
@@ -5665,13 +4885,11 @@ open class MobileProjectionSubscription :
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(
-        private val handle: Long,
-    ) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
             if (handle == 0.toLong()) {
                 // Fake object created with `NoHandle`, don't try to free.
-                return
+                return;
             }
             uniffiRustCall { status ->
                 UniffiLib.uniffi_lattice_uniffi_fn_free_mobileprojectionsubscription(handle, status)
@@ -5684,41 +4902,45 @@ open class MobileProjectionSubscription :
      */
     fun uniffiCloneHandle(): Long {
         if (handle == 0.toLong()) {
-            throw InternalException("uniffiCloneHandle() called on NoHandle object")
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
         }
-        return uniffiRustCall { status ->
+        return uniffiRustCall() { status ->
             UniffiLib.uniffi_lattice_uniffi_fn_clone_mobileprojectionsubscription(handle, status)
         }
     }
 
+    
     /**
      * Closes the subscription and wakes any blocked waiter.
-     */
-    override fun `cancel`() =
-        callWithHandle {
-            uniffiRustCall { _status ->
-                UniffiLib.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_cancel(
-                    it,
-                    _status,
-                )
-            }
-        }
+     */override fun `cancel`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_cancel(
+        it,
+        _status)
+}
+    }
+    
+    
 
+    
     /**
      * Reports whether this subscription has been closed.
-     */
-    override fun `isClosed`(): kotlin.Boolean =
-        FfiConverterBoolean.lift(
-            callWithHandle {
-                uniffiRustCall { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_is_closed(
-                        it,
-                        _status,
-                    )
-                }
-            },
-        )
+     */override fun `isClosed`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_is_closed(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Waits for one coalesced change; `None` means timeout or closure.
      *
@@ -5728,45 +4950,58 @@ open class MobileProjectionSubscription :
      * range, or `ProjectionObserverUnavailable` if observer synchronization
      * fails.
      */
-    @Throws(MobileException::class)
-    override fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange? =
-        FfiConverterOptionalTypeMobileProjectionChange.lift(
-            callWithHandle {
-                uniffiRustCallWithError(MobileException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_wait_for_change(
-                        it,
-                        FfiConverterULong.lower(`timeoutMs`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(MobileException::class)override fun `waitForChange`(`timeoutMs`: kotlin.ULong): MobileProjectionChange? {
+            return FfiConverterOptionalTypeMobileProjectionChange.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_mobileprojectionsubscription_wait_for_change(
+        it,
+        
+        FfiConverterULong.lower(`timeoutMs`),_status)
+}
+    }
+    )
+    }
+    
 
+    
+
+    
+
+
+    
+    
     /**
      * @suppress
      */
     companion object
+    
 }
+
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileProjectionSubscription : FfiConverter<MobileProjectionSubscription, Long> {
-    override fun lower(value: MobileProjectionSubscription): Long = value.uniffiCloneHandle()
+public object FfiConverterTypeMobileProjectionSubscription: FfiConverter<MobileProjectionSubscription, Long> {
+    override fun lower(value: MobileProjectionSubscription): Long {
+        return value.uniffiCloneHandle()
+    }
 
-    override fun lift(value: Long): MobileProjectionSubscription = MobileProjectionSubscription(UniffiWithHandle, value)
+    override fun lift(value: Long): MobileProjectionSubscription {
+        return MobileProjectionSubscription(UniffiWithHandle, value)
+    }
 
-    override fun read(buf: ByteBuffer): MobileProjectionSubscription = lift(buf.getLong())
+    override fun read(buf: ByteBuffer): MobileProjectionSubscription {
+        return lift(buf.getLong())
+    }
 
     override fun allocationSize(value: MobileProjectionSubscription) = 8UL
 
-    override fun write(
-        value: MobileProjectionSubscription,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileProjectionSubscription, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
+
 
 // This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
@@ -5862,7 +5097,9 @@ public object FfiConverterTypeMobileProjectionSubscription : FfiConverter<Mobile
 // [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
 //
 
+
 public interface PlatformKeyProtector {
+    
     /**
      * Wraps private material for the exact profile identifier.
      *
@@ -5870,11 +5107,8 @@ public interface PlatformKeyProtector {
      *
      * Returns `ProtectorError` when the native keystore refuses protection.
      */
-    fun `wrap`(
-        `profileId`: kotlin.String,
-        `clearMaterial`: kotlin.ByteArray,
-    ): kotlin.ByteArray
-
+    fun `wrap`(`profileId`: kotlin.String, `clearMaterial`: kotlin.ByteArray): kotlin.ByteArray
+    
     /**
      * Unwraps ciphertext only for the exact profile identifier.
      *
@@ -5883,22 +5117,18 @@ public interface PlatformKeyProtector {
      * Returns `ProtectorError` when the native keystore refuses or cannot
      * authenticate the ciphertext.
      */
-    fun `unwrap`(
-        `profileId`: kotlin.String,
-        `ciphertext`: kotlin.ByteArray,
-    ): kotlin.ByteArray
-
+    fun `unwrap`(`profileId`: kotlin.String, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
+    
     companion object
 }
 
-open class PlatformKeyProtectorImpl :
-    Disposable,
-    AutoCloseable,
-    PlatformKeyProtector {
+open class PlatformKeyProtectorImpl: Disposable, AutoCloseable, PlatformKeyProtector
+{
+
+    @Suppress("UNUSED_PARAMETER")
     /**
      * @suppress
      */
-    @Suppress("UNUSED_PARAMETER")
     constructor(withHandle: UniffiWithHandle, handle: Long) {
         this.handle = handle
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
@@ -5955,7 +5185,7 @@ open class PlatformKeyProtectorImpl :
             if (c == Long.MAX_VALUE) {
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
-        } while (!this.callCounter.compareAndSet(c, c + 1L))
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
         // Now we can safely do the method call without the handle being freed concurrently.
         try {
             return block(this.uniffiCloneHandle())
@@ -5969,13 +5199,11 @@ open class PlatformKeyProtectorImpl :
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(
-        private val handle: Long,
-    ) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
             if (handle == 0.toLong()) {
                 // Fake object created with `NoHandle`, don't try to free.
-                return
+                return;
             }
             uniffiRustCall { status ->
                 UniffiLib.uniffi_lattice_uniffi_fn_free_platformkeyprotector(handle, status)
@@ -5988,13 +5216,14 @@ open class PlatformKeyProtectorImpl :
      */
     fun uniffiCloneHandle(): Long {
         if (handle == 0.toLong()) {
-            throw InternalException("uniffiCloneHandle() called on NoHandle object")
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
         }
-        return uniffiRustCall { status ->
+        return uniffiRustCall() { status ->
             UniffiLib.uniffi_lattice_uniffi_fn_clone_platformkeyprotector(handle, status)
         }
     }
 
+    
     /**
      * Wraps private material for the exact profile identifier.
      *
@@ -6002,24 +5231,22 @@ open class PlatformKeyProtectorImpl :
      *
      * Returns `ProtectorError` when the native keystore refuses protection.
      */
-    @Throws(ProtectorException::class)
-    override fun `wrap`(
-        `profileId`: kotlin.String,
-        `clearMaterial`: kotlin.ByteArray,
-    ): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(ProtectorException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(
-                        it,
-                        FfiConverterString.lower(`profileId`),
-                        FfiConverterByteArray.lower(`clearMaterial`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(ProtectorException::class)override fun `wrap`(`profileId`: kotlin.String, `clearMaterial`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(ProtectorException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_platformkeyprotector_wrap(
+        it,
+        
+        FfiConverterString.lower(`profileId`),
+        FfiConverterByteArray.lower(`clearMaterial`),_status)
+}
+    }
+    )
+    }
+    
 
+    
     /**
      * Unwraps ciphertext only for the exact profile identifier.
      *
@@ -6028,97 +5255,94 @@ open class PlatformKeyProtectorImpl :
      * Returns `ProtectorError` when the native keystore refuses or cannot
      * authenticate the ciphertext.
      */
-    @Throws(ProtectorException::class)
-    override fun `unwrap`(
-        `profileId`: kotlin.String,
-        `ciphertext`: kotlin.ByteArray,
-    ): kotlin.ByteArray =
-        FfiConverterByteArray.lift(
-            callWithHandle {
-                uniffiRustCallWithError(ProtectorException) { _status ->
-                    UniffiLib.uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(
-                        it,
-                        FfiConverterString.lower(`profileId`),
-                        FfiConverterByteArray.lower(`ciphertext`),
-                        _status,
-                    )
-                }
-            },
-        )
+    @Throws(ProtectorException::class)override fun `unwrap`(`profileId`: kotlin.String, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(ProtectorException) { _status ->
+    UniffiLib.uniffi_lattice_uniffi_fn_method_platformkeyprotector_unwrap(
+        it,
+        
+        FfiConverterString.lower(`profileId`),
+        FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
 
+    
+
+    
+
+
+    
+    
     /**
      * @suppress
      */
     companion object
+    
 }
+
+
 
 // Put the implementation in an object so we don't pollute the top-level namespace
 internal object uniffiCallbackInterfacePlatformKeyProtector {
-    internal object `wrap` : UniffiCallbackInterfacePlatformKeyProtectorMethod0 {
-        override fun callback(
-            `uniffiHandle`: Long,
-            `profileId`: RustBuffer.ByValue,
-            `clearMaterial`: RustBuffer.ByValue,
-            `uniffiOutReturn`: RustBuffer,
-            uniffiCallStatus: UniffiRustCallStatus,
-        ) {
+    internal object `wrap`: UniffiCallbackInterfacePlatformKeyProtectorMethod0 {
+        override fun callback(`uniffiHandle`: Long,`profileId`: RustBuffer.ByValue,`clearMaterial`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypePlatformKeyProtector.handleMap.get(uniffiHandle)
-            val makeCall = {  uniffiObj.`wrap`(
-                FfiConverterString.lift(`profileId`),
-                FfiConverterByteArray.lift(`clearMaterial`),
-            )
+            val makeCall = { ->
+                uniffiObj.`wrap`(
+                    FfiConverterString.lift(`profileId`),
+                    FfiConverterByteArray.lift(`clearMaterial`),
+                )
             }
             val writeReturn = { value: kotlin.ByteArray -> uniffiOutReturn.setValue(FfiConverterByteArray.lower(value)) }
             uniffiTraitInterfaceCallWithError(
                 uniffiCallStatus,
                 makeCall,
                 writeReturn,
-                { e: ProtectorException -> FfiConverterTypeProtectorError.lower(e) },
+                { e: ProtectorException -> FfiConverterTypeProtectorError.lower(e) }
             )
         }
     }
-
-    internal object `unwrap` : UniffiCallbackInterfacePlatformKeyProtectorMethod1 {
-        override fun callback(
-            `uniffiHandle`: Long,
-            `profileId`: RustBuffer.ByValue,
-            `ciphertext`: RustBuffer.ByValue,
-            `uniffiOutReturn`: RustBuffer,
-            uniffiCallStatus: UniffiRustCallStatus,
-        ) {
+    internal object `unwrap`: UniffiCallbackInterfacePlatformKeyProtectorMethod1 {
+        override fun callback(`uniffiHandle`: Long,`profileId`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypePlatformKeyProtector.handleMap.get(uniffiHandle)
-            val makeCall = {  uniffiObj.`unwrap`(
-                FfiConverterString.lift(`profileId`),
-                FfiConverterByteArray.lift(`ciphertext`),
-            )
+            val makeCall = { ->
+                uniffiObj.`unwrap`(
+                    FfiConverterString.lift(`profileId`),
+                    FfiConverterByteArray.lift(`ciphertext`),
+                )
             }
             val writeReturn = { value: kotlin.ByteArray -> uniffiOutReturn.setValue(FfiConverterByteArray.lower(value)) }
             uniffiTraitInterfaceCallWithError(
                 uniffiCallStatus,
                 makeCall,
                 writeReturn,
-                { e: ProtectorException -> FfiConverterTypeProtectorError.lower(e) },
+                { e: ProtectorException -> FfiConverterTypeProtectorError.lower(e) }
             )
         }
     }
 
-    internal object uniffiFree : UniffiCallbackInterfaceFree {
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
         override fun callback(handle: Long) {
             FfiConverterTypePlatformKeyProtector.handleMap.remove(handle)
         }
     }
 
-    internal object uniffiClone : UniffiCallbackInterfaceClone {
-        override fun callback(handle: Long): Long = FfiConverterTypePlatformKeyProtector.handleMap.clone(handle)
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypePlatformKeyProtector.handleMap.clone(handle)
+        }
     }
 
-    internal var vtable =
-        UniffiVTableCallbackInterfacePlatformKeyProtector.UniffiByValue(
-            uniffiFree,
-            uniffiClone,
-            `wrap`,
-            `unwrap`,
-        )
+    internal var vtable = UniffiVTableCallbackInterfacePlatformKeyProtector.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `wrap`,
+        `unwrap`,
+    )
 
     // Registers the foreign callback with the Rust side.
     // This method is generated for each callback interface.
@@ -6130,17 +5354,17 @@ internal object uniffiCallbackInterfacePlatformKeyProtector {
 /**
  * @suppress
  */
-public object FfiConverterTypePlatformKeyProtector : FfiConverter<PlatformKeyProtector, Long> {
+public object FfiConverterTypePlatformKeyProtector: FfiConverter<PlatformKeyProtector, Long> {
     internal val handleMap = UniffiHandleMap<PlatformKeyProtector>()
 
     override fun lower(value: PlatformKeyProtector): Long {
         if (value is PlatformKeyProtectorImpl) {
-            // Rust-implemented object.  Clone the handle and return it
+             // Rust-implemented object.  Clone the handle and return it
             return value.uniffiCloneHandle()
-        } else {
+         } else {
             // Kotlin object, generate a new vtable handle and return that.
             return handleMap.insert(value)
-        }
+         }
     }
 
     override fun lift(value: Long): PlatformKeyProtector {
@@ -6154,205 +5378,249 @@ public object FfiConverterTypePlatformKeyProtector : FfiConverter<PlatformKeyPro
         }
     }
 
-    override fun read(buf: ByteBuffer): PlatformKeyProtector = lift(buf.getLong())
+    override fun read(buf: ByteBuffer): PlatformKeyProtector {
+        return lift(buf.getLong())
+    }
 
     override fun allocationSize(value: PlatformKeyProtector) = 8UL
 
-    override fun write(
-        value: PlatformKeyProtector,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: PlatformKeyProtector, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
 
+
+
 /**
  * Verified bytes copied to an app-private temporary export file.
  */
-data class MobileAttachmentExport(
-    var `exportId`: kotlin.String,
-    var `filename`: kotlin.String,
-    var `fileSize`: kotlin.ULong,
-    var `fileHash`: kotlin.ByteArray,
-) {
+data class MobileAttachmentExport (
+    var `exportId`: kotlin.String
+    , 
+    var `filename`: kotlin.String
+    , 
+    var `fileSize`: kotlin.ULong
+    , 
+    var `fileHash`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileAttachmentExport : FfiConverterRustBuffer<MobileAttachmentExport> {
-    override fun read(buf: ByteBuffer): MobileAttachmentExport =
-        MobileAttachmentExport(
+public object FfiConverterTypeMobileAttachmentExport: FfiConverterRustBuffer<MobileAttachmentExport> {
+    override fun read(buf: ByteBuffer): MobileAttachmentExport {
+        return MobileAttachmentExport(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileAttachmentExport) =
-        (
+    override fun allocationSize(value: MobileAttachmentExport) = (
             FfiConverterString.allocationSize(value.`exportId`) +
-                FfiConverterString.allocationSize(value.`filename`) +
-                FfiConverterULong.allocationSize(value.`fileSize`) +
-                FfiConverterByteArray.allocationSize(value.`fileHash`)
-        )
+            FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterByteArray.allocationSize(value.`fileHash`)
+    )
 
-    override fun write(
-        value: MobileAttachmentExport,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`exportId`, buf)
-        FfiConverterString.write(value.`filename`, buf)
-        FfiConverterULong.write(value.`fileSize`, buf)
-        FfiConverterByteArray.write(value.`fileHash`, buf)
+    override fun write(value: MobileAttachmentExport, buf: ByteBuffer) {
+            FfiConverterString.write(value.`exportId`, buf)
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterByteArray.write(value.`fileHash`, buf)
     }
 }
+
+
 
 /**
  * Locally computed attachment metadata preview. The file hash is display and
  * change-detection data; only Core's signed manifest event authorizes a transfer.
  */
-data class MobileAttachmentManifest(
-    var `filename`: kotlin.String,
-    var `fileSize`: kotlin.ULong,
-    var `fileHash`: kotlin.ByteArray,
-) {
+data class MobileAttachmentManifest (
+    var `filename`: kotlin.String
+    , 
+    var `fileSize`: kotlin.ULong
+    , 
+    var `fileHash`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileAttachmentManifest : FfiConverterRustBuffer<MobileAttachmentManifest> {
-    override fun read(buf: ByteBuffer): MobileAttachmentManifest =
-        MobileAttachmentManifest(
+public object FfiConverterTypeMobileAttachmentManifest: FfiConverterRustBuffer<MobileAttachmentManifest> {
+    override fun read(buf: ByteBuffer): MobileAttachmentManifest {
+        return MobileAttachmentManifest(
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileAttachmentManifest) =
-        (
+    override fun allocationSize(value: MobileAttachmentManifest) = (
             FfiConverterString.allocationSize(value.`filename`) +
-                FfiConverterULong.allocationSize(value.`fileSize`) +
-                FfiConverterByteArray.allocationSize(value.`fileHash`)
-        )
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterByteArray.allocationSize(value.`fileHash`)
+    )
 
-    override fun write(
-        value: MobileAttachmentManifest,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`filename`, buf)
-        FfiConverterULong.write(value.`fileSize`, buf)
-        FfiConverterByteArray.write(value.`fileHash`, buf)
+    override fun write(value: MobileAttachmentManifest, buf: ByteBuffer) {
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterByteArray.write(value.`fileHash`, buf)
     }
 }
+
+
 
 /**
  * Result of queueing one signed attachment manifest and retaining its source.
  */
-data class MobileAttachmentQueueReceipt(
-    var `manifest`: MobileAuthorizedAttachmentManifest,
-    var `sourceRetained`: kotlin.Boolean,
-) {
+data class MobileAttachmentQueueReceipt (
+    var `manifest`: MobileAuthorizedAttachmentManifest
+    , 
+    var `sourceRetained`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileAttachmentQueueReceipt : FfiConverterRustBuffer<MobileAttachmentQueueReceipt> {
-    override fun read(buf: ByteBuffer): MobileAttachmentQueueReceipt =
-        MobileAttachmentQueueReceipt(
+public object FfiConverterTypeMobileAttachmentQueueReceipt: FfiConverterRustBuffer<MobileAttachmentQueueReceipt> {
+    override fun read(buf: ByteBuffer): MobileAttachmentQueueReceipt {
+        return MobileAttachmentQueueReceipt(
             FfiConverterTypeMobileAuthorizedAttachmentManifest.read(buf),
             FfiConverterBoolean.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileAttachmentQueueReceipt) =
-        (
+    override fun allocationSize(value: MobileAttachmentQueueReceipt) = (
             FfiConverterTypeMobileAuthorizedAttachmentManifest.allocationSize(value.`manifest`) +
-                FfiConverterBoolean.allocationSize(value.`sourceRetained`)
-        )
+            FfiConverterBoolean.allocationSize(value.`sourceRetained`)
+    )
 
-    override fun write(
-        value: MobileAttachmentQueueReceipt,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterTypeMobileAuthorizedAttachmentManifest.write(value.`manifest`, buf)
-        FfiConverterBoolean.write(value.`sourceRetained`, buf)
+    override fun write(value: MobileAttachmentQueueReceipt, buf: ByteBuffer) {
+            FfiConverterTypeMobileAuthorizedAttachmentManifest.write(value.`manifest`, buf)
+            FfiConverterBoolean.write(value.`sourceRetained`, buf)
     }
 }
+
+
 
 /**
  * Resumable progress reconstructed from verified staged chunks.
  */
-data class MobileAttachmentStagingStatus(
-    var `eventId`: kotlin.ByteArray,
-    var `fileSize`: kotlin.ULong,
-    var `verifiedChunks`: kotlin.ULong,
-    var `totalChunks`: kotlin.ULong,
-    var `complete`: kotlin.Boolean,
-) {
+data class MobileAttachmentStagingStatus (
+    var `eventId`: kotlin.ByteArray
+    , 
+    var `fileSize`: kotlin.ULong
+    , 
+    var `verifiedChunks`: kotlin.ULong
+    , 
+    var `totalChunks`: kotlin.ULong
+    , 
+    var `complete`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileAttachmentStagingStatus : FfiConverterRustBuffer<MobileAttachmentStagingStatus> {
-    override fun read(buf: ByteBuffer): MobileAttachmentStagingStatus =
-        MobileAttachmentStagingStatus(
+public object FfiConverterTypeMobileAttachmentStagingStatus: FfiConverterRustBuffer<MobileAttachmentStagingStatus> {
+    override fun read(buf: ByteBuffer): MobileAttachmentStagingStatus {
+        return MobileAttachmentStagingStatus(
             FfiConverterByteArray.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileAttachmentStagingStatus) =
-        (
+    override fun allocationSize(value: MobileAttachmentStagingStatus) = (
             FfiConverterByteArray.allocationSize(value.`eventId`) +
-                FfiConverterULong.allocationSize(value.`fileSize`) +
-                FfiConverterULong.allocationSize(value.`verifiedChunks`) +
-                FfiConverterULong.allocationSize(value.`totalChunks`) +
-                FfiConverterBoolean.allocationSize(value.`complete`)
-        )
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterULong.allocationSize(value.`verifiedChunks`) +
+            FfiConverterULong.allocationSize(value.`totalChunks`) +
+            FfiConverterBoolean.allocationSize(value.`complete`)
+    )
 
-    override fun write(
-        value: MobileAttachmentStagingStatus,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
-        FfiConverterULong.write(value.`fileSize`, buf)
-        FfiConverterULong.write(value.`verifiedChunks`, buf)
-        FfiConverterULong.write(value.`totalChunks`, buf)
-        FfiConverterBoolean.write(value.`complete`, buf)
+    override fun write(value: MobileAttachmentStagingStatus, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterULong.write(value.`verifiedChunks`, buf)
+            FfiConverterULong.write(value.`totalChunks`, buf)
+            FfiConverterBoolean.write(value.`complete`, buf)
     }
 }
+
+
 
 /**
  * Truthful receipt for one authenticated attachment transfer.
  */
-data class MobileAttachmentTransferReceipt(
-    var `eventId`: kotlin.ByteArray,
-    var `peerFingerprint`: kotlin.ByteArray,
-    var `transferId`: kotlin.ByteArray,
-    var `isSender`: kotlin.Boolean,
-    var `chunksTransferred`: kotlin.ULong,
-    var `peerVerified`: kotlin.Boolean,
-    var `localFileVerifiedComplete`: kotlin.Boolean,
-    var `remoteFileVerifiedComplete`: kotlin.Boolean,
-) {
+data class MobileAttachmentTransferReceipt (
+    var `eventId`: kotlin.ByteArray
+    , 
+    var `peerFingerprint`: kotlin.ByteArray
+    , 
+    var `transferId`: kotlin.ByteArray
+    , 
+    var `isSender`: kotlin.Boolean
+    , 
+    var `chunksTransferred`: kotlin.ULong
+    , 
+    var `peerVerified`: kotlin.Boolean
+    , 
+    var `localFileVerifiedComplete`: kotlin.Boolean
+    , 
+    var `remoteFileVerifiedComplete`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileAttachmentTransferReceipt : FfiConverterRustBuffer<MobileAttachmentTransferReceipt> {
-    override fun read(buf: ByteBuffer): MobileAttachmentTransferReceipt =
-        MobileAttachmentTransferReceipt(
+public object FfiConverterTypeMobileAttachmentTransferReceipt: FfiConverterRustBuffer<MobileAttachmentTransferReceipt> {
+    override fun read(buf: ByteBuffer): MobileAttachmentTransferReceipt {
+        return MobileAttachmentTransferReceipt(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
@@ -6362,56 +5630,68 @@ public object FfiConverterTypeMobileAttachmentTransferReceipt : FfiConverterRust
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileAttachmentTransferReceipt) =
-        (
+    override fun allocationSize(value: MobileAttachmentTransferReceipt) = (
             FfiConverterByteArray.allocationSize(value.`eventId`) +
-                FfiConverterByteArray.allocationSize(value.`peerFingerprint`) +
-                FfiConverterByteArray.allocationSize(value.`transferId`) +
-                FfiConverterBoolean.allocationSize(value.`isSender`) +
-                FfiConverterULong.allocationSize(value.`chunksTransferred`) +
-                FfiConverterBoolean.allocationSize(value.`peerVerified`) +
-                FfiConverterBoolean.allocationSize(value.`localFileVerifiedComplete`) +
-                FfiConverterBoolean.allocationSize(value.`remoteFileVerifiedComplete`)
-        )
+            FfiConverterByteArray.allocationSize(value.`peerFingerprint`) +
+            FfiConverterByteArray.allocationSize(value.`transferId`) +
+            FfiConverterBoolean.allocationSize(value.`isSender`) +
+            FfiConverterULong.allocationSize(value.`chunksTransferred`) +
+            FfiConverterBoolean.allocationSize(value.`peerVerified`) +
+            FfiConverterBoolean.allocationSize(value.`localFileVerifiedComplete`) +
+            FfiConverterBoolean.allocationSize(value.`remoteFileVerifiedComplete`)
+    )
 
-    override fun write(
-        value: MobileAttachmentTransferReceipt,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
-        FfiConverterByteArray.write(value.`peerFingerprint`, buf)
-        FfiConverterByteArray.write(value.`transferId`, buf)
-        FfiConverterBoolean.write(value.`isSender`, buf)
-        FfiConverterULong.write(value.`chunksTransferred`, buf)
-        FfiConverterBoolean.write(value.`peerVerified`, buf)
-        FfiConverterBoolean.write(value.`localFileVerifiedComplete`, buf)
-        FfiConverterBoolean.write(value.`remoteFileVerifiedComplete`, buf)
+    override fun write(value: MobileAttachmentTransferReceipt, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`peerFingerprint`, buf)
+            FfiConverterByteArray.write(value.`transferId`, buf)
+            FfiConverterBoolean.write(value.`isSender`, buf)
+            FfiConverterULong.write(value.`chunksTransferred`, buf)
+            FfiConverterBoolean.write(value.`peerVerified`, buf)
+            FfiConverterBoolean.write(value.`localFileVerifiedComplete`, buf)
+            FfiConverterBoolean.write(value.`remoteFileVerifiedComplete`, buf)
     }
 }
+
+
 
 /**
  * Summary of a manifest admitted by the restored Space policy.
  */
-data class MobileAuthorizedAttachmentManifest(
-    var `eventId`: kotlin.ByteArray,
-    var `spaceId`: kotlin.ByteArray,
-    var `groupReference`: kotlin.ByteArray,
-    var `filename`: kotlin.String,
-    var `mimeType`: kotlin.String?,
-    var `fileSize`: kotlin.ULong,
-    var `fileHash`: kotlin.ByteArray,
-    var `transferId`: kotlin.ByteArray,
-) {
+data class MobileAuthorizedAttachmentManifest (
+    var `eventId`: kotlin.ByteArray
+    , 
+    var `spaceId`: kotlin.ByteArray
+    , 
+    var `groupReference`: kotlin.ByteArray
+    , 
+    var `filename`: kotlin.String
+    , 
+    var `mimeType`: kotlin.String?
+    , 
+    var `fileSize`: kotlin.ULong
+    , 
+    var `fileHash`: kotlin.ByteArray
+    , 
+    var `transferId`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileAuthorizedAttachmentManifest : FfiConverterRustBuffer<MobileAuthorizedAttachmentManifest> {
-    override fun read(buf: ByteBuffer): MobileAuthorizedAttachmentManifest =
-        MobileAuthorizedAttachmentManifest(
+public object FfiConverterTypeMobileAuthorizedAttachmentManifest: FfiConverterRustBuffer<MobileAuthorizedAttachmentManifest> {
+    override fun read(buf: ByteBuffer): MobileAuthorizedAttachmentManifest {
+        return MobileAuthorizedAttachmentManifest(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
@@ -6421,281 +5701,328 @@ public object FfiConverterTypeMobileAuthorizedAttachmentManifest : FfiConverterR
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileAuthorizedAttachmentManifest) =
-        (
+    override fun allocationSize(value: MobileAuthorizedAttachmentManifest) = (
             FfiConverterByteArray.allocationSize(value.`eventId`) +
-                FfiConverterByteArray.allocationSize(value.`spaceId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterString.allocationSize(value.`filename`) +
-                FfiConverterOptionalString.allocationSize(value.`mimeType`) +
-                FfiConverterULong.allocationSize(value.`fileSize`) +
-                FfiConverterByteArray.allocationSize(value.`fileHash`) +
-                FfiConverterByteArray.allocationSize(value.`transferId`)
-        )
+            FfiConverterByteArray.allocationSize(value.`spaceId`) +
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterOptionalString.allocationSize(value.`mimeType`) +
+            FfiConverterULong.allocationSize(value.`fileSize`) +
+            FfiConverterByteArray.allocationSize(value.`fileHash`) +
+            FfiConverterByteArray.allocationSize(value.`transferId`)
+    )
 
-    override fun write(
-        value: MobileAuthorizedAttachmentManifest,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
-        FfiConverterByteArray.write(value.`spaceId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterString.write(value.`filename`, buf)
-        FfiConverterOptionalString.write(value.`mimeType`, buf)
-        FfiConverterULong.write(value.`fileSize`, buf)
-        FfiConverterByteArray.write(value.`fileHash`, buf)
-        FfiConverterByteArray.write(value.`transferId`, buf)
+    override fun write(value: MobileAuthorizedAttachmentManifest, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterOptionalString.write(value.`mimeType`, buf)
+            FfiConverterULong.write(value.`fileSize`, buf)
+            FfiConverterByteArray.write(value.`fileHash`, buf)
+            FfiConverterByteArray.write(value.`transferId`, buf)
     }
 }
+
+
 
 /**
  * Public peer identity and comparison string from a transcript-verified proof.
  */
-data class MobileBlePeerInfo(
-    var `identityBundle`: kotlin.ByteArray,
-    var `fingerprint`: kotlin.ByteArray,
-    var `safetyNumber`: kotlin.String,
-    var `alreadyPinned`: kotlin.Boolean,
-) {
+data class MobileBlePeerInfo (
+    var `identityBundle`: kotlin.ByteArray
+    , 
+    var `fingerprint`: kotlin.ByteArray
+    , 
+    var `safetyNumber`: kotlin.String
+    , 
+    var `alreadyPinned`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileBlePeerInfo : FfiConverterRustBuffer<MobileBlePeerInfo> {
-    override fun read(buf: ByteBuffer): MobileBlePeerInfo =
-        MobileBlePeerInfo(
+public object FfiConverterTypeMobileBlePeerInfo: FfiConverterRustBuffer<MobileBlePeerInfo> {
+    override fun read(buf: ByteBuffer): MobileBlePeerInfo {
+        return MobileBlePeerInfo(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterString.read(buf),
             FfiConverterBoolean.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileBlePeerInfo) =
-        (
+    override fun allocationSize(value: MobileBlePeerInfo) = (
             FfiConverterByteArray.allocationSize(value.`identityBundle`) +
-                FfiConverterByteArray.allocationSize(value.`fingerprint`) +
-                FfiConverterString.allocationSize(value.`safetyNumber`) +
-                FfiConverterBoolean.allocationSize(value.`alreadyPinned`)
-        )
+            FfiConverterByteArray.allocationSize(value.`fingerprint`) +
+            FfiConverterString.allocationSize(value.`safetyNumber`) +
+            FfiConverterBoolean.allocationSize(value.`alreadyPinned`)
+    )
 
-    override fun write(
-        value: MobileBlePeerInfo,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`identityBundle`, buf)
-        FfiConverterByteArray.write(value.`fingerprint`, buf)
-        FfiConverterString.write(value.`safetyNumber`, buf)
-        FfiConverterBoolean.write(value.`alreadyPinned`, buf)
+    override fun write(value: MobileBlePeerInfo, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`identityBundle`, buf)
+            FfiConverterByteArray.write(value.`fingerprint`, buf)
+            FfiConverterString.write(value.`safetyNumber`, buf)
+            FfiConverterBoolean.write(value.`alreadyPinned`, buf)
     }
 }
+
+
 
 /**
  * Non-secret projection of one channel in the local Genesis policy.
  */
-data class MobileChannelSummary(
+data class MobileChannelSummary (
     /**
      * Random channel identifier bytes.
      */
-    var `id`: kotlin.ByteArray,
+    var `id`: kotlin.ByteArray
+    , 
     /**
      * Display name.
      */
-    var `name`: kotlin.String,
+    var `name`: kotlin.String
+    , 
     /**
      * Channel type.
      */
-    var `channelType`: MobileChannelType,
+    var `channelType`: MobileChannelType
+    , 
     /**
      * Whether the channel was archived in Genesis.
      */
-    var `archived`: kotlin.Boolean,
-) {
+    var `archived`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileChannelSummary : FfiConverterRustBuffer<MobileChannelSummary> {
-    override fun read(buf: ByteBuffer): MobileChannelSummary =
-        MobileChannelSummary(
+public object FfiConverterTypeMobileChannelSummary: FfiConverterRustBuffer<MobileChannelSummary> {
+    override fun read(buf: ByteBuffer): MobileChannelSummary {
+        return MobileChannelSummary(
             FfiConverterByteArray.read(buf),
             FfiConverterString.read(buf),
             FfiConverterTypeMobileChannelType.read(buf),
             FfiConverterBoolean.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileChannelSummary) =
-        (
+    override fun allocationSize(value: MobileChannelSummary) = (
             FfiConverterByteArray.allocationSize(value.`id`) +
-                FfiConverterString.allocationSize(value.`name`) +
-                FfiConverterTypeMobileChannelType.allocationSize(value.`channelType`) +
-                FfiConverterBoolean.allocationSize(value.`archived`)
-        )
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterTypeMobileChannelType.allocationSize(value.`channelType`) +
+            FfiConverterBoolean.allocationSize(value.`archived`)
+    )
 
-    override fun write(
-        value: MobileChannelSummary,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`id`, buf)
-        FfiConverterString.write(value.`name`, buf)
-        FfiConverterTypeMobileChannelType.write(value.`channelType`, buf)
-        FfiConverterBoolean.write(value.`archived`, buf)
+    override fun write(value: MobileChannelSummary, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterTypeMobileChannelType.write(value.`channelType`, buf)
+            FfiConverterBoolean.write(value.`archived`, buf)
     }
 }
+
+
 
 /**
  * Conversation plus a durable invitation packet ready for transport.
  */
-data class MobileCreatedDirectMessage(
-    var `conversation`: MobileDirectMessageConversation,
-    var `invitation`: MobileDirectMessagePacket,
-) {
+data class MobileCreatedDirectMessage (
+    var `conversation`: MobileDirectMessageConversation
+    , 
+    var `invitation`: MobileDirectMessagePacket
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileCreatedDirectMessage : FfiConverterRustBuffer<MobileCreatedDirectMessage> {
-    override fun read(buf: ByteBuffer): MobileCreatedDirectMessage =
-        MobileCreatedDirectMessage(
+public object FfiConverterTypeMobileCreatedDirectMessage: FfiConverterRustBuffer<MobileCreatedDirectMessage> {
+    override fun read(buf: ByteBuffer): MobileCreatedDirectMessage {
+        return MobileCreatedDirectMessage(
             FfiConverterTypeMobileDirectMessageConversation.read(buf),
             FfiConverterTypeMobileDirectMessagePacket.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileCreatedDirectMessage) =
-        (
+    override fun allocationSize(value: MobileCreatedDirectMessage) = (
             FfiConverterTypeMobileDirectMessageConversation.allocationSize(value.`conversation`) +
-                FfiConverterTypeMobileDirectMessagePacket.allocationSize(value.`invitation`)
-        )
+            FfiConverterTypeMobileDirectMessagePacket.allocationSize(value.`invitation`)
+    )
 
-    override fun write(
-        value: MobileCreatedDirectMessage,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterTypeMobileDirectMessageConversation.write(value.`conversation`, buf)
-        FfiConverterTypeMobileDirectMessagePacket.write(value.`invitation`, buf)
+    override fun write(value: MobileCreatedDirectMessage, buf: ByteBuffer) {
+            FfiConverterTypeMobileDirectMessageConversation.write(value.`conversation`, buf)
+            FfiConverterTypeMobileDirectMessagePacket.write(value.`invitation`, buf)
     }
 }
+
+
 
 /**
  * Non-secret identifiers returned after a local Space transaction commits.
  */
-data class MobileCreatedSpace(
+data class MobileCreatedSpace (
     /**
      * Randomly generated Space identifier.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray
+    , 
     /**
      * Event-visible MLS group reference.
      */
-    var `groupReference`: kotlin.ByteArray,
+    var `groupReference`: kotlin.ByteArray
+    , 
     /**
      * Identifier of the committed signed Genesis event.
      */
-    var `genesisEventId`: kotlin.ByteArray,
+    var `genesisEventId`: kotlin.ByteArray
+    , 
     /**
      * Initial channels committed in Genesis.
      */
-    var `channels`: List<MobileChannelSummary>,
-) {
+    var `channels`: List<MobileChannelSummary>
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileCreatedSpace : FfiConverterRustBuffer<MobileCreatedSpace> {
-    override fun read(buf: ByteBuffer): MobileCreatedSpace =
-        MobileCreatedSpace(
+public object FfiConverterTypeMobileCreatedSpace: FfiConverterRustBuffer<MobileCreatedSpace> {
+    override fun read(buf: ByteBuffer): MobileCreatedSpace {
+        return MobileCreatedSpace(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterSequenceTypeMobileChannelSummary.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileCreatedSpace) =
-        (
+    override fun allocationSize(value: MobileCreatedSpace) = (
             FfiConverterByteArray.allocationSize(value.`spaceId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterByteArray.allocationSize(value.`genesisEventId`) +
-                FfiConverterSequenceTypeMobileChannelSummary.allocationSize(value.`channels`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`genesisEventId`) +
+            FfiConverterSequenceTypeMobileChannelSummary.allocationSize(value.`channels`)
+    )
 
-    override fun write(
-        value: MobileCreatedSpace,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`spaceId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterByteArray.write(value.`genesisEventId`, buf)
-        FfiConverterSequenceTypeMobileChannelSummary.write(value.`channels`, buf)
+    override fun write(value: MobileCreatedSpace, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`genesisEventId`, buf)
+            FfiConverterSequenceTypeMobileChannelSummary.write(value.`channels`, buf)
     }
 }
+
+
 
 /**
  * Local participant metadata for one pairwise MLS conversation.
  */
-data class MobileDirectMessageConversation(
-    var `groupReference`: kotlin.ByteArray,
-    var `peerIdentity`: kotlin.ByteArray,
-    var `closed`: kotlin.Boolean,
-) {
+data class MobileDirectMessageConversation (
+    var `groupReference`: kotlin.ByteArray
+    , 
+    var `peerIdentity`: kotlin.ByteArray
+    , 
+    var `closed`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessageConversation : FfiConverterRustBuffer<MobileDirectMessageConversation> {
-    override fun read(buf: ByteBuffer): MobileDirectMessageConversation =
-        MobileDirectMessageConversation(
+public object FfiConverterTypeMobileDirectMessageConversation: FfiConverterRustBuffer<MobileDirectMessageConversation> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageConversation {
+        return MobileDirectMessageConversation(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterBoolean.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessageConversation) =
-        (
+    override fun allocationSize(value: MobileDirectMessageConversation) = (
             FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterByteArray.allocationSize(value.`peerIdentity`) +
-                FfiConverterBoolean.allocationSize(value.`closed`)
-        )
+            FfiConverterByteArray.allocationSize(value.`peerIdentity`) +
+            FfiConverterBoolean.allocationSize(value.`closed`)
+    )
 
-    override fun write(
-        value: MobileDirectMessageConversation,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterByteArray.write(value.`peerIdentity`, buf)
-        FfiConverterBoolean.write(value.`closed`, buf)
+    override fun write(value: MobileDirectMessageConversation, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`peerIdentity`, buf)
+            FfiConverterBoolean.write(value.`closed`, buf)
     }
 }
+
+
 
 /**
  * Result of one authenticated bounded direct-message TCP exchange.
  */
-data class MobileDirectMessageExchange(
-    var `listenAddress`: kotlin.String,
-    var `peerFingerprint`: kotlin.ByteArray,
-    var `outgoingPacketId`: kotlin.ByteArray?,
-    var `outgoingIngressState`: kotlin.String?,
-    var `incomingPacketId`: kotlin.ByteArray?,
-    var `incomingIngressState`: kotlin.String?,
-) {
+data class MobileDirectMessageExchange (
+    var `listenAddress`: kotlin.String
+    , 
+    var `peerFingerprint`: kotlin.ByteArray
+    , 
+    var `outgoingPacketId`: kotlin.ByteArray?
+    , 
+    var `outgoingIngressState`: kotlin.String?
+    , 
+    var `incomingPacketId`: kotlin.ByteArray?
+    , 
+    var `incomingIngressState`: kotlin.String?
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessageExchange : FfiConverterRustBuffer<MobileDirectMessageExchange> {
-    override fun read(buf: ByteBuffer): MobileDirectMessageExchange =
-        MobileDirectMessageExchange(
+public object FfiConverterTypeMobileDirectMessageExchange: FfiConverterRustBuffer<MobileDirectMessageExchange> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageExchange {
+        return MobileDirectMessageExchange(
             FfiConverterString.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterOptionalByteArray.read(buf),
@@ -6703,93 +6030,111 @@ public object FfiConverterTypeMobileDirectMessageExchange : FfiConverterRustBuff
             FfiConverterOptionalByteArray.read(buf),
             FfiConverterOptionalString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessageExchange) =
-        (
+    override fun allocationSize(value: MobileDirectMessageExchange) = (
             FfiConverterString.allocationSize(value.`listenAddress`) +
-                FfiConverterByteArray.allocationSize(value.`peerFingerprint`) +
-                FfiConverterOptionalByteArray.allocationSize(value.`outgoingPacketId`) +
-                FfiConverterOptionalString.allocationSize(value.`outgoingIngressState`) +
-                FfiConverterOptionalByteArray.allocationSize(value.`incomingPacketId`) +
-                FfiConverterOptionalString.allocationSize(value.`incomingIngressState`)
-        )
+            FfiConverterByteArray.allocationSize(value.`peerFingerprint`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`outgoingPacketId`) +
+            FfiConverterOptionalString.allocationSize(value.`outgoingIngressState`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`incomingPacketId`) +
+            FfiConverterOptionalString.allocationSize(value.`incomingIngressState`)
+    )
 
-    override fun write(
-        value: MobileDirectMessageExchange,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterString.write(value.`listenAddress`, buf)
-        FfiConverterByteArray.write(value.`peerFingerprint`, buf)
-        FfiConverterOptionalByteArray.write(value.`outgoingPacketId`, buf)
-        FfiConverterOptionalString.write(value.`outgoingIngressState`, buf)
-        FfiConverterOptionalByteArray.write(value.`incomingPacketId`, buf)
-        FfiConverterOptionalString.write(value.`incomingIngressState`, buf)
+    override fun write(value: MobileDirectMessageExchange, buf: ByteBuffer) {
+            FfiConverterString.write(value.`listenAddress`, buf)
+            FfiConverterByteArray.write(value.`peerFingerprint`, buf)
+            FfiConverterOptionalByteArray.write(value.`outgoingPacketId`, buf)
+            FfiConverterOptionalString.write(value.`outgoingIngressState`, buf)
+            FfiConverterOptionalByteArray.write(value.`incomingPacketId`, buf)
+            FfiConverterOptionalString.write(value.`incomingIngressState`, buf)
     }
 }
+
+
 
 /**
  * Decrypted message retained in the local protected direct-message history.
  */
-data class MobileDirectMessageHistoryEntry(
-    var `packetId`: kotlin.ByteArray,
-    var `groupReference`: kotlin.ByteArray,
-    var `authorIdentity`: kotlin.ByteArray,
-    var `content`: kotlin.String,
-) {
+data class MobileDirectMessageHistoryEntry (
+    var `packetId`: kotlin.ByteArray
+    , 
+    var `groupReference`: kotlin.ByteArray
+    , 
+    var `authorIdentity`: kotlin.ByteArray
+    , 
+    var `content`: kotlin.String
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessageHistoryEntry : FfiConverterRustBuffer<MobileDirectMessageHistoryEntry> {
-    override fun read(buf: ByteBuffer): MobileDirectMessageHistoryEntry =
-        MobileDirectMessageHistoryEntry(
+public object FfiConverterTypeMobileDirectMessageHistoryEntry: FfiConverterRustBuffer<MobileDirectMessageHistoryEntry> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageHistoryEntry {
+        return MobileDirectMessageHistoryEntry(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessageHistoryEntry) =
-        (
+    override fun allocationSize(value: MobileDirectMessageHistoryEntry) = (
             FfiConverterByteArray.allocationSize(value.`packetId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterByteArray.allocationSize(value.`authorIdentity`) +
-                FfiConverterString.allocationSize(value.`content`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`authorIdentity`) +
+            FfiConverterString.allocationSize(value.`content`)
+    )
 
-    override fun write(
-        value: MobileDirectMessageHistoryEntry,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`packetId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterByteArray.write(value.`authorIdentity`, buf)
-        FfiConverterString.write(value.`content`, buf)
+    override fun write(value: MobileDirectMessageHistoryEntry, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`authorIdentity`, buf)
+            FfiConverterString.write(value.`content`, buf)
     }
 }
+
+
 
 /**
  * Result of authenticating and storing one incoming MLS packet.
  */
-data class MobileDirectMessageIngressResult(
-    var `packetId`: kotlin.ByteArray,
-    var `duplicate`: kotlin.Boolean,
-    var `invitationPending`: kotlin.Boolean,
-    var `groupReference`: kotlin.ByteArray?,
-    var `peerIdentity`: kotlin.ByteArray?,
-    var `content`: kotlin.String?,
-) {
+data class MobileDirectMessageIngressResult (
+    var `packetId`: kotlin.ByteArray
+    , 
+    var `duplicate`: kotlin.Boolean
+    , 
+    var `invitationPending`: kotlin.Boolean
+    , 
+    var `groupReference`: kotlin.ByteArray?
+    , 
+    var `peerIdentity`: kotlin.ByteArray?
+    , 
+    var `content`: kotlin.String?
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessageIngressResult : FfiConverterRustBuffer<MobileDirectMessageIngressResult> {
-    override fun read(buf: ByteBuffer): MobileDirectMessageIngressResult =
-        MobileDirectMessageIngressResult(
+public object FfiConverterTypeMobileDirectMessageIngressResult: FfiConverterRustBuffer<MobileDirectMessageIngressResult> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageIngressResult {
+        return MobileDirectMessageIngressResult(
             FfiConverterByteArray.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
@@ -6797,50 +6142,60 @@ public object FfiConverterTypeMobileDirectMessageIngressResult : FfiConverterRus
             FfiConverterOptionalByteArray.read(buf),
             FfiConverterOptionalString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessageIngressResult) =
-        (
+    override fun allocationSize(value: MobileDirectMessageIngressResult) = (
             FfiConverterByteArray.allocationSize(value.`packetId`) +
-                FfiConverterBoolean.allocationSize(value.`duplicate`) +
-                FfiConverterBoolean.allocationSize(value.`invitationPending`) +
-                FfiConverterOptionalByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterOptionalByteArray.allocationSize(value.`peerIdentity`) +
-                FfiConverterOptionalString.allocationSize(value.`content`)
-        )
+            FfiConverterBoolean.allocationSize(value.`duplicate`) +
+            FfiConverterBoolean.allocationSize(value.`invitationPending`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterOptionalByteArray.allocationSize(value.`peerIdentity`) +
+            FfiConverterOptionalString.allocationSize(value.`content`)
+    )
 
-    override fun write(
-        value: MobileDirectMessageIngressResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`packetId`, buf)
-        FfiConverterBoolean.write(value.`duplicate`, buf)
-        FfiConverterBoolean.write(value.`invitationPending`, buf)
-        FfiConverterOptionalByteArray.write(value.`groupReference`, buf)
-        FfiConverterOptionalByteArray.write(value.`peerIdentity`, buf)
-        FfiConverterOptionalString.write(value.`content`, buf)
+    override fun write(value: MobileDirectMessageIngressResult, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterBoolean.write(value.`duplicate`, buf)
+            FfiConverterBoolean.write(value.`invitationPending`, buf)
+            FfiConverterOptionalByteArray.write(value.`groupReference`, buf)
+            FfiConverterOptionalByteArray.write(value.`peerIdentity`, buf)
+            FfiConverterOptionalString.write(value.`content`, buf)
     }
 }
+
+
 
 /**
  * Durable outbox packet and retry metadata.
  */
-data class MobileDirectMessageOutboxEntry(
-    var `packetId`: kotlin.ByteArray,
-    var `groupReference`: kotlin.ByteArray,
-    var `envelopeBytes`: kotlin.ByteArray,
-    var `nextAttemptMs`: kotlin.Long,
-    var `attemptCount`: kotlin.UInt,
-    var `state`: MobileOutboxState,
-) {
+data class MobileDirectMessageOutboxEntry (
+    var `packetId`: kotlin.ByteArray
+    , 
+    var `groupReference`: kotlin.ByteArray
+    , 
+    var `envelopeBytes`: kotlin.ByteArray
+    , 
+    var `nextAttemptMs`: kotlin.Long
+    , 
+    var `attemptCount`: kotlin.UInt
+    , 
+    var `state`: MobileOutboxState
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessageOutboxEntry : FfiConverterRustBuffer<MobileDirectMessageOutboxEntry> {
-    override fun read(buf: ByteBuffer): MobileDirectMessageOutboxEntry =
-        MobileDirectMessageOutboxEntry(
+public object FfiConverterTypeMobileDirectMessageOutboxEntry: FfiConverterRustBuffer<MobileDirectMessageOutboxEntry> {
+    override fun read(buf: ByteBuffer): MobileDirectMessageOutboxEntry {
+        return MobileDirectMessageOutboxEntry(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
@@ -6848,242 +6203,280 @@ public object FfiConverterTypeMobileDirectMessageOutboxEntry : FfiConverterRustB
             FfiConverterUInt.read(buf),
             FfiConverterTypeMobileOutboxState.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessageOutboxEntry) =
-        (
+    override fun allocationSize(value: MobileDirectMessageOutboxEntry) = (
             FfiConverterByteArray.allocationSize(value.`packetId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterByteArray.allocationSize(value.`envelopeBytes`) +
-                FfiConverterLong.allocationSize(value.`nextAttemptMs`) +
-                FfiConverterUInt.allocationSize(value.`attemptCount`) +
-                FfiConverterTypeMobileOutboxState.allocationSize(value.`state`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`envelopeBytes`) +
+            FfiConverterLong.allocationSize(value.`nextAttemptMs`) +
+            FfiConverterUInt.allocationSize(value.`attemptCount`) +
+            FfiConverterTypeMobileOutboxState.allocationSize(value.`state`)
+    )
 
-    override fun write(
-        value: MobileDirectMessageOutboxEntry,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`packetId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterByteArray.write(value.`envelopeBytes`, buf)
-        FfiConverterLong.write(value.`nextAttemptMs`, buf)
-        FfiConverterUInt.write(value.`attemptCount`, buf)
-        FfiConverterTypeMobileOutboxState.write(value.`state`, buf)
+    override fun write(value: MobileDirectMessageOutboxEntry, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`envelopeBytes`, buf)
+            FfiConverterLong.write(value.`nextAttemptMs`, buf)
+            FfiConverterUInt.write(value.`attemptCount`, buf)
+            FfiConverterTypeMobileOutboxState.write(value.`state`, buf)
     }
 }
+
+
 
 /**
  * Immutable routed invitation or ciphertext packet.
  */
-data class MobileDirectMessagePacket(
-    var `packetId`: kotlin.ByteArray,
-    var `groupReference`: kotlin.ByteArray,
-    var `envelopeBytes`: kotlin.ByteArray,
-) {
+data class MobileDirectMessagePacket (
+    var `packetId`: kotlin.ByteArray
+    , 
+    var `groupReference`: kotlin.ByteArray
+    , 
+    var `envelopeBytes`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessagePacket : FfiConverterRustBuffer<MobileDirectMessagePacket> {
-    override fun read(buf: ByteBuffer): MobileDirectMessagePacket =
-        MobileDirectMessagePacket(
+public object FfiConverterTypeMobileDirectMessagePacket: FfiConverterRustBuffer<MobileDirectMessagePacket> {
+    override fun read(buf: ByteBuffer): MobileDirectMessagePacket {
+        return MobileDirectMessagePacket(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessagePacket) =
-        (
+    override fun allocationSize(value: MobileDirectMessagePacket) = (
             FfiConverterByteArray.allocationSize(value.`packetId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterByteArray.allocationSize(value.`envelopeBytes`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`envelopeBytes`)
+    )
 
-    override fun write(
-        value: MobileDirectMessagePacket,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`packetId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterByteArray.write(value.`envelopeBytes`, buf)
+    override fun write(value: MobileDirectMessagePacket, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`envelopeBytes`, buf)
     }
 }
+
+
 
 /**
  * Authenticated invitation stored until the user accepts or declines it.
  */
-data class MobileDirectMessagePendingInvitation(
-    var `packetId`: kotlin.ByteArray,
-    var `groupReference`: kotlin.ByteArray,
-    var `peerIdentity`: kotlin.ByteArray,
-) {
+data class MobileDirectMessagePendingInvitation (
+    var `packetId`: kotlin.ByteArray
+    , 
+    var `groupReference`: kotlin.ByteArray
+    , 
+    var `peerIdentity`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileDirectMessagePendingInvitation : FfiConverterRustBuffer<MobileDirectMessagePendingInvitation> {
-    override fun read(buf: ByteBuffer): MobileDirectMessagePendingInvitation =
-        MobileDirectMessagePendingInvitation(
+public object FfiConverterTypeMobileDirectMessagePendingInvitation: FfiConverterRustBuffer<MobileDirectMessagePendingInvitation> {
+    override fun read(buf: ByteBuffer): MobileDirectMessagePendingInvitation {
+        return MobileDirectMessagePendingInvitation(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileDirectMessagePendingInvitation) =
-        (
+    override fun allocationSize(value: MobileDirectMessagePendingInvitation) = (
             FfiConverterByteArray.allocationSize(value.`packetId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterByteArray.allocationSize(value.`peerIdentity`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterByteArray.allocationSize(value.`peerIdentity`)
+    )
 
-    override fun write(
-        value: MobileDirectMessagePendingInvitation,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`packetId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterByteArray.write(value.`peerIdentity`, buf)
+    override fun write(value: MobileDirectMessagePendingInvitation, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`packetId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterByteArray.write(value.`peerIdentity`, buf)
     }
 }
+
+
 
 /**
  * Public, non-secret identity snapshot for native UI presentation.
  */
-data class MobileIdentityInfo(
+data class MobileIdentityInfo (
     /**
      * Versioned public identity bundle.
      */
-    var `publicBundle`: kotlin.ByteArray,
+    var `publicBundle`: kotlin.ByteArray
+    , 
     /**
      * Domain-separated fingerprint of the exact public bundle.
      */
-    var `fingerprint`: kotlin.ByteArray,
-) {
+    var `fingerprint`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileIdentityInfo : FfiConverterRustBuffer<MobileIdentityInfo> {
-    override fun read(buf: ByteBuffer): MobileIdentityInfo =
-        MobileIdentityInfo(
+public object FfiConverterTypeMobileIdentityInfo: FfiConverterRustBuffer<MobileIdentityInfo> {
+    override fun read(buf: ByteBuffer): MobileIdentityInfo {
+        return MobileIdentityInfo(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileIdentityInfo) =
-        (
+    override fun allocationSize(value: MobileIdentityInfo) = (
             FfiConverterByteArray.allocationSize(value.`publicBundle`) +
-                FfiConverterByteArray.allocationSize(value.`fingerprint`)
-        )
+            FfiConverterByteArray.allocationSize(value.`fingerprint`)
+    )
 
-    override fun write(
-        value: MobileIdentityInfo,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`publicBundle`, buf)
-        FfiConverterByteArray.write(value.`fingerprint`, buf)
+    override fun write(value: MobileIdentityInfo, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`publicBundle`, buf)
+            FfiConverterByteArray.write(value.`fingerprint`, buf)
     }
 }
+
+
 
 /**
  * Bounded caller-selected policy inputs for one initial channel.
  */
-data class MobileInitialChannel(
+data class MobileInitialChannel (
     /**
      * Candidate channel type.
      */
-    var `channelType`: MobileChannelType,
+    var `channelType`: MobileChannelType
+    , 
     /**
      * Display-only channel name, limited to 128 UTF-8 bytes.
      */
-    var `name`: kotlin.String,
+    var `name`: kotlin.String
+    , 
     /**
      * Initial channel-level permission allow mask.
      */
-    var `defaultAllow`: kotlin.ULong,
+    var `defaultAllow`: kotlin.ULong
+    , 
     /**
      * Initial channel-level permission deny mask.
      */
-    var `defaultDeny`: kotlin.ULong,
-) {
+    var `defaultDeny`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileInitialChannel : FfiConverterRustBuffer<MobileInitialChannel> {
-    override fun read(buf: ByteBuffer): MobileInitialChannel =
-        MobileInitialChannel(
+public object FfiConverterTypeMobileInitialChannel: FfiConverterRustBuffer<MobileInitialChannel> {
+    override fun read(buf: ByteBuffer): MobileInitialChannel {
+        return MobileInitialChannel(
             FfiConverterTypeMobileChannelType.read(buf),
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileInitialChannel) =
-        (
+    override fun allocationSize(value: MobileInitialChannel) = (
             FfiConverterTypeMobileChannelType.allocationSize(value.`channelType`) +
-                FfiConverterString.allocationSize(value.`name`) +
-                FfiConverterULong.allocationSize(value.`defaultAllow`) +
-                FfiConverterULong.allocationSize(value.`defaultDeny`)
-        )
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterULong.allocationSize(value.`defaultAllow`) +
+            FfiConverterULong.allocationSize(value.`defaultDeny`)
+    )
 
-    override fun write(
-        value: MobileInitialChannel,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterTypeMobileChannelType.write(value.`channelType`, buf)
-        FfiConverterString.write(value.`name`, buf)
-        FfiConverterULong.write(value.`defaultAllow`, buf)
-        FfiConverterULong.write(value.`defaultDeny`, buf)
+    override fun write(value: MobileInitialChannel, buf: ByteBuffer) {
+            FfiConverterTypeMobileChannelType.write(value.`channelType`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterULong.write(value.`defaultAllow`, buf)
+            FfiConverterULong.write(value.`defaultDeny`, buf)
     }
 }
+
+
 
 /**
  * One locally retained authorized message from bounded history or search.
  */
-data class MobileLocalTextMessage(
+data class MobileLocalTextMessage (
     /**
      * Immutable signed message event identifier.
      */
-    var `eventId`: kotlin.ByteArray,
+    var `eventId`: kotlin.ByteArray
+    , 
     /**
      * Stable author fingerprint.
      */
-    var `authorId`: kotlin.ByteArray,
+    var `authorId`: kotlin.ByteArray
+    , 
     /**
      * Author sequence for detecting local gaps.
      */
-    var `authorSequence`: kotlin.ULong,
+    var `authorSequence`: kotlin.ULong
+    , 
     /**
      * Causal Lamport value.
      */
-    var `lamport`: kotlin.ULong,
+    var `lamport`: kotlin.ULong
+    , 
     /**
      * Decrypted text retained by the local encrypted cache.
      */
-    var `content`: kotlin.String,
+    var `content`: kotlin.String
+    , 
     /**
      * Local outbox state, when the envelope remains queued.
      */
-    var `outboxState`: kotlin.String?,
-) {
+    var `outboxState`: kotlin.String?
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileLocalTextMessage : FfiConverterRustBuffer<MobileLocalTextMessage> {
-    override fun read(buf: ByteBuffer): MobileLocalTextMessage =
-        MobileLocalTextMessage(
+public object FfiConverterTypeMobileLocalTextMessage: FfiConverterRustBuffer<MobileLocalTextMessage> {
+    override fun read(buf: ByteBuffer): MobileLocalTextMessage {
+        return MobileLocalTextMessage(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterULong.read(buf),
@@ -7091,139 +6484,154 @@ public object FfiConverterTypeMobileLocalTextMessage : FfiConverterRustBuffer<Mo
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileLocalTextMessage) =
-        (
+    override fun allocationSize(value: MobileLocalTextMessage) = (
             FfiConverterByteArray.allocationSize(value.`eventId`) +
-                FfiConverterByteArray.allocationSize(value.`authorId`) +
-                FfiConverterULong.allocationSize(value.`authorSequence`) +
-                FfiConverterULong.allocationSize(value.`lamport`) +
-                FfiConverterString.allocationSize(value.`content`) +
-                FfiConverterOptionalString.allocationSize(value.`outboxState`)
-        )
+            FfiConverterByteArray.allocationSize(value.`authorId`) +
+            FfiConverterULong.allocationSize(value.`authorSequence`) +
+            FfiConverterULong.allocationSize(value.`lamport`) +
+            FfiConverterString.allocationSize(value.`content`) +
+            FfiConverterOptionalString.allocationSize(value.`outboxState`)
+    )
 
-    override fun write(
-        value: MobileLocalTextMessage,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
-        FfiConverterByteArray.write(value.`authorId`, buf)
-        FfiConverterULong.write(value.`authorSequence`, buf)
-        FfiConverterULong.write(value.`lamport`, buf)
-        FfiConverterString.write(value.`content`, buf)
-        FfiConverterOptionalString.write(value.`outboxState`, buf)
+    override fun write(value: MobileLocalTextMessage, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`authorId`, buf)
+            FfiConverterULong.write(value.`authorSequence`, buf)
+            FfiConverterULong.write(value.`lamport`, buf)
+            FfiConverterString.write(value.`content`, buf)
+            FfiConverterOptionalString.write(value.`outboxState`, buf)
     }
 }
+
+
 
 /**
  * Bounded offline search result over locally retained message history.
  */
-data class MobileLocalTextMessageSearch(
+data class MobileLocalTextMessageSearch (
     /**
      * Up to 100 newest matching messages in chronological order.
      */
-    var `messages`: List<MobileLocalTextMessage>,
+    var `messages`: List<MobileLocalTextMessage>
+    , 
     /**
      * Exact number of matches in the local channel cache.
      */
-    var `totalMatches`: kotlin.ULong,
+    var `totalMatches`: kotlin.ULong
+    , 
     /**
      * Number of local messages scanned.
      */
-    var `scannedMessages`: kotlin.ULong,
-) {
+    var `scannedMessages`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileLocalTextMessageSearch : FfiConverterRustBuffer<MobileLocalTextMessageSearch> {
-    override fun read(buf: ByteBuffer): MobileLocalTextMessageSearch =
-        MobileLocalTextMessageSearch(
+public object FfiConverterTypeMobileLocalTextMessageSearch: FfiConverterRustBuffer<MobileLocalTextMessageSearch> {
+    override fun read(buf: ByteBuffer): MobileLocalTextMessageSearch {
+        return MobileLocalTextMessageSearch(
             FfiConverterSequenceTypeMobileLocalTextMessage.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileLocalTextMessageSearch) =
-        (
+    override fun allocationSize(value: MobileLocalTextMessageSearch) = (
             FfiConverterSequenceTypeMobileLocalTextMessage.allocationSize(value.`messages`) +
-                FfiConverterULong.allocationSize(value.`totalMatches`) +
-                FfiConverterULong.allocationSize(value.`scannedMessages`)
-        )
+            FfiConverterULong.allocationSize(value.`totalMatches`) +
+            FfiConverterULong.allocationSize(value.`scannedMessages`)
+    )
 
-    override fun write(
-        value: MobileLocalTextMessageSearch,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterSequenceTypeMobileLocalTextMessage.write(value.`messages`, buf)
-        FfiConverterULong.write(value.`totalMatches`, buf)
-        FfiConverterULong.write(value.`scannedMessages`, buf)
+    override fun write(value: MobileLocalTextMessageSearch, buf: ByteBuffer) {
+            FfiConverterSequenceTypeMobileLocalTextMessage.write(value.`messages`, buf)
+            FfiConverterULong.write(value.`totalMatches`, buf)
+            FfiConverterULong.write(value.`scannedMessages`, buf)
     }
 }
+
+
 
 /**
  * Exact persisted envelope and retry metadata for native transport owners.
  */
-data class MobileOutboxEntry(
+data class MobileOutboxEntry (
     /**
      * Immutable signed-event identifier.
      */
-    var `eventId`: kotlin.ByteArray,
+    var `eventId`: kotlin.ByteArray
+    , 
     /**
      * Opaque envelope bytes; transport code must not reinterpret them.
      */
-    var `envelopeBytes`: kotlin.ByteArray,
+    var `envelopeBytes`: kotlin.ByteArray
+    , 
     /**
      * Persisted retry schedule in Unix milliseconds.
      */
-    var `nextAttemptMs`: kotlin.Long,
+    var `nextAttemptMs`: kotlin.Long
+    , 
     /**
      * Number of recorded forwarding attempts.
      */
-    var `attemptCount`: kotlin.UInt,
+    var `attemptCount`: kotlin.UInt
+    , 
     /**
      * Local outbox state; this is not proof of destination receipt.
      */
-    var `state`: MobileOutboxState,
-) {
+    var `state`: MobileOutboxState
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileOutboxEntry : FfiConverterRustBuffer<MobileOutboxEntry> {
-    override fun read(buf: ByteBuffer): MobileOutboxEntry =
-        MobileOutboxEntry(
+public object FfiConverterTypeMobileOutboxEntry: FfiConverterRustBuffer<MobileOutboxEntry> {
+    override fun read(buf: ByteBuffer): MobileOutboxEntry {
+        return MobileOutboxEntry(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterLong.read(buf),
             FfiConverterUInt.read(buf),
             FfiConverterTypeMobileOutboxState.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileOutboxEntry) =
-        (
+    override fun allocationSize(value: MobileOutboxEntry) = (
             FfiConverterByteArray.allocationSize(value.`eventId`) +
-                FfiConverterByteArray.allocationSize(value.`envelopeBytes`) +
-                FfiConverterLong.allocationSize(value.`nextAttemptMs`) +
-                FfiConverterUInt.allocationSize(value.`attemptCount`) +
-                FfiConverterTypeMobileOutboxState.allocationSize(value.`state`)
-        )
+            FfiConverterByteArray.allocationSize(value.`envelopeBytes`) +
+            FfiConverterLong.allocationSize(value.`nextAttemptMs`) +
+            FfiConverterUInt.allocationSize(value.`attemptCount`) +
+            FfiConverterTypeMobileOutboxState.allocationSize(value.`state`)
+    )
 
-    override fun write(
-        value: MobileOutboxEntry,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
-        FfiConverterByteArray.write(value.`envelopeBytes`, buf)
-        FfiConverterLong.write(value.`nextAttemptMs`, buf)
-        FfiConverterUInt.write(value.`attemptCount`, buf)
-        FfiConverterTypeMobileOutboxState.write(value.`state`, buf)
+    override fun write(value: MobileOutboxEntry, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterByteArray.write(value.`envelopeBytes`, buf)
+            FfiConverterLong.write(value.`nextAttemptMs`, buf)
+            FfiConverterUInt.write(value.`attemptCount`, buf)
+            FfiConverterTypeMobileOutboxState.write(value.`state`, buf)
     }
 }
+
+
 
 /**
  * A durable local match between a public bundle and its full fingerprint.
@@ -7231,780 +6639,960 @@ public object FfiConverterTypeMobileOutboxEntry : FfiConverterRustBuffer<MobileO
  * This record does not attest human comparison, authenticate a session, or
  * authorize MLS membership.
  */
-data class MobilePinnedIdentity(
+data class MobilePinnedIdentity (
     /**
      * Exact versioned public identity bundle.
      */
-    var `publicBundle`: kotlin.ByteArray,
+    var `publicBundle`: kotlin.ByteArray
+    , 
     /**
      * Full fingerprint of the exact bundle bytes.
      */
-    var `fingerprint`: kotlin.ByteArray,
-) {
+    var `fingerprint`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobilePinnedIdentity : FfiConverterRustBuffer<MobilePinnedIdentity> {
-    override fun read(buf: ByteBuffer): MobilePinnedIdentity =
-        MobilePinnedIdentity(
+public object FfiConverterTypeMobilePinnedIdentity: FfiConverterRustBuffer<MobilePinnedIdentity> {
+    override fun read(buf: ByteBuffer): MobilePinnedIdentity {
+        return MobilePinnedIdentity(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobilePinnedIdentity) =
-        (
+    override fun allocationSize(value: MobilePinnedIdentity) = (
             FfiConverterByteArray.allocationSize(value.`publicBundle`) +
-                FfiConverterByteArray.allocationSize(value.`fingerprint`)
-        )
+            FfiConverterByteArray.allocationSize(value.`fingerprint`)
+    )
 
-    override fun write(
-        value: MobilePinnedIdentity,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`publicBundle`, buf)
-        FfiConverterByteArray.write(value.`fingerprint`, buf)
+    override fun write(value: MobilePinnedIdentity, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`publicBundle`, buf)
+            FfiConverterByteArray.write(value.`fingerprint`, buf)
     }
 }
+
+
 
 /**
  * Result of committing a text event to the local durable outbox.
  */
-data class MobileQueuedMessage(
+data class MobileQueuedMessage (
     /**
      * Immutable identifier of the committed event.
      */
-    var `eventId`: kotlin.ByteArray,
-) {
+    var `eventId`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileQueuedMessage : FfiConverterRustBuffer<MobileQueuedMessage> {
-    override fun read(buf: ByteBuffer): MobileQueuedMessage =
-        MobileQueuedMessage(
+public object FfiConverterTypeMobileQueuedMessage: FfiConverterRustBuffer<MobileQueuedMessage> {
+    override fun read(buf: ByteBuffer): MobileQueuedMessage {
+        return MobileQueuedMessage(
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileQueuedMessage) =
-        (
+    override fun allocationSize(value: MobileQueuedMessage) = (
             FfiConverterByteArray.allocationSize(value.`eventId`)
-        )
+    )
 
-    override fun write(
-        value: MobileQueuedMessage,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
+    override fun write(value: MobileQueuedMessage, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
     }
 }
+
+
 
 /**
  * Stable cursor for paginating locally recoverable Space generations.
  */
-data class MobileSpaceCursor(
+data class MobileSpaceCursor (
     /**
      * Space identifier bytes.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray
+    , 
     /**
      * MLS group reference bytes.
      */
-    var `groupReference`: kotlin.ByteArray,
-) {
+    var `groupReference`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileSpaceCursor : FfiConverterRustBuffer<MobileSpaceCursor> {
-    override fun read(buf: ByteBuffer): MobileSpaceCursor =
-        MobileSpaceCursor(
+public object FfiConverterTypeMobileSpaceCursor: FfiConverterRustBuffer<MobileSpaceCursor> {
+    override fun read(buf: ByteBuffer): MobileSpaceCursor {
+        return MobileSpaceCursor(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileSpaceCursor) =
-        (
+    override fun allocationSize(value: MobileSpaceCursor) = (
             FfiConverterByteArray.allocationSize(value.`spaceId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`)
+    )
 
-    override fun write(
-        value: MobileSpaceCursor,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`spaceId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
+    override fun write(value: MobileSpaceCursor, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
     }
 }
+
+
 
 /**
  * Offline invitation artifacts committed with one membership transition.
  */
-data class MobileSpaceInvitation(
+data class MobileSpaceInvitation (
     /**
      * Signed policy Invite event identifier.
      */
-    var `inviteEventId`: kotlin.ByteArray,
+    var `inviteEventId`: kotlin.ByteArray
+    , 
     /**
      * Full fingerprint of the target device.
      */
-    var `targetFingerprint`: kotlin.ByteArray,
+    var `targetFingerprint`: kotlin.ByteArray
+    , 
     /**
      * Canonical invitation token bytes.
      */
-    var `token`: kotlin.ByteArray,
+    var `token`: kotlin.ByteArray
+    , 
     /**
      * Signed policy checkpoint and MLS Welcome bootstrap.
      */
-    var `welcomeBootstrap`: kotlin.ByteArray,
-) {
+    var `welcomeBootstrap`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileSpaceInvitation : FfiConverterRustBuffer<MobileSpaceInvitation> {
-    override fun read(buf: ByteBuffer): MobileSpaceInvitation =
-        MobileSpaceInvitation(
+public object FfiConverterTypeMobileSpaceInvitation: FfiConverterRustBuffer<MobileSpaceInvitation> {
+    override fun read(buf: ByteBuffer): MobileSpaceInvitation {
+        return MobileSpaceInvitation(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileSpaceInvitation) =
-        (
+    override fun allocationSize(value: MobileSpaceInvitation) = (
             FfiConverterByteArray.allocationSize(value.`inviteEventId`) +
-                FfiConverterByteArray.allocationSize(value.`targetFingerprint`) +
-                FfiConverterByteArray.allocationSize(value.`token`) +
-                FfiConverterByteArray.allocationSize(value.`welcomeBootstrap`)
-        )
+            FfiConverterByteArray.allocationSize(value.`targetFingerprint`) +
+            FfiConverterByteArray.allocationSize(value.`token`) +
+            FfiConverterByteArray.allocationSize(value.`welcomeBootstrap`)
+    )
 
-    override fun write(
-        value: MobileSpaceInvitation,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`inviteEventId`, buf)
-        FfiConverterByteArray.write(value.`targetFingerprint`, buf)
-        FfiConverterByteArray.write(value.`token`, buf)
-        FfiConverterByteArray.write(value.`welcomeBootstrap`, buf)
+    override fun write(value: MobileSpaceInvitation, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`inviteEventId`, buf)
+            FfiConverterByteArray.write(value.`targetFingerprint`, buf)
+            FfiConverterByteArray.write(value.`token`, buf)
+            FfiConverterByteArray.write(value.`welcomeBootstrap`, buf)
     }
 }
+
+
+
+/**
+ * Identifiers and epoch transition for a locally committed member removal.
+ */
+data class MobileSpaceMemberRemoval (
+    var `targetFingerprint`: kotlin.ByteArray
+    , 
+    var `controlEventId`: kotlin.ByteArray
+    , 
+    var `transitionEventId`: kotlin.ByteArray
+    , 
+    var `parentEpoch`: kotlin.ULong
+    , 
+    var `newEpoch`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSpaceMemberRemoval: FfiConverterRustBuffer<MobileSpaceMemberRemoval> {
+    override fun read(buf: ByteBuffer): MobileSpaceMemberRemoval {
+        return MobileSpaceMemberRemoval(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSpaceMemberRemoval) = (
+            FfiConverterByteArray.allocationSize(value.`targetFingerprint`) +
+            FfiConverterByteArray.allocationSize(value.`controlEventId`) +
+            FfiConverterByteArray.allocationSize(value.`transitionEventId`) +
+            FfiConverterULong.allocationSize(value.`parentEpoch`) +
+            FfiConverterULong.allocationSize(value.`newEpoch`)
+    )
+
+    override fun write(value: MobileSpaceMemberRemoval, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`targetFingerprint`, buf)
+            FfiConverterByteArray.write(value.`controlEventId`, buf)
+            FfiConverterByteArray.write(value.`transitionEventId`, buf)
+            FfiConverterULong.write(value.`parentEpoch`, buf)
+            FfiConverterULong.write(value.`newEpoch`, buf)
+    }
+}
+
+
 
 /**
  * Bounded page of locally verified Space Genesis snapshots.
  */
-data class MobileSpacePage(
+data class MobileSpacePage (
     /**
      * Restored generations in this page.
      */
-    var `spaces`: List<MobileSpaceSummary>,
+    var `spaces`: List<MobileSpaceSummary>
+    , 
     /**
      * Exclusive cursor to request the next page.
      */
-    var `nextCursor`: MobileSpaceCursor?,
-) {
+    var `nextCursor`: MobileSpaceCursor?
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileSpacePage : FfiConverterRustBuffer<MobileSpacePage> {
-    override fun read(buf: ByteBuffer): MobileSpacePage =
-        MobileSpacePage(
+public object FfiConverterTypeMobileSpacePage: FfiConverterRustBuffer<MobileSpacePage> {
+    override fun read(buf: ByteBuffer): MobileSpacePage {
+        return MobileSpacePage(
             FfiConverterSequenceTypeMobileSpaceSummary.read(buf),
             FfiConverterOptionalTypeMobileSpaceCursor.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileSpacePage) =
-        (
+    override fun allocationSize(value: MobileSpacePage) = (
             FfiConverterSequenceTypeMobileSpaceSummary.allocationSize(value.`spaces`) +
-                FfiConverterOptionalTypeMobileSpaceCursor.allocationSize(value.`nextCursor`)
-        )
+            FfiConverterOptionalTypeMobileSpaceCursor.allocationSize(value.`nextCursor`)
+    )
 
-    override fun write(
-        value: MobileSpacePage,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterSequenceTypeMobileSpaceSummary.write(value.`spaces`, buf)
-        FfiConverterOptionalTypeMobileSpaceCursor.write(value.`nextCursor`, buf)
+    override fun write(value: MobileSpacePage, buf: ByteBuffer) {
+            FfiConverterSequenceTypeMobileSpaceSummary.write(value.`spaces`, buf)
+            FfiConverterOptionalTypeMobileSpaceCursor.write(value.`nextCursor`, buf)
     }
 }
+
+
 
 /**
  * Non-secret identifier summary for one locally restored Space generation.
  */
-data class MobileSpaceSummary(
+data class MobileSpaceSummary (
     /**
      * Space identifier bytes.
      */
-    var `spaceId`: kotlin.ByteArray,
+    var `spaceId`: kotlin.ByteArray
+    , 
     /**
      * MLS group reference bytes.
      */
-    var `groupReference`: kotlin.ByteArray,
+    var `groupReference`: kotlin.ByteArray
+    , 
     /**
      * Channels in the locally restored Genesis policy.
      */
-    var `channels`: List<MobileChannelSummary>,
-) {
+    var `channels`: List<MobileChannelSummary>
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileSpaceSummary : FfiConverterRustBuffer<MobileSpaceSummary> {
-    override fun read(buf: ByteBuffer): MobileSpaceSummary =
-        MobileSpaceSummary(
+public object FfiConverterTypeMobileSpaceSummary: FfiConverterRustBuffer<MobileSpaceSummary> {
+    override fun read(buf: ByteBuffer): MobileSpaceSummary {
+        return MobileSpaceSummary(
             FfiConverterByteArray.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterSequenceTypeMobileChannelSummary.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileSpaceSummary) =
-        (
+    override fun allocationSize(value: MobileSpaceSummary) = (
             FfiConverterByteArray.allocationSize(value.`spaceId`) +
-                FfiConverterByteArray.allocationSize(value.`groupReference`) +
-                FfiConverterSequenceTypeMobileChannelSummary.allocationSize(value.`channels`)
-        )
+            FfiConverterByteArray.allocationSize(value.`groupReference`) +
+            FfiConverterSequenceTypeMobileChannelSummary.allocationSize(value.`channels`)
+    )
 
-    override fun write(
-        value: MobileSpaceSummary,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`spaceId`, buf)
-        FfiConverterByteArray.write(value.`groupReference`, buf)
-        FfiConverterSequenceTypeMobileChannelSummary.write(value.`channels`, buf)
+    override fun write(value: MobileSpaceSummary, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`spaceId`, buf)
+            FfiConverterByteArray.write(value.`groupReference`, buf)
+            FfiConverterSequenceTypeMobileChannelSummary.write(value.`channels`, buf)
     }
 }
+
+
 
 /**
  * Result of handing one signed application event to Rust Core.
  */
-data class MobileSyncEventResult(
-    var `eventId`: kotlin.ByteArray,
-    var `state`: MobileSyncEventState,
-    var `missingDependencies`: List<kotlin.ByteArray>,
-) {
+data class MobileSyncEventResult (
+    var `eventId`: kotlin.ByteArray
+    , 
+    var `state`: MobileSyncEventState
+    , 
+    var `missingDependencies`: List<kotlin.ByteArray>
+    
+){
+    
+
+    
+
+    
     companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileSyncEventResult : FfiConverterRustBuffer<MobileSyncEventResult> {
-    override fun read(buf: ByteBuffer): MobileSyncEventResult =
-        MobileSyncEventResult(
+public object FfiConverterTypeMobileSyncEventResult: FfiConverterRustBuffer<MobileSyncEventResult> {
+    override fun read(buf: ByteBuffer): MobileSyncEventResult {
+        return MobileSyncEventResult(
             FfiConverterByteArray.read(buf),
             FfiConverterTypeMobileSyncEventState.read(buf),
             FfiConverterSequenceByteArray.read(buf),
         )
+    }
 
-    override fun allocationSize(value: MobileSyncEventResult) =
-        (
+    override fun allocationSize(value: MobileSyncEventResult) = (
             FfiConverterByteArray.allocationSize(value.`eventId`) +
-                FfiConverterTypeMobileSyncEventState.allocationSize(value.`state`) +
-                FfiConverterSequenceByteArray.allocationSize(value.`missingDependencies`)
-        )
+            FfiConverterTypeMobileSyncEventState.allocationSize(value.`state`) +
+            FfiConverterSequenceByteArray.allocationSize(value.`missingDependencies`)
+    )
 
-    override fun write(
-        value: MobileSyncEventResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterByteArray.write(value.`eventId`, buf)
-        FfiConverterTypeMobileSyncEventState.write(value.`state`, buf)
-        FfiConverterSequenceByteArray.write(value.`missingDependencies`, buf)
+    override fun write(value: MobileSyncEventResult, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`eventId`, buf)
+            FfiConverterTypeMobileSyncEventState.write(value.`state`, buf)
+            FfiConverterSequenceByteArray.write(value.`missingDependencies`, buf)
     }
 }
 
+
+
+
 enum class MobileBleRole {
+    
     INITIATOR,
-    RESPONDER,
-    ;
+    RESPONDER;
+
+    
+
 
     companion object
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileBleRole : FfiConverterRustBuffer<MobileBleRole> {
-    override fun read(buf: ByteBuffer) =
-        try {
-            MobileBleRole.values()[buf.getInt() - 1]
-        } catch (e: IndexOutOfBoundsException) {
-            throw RuntimeException("invalid enum value, something is very wrong!!", e)
-        }
+public object FfiConverterTypeMobileBleRole: FfiConverterRustBuffer<MobileBleRole> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileBleRole.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
 
     override fun allocationSize(value: MobileBleRole) = 4UL
 
-    override fun write(
-        value: MobileBleRole,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileBleRole, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
+
+
+
+
 
 /**
  * Supported candidate channel types for local Space creation.
  */
 
 enum class MobileChannelType {
+    
     TEXT,
     ANNOUNCEMENT,
-    VOICE,
-    ;
+    VOICE;
+
+    
+
 
     companion object
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileChannelType : FfiConverterRustBuffer<MobileChannelType> {
-    override fun read(buf: ByteBuffer) =
-        try {
-            MobileChannelType.values()[buf.getInt() - 1]
-        } catch (e: IndexOutOfBoundsException) {
-            throw RuntimeException("invalid enum value, something is very wrong!!", e)
-        }
+public object FfiConverterTypeMobileChannelType: FfiConverterRustBuffer<MobileChannelType> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileChannelType.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
 
     override fun allocationSize(value: MobileChannelType) = 4UL
 
-    override fun write(
-        value: MobileChannelType,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileChannelType, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
 
+
+
+
+
+
+
 /**
  * Stable mobile-safe failures that do not disclose key material or SQL details.
  */
-sealed class MobileException : kotlin.Exception() {
+sealed class MobileException: kotlin.Exception() {
+    
     /**
      * Profile identifiers must be 1–128 printable ASCII characters.
      */
-    class InvalidProfileId : MobileException() {
+    class InvalidProfileId(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local profile could not be opened with its OS-protected keys.
      */
-    class ProfileOpenFailed : MobileException() {
+    class ProfileOpenFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The native key protector failed or denied access.
      */
-    class KeyProtectionFailed : MobileException() {
+    class KeyProtectionFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The profile lock was poisoned by a prior Rust panic.
      */
-    class ProfileUnavailable : MobileException() {
+    class ProfileUnavailable(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The protected device key could not create a certificate signing request.
      */
-    class CertificateSigningRequestFailed : MobileException() {
+    class CertificateSigningRequestFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The caller supplied a Space cursor with an invalid identifier length.
      */
-    class InvalidSpaceCursor : MobileException() {
+    class InvalidSpaceCursor(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The public identity bundle is malformed or uses unsupported keys.
      */
-    class InvalidIdentityBundle : MobileException() {
+    class InvalidIdentityBundle(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The caller supplied a fingerprint with a length other than 32 bytes.
      */
-    class InvalidFingerprint : MobileException() {
+    class InvalidFingerprint(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The supplied full fingerprint does not match the exact bundle.
      */
-    class FingerprintMismatch : MobileException() {
+    class FingerprintMismatch(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A previously stored fingerprint is mapped to different bundle bytes.
      */
-    class PinnedIdentityConflict : MobileException() {
+    class PinnedIdentityConflict(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The supplied RFC 9420 X.509 credential is malformed, untrusted, or mismatched.
      */
-    class InvalidSpaceCredential : MobileException() {
+    class InvalidSpaceCredential(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Initial channel inputs exceed bounds or violate Space policy.
      */
-    class InvalidSpaceInput : MobileException() {
+    class InvalidSpaceInput(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local Space transaction could not be committed.
      */
-    class SpaceCreationFailed : MobileException() {
+    class SpaceCreationFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A local Space generation could not be restored or recovered.
      */
-    class SpaceRecoveryFailed : MobileException() {
+    class SpaceRecoveryFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Bootstrap package bytes are empty, oversized, or invalid.
      */
-    class InvalidSpaceBootstrap : MobileException() {
+    class InvalidSpaceBootstrap(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The Welcome inviter's complete identity bundle is not pinned.
      */
-    class UntrustedSpaceInviter : MobileException() {
+    class UntrustedSpaceInviter(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A validated Welcome could not be imported into the local profile.
      */
-    class SpaceJoinFailed : MobileException() {
+    class SpaceJoinFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A `KeyPackage` publication request exceeded mobile input bounds or failed validation.
      */
-    class SpaceKeyPackagePublicationFailed : MobileException() {
+    class SpaceKeyPackagePublicationFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The target `KeyPackage` is empty, oversized, or malformed.
      */
-    class InvalidSpaceKeyPackage : MobileException() {
+    class InvalidSpaceKeyPackage(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A membership invitation could not be committed locally.
      */
-    class SpaceInvitationFailed : MobileException() {
+    class SpaceInvitationFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
+    /**
+     * A Space member removal could not be committed.
+     */
+    class SpaceMemberRemovalFailed(
+        ) : MobileException() {
+        override val message
+            get() = ""
+    }
+    
     /**
      * The bounded Core projection observer limit has been reached.
      */
-    class ProjectionObserverLimit : MobileException() {
+    class ProjectionObserverLimit(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The Core projection observer wait duration is outside its supported range.
      */
-    class InvalidProjectionWait : MobileException() {
+    class InvalidProjectionWait(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The Core projection observer synchronization state is unavailable.
      */
-    class ProjectionObserverUnavailable : MobileException() {
+    class ProjectionObserverUnavailable(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A supplied Space, group, or channel identifier has the wrong byte length.
      */
-    class InvalidSpaceMessageId : MobileException() {
+    class InvalidSpaceMessageId(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Text exceeds the bounded Space application payload size.
      */
-    class InvalidMessageInput : MobileException() {
+    class InvalidMessageInput(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A direct-message identifier or packet failed validation or storage.
      */
-    class DirectMessageFailed : MobileException() {
+    class DirectMessageFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A direct-message packet was not explicitly accepted by the user.
      */
-    class DirectMessageNotAccepted : MobileException() {
+    class DirectMessageNotAccepted(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The local message-search query is empty or exceeds its byte limit.
      */
-    class InvalidMessageSearch : MobileException() {
+    class InvalidMessageSearch(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The valid message was not authorized by the locally restored policy.
      */
-    class MessageRejected : MobileException() {
+    class MessageRejected(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * A local message could not be committed to the durable outbox.
      */
-    class MessageQueueFailed : MobileException() {
+    class MessageQueueFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Local encrypted message history could not be authenticated or restored.
      */
-    class MessageHistoryUnavailable : MobileException() {
+    class MessageHistoryUnavailable(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Invalid signed-event identifier supplied for an outbox transition.
      */
-    class InvalidOutboxEventId : MobileException() {
+    class InvalidOutboxEventId(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Negative retry timestamp supplied for a forwarding attempt.
      */
-    class InvalidOutboxSchedule : MobileException() {
+    class InvalidOutboxSchedule(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * An outbox state transition could not be applied.
      */
-    class OutboxTransitionRejected : MobileException() {
+    class OutboxTransitionRejected(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Invalid event-ID cursor supplied to the bounded outbox page API.
      */
-    class InvalidOutboxCursor : MobileException() {
+    class InvalidOutboxCursor(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Requested outbox page size is outside the supported bound.
      */
-    class InvalidOutboxPage : MobileException() {
+    class InvalidOutboxPage(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The durable outbox could not be read.
      */
-    class OutboxUnavailable : MobileException() {
+    class OutboxUnavailable(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Signed event failed verification, MLS binding, local policy, or storage.
      */
-    class SyncIngestFailed : MobileException() {
+    class SyncIngestFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The advertised exp0 token has an invalid width.
      */
-    class InvalidBleDiscoveryToken : MobileException() {
+    class InvalidBleDiscoveryToken(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The authenticated exp0 session could not advance safely.
      */
-    class BleSessionFailed : MobileException() {
+    class BleSessionFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * An exp0 control or identity record failed its exact encoding or signature.
      */
-    class BleRecordRejected : MobileException() {
+    class BleRecordRejected(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The remote identity has not been explicitly pinned on this device.
      */
-    class BlePeerNotPinned : MobileException() {
+    class BlePeerNotPinned(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The remote identity differs from this device's existing pin.
      */
-    class BlePeerIdentityMismatch : MobileException() {
+    class BlePeerIdentityMismatch(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Application records are forbidden before transcript confirmation.
      */
-    class BlePeerNotAuthenticated : MobileException() {
+    class BlePeerNotAuthenticated(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * Attachment metadata, private staging, or transfer operation failed.
      */
-    class AttachmentOperationFailed : MobileException() {
+    class AttachmentOperationFailed(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * An authorized Space event does not contain the requested attachment manifest.
      */
-    class AttachmentNotAuthorized : MobileException() {
+    class AttachmentNotAuthorized(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The selected private source changed after its manifest preview was created.
      */
-    class AttachmentManifestSourceChanged : MobileException() {
+    class AttachmentManifestSourceChanged(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The receiver has not explicitly consented to private staging.
      */
-    class AttachmentConsentRequired : MobileException() {
+    class AttachmentConsentRequired(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The exact pinned peer is not an active member of the selected Space.
      */
-    class AttachmentPeerNotAuthorized : MobileException() {
+    class AttachmentPeerNotAuthorized(
+        ) : MobileException() {
         override val message
             get() = ""
     }
-
+    
     /**
      * The remote identity has not been pinned in this profile.
      */
-    class AttachmentPeerNotPinned : MobileException() {
+    class AttachmentPeerNotPinned(
+        ) : MobileException() {
         override val message
             get() = ""
     }
+    
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileException> {
         override fun lift(error_buf: RustBuffer.ByValue): MobileException = FfiConverterTypeMobileError.lift(error_buf)
     }
+
+    
 }
 
 /**
  * @suppress
  */
 public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileException> {
-    override fun read(buf: ByteBuffer): MobileException =
-        when (buf.getInt()) {
+    override fun read(buf: ByteBuffer): MobileException {
+        
+
+        return when(buf.getInt()) {
             1 -> MobileException.InvalidProfileId()
             2 -> MobileException.ProfileOpenFailed()
             3 -> MobileException.KeyProtectionFailed()
@@ -8025,710 +7613,650 @@ public object FfiConverterTypeMobileError : FfiConverterRustBuffer<MobileExcepti
             18 -> MobileException.SpaceKeyPackagePublicationFailed()
             19 -> MobileException.InvalidSpaceKeyPackage()
             20 -> MobileException.SpaceInvitationFailed()
-            21 -> MobileException.ProjectionObserverLimit()
-            22 -> MobileException.InvalidProjectionWait()
-            23 -> MobileException.ProjectionObserverUnavailable()
-            24 -> MobileException.InvalidSpaceMessageId()
-            25 -> MobileException.InvalidMessageInput()
-            26 -> MobileException.DirectMessageFailed()
-            27 -> MobileException.DirectMessageNotAccepted()
-            28 -> MobileException.InvalidMessageSearch()
-            29 -> MobileException.MessageRejected()
-            30 -> MobileException.MessageQueueFailed()
-            31 -> MobileException.MessageHistoryUnavailable()
-            32 -> MobileException.InvalidOutboxEventId()
-            33 -> MobileException.InvalidOutboxSchedule()
-            34 -> MobileException.OutboxTransitionRejected()
-            35 -> MobileException.InvalidOutboxCursor()
-            36 -> MobileException.InvalidOutboxPage()
-            37 -> MobileException.OutboxUnavailable()
-            38 -> MobileException.SyncIngestFailed()
-            39 -> MobileException.InvalidBleDiscoveryToken()
-            40 -> MobileException.BleSessionFailed()
-            41 -> MobileException.BleRecordRejected()
-            42 -> MobileException.BlePeerNotPinned()
-            43 -> MobileException.BlePeerIdentityMismatch()
-            44 -> MobileException.BlePeerNotAuthenticated()
-            45 -> MobileException.AttachmentOperationFailed()
-            46 -> MobileException.AttachmentNotAuthorized()
-            47 -> MobileException.AttachmentManifestSourceChanged()
-            48 -> MobileException.AttachmentConsentRequired()
-            49 -> MobileException.AttachmentPeerNotAuthorized()
-            50 -> MobileException.AttachmentPeerNotPinned()
+            21 -> MobileException.SpaceMemberRemovalFailed()
+            22 -> MobileException.ProjectionObserverLimit()
+            23 -> MobileException.InvalidProjectionWait()
+            24 -> MobileException.ProjectionObserverUnavailable()
+            25 -> MobileException.InvalidSpaceMessageId()
+            26 -> MobileException.InvalidMessageInput()
+            27 -> MobileException.DirectMessageFailed()
+            28 -> MobileException.DirectMessageNotAccepted()
+            29 -> MobileException.InvalidMessageSearch()
+            30 -> MobileException.MessageRejected()
+            31 -> MobileException.MessageQueueFailed()
+            32 -> MobileException.MessageHistoryUnavailable()
+            33 -> MobileException.InvalidOutboxEventId()
+            34 -> MobileException.InvalidOutboxSchedule()
+            35 -> MobileException.OutboxTransitionRejected()
+            36 -> MobileException.InvalidOutboxCursor()
+            37 -> MobileException.InvalidOutboxPage()
+            38 -> MobileException.OutboxUnavailable()
+            39 -> MobileException.SyncIngestFailed()
+            40 -> MobileException.InvalidBleDiscoveryToken()
+            41 -> MobileException.BleSessionFailed()
+            42 -> MobileException.BleRecordRejected()
+            43 -> MobileException.BlePeerNotPinned()
+            44 -> MobileException.BlePeerIdentityMismatch()
+            45 -> MobileException.BlePeerNotAuthenticated()
+            46 -> MobileException.AttachmentOperationFailed()
+            47 -> MobileException.AttachmentNotAuthorized()
+            48 -> MobileException.AttachmentManifestSourceChanged()
+            49 -> MobileException.AttachmentConsentRequired()
+            50 -> MobileException.AttachmentPeerNotAuthorized()
+            51 -> MobileException.AttachmentPeerNotPinned()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
+    }
 
-    override fun allocationSize(value: MobileException): ULong =
-        when (value) {
+    override fun allocationSize(value: MobileException): ULong {
+        return when(value) {
             is MobileException.InvalidProfileId -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.ProfileOpenFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.KeyProtectionFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.ProfileUnavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.CertificateSigningRequestFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidSpaceCursor -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidIdentityBundle -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidFingerprint -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.FingerprintMismatch -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.PinnedIdentityConflict -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidSpaceCredential -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidSpaceInput -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.SpaceCreationFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.SpaceRecoveryFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidSpaceBootstrap -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.UntrustedSpaceInviter -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.SpaceJoinFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.SpaceKeyPackagePublicationFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidSpaceKeyPackage -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.SpaceInvitationFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
+            is MobileException.SpaceMemberRemovalFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
             is MobileException.ProjectionObserverLimit -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidProjectionWait -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.ProjectionObserverUnavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidSpaceMessageId -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidMessageInput -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.DirectMessageFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.DirectMessageNotAccepted -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidMessageSearch -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.MessageRejected -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.MessageQueueFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.MessageHistoryUnavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidOutboxEventId -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidOutboxSchedule -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.OutboxTransitionRejected -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidOutboxCursor -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidOutboxPage -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.OutboxUnavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.SyncIngestFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.InvalidBleDiscoveryToken -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.BleSessionFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.BleRecordRejected -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.BlePeerNotPinned -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.BlePeerIdentityMismatch -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.BlePeerNotAuthenticated -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.AttachmentOperationFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.AttachmentNotAuthorized -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.AttachmentManifestSourceChanged -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.AttachmentConsentRequired -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.AttachmentPeerNotAuthorized -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
-
             is MobileException.AttachmentPeerNotPinned -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
         }
+    }
 
-    override fun write(
-        value: MobileException,
-        buf: ByteBuffer,
-    ) {
-        when (value) {
+    override fun write(value: MobileException, buf: ByteBuffer) {
+        when(value) {
             is MobileException.InvalidProfileId -> {
                 buf.putInt(1)
                 Unit
             }
-
             is MobileException.ProfileOpenFailed -> {
                 buf.putInt(2)
                 Unit
             }
-
             is MobileException.KeyProtectionFailed -> {
                 buf.putInt(3)
                 Unit
             }
-
             is MobileException.ProfileUnavailable -> {
                 buf.putInt(4)
                 Unit
             }
-
             is MobileException.CertificateSigningRequestFailed -> {
                 buf.putInt(5)
                 Unit
             }
-
             is MobileException.InvalidSpaceCursor -> {
                 buf.putInt(6)
                 Unit
             }
-
             is MobileException.InvalidIdentityBundle -> {
                 buf.putInt(7)
                 Unit
             }
-
             is MobileException.InvalidFingerprint -> {
                 buf.putInt(8)
                 Unit
             }
-
             is MobileException.FingerprintMismatch -> {
                 buf.putInt(9)
                 Unit
             }
-
             is MobileException.PinnedIdentityConflict -> {
                 buf.putInt(10)
                 Unit
             }
-
             is MobileException.InvalidSpaceCredential -> {
                 buf.putInt(11)
                 Unit
             }
-
             is MobileException.InvalidSpaceInput -> {
                 buf.putInt(12)
                 Unit
             }
-
             is MobileException.SpaceCreationFailed -> {
                 buf.putInt(13)
                 Unit
             }
-
             is MobileException.SpaceRecoveryFailed -> {
                 buf.putInt(14)
                 Unit
             }
-
             is MobileException.InvalidSpaceBootstrap -> {
                 buf.putInt(15)
                 Unit
             }
-
             is MobileException.UntrustedSpaceInviter -> {
                 buf.putInt(16)
                 Unit
             }
-
             is MobileException.SpaceJoinFailed -> {
                 buf.putInt(17)
                 Unit
             }
-
             is MobileException.SpaceKeyPackagePublicationFailed -> {
                 buf.putInt(18)
                 Unit
             }
-
             is MobileException.InvalidSpaceKeyPackage -> {
                 buf.putInt(19)
                 Unit
             }
-
             is MobileException.SpaceInvitationFailed -> {
                 buf.putInt(20)
                 Unit
             }
-
-            is MobileException.ProjectionObserverLimit -> {
+            is MobileException.SpaceMemberRemovalFailed -> {
                 buf.putInt(21)
                 Unit
             }
-
-            is MobileException.InvalidProjectionWait -> {
+            is MobileException.ProjectionObserverLimit -> {
                 buf.putInt(22)
                 Unit
             }
-
-            is MobileException.ProjectionObserverUnavailable -> {
+            is MobileException.InvalidProjectionWait -> {
                 buf.putInt(23)
                 Unit
             }
-
-            is MobileException.InvalidSpaceMessageId -> {
+            is MobileException.ProjectionObserverUnavailable -> {
                 buf.putInt(24)
                 Unit
             }
-
-            is MobileException.InvalidMessageInput -> {
+            is MobileException.InvalidSpaceMessageId -> {
                 buf.putInt(25)
                 Unit
             }
-
-            is MobileException.DirectMessageFailed -> {
+            is MobileException.InvalidMessageInput -> {
                 buf.putInt(26)
                 Unit
             }
-
-            is MobileException.DirectMessageNotAccepted -> {
+            is MobileException.DirectMessageFailed -> {
                 buf.putInt(27)
                 Unit
             }
-
-            is MobileException.InvalidMessageSearch -> {
+            is MobileException.DirectMessageNotAccepted -> {
                 buf.putInt(28)
                 Unit
             }
-
-            is MobileException.MessageRejected -> {
+            is MobileException.InvalidMessageSearch -> {
                 buf.putInt(29)
                 Unit
             }
-
-            is MobileException.MessageQueueFailed -> {
+            is MobileException.MessageRejected -> {
                 buf.putInt(30)
                 Unit
             }
-
-            is MobileException.MessageHistoryUnavailable -> {
+            is MobileException.MessageQueueFailed -> {
                 buf.putInt(31)
                 Unit
             }
-
-            is MobileException.InvalidOutboxEventId -> {
+            is MobileException.MessageHistoryUnavailable -> {
                 buf.putInt(32)
                 Unit
             }
-
-            is MobileException.InvalidOutboxSchedule -> {
+            is MobileException.InvalidOutboxEventId -> {
                 buf.putInt(33)
                 Unit
             }
-
-            is MobileException.OutboxTransitionRejected -> {
+            is MobileException.InvalidOutboxSchedule -> {
                 buf.putInt(34)
                 Unit
             }
-
-            is MobileException.InvalidOutboxCursor -> {
+            is MobileException.OutboxTransitionRejected -> {
                 buf.putInt(35)
                 Unit
             }
-
-            is MobileException.InvalidOutboxPage -> {
+            is MobileException.InvalidOutboxCursor -> {
                 buf.putInt(36)
                 Unit
             }
-
-            is MobileException.OutboxUnavailable -> {
+            is MobileException.InvalidOutboxPage -> {
                 buf.putInt(37)
                 Unit
             }
-
-            is MobileException.SyncIngestFailed -> {
+            is MobileException.OutboxUnavailable -> {
                 buf.putInt(38)
                 Unit
             }
-
-            is MobileException.InvalidBleDiscoveryToken -> {
+            is MobileException.SyncIngestFailed -> {
                 buf.putInt(39)
                 Unit
             }
-
-            is MobileException.BleSessionFailed -> {
+            is MobileException.InvalidBleDiscoveryToken -> {
                 buf.putInt(40)
                 Unit
             }
-
-            is MobileException.BleRecordRejected -> {
+            is MobileException.BleSessionFailed -> {
                 buf.putInt(41)
                 Unit
             }
-
-            is MobileException.BlePeerNotPinned -> {
+            is MobileException.BleRecordRejected -> {
                 buf.putInt(42)
                 Unit
             }
-
-            is MobileException.BlePeerIdentityMismatch -> {
+            is MobileException.BlePeerNotPinned -> {
                 buf.putInt(43)
                 Unit
             }
-
-            is MobileException.BlePeerNotAuthenticated -> {
+            is MobileException.BlePeerIdentityMismatch -> {
                 buf.putInt(44)
                 Unit
             }
-
-            is MobileException.AttachmentOperationFailed -> {
+            is MobileException.BlePeerNotAuthenticated -> {
                 buf.putInt(45)
                 Unit
             }
-
-            is MobileException.AttachmentNotAuthorized -> {
+            is MobileException.AttachmentOperationFailed -> {
                 buf.putInt(46)
                 Unit
             }
-
-            is MobileException.AttachmentManifestSourceChanged -> {
+            is MobileException.AttachmentNotAuthorized -> {
                 buf.putInt(47)
                 Unit
             }
-
-            is MobileException.AttachmentConsentRequired -> {
+            is MobileException.AttachmentManifestSourceChanged -> {
                 buf.putInt(48)
                 Unit
             }
-
-            is MobileException.AttachmentPeerNotAuthorized -> {
+            is MobileException.AttachmentConsentRequired -> {
                 buf.putInt(49)
                 Unit
             }
-
-            is MobileException.AttachmentPeerNotPinned -> {
+            is MobileException.AttachmentPeerNotAuthorized -> {
                 buf.putInt(50)
+                Unit
+            }
+            is MobileException.AttachmentPeerNotPinned -> {
+                buf.putInt(51)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
+
 }
+
+
 
 /**
  * Durable local outbox state. Only a verified destination receipt may be `Delivered`.
  */
 
 enum class MobileOutboxState {
+    
     QUEUED,
     FORWARDING,
     FORWARDED,
     PEER_INGRESS_ACCEPTED,
     DELIVERED,
-    FAILED,
-    ;
+    FAILED;
+
+    
+
 
     companion object
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileOutboxState : FfiConverterRustBuffer<MobileOutboxState> {
-    override fun read(buf: ByteBuffer) =
-        try {
-            MobileOutboxState.values()[buf.getInt() - 1]
-        } catch (e: IndexOutOfBoundsException) {
-            throw RuntimeException("invalid enum value, something is very wrong!!", e)
-        }
+public object FfiConverterTypeMobileOutboxState: FfiConverterRustBuffer<MobileOutboxState> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileOutboxState.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
 
     override fun allocationSize(value: MobileOutboxState) = 4UL
 
-    override fun write(
-        value: MobileOutboxState,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileOutboxState, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
+
+
+
+
 
 /**
  * Coalesced reason that a local Core projection may need refreshing.
  */
 
 enum class MobileProjectionChange {
+    
     SPACES,
     MESSAGES,
     ALL,
-    SYNCED_EVENTS,
-    ;
+    SYNCED_EVENTS;
+
+    
+
 
     companion object
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileProjectionChange : FfiConverterRustBuffer<MobileProjectionChange> {
-    override fun read(buf: ByteBuffer) =
-        try {
-            MobileProjectionChange.values()[buf.getInt() - 1]
-        } catch (e: IndexOutOfBoundsException) {
-            throw RuntimeException("invalid enum value, something is very wrong!!", e)
-        }
+public object FfiConverterTypeMobileProjectionChange: FfiConverterRustBuffer<MobileProjectionChange> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileProjectionChange.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
 
     override fun allocationSize(value: MobileProjectionChange) = 4UL
 
-    override fun write(
-        value: MobileProjectionChange,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileProjectionChange, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
+
+
+
+
 
 /**
  * Outcome class from Core's authenticated sync-event acceptance path.
  */
 
 enum class MobileSyncEventState {
+    
     ACCEPTED,
     DUPLICATE,
     PENDING,
-    CHECKPOINT_EXCLUDED,
-    ;
+    CHECKPOINT_EXCLUDED;
+
+    
+
 
     companion object
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeMobileSyncEventState : FfiConverterRustBuffer<MobileSyncEventState> {
-    override fun read(buf: ByteBuffer) =
-        try {
-            MobileSyncEventState.values()[buf.getInt() - 1]
-        } catch (e: IndexOutOfBoundsException) {
-            throw RuntimeException("invalid enum value, something is very wrong!!", e)
-        }
+public object FfiConverterTypeMobileSyncEventState: FfiConverterRustBuffer<MobileSyncEventState> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileSyncEventState.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
 
     override fun allocationSize(value: MobileSyncEventState) = 4UL
 
-    override fun write(
-        value: MobileSyncEventState,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileSyncEventState, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
+
+
+
+
+
+
 
 /**
  * OS keystore bridge. Implementations must wrap bytes with a non-exportable,
  * profile-bound platform key and must fail closed when that key is unavailable.
  */
-sealed class ProtectorException : kotlin.Exception() {
+sealed class ProtectorException: kotlin.Exception() {
+    
     /**
      * The native keystore denied access or could not protect the bytes.
      */
-    class Failure : ProtectorException() {
+    class Failure(
+        ) : ProtectorException() {
         override val message
             get() = ""
     }
+    
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ProtectorException> {
         override fun lift(error_buf: RustBuffer.ByValue): ProtectorException = FfiConverterTypeProtectorError.lift(error_buf)
     }
+
+    
 }
 
 /**
  * @suppress
  */
 public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorException> {
-    override fun read(buf: ByteBuffer): ProtectorException =
-        when (buf.getInt()) {
+    override fun read(buf: ByteBuffer): ProtectorException {
+        
+
+        return when(buf.getInt()) {
             1 -> ProtectorException.Failure()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
+    }
 
-    override fun allocationSize(value: ProtectorException): ULong =
-        when (value) {
+    override fun allocationSize(value: ProtectorException): ULong {
+        return when(value) {
             is ProtectorException.Failure -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
         }
+    }
 
-    override fun write(
-        value: ProtectorException,
-        buf: ByteBuffer,
-    ) {
-        when (value) {
+    override fun write(value: ProtectorException, buf: ByteBuffer) {
+        when(value) {
             is ProtectorException.Failure -> {
                 buf.putInt(1)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
+
 }
+
+
+
 
 /**
  * @suppress
  */
-public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
     override fun read(buf: ByteBuffer): kotlin.UInt? {
         if (buf.get().toInt() == 0) {
             return null
@@ -8744,10 +8272,7 @@ public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
         }
     }
 
-    override fun write(
-        value: kotlin.UInt?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -8757,10 +8282,13 @@ public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalString : FfiConverterRustBuffer<kotlin.String?> {
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
             return null
@@ -8776,10 +8304,7 @@ public object FfiConverterOptionalString : FfiConverterRustBuffer<kotlin.String?
         }
     }
 
-    override fun write(
-        value: kotlin.String?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -8789,10 +8314,13 @@ public object FfiConverterOptionalString : FfiConverterRustBuffer<kotlin.String?
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalByteArray : FfiConverterRustBuffer<kotlin.ByteArray?> {
+public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteArray?> {
     override fun read(buf: ByteBuffer): kotlin.ByteArray? {
         if (buf.get().toInt() == 0) {
             return null
@@ -8808,10 +8336,7 @@ public object FfiConverterOptionalByteArray : FfiConverterRustBuffer<kotlin.Byte
         }
     }
 
-    override fun write(
-        value: kotlin.ByteArray?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: kotlin.ByteArray?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -8821,10 +8346,13 @@ public object FfiConverterOptionalByteArray : FfiConverterRustBuffer<kotlin.Byte
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeMobilePinnedIdentity : FfiConverterRustBuffer<MobilePinnedIdentity?> {
+public object FfiConverterOptionalTypeMobilePinnedIdentity: FfiConverterRustBuffer<MobilePinnedIdentity?> {
     override fun read(buf: ByteBuffer): MobilePinnedIdentity? {
         if (buf.get().toInt() == 0) {
             return null
@@ -8840,10 +8368,7 @@ public object FfiConverterOptionalTypeMobilePinnedIdentity : FfiConverterRustBuf
         }
     }
 
-    override fun write(
-        value: MobilePinnedIdentity?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobilePinnedIdentity?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -8853,10 +8378,13 @@ public object FfiConverterOptionalTypeMobilePinnedIdentity : FfiConverterRustBuf
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeMobileSpaceCursor : FfiConverterRustBuffer<MobileSpaceCursor?> {
+public object FfiConverterOptionalTypeMobileSpaceCursor: FfiConverterRustBuffer<MobileSpaceCursor?> {
     override fun read(buf: ByteBuffer): MobileSpaceCursor? {
         if (buf.get().toInt() == 0) {
             return null
@@ -8872,10 +8400,7 @@ public object FfiConverterOptionalTypeMobileSpaceCursor : FfiConverterRustBuffer
         }
     }
 
-    override fun write(
-        value: MobileSpaceCursor?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileSpaceCursor?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -8885,10 +8410,13 @@ public object FfiConverterOptionalTypeMobileSpaceCursor : FfiConverterRustBuffer
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterOptionalTypeMobileProjectionChange : FfiConverterRustBuffer<MobileProjectionChange?> {
+public object FfiConverterOptionalTypeMobileProjectionChange: FfiConverterRustBuffer<MobileProjectionChange?> {
     override fun read(buf: ByteBuffer): MobileProjectionChange? {
         if (buf.get().toInt() == 0) {
             return null
@@ -8904,10 +8432,7 @@ public object FfiConverterOptionalTypeMobileProjectionChange : FfiConverterRustB
         }
     }
 
-    override fun write(
-        value: MobileProjectionChange?,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: MobileProjectionChange?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
@@ -8917,10 +8442,13 @@ public object FfiConverterOptionalTypeMobileProjectionChange : FfiConverterRustB
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceByteArray : FfiConverterRustBuffer<List<kotlin.ByteArray>> {
+public object FfiConverterSequenceByteArray: FfiConverterRustBuffer<List<kotlin.ByteArray>> {
     override fun read(buf: ByteBuffer): List<kotlin.ByteArray> {
         val len = buf.getInt()
         return List<kotlin.ByteArray>(len) {
@@ -8934,10 +8462,7 @@ public object FfiConverterSequenceByteArray : FfiConverterRustBuffer<List<kotlin
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<kotlin.ByteArray>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<kotlin.ByteArray>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterByteArray.write(it, buf)
@@ -8945,10 +8470,13 @@ public object FfiConverterSequenceByteArray : FfiConverterRustBuffer<List<kotlin
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileChannelSummary : FfiConverterRustBuffer<List<MobileChannelSummary>> {
+public object FfiConverterSequenceTypeMobileChannelSummary: FfiConverterRustBuffer<List<MobileChannelSummary>> {
     override fun read(buf: ByteBuffer): List<MobileChannelSummary> {
         val len = buf.getInt()
         return List<MobileChannelSummary>(len) {
@@ -8962,10 +8490,7 @@ public object FfiConverterSequenceTypeMobileChannelSummary : FfiConverterRustBuf
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileChannelSummary>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileChannelSummary>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileChannelSummary.write(it, buf)
@@ -8973,10 +8498,13 @@ public object FfiConverterSequenceTypeMobileChannelSummary : FfiConverterRustBuf
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileDirectMessageConversation : FfiConverterRustBuffer<List<MobileDirectMessageConversation>> {
+public object FfiConverterSequenceTypeMobileDirectMessageConversation: FfiConverterRustBuffer<List<MobileDirectMessageConversation>> {
     override fun read(buf: ByteBuffer): List<MobileDirectMessageConversation> {
         val len = buf.getInt()
         return List<MobileDirectMessageConversation>(len) {
@@ -8990,10 +8518,7 @@ public object FfiConverterSequenceTypeMobileDirectMessageConversation : FfiConve
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileDirectMessageConversation>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileDirectMessageConversation>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileDirectMessageConversation.write(it, buf)
@@ -9001,10 +8526,13 @@ public object FfiConverterSequenceTypeMobileDirectMessageConversation : FfiConve
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileDirectMessageHistoryEntry : FfiConverterRustBuffer<List<MobileDirectMessageHistoryEntry>> {
+public object FfiConverterSequenceTypeMobileDirectMessageHistoryEntry: FfiConverterRustBuffer<List<MobileDirectMessageHistoryEntry>> {
     override fun read(buf: ByteBuffer): List<MobileDirectMessageHistoryEntry> {
         val len = buf.getInt()
         return List<MobileDirectMessageHistoryEntry>(len) {
@@ -9018,10 +8546,7 @@ public object FfiConverterSequenceTypeMobileDirectMessageHistoryEntry : FfiConve
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileDirectMessageHistoryEntry>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileDirectMessageHistoryEntry>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileDirectMessageHistoryEntry.write(it, buf)
@@ -9029,10 +8554,13 @@ public object FfiConverterSequenceTypeMobileDirectMessageHistoryEntry : FfiConve
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileDirectMessageOutboxEntry : FfiConverterRustBuffer<List<MobileDirectMessageOutboxEntry>> {
+public object FfiConverterSequenceTypeMobileDirectMessageOutboxEntry: FfiConverterRustBuffer<List<MobileDirectMessageOutboxEntry>> {
     override fun read(buf: ByteBuffer): List<MobileDirectMessageOutboxEntry> {
         val len = buf.getInt()
         return List<MobileDirectMessageOutboxEntry>(len) {
@@ -9046,10 +8574,7 @@ public object FfiConverterSequenceTypeMobileDirectMessageOutboxEntry : FfiConver
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileDirectMessageOutboxEntry>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileDirectMessageOutboxEntry>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileDirectMessageOutboxEntry.write(it, buf)
@@ -9057,10 +8582,13 @@ public object FfiConverterSequenceTypeMobileDirectMessageOutboxEntry : FfiConver
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileDirectMessagePendingInvitation : FfiConverterRustBuffer<List<MobileDirectMessagePendingInvitation>> {
+public object FfiConverterSequenceTypeMobileDirectMessagePendingInvitation: FfiConverterRustBuffer<List<MobileDirectMessagePendingInvitation>> {
     override fun read(buf: ByteBuffer): List<MobileDirectMessagePendingInvitation> {
         val len = buf.getInt()
         return List<MobileDirectMessagePendingInvitation>(len) {
@@ -9074,10 +8602,7 @@ public object FfiConverterSequenceTypeMobileDirectMessagePendingInvitation : Ffi
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileDirectMessagePendingInvitation>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileDirectMessagePendingInvitation>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileDirectMessagePendingInvitation.write(it, buf)
@@ -9085,10 +8610,13 @@ public object FfiConverterSequenceTypeMobileDirectMessagePendingInvitation : Ffi
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileInitialChannel : FfiConverterRustBuffer<List<MobileInitialChannel>> {
+public object FfiConverterSequenceTypeMobileInitialChannel: FfiConverterRustBuffer<List<MobileInitialChannel>> {
     override fun read(buf: ByteBuffer): List<MobileInitialChannel> {
         val len = buf.getInt()
         return List<MobileInitialChannel>(len) {
@@ -9102,10 +8630,7 @@ public object FfiConverterSequenceTypeMobileInitialChannel : FfiConverterRustBuf
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileInitialChannel>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileInitialChannel>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileInitialChannel.write(it, buf)
@@ -9113,10 +8638,13 @@ public object FfiConverterSequenceTypeMobileInitialChannel : FfiConverterRustBuf
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileLocalTextMessage : FfiConverterRustBuffer<List<MobileLocalTextMessage>> {
+public object FfiConverterSequenceTypeMobileLocalTextMessage: FfiConverterRustBuffer<List<MobileLocalTextMessage>> {
     override fun read(buf: ByteBuffer): List<MobileLocalTextMessage> {
         val len = buf.getInt()
         return List<MobileLocalTextMessage>(len) {
@@ -9130,10 +8658,7 @@ public object FfiConverterSequenceTypeMobileLocalTextMessage : FfiConverterRustB
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileLocalTextMessage>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileLocalTextMessage>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileLocalTextMessage.write(it, buf)
@@ -9141,10 +8666,13 @@ public object FfiConverterSequenceTypeMobileLocalTextMessage : FfiConverterRustB
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileOutboxEntry : FfiConverterRustBuffer<List<MobileOutboxEntry>> {
+public object FfiConverterSequenceTypeMobileOutboxEntry: FfiConverterRustBuffer<List<MobileOutboxEntry>> {
     override fun read(buf: ByteBuffer): List<MobileOutboxEntry> {
         val len = buf.getInt()
         return List<MobileOutboxEntry>(len) {
@@ -9158,10 +8686,7 @@ public object FfiConverterSequenceTypeMobileOutboxEntry : FfiConverterRustBuffer
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileOutboxEntry>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileOutboxEntry>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileOutboxEntry.write(it, buf)
@@ -9169,10 +8694,13 @@ public object FfiConverterSequenceTypeMobileOutboxEntry : FfiConverterRustBuffer
     }
 }
 
+
+
+
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeMobileSpaceSummary : FfiConverterRustBuffer<List<MobileSpaceSummary>> {
+public object FfiConverterSequenceTypeMobileSpaceSummary: FfiConverterRustBuffer<List<MobileSpaceSummary>> {
     override fun read(buf: ByteBuffer): List<MobileSpaceSummary> {
         val len = buf.getInt()
         return List<MobileSpaceSummary>(len) {
@@ -9186,13 +8714,11 @@ public object FfiConverterSequenceTypeMobileSpaceSummary : FfiConverterRustBuffe
         return sizeForLength + sizeForItems
     }
 
-    override fun write(
-        value: List<MobileSpaceSummary>,
-        buf: ByteBuffer,
-    ) {
+    override fun write(value: List<MobileSpaceSummary>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMobileSpaceSummary.write(it, buf)
         }
     }
 }
+

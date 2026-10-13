@@ -55,7 +55,7 @@
       "id": "space-membership",
       "capability": "Space policy, permissions, conflicts, membership and MLS transitions",
       "status": "FAILED",
-      "acceptance_boundary": "Core authorization and conflict recovery pass; product member-removal/rekey transitions remain unavailable."
+      "acceptance_boundary": "Core exposes atomic member removal; regression tests prove exact Remove rekey, next-epoch exclusion, and persistence after restart. Product-client removal controls, cross-client conflict recovery/restart, and broader convergence remain unverified."
     },
     {
       "id": "invite-welcome",

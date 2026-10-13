@@ -33,6 +33,17 @@ type LocalSpaceRecoveryResult = {
   networkContacted: false;
 };
 
+type LocalSpaceMemberRemoval = {
+  state: "member_removed_locally";
+  targetFingerprint: string;
+  controlEventId: string;
+  transitionEventId: string;
+  parentEpoch: number;
+  newEpoch: number;
+  networkContacted: false;
+  peerDeliveryClaimed: false;
+};
+
 type QueuedLocalMessage = {
   state: "queued";
   eventId: string;
@@ -1005,6 +1016,116 @@ function LocalSpaceRecovery({ space }: { space: LocalSpaceSummary }) {
     </form>
   );
 }
+function LocalSpaceMemberRemovalForm({ space }: { space: LocalSpaceSummary }) {
+  const [credentialVectorHex, setCredentialVectorHex] = useState("");
+  const [targetFingerprintHex, setTargetFingerprintHex] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<LocalSpaceMemberRemoval | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function removeMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const credential = credentialVectorHex.trim();
+    const target = targetFingerprintHex.trim();
+    if (
+      credential.length === 0 ||
+      credential.length > MAX_CREDENTIAL_HEX_LENGTH ||
+      credential.length % 2 !== 0 ||
+      !/^[\da-f]+$/i.test(credential) ||
+      !/^[\da-f]{64}$/i.test(target)
+    ) {
+      setError("Enter a bounded credential vector and the target's complete 32-byte fingerprint.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Remove device ${target} from this local Space generation? This cannot erase previously received data, and this action does not deliver the removal to peers.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const removal = await invoke<LocalSpaceMemberRemoval>("remove_local_space_member", {
+        spaceIdHex: space.spaceId,
+        groupReferenceHex: space.groupReference,
+        credentialVectorHex: credential,
+        targetFingerprintHex: target,
+      });
+      setResult(removal);
+      setCredentialVectorHex("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const formId = `${space.spaceId}-${space.groupReference}`;
+
+  return (
+    <form className="identity-pin-fields" onSubmit={(event) => void removeMember(event)}>
+      <h4>Remove a Space member</h4>
+      <p>
+        Commits an authorized MLS Remove and policy transition to this local profile. Share the
+        resulting signed events through an authenticated sync path; this action does not contact
+        peers or revoke their already received data.
+      </p>
+      <FormField
+        label="Administrator RFC 9420 X.509 credential vector (hex)"
+        htmlFor={`remove-member-credential-${formId}`}
+      >
+        <textarea
+          autoComplete="off"
+          id={`remove-member-credential-${formId}`}
+          maxLength={MAX_CREDENTIAL_HEX_LENGTH}
+          rows={3}
+          value={credentialVectorHex}
+          onChange={(event) => setCredentialVectorHex(event.currentTarget.value)}
+          spellCheck={false}
+          disabled={busy}
+        />
+      </FormField>
+      <FormField
+        label="Target member's full identity fingerprint (64 hex characters)"
+        htmlFor={`remove-member-target-${formId}`}
+      >
+        <input
+          autoComplete="off"
+          id={`remove-member-target-${formId}`}
+          maxLength={64}
+          value={targetFingerprintHex}
+          onChange={(event) => setTargetFingerprintHex(event.currentTarget.value.trim())}
+          spellCheck={false}
+          disabled={busy}
+        />
+      </FormField>
+      <ActionButton
+        type="submit"
+        tone="danger"
+        disabled={
+          busy ||
+          !/^[\da-f]{64}$/i.test(targetFingerprintHex.trim()) ||
+          credentialVectorHex.trim().length === 0 ||
+          credentialVectorHex.trim().length > MAX_CREDENTIAL_HEX_LENGTH ||
+          credentialVectorHex.trim().length % 2 !== 0 ||
+          !/^[\da-f]+$/i.test(credentialVectorHex.trim())
+        }
+      >
+        {busy ? "Committing removal…" : "Remove member locally"}
+      </ActionButton>
+      {error && <StatusNotice kind="error">Member removal failed: {error}</StatusNotice>}
+      {result && (
+        <StatusNotice kind="success">
+          Removal committed locally at MLS epoch {result.parentEpoch} → {result.newEpoch}. Control
+          event {result.controlEventId}; policy transition {result.transitionEventId}. No peers were
+          contacted; delivery is not claimed.
+        </StatusNotice>
+      )}
+    </form>
+  );
+}
 
 export function LocalSpaceBrowser({
   runtimeAvailable,
@@ -1401,6 +1522,8 @@ export function LocalSpaceBrowser({
                   {...(onChannelChange ? { onChannelChange } : {})}
                 />
               )}
+              {runtimeAvailable && <LocalSpaceMemberRemovalForm space={space} />}
+
               {runtimeAvailable && (
                 <LocalSyncPanel spaceId={space.spaceId} groupReference={space.groupReference} />
               )}

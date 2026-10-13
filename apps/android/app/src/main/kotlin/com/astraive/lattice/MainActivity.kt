@@ -317,6 +317,10 @@ class MainActivity : ComponentActivity() {
                     onInvitationExpiryHoursChanged = ::onInvitationExpiryHoursChanged,
                     onInvitationMaxUsesChanged = ::onInvitationMaxUsesChanged,
                     onCreateSpaceInvitation = ::createSpaceInvitation,
+                    onRemovalTargetChanged = ::onRemovalTargetChanged,
+                    onRemovalCredentialChanged = ::onRemovalCredentialChanged,
+                    onRemoveSpaceMember = ::removeSpaceMember,
+
                     onCopyMembershipValue = ::copyPublicValue,
                     onGenerateCertificateRequest = ::generateCertificateRequest,
                     onCopyCertificateRequest = ::copyCertificateRequest,
@@ -1425,6 +1429,91 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private fun onRemovalTargetChanged(value: String) {
+        if (value.length > 64) return
+        updateSpaceMembership {
+            it.copy(
+                removalTargetFingerprintHex = value,
+                removal = null,
+                removalStatus = "Target fingerprint changed; it has not been validated.",
+            )
+        }
+    }
+
+    private fun onRemovalCredentialChanged(value: String) {
+        if (value.length > MAX_CREDENTIAL_HEX_LENGTH) {
+            updateSpaceMembership { it.copy(removalStatus = "The credential vector exceeds 16 KiB.") }
+            return
+        }
+        updateSpaceMembership {
+            it.copy(
+                removalCredentialHex = value,
+                removal = null,
+                removalStatus = "Credential changed; it has not been validated.",
+            )
+        }
+    }
+
+    private fun removeSpaceMember() {
+        val profile = mobileProfile ?: return updateSpaceMembership {
+            it.copy(removalStatus = "The protected profile is not ready.")
+        }
+        val state = screenState.spaceMembership
+        if (state.removingMember) return
+        val space = screenState.selectedSpaceKey?.let { key ->
+            screenState.localSpaces.firstOrNull { localSpaceKey(it) == key }
+        } ?: return updateSpaceMembership {
+            it.copy(removalStatus = "Open the intended local Space before removing a member.")
+        }
+        val target = decodeStrictBoundedHex(state.removalTargetFingerprintHex)?.takeIf { it.size == 32 }
+            ?: return updateSpaceMembership {
+                it.copy(removalStatus = "Enter the target's full 32-byte identity fingerprint.")
+            }
+        val credential = decodeStrictBoundedHex(state.removalCredentialHex)
+            ?: run {
+                target.fill(0)
+                return updateSpaceMembership {
+                    it.copy(removalStatus = "Enter a valid bounded X.509 credential vector.")
+                }
+            }
+        updateSpaceMembership {
+            it.copy(removingMember = true, removal = null, removalStatus = "Validating authorization and committing the local rekey.")
+        }
+        lifecycleScope.launch {
+            try {
+                val removal = withContext(Dispatchers.IO) {
+                    try {
+                        profile.removeSpaceMember(
+                            space.spaceId,
+                            space.groupReference,
+                            credential,
+                            target,
+                        )
+                    } finally {
+                        credential.fill(0)
+                        target.fill(0)
+                    }
+                }
+                updateSpaceMembership {
+                    it.copy(
+                        removalCredentialHex = "",
+                        removal = removal,
+                        removalStatus = "Removal committed locally; peers were not contacted and delivery is not claimed.",
+                    )
+                }
+                refreshLocalSpaces()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MobileException) {
+                updateSpaceMembership { it.copy(removalStatus = mobileErrorStatus(error)) }
+            } catch (_: Exception) {
+                updateSpaceMembership { it.copy(removalStatus = "Member removal could not be committed locally.") }
+            } finally {
+                updateSpaceMembership { it.copy(removingMember = false) }
+            }
+        }
+    }
+
 
     private fun decodeBoundedBase64(value: String, maxBytes: Int, maxChars: Int): ByteArray? {
         if (value.isEmpty() || value.length > maxChars || value.length % 4 != 0) return null
@@ -2023,6 +2112,8 @@ class MainActivity : ComponentActivity() {
         is MobileException.InvalidSpaceKeyPackage -> "The target KeyPackage is invalid or exceeds its size bound."
         is MobileException.SpaceKeyPackagePublicationFailed -> "The target device KeyPackage could not be published."
         is MobileException.SpaceInvitationFailed -> "The signed membership invitation could not be committed."
+        is MobileException.SpaceMemberRemovalFailed -> "The local membership removal was unauthorized or could not be committed."
+
         is MobileException.InvalidBleDiscoveryToken -> "The BLE discovery token is invalid; no session was started."
         is MobileException.BleSessionFailed -> "BLE authentication or transport failed; delivery is not confirmed."
         is MobileException.BleRecordRejected -> "The BLE peer sent an unexpected or malformed record."
@@ -2791,6 +2882,10 @@ private fun NearbyReadinessScreen(
     onInvitationCredentialChanged: (String) -> Unit,
     onInvitationExpiryHoursChanged: (String) -> Unit,
     onInvitationMaxUsesChanged: (String) -> Unit,
+    onRemovalTargetChanged: (String) -> Unit,
+    onRemovalCredentialChanged: (String) -> Unit,
+    onRemoveSpaceMember: () -> Unit,
+
     onCreateSpaceInvitation: () -> Unit,
     onCopyMembershipValue: (String, String) -> Unit,
     onRecoverySpaceSelected: (String) -> Unit,
@@ -2961,6 +3056,10 @@ private fun NearbyReadinessScreen(
                             onExpiryHoursChanged = onInvitationExpiryHoursChanged,
                             onMaxUsesChanged = onInvitationMaxUsesChanged,
                             onCreateInvitation = onCreateSpaceInvitation,
+                            onRemovalTargetChanged = onRemovalTargetChanged,
+                            onRemovalCredentialChanged = onRemovalCredentialChanged,
+                            onRemoveMember = onRemoveSpaceMember,
+
                             onCopyValue = onCopyMembershipValue,
                         )
                     },

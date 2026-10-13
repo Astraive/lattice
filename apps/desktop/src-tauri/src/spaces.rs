@@ -30,6 +30,19 @@ struct LocalSpaceSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct LocalSpaceMemberRemoval {
+    state: &'static str,
+    target_fingerprint: String,
+    control_event_id: String,
+    transition_event_id: String,
+    parent_epoch: u64,
+    new_epoch: u64,
+    network_contacted: bool,
+    peer_delivery_claimed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct LocalSpacePage {
     spaces: Vec<LocalSpaceSummary>,
     next_cursor: Option<String>,
@@ -705,6 +718,53 @@ pub(crate) fn list_local_spaces(after: Option<String>) -> Result<LocalSpacePage,
     Ok(LocalSpacePage {
         spaces,
         next_cursor: page.next_cursor().map(encoding::space_cursor_hex),
+    })
+}
+
+// Tauri decodes command arguments into owned strings.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub(crate) fn remove_local_space_member(
+    space_id_hex: String,
+    group_reference_hex: String,
+    credential_vector_hex: String,
+    target_fingerprint_hex: String,
+) -> Result<LocalSpaceMemberRemoval, String> {
+    let space_id = encoding::parse_fixed_hex::<16>(&space_id_hex, "Space ID")?;
+    let group_reference =
+        encoding::parse_fixed_hex::<32>(&group_reference_hex, "MLS group reference")?;
+    let target_fingerprint =
+        encoding::parse_fixed_hex::<32>(&target_fingerprint_hex, "target fingerprint")?;
+    let credential_vector = encoding::parse_hex_bytes(
+        &credential_vector_hex,
+        "RFC 9420 X.509 credential vector",
+        MAX_SPACE_CREDENTIAL_BYTES,
+    )?;
+    let (database_path, protector) = profile::open_profile()?;
+    let mut client = profile::open_existing_client(database_path, &protector)?;
+    let mut space = client
+        .restore_space(&space_id, &group_reference)
+        .map_err(|_| "local Space generation is unavailable or has changed".to_owned())?;
+    let removal = client
+        .remove_space_member_from_x509_credential(&mut space, credential_vector, target_fingerprint)
+        .map_err(|error| match error {
+            CoreError::SpaceCredentialInvalid => {
+                "the X.509 credential is invalid or not trusted".to_owned()
+            }
+            CoreError::SpaceMessageRejected(_) => {
+                "local Space policy rejected this member removal".to_owned()
+            }
+            _ => "member removal could not be committed locally".to_owned(),
+        })?;
+    Ok(LocalSpaceMemberRemoval {
+        state: "member_removed_locally",
+        target_fingerprint: encoding::hex(removal.target_fingerprint()),
+        control_event_id: encoding::hex(removal.control_event_id()),
+        transition_event_id: encoding::hex(removal.transition_event_id()),
+        parent_epoch: removal.parent_epoch(),
+        new_epoch: removal.new_epoch(),
+        network_contacted: false,
+        peer_delivery_claimed: false,
     })
 }
 

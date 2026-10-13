@@ -319,6 +319,15 @@ pub struct MobileSpaceInvitation {
     /// Signed policy checkpoint and MLS Welcome bootstrap.
     pub welcome_bootstrap: Vec<u8>,
 }
+/// Identifiers and epoch transition for a locally committed member removal.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct MobileSpaceMemberRemoval {
+    pub target_fingerprint: Vec<u8>,
+    pub control_event_id: Vec<u8>,
+    pub transition_event_id: Vec<u8>,
+    pub parent_epoch: u64,
+    pub new_epoch: u64,
+}
 
 /// Bounded page of locally verified Space Genesis snapshots.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -453,6 +462,9 @@ pub enum MobileError {
     /// A membership invitation could not be committed locally.
     #[error("Space invitation failed")]
     SpaceInvitationFailed,
+    /// A Space member removal could not be committed.
+    #[error("Space member removal failed")]
+    SpaceMemberRemovalFailed,
     /// The bounded Core projection observer limit has been reached.
     #[error("too many Core projection observers")]
     ProjectionObserverLimit,

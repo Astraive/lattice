@@ -114,6 +114,8 @@ enum Command {
 
 type PinInput = ([u8; 65], [u8; 32]);
 type SpaceEditInput = ([u8; 16], [u8; 32], [u8; 16], [u8; 32]);
+type SpaceMemberRemovalInput = ([u8; 16], [u8; 32], [u8; 32]);
+
 type SpaceHistoryInput = ([u8; 16], [u8; 32], [u8; 16]);
 type SpaceRestoreInput = ([u8; 16], [u8; 32]);
 type SendInput = ([u8; 16], [u8; 32], [u8; 16]);
@@ -125,6 +127,8 @@ enum SpaceCommandInput {
     Join([u8; 32]),
     Invite(SpaceRestoreInput),
     Leave(SpaceRestoreInput),
+    RemoveMember(SpaceMemberRemovalInput),
+
     Edit(SpaceEditInput),
     History(SpaceHistoryInput),
     Search(SpaceHistoryInput),
@@ -551,6 +555,22 @@ fn parse_space_command_input(command: &Command) -> Result<SpaceCommandInput, Cli
             .map(SpaceCommandInput::Invite)
             .ok_or_else(|| CliError::invalid_input("Space identifiers were not parsed")),
         Command::Space {
+            command:
+                SpaceCommand::RemoveMember {
+                    space_id,
+                    group_reference,
+                    target_fingerprint,
+                    ..
+                },
+        } => Ok(SpaceCommandInput::RemoveMember((
+            parse_fixed_hex::<16>(space_id, "space ID").map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<32>(group_reference, "group reference")
+                .map_err(CliError::invalid_input)?,
+            parse_fixed_hex::<32>(target_fingerprint, "target fingerprint")
+                .map_err(CliError::invalid_input)?,
+        ))),
+
+        Command::Space {
             command: SpaceCommand::Leave { .. },
         } => parse_space_restore_input(command)?
             .map(SpaceCommandInput::Leave)
@@ -604,6 +624,7 @@ fn read_space_credential(command: &Command) -> Result<Option<Vec<u8>>, Box<dyn E
                 | SpaceCommand::KeyPackage { credential, .. }
                 | SpaceCommand::Invite { credential, .. }
                 | SpaceCommand::Join { credential, .. }
+                | SpaceCommand::RemoveMember { credential, .. }
                 | SpaceCommand::Leave { credential, .. },
         }
         | Command::Relay {
@@ -832,6 +853,10 @@ fn execute_space(
         SpaceCommand::Leave { .. } => {
             execute_space_leave(credential_bytes, input, database_path, protector, json)?;
         }
+        SpaceCommand::RemoveMember { .. } => {
+            execute_space_member_removal(credential_bytes, input, database_path, protector, json)?;
+        }
+
         SpaceCommand::Recover { .. } => {
             execute_space_recovery(credential_bytes, input, database_path, protector, json)?;
         }
@@ -927,6 +952,56 @@ fn execute_space_leave(
         credential_bytes,
     )?;
     print_queued_event(json, "space_leave", "Leave request queued", &event_id);
+    Ok(())
+}
+fn execute_space_member_removal(
+    credential_bytes: Option<Vec<u8>>,
+    input: SpaceCommandInput,
+    database_path: &Path,
+    protector: &OsKeyringProtector,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let credential_bytes = credential_bytes
+        .ok_or_else(|| CliError::invalid_input("credential vector was not loaded"))?;
+    let SpaceCommandInput::RemoveMember((space_id, group_reference, target_fingerprint)) = input
+    else {
+        return Err(CliError::invalid_input("member removal identifiers were not parsed").into());
+    };
+    let mut client = match Client::open_existing(database_path, protector) {
+        Ok(client) => client,
+        Err(CoreError::MissingIdentity) => return Err(CliError::missing_identity().into()),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let mut space = client.restore_space(&space_id, &group_reference)?;
+    let removal = client.remove_space_member_from_x509_credential(
+        &mut space,
+        credential_bytes,
+        target_fingerprint,
+    )?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "state": "member_removed_locally",
+                "target_fingerprint": hex(removal.target_fingerprint()),
+                "control_event_id": hex(removal.control_event_id()),
+                "transition_event_id": hex(removal.transition_event_id()),
+                "parent_epoch": removal.parent_epoch(),
+                "new_epoch": removal.new_epoch(),
+                "network_contacted": false,
+                "peer_delivery_claimed": false,
+            })
+        );
+    } else {
+        println!(
+            "Member removal committed locally at epoch {} → {}. Control event {}; policy transition {}. No peers were contacted; delivery is not claimed.",
+            removal.parent_epoch(),
+            removal.new_epoch(),
+            hex(removal.control_event_id()),
+            hex(removal.transition_event_id()),
+        );
+    }
     Ok(())
 }
 
@@ -1926,6 +2001,48 @@ mod tests {
                 if space_id == [0x11; 16] && group_reference == [0x22; 32]
         ));
         assert!(validate_command_inputs(&parsed.command).is_ok());
+    }
+
+    #[test]
+    fn space_remove_member_requires_full_target_fingerprint() {
+        let parsed = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "remove-member",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--credential",
+            "admin.der",
+            "--target-fingerprint",
+            &"33".repeat(32),
+        ])
+        .expect("member removal command parses");
+        assert!(matches!(
+            parse_space_command_input(&parsed.command),
+            Ok(SpaceCommandInput::RemoveMember((space_id, group_reference, target)))
+                if space_id == [0x11; 16]
+                    && group_reference == [0x22; 32]
+                    && target == [0x33; 32]
+        ));
+        assert!(validate_command_inputs(&parsed.command).is_ok());
+
+        let parsed = Cli::try_parse_from([
+            "lattice",
+            "space",
+            "remove-member",
+            "--space-id",
+            &"11".repeat(16),
+            "--group-reference",
+            &"22".repeat(32),
+            "--credential",
+            "admin.der",
+            "--target-fingerprint",
+            &"33".repeat(31),
+        ])
+        .expect("syntactically accepted target is rejected by fixed-width validation");
+        assert!(parse_space_command_input(&parsed.command).is_err());
     }
 
     #[test]

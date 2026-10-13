@@ -41,8 +41,8 @@ use super::{
     MobileDirectMessagePendingInvitation, MobileError, MobileIdentityInfo, MobileInitialChannel,
     MobileLocalTextMessage, MobileLocalTextMessageSearch, MobileOutboxEntry, MobileOutboxState,
     MobilePinnedIdentity, MobileProjectionChange, MobileQueuedMessage, MobileSpaceCursor,
-    MobileSpaceInvitation, MobileSpacePage, MobileSpaceSummary, MobileSyncEventResult,
-    MobileSyncEventState, PlatformKeyProtector,
+    MobileSpaceInvitation, MobileSpaceMemberRemoval, MobileSpacePage, MobileSpaceSummary,
+    MobileSyncEventResult, MobileSyncEventState, PlatformKeyProtector,
 };
 
 #[derive(Clone)]
@@ -830,6 +830,63 @@ impl MobileClient {
             .publish(MobileProjectionChange::Spaces);
         Ok(result)
     }
+    /// Commits an authorized MLS Remove and matching Space policy transition locally.
+    ///
+    /// This advances the local MLS epoch and stages signed membership events; it
+    /// does not deliver them to peers or prove that the removed device observed them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSpaceMessageId` for malformed Space/group identifiers,
+    /// `InvalidFingerprint` for a malformed target fingerprint, and
+    /// `InvalidSpaceCredential` for empty or oversized credentials.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn remove_space_member(
+        &self,
+        space_id: Vec<u8>,
+        group_reference: Vec<u8>,
+        credential_vector: Vec<u8>,
+        target_fingerprint: Vec<u8>,
+    ) -> Result<MobileSpaceMemberRemoval, MobileError> {
+        let space_id: [u8; 16] = space_id
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let group_reference: [u8; 32] = group_reference
+            .try_into()
+            .map_err(|_| MobileError::InvalidSpaceMessageId)?;
+        let target_fingerprint: [u8; 32] = target_fingerprint
+            .try_into()
+            .map_err(|_| MobileError::InvalidFingerprint)?;
+        if credential_vector.is_empty() || credential_vector.len() > MAX_SPACE_CREDENTIAL_BYTES {
+            return Err(MobileError::InvalidSpaceCredential);
+        }
+        let mut client = self.lock_client()?;
+        let mut space = client
+            .restore_space(&space_id, &group_reference)
+            .map_err(|_| MobileError::SpaceMemberRemovalFailed)?;
+        let removal = client
+            .remove_space_member_from_x509_credential(
+                &mut space,
+                credential_vector,
+                target_fingerprint,
+            )
+            .map_err(|error| match error {
+                CoreError::SpaceCredentialInvalid => MobileError::InvalidSpaceCredential,
+                _ => MobileError::SpaceMemberRemovalFailed,
+            })?;
+        let result = MobileSpaceMemberRemoval {
+            target_fingerprint: removal.target_fingerprint().to_vec(),
+            control_event_id: removal.control_event_id().to_vec(),
+            transition_event_id: removal.transition_event_id().to_vec(),
+            parent_epoch: removal.parent_epoch(),
+            new_epoch: removal.new_epoch(),
+        };
+        drop(client);
+        self.projection_observers
+            .publish(MobileProjectionChange::Spaces);
+        Ok(result)
+    }
+
     /// Joins one validated MLS Welcome using a signed policy checkpoint from
     /// an explicitly pinned inviter.
     ///
