@@ -1,5 +1,5 @@
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use lattice_identity::{PrivateKeyProtectionError, PrivateKeyProtector};
 use zeroize::Zeroizing;
 
@@ -45,7 +45,7 @@ impl PrivateKeyProtector for SessionKeyProtector {
             Aes256Gcm::new_from_slice(&self.key[..]).map_err(|_| PrivateKeyProtectionError)?;
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                From::from(&nonce),
                 Payload {
                     msg: private_material,
                     aad: WRAP_AAD,
@@ -64,7 +64,8 @@ impl PrivateKeyProtector for SessionKeyProtector {
             return Err(PrivateKeyProtectionError);
         }
         let nonce_end = 1 + NONCE_BYTES;
-        let nonce = Nonce::from_slice(&ciphertext[1..nonce_end]);
+        let nonce =
+            TryFrom::try_from(&ciphertext[1..nonce_end]).map_err(|_| PrivateKeyProtectionError)?;
         let cipher =
             Aes256Gcm::new_from_slice(&self.key[..]).map_err(|_| PrivateKeyProtectionError)?;
         cipher

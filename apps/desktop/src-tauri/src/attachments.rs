@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fs4::fs_std::FileExt as _;
+use fs4::{FileExt, TryLockError};
 use lattice_files::{
     AttachmentManifest, AttachmentStagingLimits, AttachmentStagingStore, MAX_FILE_SIZE,
     ManagedAttachmentFile,
@@ -918,15 +918,13 @@ fn acquire_cache_lock(source_dir: &Path) -> Result<File, String> {
         .truncate(false)
         .open(lock_path)
         .map_err(|error| format!("open attachment quota lock: {error}"))?;
-    if !lock
-        .try_lock_exclusive()
-        .map_err(|error| format!("lock attachment cache: {error}"))?
-    {
-        return Err(
-            "attachment cache is busy; retry after the other operation finishes".to_owned(),
-        );
+    match FileExt::try_lock(&lock) {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => {
+            Err("attachment cache is busy; retry after the other operation finishes".to_owned())
+        }
+        Err(error) => Err(format!("lock attachment cache: {error}")),
     }
-    Ok(lock)
 }
 
 fn write_cached_filename(path: &Path, file_name: &str) -> Result<(), String> {

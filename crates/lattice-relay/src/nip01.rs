@@ -114,11 +114,11 @@ impl NostrEventV1 {
         content: String,
     ) -> Result<Self, NostrEventError> {
         let signing_key =
-            SigningKey::from_bytes(secret_key).map_err(|_| NostrEventError::InvalidSecretKey)?;
+            SigningKey::from_slice(secret_key).map_err(|_| NostrEventError::InvalidSecretKey)?;
         let pubkey: [u8; 32] = signing_key.verifying_key().to_bytes().into();
         let id = calculate_id(pubkey, created_at, kind, &tags, &content)?;
         let signature = signing_key
-            .sign_prehash_with_aux_rand(&id, &[0_u8; 32])
+            .sign_raw(&id, &[0_u8; 32])
             .map_err(|_| NostrEventError::InvalidSignature)?;
         let event = Self {
             id,
@@ -155,7 +155,7 @@ impl NostrEventV1 {
         let pubkey = decode_hex::<32>(&parsed.pubkey, "pubkey")?;
         let sig = decode_hex::<64>(&parsed.sig, "sig")?;
 
-        VerifyingKey::from_bytes(&pubkey).map_err(|_| NostrEventError::InvalidPublicKey)?;
+        VerifyingKey::from_slice(&pubkey).map_err(|_| NostrEventError::InvalidPublicKey)?;
         Signature::try_from(sig.as_slice()).map_err(|_| NostrEventError::InvalidSignature)?;
 
         let event = Self {
@@ -268,7 +268,7 @@ impl NostrEventV1 {
             return Err(NostrEventError::IdMismatch);
         }
 
-        let verifying_key = VerifyingKey::from_bytes(&self.pubkey)
+        let verifying_key = VerifyingKey::from_slice(&self.pubkey)
             .map_err(|_| NostrEventError::InvalidPublicKey)?;
         let signature = Signature::try_from(self.sig.as_slice())
             .map_err(|_| NostrEventError::InvalidSignature)?;

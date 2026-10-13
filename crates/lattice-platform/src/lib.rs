@@ -7,10 +7,10 @@ use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use directories::BaseDirs;
-use fs4::fs_std::FileExt;
+use fs4::{FileExt, TryLockError};
 use lattice_identity::{PrivateKeyProtectionError, PrivateKeyProtector};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
@@ -319,7 +319,8 @@ impl OsKeyringProtector {
             .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?;
         let encrypted = cipher
             .encrypt(
-                Nonce::from_slice(&nonce[..]),
+                TryFrom::try_from(&nonce[..])
+                    .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?,
                 Payload {
                     msg: private_material,
                     aad: &aad,
@@ -367,7 +368,8 @@ impl OsKeyringProtector {
             .map_err(|_| OsKeyringProtectionError::CryptographicFailure)?;
         let plaintext = cipher
             .decrypt(
-                Nonce::from_slice(&ciphertext[1..=NONCE_BYTES]),
+                TryFrom::try_from(&ciphertext[1..=NONCE_BYTES])
+                    .map_err(|_| OsKeyringProtectionError::InvalidFormat)?,
                 Payload {
                     msg: &ciphertext[1 + NONCE_BYTES..],
                     aad: &aad,
@@ -390,14 +392,12 @@ impl OsKeyringProtector {
             .map_err(|_| OsKeyringProtectionError::StoreUnavailable)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            match file.try_lock_exclusive() {
-                Ok(true) => return Ok(file),
-                Ok(false) if Instant::now() < deadline => {
+            match FileExt::try_lock(&file) {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                     thread::sleep(Duration::from_millis(10));
                 }
-                Ok(false) | Err(_) => {
-                    return Err(OsKeyringProtectionError::SynchronizationFailure);
-                }
+                Err(_) => return Err(OsKeyringProtectionError::SynchronizationFailure),
             }
         }
     }
@@ -1296,19 +1296,14 @@ mod os_keyring_protector_tests {
             .write(true)
             .open(protector.profile_lock_path().expect("lock path"))
             .expect("open second lock handle");
-        assert!(
-            !second_handle
-                .try_lock_exclusive()
-                .expect("probe competing lock")
-        );
+        assert!(matches!(
+            FileExt::try_lock(&second_handle),
+            Err(fs4::TryLockError::WouldBlock)
+        ));
 
         drop(held_lock);
-        assert!(
-            second_handle
-                .try_lock_exclusive()
-                .expect("acquire released lock")
-        );
-        second_handle.unlock().expect("release second lock");
+        FileExt::try_lock(&second_handle).expect("acquire released lock");
+        FileExt::unlock(&second_handle).expect("release second lock");
     }
 
     #[test]

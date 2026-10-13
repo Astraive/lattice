@@ -3,7 +3,7 @@
 use std::{cell::RefCell, error::Error, fmt, io};
 
 use aes_gcm::{
-    Aes256Gcm, Nonce,
+    Aes256Gcm,
     aead::{Aead, KeyInit, Payload},
 };
 use openmls_rust_crypto::RustCrypto;
@@ -144,7 +144,7 @@ pub fn protect_local_record(
         getrandom::fill(&mut nonce).map_err(|_| ProtectedCodecError::Randomness)?;
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                From::from(&nonce),
                 Payload {
                     msg: plaintext,
                     aad: &associated_data,
@@ -196,7 +196,8 @@ pub fn unprotect_local_record(
         associated_data.extend_from_slice(context);
         let plaintext = cipher
             .decrypt(
-                Nonce::from_slice(&record[1..HEADER_BYTES]),
+                TryFrom::try_from(&record[1..HEADER_BYTES])
+                    .map_err(|_| ProtectedCodecError::Decryption)?,
                 Payload {
                     msg: &record[HEADER_BYTES..],
                     aad: &associated_data,
@@ -276,7 +277,7 @@ impl Codec for ProtectedJsonCodec {
             getrandom::fill(&mut nonce_bytes).map_err(|_| ProtectedCodecError::Randomness)?;
             let ciphertext = cipher
                 .encrypt(
-                    Nonce::from_slice(&nonce_bytes),
+                    From::from(&nonce_bytes),
                     Payload {
                         msg: plaintext.0.as_slice(),
                         aad: AAD,
@@ -312,7 +313,8 @@ impl Codec for ProtectedJsonCodec {
                 Aes256Gcm::new_from_slice(key).map_err(|_| ProtectedCodecError::Decryption)?;
             let plaintext = cipher
                 .decrypt(
-                    Nonce::from_slice(&bytes[1..HEADER_BYTES]),
+                    TryFrom::try_from(&bytes[1..HEADER_BYTES])
+                        .map_err(|_| ProtectedCodecError::Decryption)?,
                     Payload {
                         msg: &bytes[HEADER_BYTES..],
                         aad: AAD,
