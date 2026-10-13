@@ -2,7 +2,7 @@
 yanked = "deny"
 unmaintained = "workspace"
 unsound = "workspace"
-ignore = []
+ignore = ["RUSTSEC-2026-0330", "RUSTSEC-2026-0331"]
 
 [licenses]
 include-dev = true

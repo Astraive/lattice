@@ -39,7 +39,7 @@ Reject duplicate CBOR keys, noncanonical signed bytes, oversized allocation clai
 
 Before stable v1: public protocol vectors; parser fuzzing; MLS/key lifecycle review; multi-device secure-storage tests; BLE and relay packet captures; key/reset/recovery review; threat model reconciled with implementation and UI copy; high/critical issues closed. Reference [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420) and [RFC 9750](https://www.rfc-editor.org/rfc/rfc9750).
 
-Supply-chain CI accepts only the SPDX identifiers in the root `deny.toml` allowlist, plus exact package/version/license exceptions in [`tooling/quality/security-exceptions.json`](../../tooling/quality/security-exceptions.json). Each exception requires a maintainer, reason, tracking issue and expiry; unmatched or expired entries fail closed. Issue #37's approved Cargo exceptions expire on 2026-11-06 and must be reviewed or removed before then.
+Supply-chain CI audits Cargo advisories, sources and third-party licenses; Bun dependencies; Gradle lockfiles; and committed history for credentials. Scoped suppressions live in [`tooling/quality/security-exceptions.json`](../../tooling/quality/security-exceptions.json), require an owner, reason, tracking issue and expiry, and fail on stale or expired matches. Cargo advisory exceptions must also match `deny.toml` exactly; a full all-target/all-feature dependency-tree guard rejects activation of the affected optional package. CI retains security reports with Gitleaks match and identity fields redacted. Release evidence includes sanitized CycloneDX SBOMs, checksums and build provenance. Review or remove issue #37's current exceptions before 2026-11-06.
 
 ## Trust by protocol phase
 

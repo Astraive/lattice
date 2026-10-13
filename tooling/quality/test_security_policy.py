@@ -2,7 +2,9 @@ import unittest
 from datetime import date
 from cargo_license_policy import validate_packages
 from gitleaks_policy import validate_findings
+from cargo_advisory_policy import validate_advisories
 from security_policy import validate_bun_findings
+
 
 
 class BunSecurityPolicyTests(unittest.TestCase):
@@ -60,6 +62,74 @@ class BunSecurityPolicyTests(unittest.TestCase):
             today=date(2029, 12, 31),
         )
         self.assertTrue(any("tracking_issue" in error for error in errors))
+
+
+
+
+class CargoAdvisoryPolicyTests(unittest.TestCase):
+    advisory = "RUSTSEC-2026-0330"
+
+    def exception(self, **updates):
+        return {
+            "advisory": self.advisory,
+            "owner": "@security-owner",
+            "reason": "Optional dependency remains inactive under all features.",
+            "expires": "2030-01-01",
+            "tracking_issue": 37,
+            **updates,
+        }
+
+    def report(self, *advisories):
+        return {
+            "vulnerabilities": {
+                "list": [{"advisory": {"id": advisory}} for advisory in advisories]
+            }
+        }
+
+    def test_current_exact_exception_matches_deny_configuration(self):
+        self.assertEqual(
+            validate_advisories(
+                self.report(self.advisory),
+                [self.exception()],
+                [self.advisory],
+                today=date(2029, 12, 31),
+            ),
+            [],
+        )
+
+    def test_unapproved_or_stale_advisory_fails(self):
+        errors = validate_advisories(
+            self.report(self.advisory, "RUSTSEC-2099-0001"),
+            [self.exception()],
+            [self.advisory],
+            today=date(2029, 12, 31),
+        )
+        self.assertTrue(any("unapproved Cargo advisory" in error for error in errors))
+
+        errors = validate_advisories(
+            self.report(self.advisory),
+            [self.exception()],
+            [self.advisory, "RUSTSEC-2099-0001"],
+            today=date(2029, 12, 31),
+        )
+        self.assertTrue(any("must exactly match" in error for error in errors))
+
+        errors = validate_advisories(
+            self.report(),
+            [self.exception()],
+            [self.advisory],
+            today=date(2029, 12, 31),
+        )
+        self.assertTrue(any("stale Cargo advisory" in error for error in errors))
+
+    def test_expired_exception_fails(self):
+        errors = validate_advisories(
+            self.report(self.advisory),
+            [self.exception(expires="2029-12-31")],
+            [self.advisory],
+            today=date(2029, 12, 31),
+        )
+        self.assertTrue(any("expired" in error for error in errors))
 
 
 class CargoLicensePolicyTests(unittest.TestCase):

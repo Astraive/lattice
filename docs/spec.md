@@ -1900,7 +1900,7 @@ Database schema version is independent of wire version. Migrations are transacti
 
 ## Reproducible dependency state
 
-Rust uses committed `Cargo.lock`; Bun uses committed `bun.lock`. CI installs JavaScript dependencies with a frozen lockfile and compiles Rust with pinned toolchain metadata. Mobile platform build files pin dependency ranges tightly enough to reproduce releases.
+Rust uses committed `Cargo.lock`; Bun uses committed `bun.lock`; Android uses committed Gradle lockfiles. CI resolves Bun in frozen mode and Rust with `--locked`, enforces Gradle dependency locking, and rejects lockfile drift after validation. Release jobs use the same locked inputs and record their exact source SHA.
 
 ## CI stages
 

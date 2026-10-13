@@ -1,4 +1,20 @@
 {
+  "cargo_advisories": [
+    {
+      "advisory": "RUSTSEC-2026-0330",
+      "owner": "@NeerajCodz",
+      "reason": "hpke-rs-libcrux 0.7.0 locks libcrux-kem only as an optional dependency; the all-target, all-feature dependency-tree guard must remain clear.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    },
+    {
+      "advisory": "RUSTSEC-2026-0331",
+      "owner": "@NeerajCodz",
+      "reason": "hpke-rs-libcrux 0.7.0 locks libcrux-kem only as an optional dependency; the all-target, all-feature dependency-tree guard must remain clear.",
+      "expires": "2026-11-06",
+      "tracking_issue": 37
+    }
+  ],
   "cargo_licenses": [
     {
       "package": "fiat-crypto",
