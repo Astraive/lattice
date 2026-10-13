@@ -276,9 +276,12 @@ jobs:
       - name: Build Desktop release executable without signing/bundling
         run: bunx tauri build --no-bundle
         working-directory: apps/desktop
-      - name: Hash release binaries
-        if: runner.os != 'Windows'
+      - name: Hash release binaries on Linux
+        if: runner.os == 'Linux'
         run: sha256sum target/release/lattice target/release/lattice-desktop
+      - name: Hash release binaries on macOS
+        if: runner.os == 'macOS'
+        run: shasum -a 256 target/release/lattice target/release/lattice-desktop
       - name: Hash release binaries on Windows
         if: runner.os == 'Windows'
         shell: pwsh
