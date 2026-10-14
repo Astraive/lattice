@@ -104,7 +104,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable toolchain action
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # stable toolchain action
         with:
           toolchain: 1.95.0
       - name: Set up Go for SBOM generation
@@ -219,7 +219,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
       - name: Set up Rust Android targets
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable toolchain action
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # stable toolchain action
         with:
           toolchain: 1.95.0
           targets: aarch64-linux-android,x86_64-linux-android
