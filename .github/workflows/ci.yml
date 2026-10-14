@@ -24,7 +24,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - name: Set up Rust formatter
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
           components: rustfmt
@@ -77,7 +77,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - name: Set up Rust and WebAssembly target
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
           targets: wasm32-unknown-unknown
@@ -116,7 +116,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
       - name: Check all workspace targets
@@ -133,7 +133,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
           components: clippy
@@ -151,7 +151,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
       - name: Run all workspace tests
@@ -171,7 +171,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - name: Set up Rust and WebAssembly target
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
           targets: wasm32-unknown-unknown
@@ -275,7 +275,7 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager --channel=3 "platforms;android-37.2" "build-tools;37.0.0" "ndk;28.2.13676358"
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
           targets: aarch64-linux-android,x86_64-linux-android
@@ -325,7 +325,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: 1.95.0
       - name: Install Linux Desktop dependencies
