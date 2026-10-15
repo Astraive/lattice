@@ -204,6 +204,24 @@ fn run_sync_once<P: PrivateKeyProtector>(
     protector: &P,
     trust_policy: CredentialTrustPolicy,
 ) -> Result<DesktopSyncResult, String> {
+    run_sync_once_after_bind(
+        listen,
+        target,
+        database_path,
+        protector,
+        trust_policy,
+        || {},
+    )
+}
+
+fn run_sync_once_after_bind<P: PrivateKeyProtector>(
+    listen: SocketAddr,
+    target: SyncTarget,
+    database_path: &Path,
+    protector: &P,
+    trust_policy: CredentialTrustPolicy,
+    after_bind: impl FnOnce(),
+) -> Result<DesktopSyncResult, String> {
     let (mut client, mut created) =
         open_sync_profile(database_path, protector, trust_policy, target)?;
 
@@ -228,7 +246,7 @@ fn run_sync_once<P: PrivateKeyProtector>(
         .build()
         .map_err(|error| format!("build Desktop sync runtime: {error}"))?;
     let (bound, outbound_adapter, inbound_adapter) =
-        connect_sync_adapters(&runtime, listen, target)?;
+        connect_sync_adapters(&runtime, listen, target, after_bind)?;
     let mut deduplicator = EventDeduplicator::new(128)
         .map_err(|error| format!("create sync event deduplicator: {error:?}"))?;
     let cancellation = CancellationToken::new();
@@ -334,6 +352,7 @@ fn connect_sync_adapters(
     runtime: &tokio::runtime::Runtime,
     listen: SocketAddr,
     target: SyncTarget,
+    after_bind: impl FnOnce(),
 ) -> Result<(SocketAddr, TcpPeerAdapter, TcpPeerAdapter), String> {
     let listener = runtime
         .block_on(TcpPeerListener::bind(listen, MAX_ENVELOPE_BYTES))
@@ -341,6 +360,7 @@ fn connect_sync_adapters(
     let bound = listener
         .local_addr()
         .map_err(|error| format!("read Desktop sync listener address: {error:?}"))?;
+    after_bind();
     let (outbound, (inbound, _remote_address)) = runtime
         .block_on(async {
             tokio::time::timeout(SYNC_STAGE_TIMEOUT, async {
@@ -629,7 +649,10 @@ fn validate_event(
 mod tests {
     use std::{
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     use lattice_core::{
@@ -984,22 +1007,30 @@ mod tests {
             peer_fingerprint: admin_fingerprint,
             scope,
         };
+        let readiness = Arc::new(Barrier::new(2));
+        let admin_readiness = Arc::clone(&readiness);
         let admin_sync = std::thread::spawn(move || {
-            run_sync_once(
+            run_sync_once_after_bind(
                 admin_listen,
                 admin_target,
                 &admin_path,
                 &TestProtector,
                 CredentialTrustPolicy::native_system(),
+                move || {
+                    admin_readiness.wait();
+                },
             )
         });
         let member_sync = std::thread::spawn(move || {
-            run_sync_once(
+            run_sync_once_after_bind(
                 member_listen,
                 member_target,
                 &member_path,
                 &TestProtector,
                 CredentialTrustPolicy::native_system(),
+                move || {
+                    readiness.wait();
+                },
             )
         });
         let admin_result = admin_sync
