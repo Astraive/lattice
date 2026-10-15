@@ -41,6 +41,10 @@ openmls = "=0.9.0"
 fs4 = "=1.1.0"
 tauri-plugin-dialog = { version = "=2.7.3", default-features = false, features = ["gtk3"] }
 
+[dev-dependencies]
+lattice-mls = { path = "../../../crates/lattice-mls", features = ["test-utils"] }
+lattice-protocol = { path = "../../../crates/lattice-protocol" }
+
 
 [lints]
 workspace = true

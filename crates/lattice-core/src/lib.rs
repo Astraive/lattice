@@ -517,6 +517,80 @@ fn store_received_event(
     }
     Ok(())
 }
+#[derive(Clone, Copy)]
+struct MembershipConflictValidation<'a> {
+    mls_storage_key: &'a [u8],
+    group_id: &'a [u8],
+    group_reference: &'a [u8; 32],
+    credential_trust_policy: &'a CredentialTrustPolicy,
+    first_control_event: &'a VerifiedSignatureOnlyEvent,
+    second_control_event: &'a VerifiedSignatureOnlyEvent,
+}
+
+fn validate_space_membership_conflict(
+    transaction: &Transaction<'_>,
+    validation: MembershipConflictValidation<'_>,
+    staged_reducer: &mut space::SpaceReducer,
+) -> Result<u64, CoreError> {
+    let MembershipConflictValidation {
+        mls_storage_key,
+        group_id,
+        group_reference,
+        credential_trust_policy,
+        first_control_event,
+        second_control_event,
+    } = validation;
+    with_mls_storage_key(mls_storage_key, || {
+        let provider = ProtectedSqliteProvider::new(transaction);
+        let mut group =
+            GroupState::load_with_trust_policy(&provider, group_id, credential_trust_policy)?;
+        if group.group_reference() != *group_reference
+            || first_control_event.mls_epoch() != group.epoch()
+            || second_control_event.mls_epoch() != group.epoch()
+        {
+            return Err(CoreError::MlsEventBindingFailed);
+        }
+        let IncomingResult::StagedCommit {
+            parent_epoch: first_parent,
+            ..
+        } = group.process_incoming(&provider, first_control_event.protected_body())?
+        else {
+            return Err(CoreError::MlsEventBindingFailed);
+        };
+
+        match group.process_incoming(&provider, second_control_event.protected_body()) {
+            Err(lattice_mls::api::MlsError::ConflictDetected { parent_epoch })
+                if parent_epoch == first_parent => {}
+            _ => return Err(CoreError::MlsEventBindingFailed),
+        }
+        let evidence = group
+            .conflict_evidence()
+            .ok_or(CoreError::MlsEventBindingFailed)?;
+        if evidence.parent_epoch() != first_parent
+            || evidence.first_commit() != first_control_event.protected_body()
+            || evidence.second_commit() != second_control_event.protected_body()
+        {
+            return Err(CoreError::MlsEventBindingFailed);
+        }
+        let first_proof = evidence
+            .first_membership_change()
+            .cloned()
+            .ok_or(CoreError::MlsEventBindingFailed)?;
+        let second_proof = evidence
+            .second_membership_change()
+            .cloned()
+            .ok_or(CoreError::MlsEventBindingFailed)?;
+        staged_reducer
+            .observe_validated_control_event(first_control_event, first_proof)
+            .map_err(CoreError::SpaceControlRejected)?;
+        staged_reducer
+            .observe_validated_control_event(second_control_event, second_proof)
+            .map_err(CoreError::SpaceControlRejected)?;
+        staged_reducer.mark_membership_conflicted(first_control_event, second_control_event);
+        Ok(first_parent)
+    })
+    .map_err(CoreError::from)?
+}
 
 fn commit_authored_event_to_outbox(
     transaction: &Transaction<'_>,
@@ -3276,7 +3350,7 @@ impl Client {
         let restored_event = event.clone();
         let credential_trust_policy = self.credential_trust_policy.clone();
         let (group_reference, reducer) =
-            self.with_mls_transaction(move |identity, provider, _transaction| {
+            self.with_mls_transaction(move |identity, provider, transaction| {
                 if event.author_fingerprint() != &identity.fingerprint() {
                     return Err(CoreError::SpaceGenesisRejected(
                         space::RejectReason::CreatorMismatch,
@@ -3332,6 +3406,9 @@ impl Client {
                     {
                         return Err(CoreError::SpaceMembershipSnapshotInvalid);
                     }
+                    transaction
+                        .execute_batch("SAVEPOINT restore_membership_conflict")
+                        .map_err(StoreError::from)?;
                     if !matches!(
                         group.process_incoming(provider, first.protected_body())?,
                         IncomingResult::StagedCommit { parent_epoch, .. }
@@ -3367,6 +3444,14 @@ impl Client {
                         .observe_validated_control_event(&second, second_proof)
                         .map_err(CoreError::SpaceControlRejected)?;
                     reducer.mark_membership_conflicted(&first, &second);
+                    // Conflict evidence is reconstructed from the exact signed
+                    // events on every restore; do not persist OpenMLS replay state.
+                    transaction
+                        .execute_batch("ROLLBACK TO restore_membership_conflict")
+                        .map_err(StoreError::from)?;
+                    transaction
+                        .execute_batch("RELEASE restore_membership_conflict")
+                        .map_err(StoreError::from)?;
                 }
                 // Restored history is accepted only when every stored proof has
                 // a corresponding committed MLS epoch.
@@ -4533,8 +4618,8 @@ impl Client {
         &mut self,
         group_id: &[u8],
         reducer: &space::SpaceReducer,
-        first_control_event: VerifiedSignatureOnlyEvent,
-        second_control_event: VerifiedSignatureOnlyEvent,
+        first_control_event: &VerifiedSignatureOnlyEvent,
+        second_control_event: &VerifiedSignatureOnlyEvent,
     ) -> Result<space::SpaceReducer, CoreError> {
         let Some(policy) = reducer.policy() else {
             return Err(CoreError::SpaceMembershipNotApplied(
@@ -4547,7 +4632,7 @@ impl Client {
         let expected_space_id = policy.space_id;
         let expected_group_reference = policy.group_reference;
         if first_control_event.event_id() == second_control_event.event_id()
-            || [&first_control_event, &second_control_event]
+            || [first_control_event, second_control_event]
                 .into_iter()
                 .any(|event| {
                     event.space_id() != &expected_space_id
@@ -4571,54 +4656,30 @@ impl Client {
         let second_event_id = *second_control_event.event_id().as_bytes();
         let mut staged_reducer = reducer.clone();
         let credential_trust_policy = self.credential_trust_policy.clone();
-        self.with_mls_transaction(move |_identity, provider, transaction| {
-            let mut group =
-                GroupState::load_with_trust_policy(provider, &group_id, &credential_trust_policy)?;
-            if group.group_reference() != expected_group_reference
-                || first_control_event.mls_epoch() != group.epoch()
-                || second_control_event.mls_epoch() != group.epoch()
-            {
-                return Err(CoreError::MlsEventBindingFailed);
-            }
-            let IncomingResult::StagedCommit {
-                parent_epoch: first_parent,
-                ..
-            } = group.process_incoming(provider, first_control_event.protected_body())?
-            else {
-                return Err(CoreError::MlsEventBindingFailed);
-            };
-
-            match group.process_incoming(provider, second_control_event.protected_body()) {
-                Err(lattice_mls::api::MlsError::ConflictDetected { parent_epoch })
-                    if parent_epoch == first_parent => {}
-                _ => return Err(CoreError::MlsEventBindingFailed),
-            }
-            let evidence = group
-                .conflict_evidence()
-                .ok_or(CoreError::MlsEventBindingFailed)?;
-            if evidence.parent_epoch() != first_parent
-                || evidence.first_commit() != first_control_event.protected_body()
-                || evidence.second_commit() != second_control_event.protected_body()
-            {
-                return Err(CoreError::MlsEventBindingFailed);
-            }
-            let first_proof = evidence
-                .first_membership_change()
-                .cloned()
-                .ok_or(CoreError::MlsEventBindingFailed)?;
-            let second_proof = evidence
-                .second_membership_change()
-                .cloned()
-                .ok_or(CoreError::MlsEventBindingFailed)?;
-            staged_reducer
-                .observe_validated_control_event(&first_control_event, first_proof)
-                .map_err(CoreError::SpaceControlRejected)?;
-            staged_reducer
-                .observe_validated_control_event(&second_control_event, second_proof)
-                .map_err(CoreError::SpaceControlRejected)?;
-            staged_reducer.mark_membership_conflicted(&first_control_event, &second_control_event);
-            store_received_event(transaction, &first_control_event)?;
-            store_received_event(transaction, &second_control_event)?;
+        self.store.with_transaction(|transaction| {
+            transaction
+                .execute_batch("SAVEPOINT membership_conflict_validation")
+                .map_err(StoreError::from)?;
+            let first_parent = validate_space_membership_conflict(
+                transaction,
+                MembershipConflictValidation {
+                    mls_storage_key: &self.mls_storage_key[..],
+                    group_id: &group_id,
+                    group_reference: &expected_group_reference,
+                    credential_trust_policy: &credential_trust_policy,
+                    first_control_event,
+                    second_control_event,
+                },
+                &mut staged_reducer,
+            )?;
+            transaction
+                .execute_batch("ROLLBACK TO membership_conflict_validation")
+                .map_err(StoreError::from)?;
+            transaction
+                .execute_batch("RELEASE membership_conflict_validation")
+                .map_err(StoreError::from)?;
+            store_received_event(transaction, first_control_event)?;
+            store_received_event(transaction, second_control_event)?;
             Store::save_space_membership_conflict_in_transaction(
                 transaction,
                 &SpaceMembershipConflictSnapshot {
@@ -4629,8 +4690,9 @@ impl Client {
                     second_control_event_id: second_event_id,
                 },
             )?;
-            Ok(staged_reducer)
-        })
+            Ok::<_, CoreError>(())
+        })?;
+        Ok(staged_reducer)
     }
 
     /// Creates a DER PKCS#10 certificate signing request for this device.
@@ -7416,12 +7478,7 @@ mod tests {
             },
         );
         let quarantined = bob
-            .record_space_membership_conflict(
-                &group_id,
-                &updated,
-                alice_control.clone(),
-                charlie_control.clone(),
-            )
+            .record_space_membership_conflict(&group_id, &updated, &alice_control, &charlie_control)
             .expect("persist distinct-author sibling conflict");
         assert!(matches!(
             quarantined.status(),
@@ -7449,8 +7506,8 @@ mod tests {
             bob.record_space_membership_conflict(
                 &group_id,
                 &quarantined,
-                alice_control,
-                charlie_control,
+                &alice_control,
+                &charlie_control,
             ),
             Err(CoreError::SpaceMembershipConflicted)
         ));
@@ -7631,8 +7688,8 @@ mod tests {
                 .record_space_membership_conflict(
                     &group_id,
                     &reducer,
-                    first_control.clone(),
-                    second_control.clone(),
+                    &first_control,
+                    &second_control,
                 )
                 .is_err()
         );
