@@ -44,7 +44,7 @@ For each privileged event, load its declared causal dependencies and relevant ac
 
 Remove and ban use the same authenticated MLS Remove proof but distinct policy results: removal marks the member `removed` and permits a later authorized invitation; ban marks the fingerprint `banned` and rejects later invitations or admissions. The event-log transaction merges the exact Commit, stores its signed control and transition events, and persists protected replay evidence together.
 
-Desktop, Android, and CLI expose an authorized local member-removal operation. It commits the MLS Remove, policy transition, and rekey together and reports both epochs and event IDs. The UI does not claim that peers received the events; a removed member can retain all data already obtained. Authenticated peer sync remains a separate operation.
+Desktop, Android, and CLI expose an authorized local member-removal operation. It commits the MLS Remove, policy transition, and rekey together and reports both epochs and event IDs. The UI does not claim that peers received the events; a removed member can retain all data already obtained. Authenticated peer sync remains separate. Desktop sync groups membership policy, MLS-control, and transition events before Core ingress; sibling Commits are quarantined as a conflict rather than applying either branch. An authorized owner can create a new one-member recovery generation from the retained common policy. Desktop tests cover authenticated loopback removal delivery across independently persisted profiles, duplicate replay, restart/convergence, conflict quarantine, and recovery. They do not cover separate OS processes, physical devices, or broad cross-client acceptance.
 
 ## Channel types and privacy semantics
 

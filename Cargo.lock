@@ -3384,6 +3384,7 @@ dependencies = [
  "lattice-mls",
  "lattice-node",
  "lattice-platform",
+ "lattice-protocol",
  "lattice-relay",
  "lattice-router",
  "lattice-storage",
