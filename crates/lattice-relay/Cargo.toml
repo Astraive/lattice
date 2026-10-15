@@ -22,7 +22,7 @@ serde_json = { version = "=1.0.151", features = ["raw_value"] }
 sha2 = "=0.10.9"
 tokio = { version = "=1.53.1", features = ["macros", "rt", "time"], optional = true }
 tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"], optional = true }
-tokio-util = { version = "=0.7.19", features = ["rt"], optional = true }
+tokio-util = { version = "=0.7.20", features = ["rt"], optional = true }
 getrandom = "=0.4.3"
 zeroize = "=1.9.0"
 url = "=2.5.8"
